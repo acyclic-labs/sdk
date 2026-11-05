@@ -31,7 +31,7 @@ export function fuzzPayload(data, caseInsensitive) {
     return refused(error);
   }
   assert.equal(fuzz(bytes), true);
-  const entries = tarEntries(bytes);
+  const entries = [...tarEntries(bytes)];
   assert.ok(payload.size > 0, "an admitted payload must contain a file");
   assert.deepEqual([...payload.keys()], entries.filter(entry => entry.type === "0").map(entry => entry.path));
   const names = entries.map(entry => entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path);
@@ -68,7 +68,7 @@ export function fuzzDeclared(data, path, files, digest, maxExpandedBytes) {
   const expanded = gunzipSync(data, { maxOutputLength: maxExpandedBytes + 1 });
   assert.ok(expanded.length <= maxExpandedBytes);
   assert.equal(fuzz(expanded), true);
-  const entries = tarEntries(expanded);
+  const entries = [...tarEntries(expanded)];
   assert.equal(entries.length, result.payload.size, "each physical member must be delivered once");
   assert.deepEqual([...result.payload.keys()].sort(), Object.keys(files).sort());
   for (const entry of entries) {

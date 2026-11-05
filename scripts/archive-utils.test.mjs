@@ -14,7 +14,7 @@ test("artifact inventory matches real file writes and refuses aliases before rep
   const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-tree-"));
   const source = join(temporary, "source"), output = join(temporary, "output");
   const expected = new Map();
-  const bodies = tarEntries(seed).filter(entry => entry.type === "0").map(entry => entry.body);
+  const bodies = [...tarEntries(seed)].filter(entry => entry.type === "0").map(entry => entry.body);
   const write = (path, bytes) => {
     const parts = path.split("/");
     mkdirSync(join(source, ...parts.slice(0, -1)), { recursive: true });
@@ -192,7 +192,7 @@ test("native package inventory survives byte mutations and rejects removed admis
     ];
     const memberCheck = 'if (entry.type !== "0" || payload.has(entry.path) || !Object.hasOwn(files, entry.path)) {\n      throw new Error("unsafe, duplicate or unexpected archive member");\n    }';
     const directoryBytes = gzipSync(seed);
-    const directoryFiles = Object.fromEntries(tarEntries(seed).map(entry => [entry.path, hash(entry.body)]));
+    const directoryFiles = Object.fromEntries(Array.from(tarEntries(seed), entry => [entry.path, hash(entry.body)]));
     mutations.push([memberCheck, directoryBytes, directoryFiles, hash(directoryBytes)]);
     const flat = gunzipSync(compressed);
     // Duplicate the original first member without changing its authenticated
@@ -232,7 +232,7 @@ test("native gzip corpus exercises actual file admission and both byte bounds", 
 test("native TAR corpus and byte mutations exercise the production decoder", () => {
   assert.equal(fuzz(seed), true);
   const listed = readFileSync(new URL("./test-support/archive-corpus/native-ustar.list", import.meta.url), "utf8");
-  assert.deepEqual(tarEntries(seed).map(entry => entry.path), listed.trimEnd().split(/\r?\n/));
+  assert.deepEqual(Array.from(tarEntries(seed), entry => entry.path), listed.trimEnd().split(/\r?\n/));
   // Every header byte and body/trailer boundary is reachable from the real
   // producer output, including the final member and a one-block end marker.
   for (let offset = 0; offset < seed.length; offset += 512) {
