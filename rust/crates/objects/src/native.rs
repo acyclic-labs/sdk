@@ -1,6 +1,6 @@
 //! Original-meter producers over the same engine paths as ordinary calls.
 use crate::{
-    Account, Blobs, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
+    Account, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
     Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
     Observation, Observed, Retained, RootId, native_future, native_input_meter,
 };
@@ -276,7 +276,7 @@ pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
         // its backing retires before the request's funding on every exit.
         let mut request = request;
         let result = account
-            .retain(&request.data.0, std::mem::take(&mut request.data.1))
+            .retain_inner(&request.data.0, std::mem::take(&mut request.data.1))
             .await;
         checked(&medium, result)
     })
@@ -292,7 +292,7 @@ pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     native_future(&meter, async move {
         let account = account.over(&medium);
         // Consume head metadata while its original medium funding is live.
-        let present = match account.head(request.data).await {
+        let present = match account.head_inner(request.data).await {
             Ok(_) => Ok(true),
             Err(error) if error.code == crate::wire::ErrorCode::NotFound => Ok(false),
             Err(error) => Err(error),
