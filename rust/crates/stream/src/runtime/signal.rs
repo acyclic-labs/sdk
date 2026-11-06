@@ -62,6 +62,25 @@ impl<T> Signal<T> {
             .0
             .pop_front())
     }
+    /// Receives at most one event and arms the next publication atomically.
+    /// The second result names buffered work that needs another owner turn.
+    pub(crate) fn take_and_listen(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Result<(Option<T>, bool), StreamError> {
+        let wake = cx.waker().clone();
+        let (value, buffered, previous) = {
+            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
+            let value = state.0.pop_front();
+            (value, !state.0.is_empty(), state.1.replace(wake))
+        };
+        drop(previous);
+        Ok((value, buffered))
+    }
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> usize {
+        self.state.lock().unwrap().0.len()
+    }
     pub(crate) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
         let wake = cx.waker().clone();
         let previous = {

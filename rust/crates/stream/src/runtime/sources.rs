@@ -301,62 +301,50 @@ impl<S: Stream + Unpin> ReadySources<S> {
         room: (bool, bool, bool),
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<S::Item>, StreamError>> {
-        let mut polled = 0;
-        loop {
-            while let Some(identity) = self.signal.try_next()? {
-                self.wake(identity);
-            }
-            if let Some(id) = self.pop(room) {
-                // A queued id always names a live entry.
-                let Some(entry) = self.entries.get_mut(&id) else {
-                    continue;
-                };
-                entry.ready = false;
-                let waker = futures::task::waker_ref(&entry.wake);
-                match entry.wake.recheck(|| {
-                    Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker))
-                }) {
-                    Poll::Ready(Some(event)) => {
-                        entry.opening = false;
-                        entry.ready = true;
-                        self.enqueue(id);
-                        return Poll::Ready(Ok(Some(event)));
-                    }
-                    Poll::Ready(None) => self.remove(id),
-                    Poll::Pending => {}
+        if let Some(identity) = self.signal.try_next()? {
+            self.wake(identity);
+        }
+        if let Some(id) = self.pop(room) {
+            // A queued id always names a live entry.
+            let Some(entry) = self.entries.get_mut(&id) else {
+                return Poll::Ready(Err(StreamError::Unavailable));
+            };
+            entry.ready = false;
+            let waker = futures::task::waker_ref(&entry.wake);
+            match entry
+                .wake
+                .recheck(|| Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker)))
+            {
+                Poll::Ready(Some(event)) => {
+                    entry.opening = false;
+                    entry.ready = true;
+                    self.enqueue(id);
+                    return Poll::Ready(Ok(Some(event)));
                 }
-                polled += 1;
-                if polled >= self.entries.len().max(1) {
-                    // Register the parent before yielding a provider's Pending.
-                    // Otherwise a last source can lose its producer while the
-                    // only parent wake still names an earlier cooperative turn.
-                    loop {
-                        match self.signal.poll(cx) {
-                            Poll::Ready(Ok(identity)) => self.wake(identity),
-                            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                            Poll::Pending => break,
-                        }
-                    }
-                    if self
-                        .queues
-                        .iter()
-                        .zip(Self::enabled(room))
-                        .any(|(queue, enabled)| enabled && queue.first.is_some())
-                    {
-                        cx.waker().wake_by_ref();
-                    }
-                    return Poll::Pending;
-                }
-            } else if self.entries.is_empty() {
-                return Poll::Ready(Ok(None));
-            } else {
-                match self.signal.poll(cx) {
-                    Poll::Ready(Ok(identity)) => self.wake(identity),
-                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                    Poll::Pending => return Poll::Pending,
-                }
+                Poll::Ready(None) => self.remove(id),
+                Poll::Pending => {}
             }
         }
+        if self.entries.is_empty() {
+            return Poll::Ready(Ok(None));
+        }
+        // A provider can publish while being polled, including through an old
+        // cancelled callback. Consume one hint and retain the parent under the
+        // same signal lock, without draining the other sources' publications.
+        let (identity, buffered) = self.signal.take_and_listen(cx)?;
+        if let Some(identity) = identity {
+            self.wake(identity);
+        }
+        if buffered
+            || self
+                .queues
+                .iter()
+                .zip(Self::enabled(room))
+                .any(|(queue, enabled)| enabled && queue.first.is_some())
+        {
+            cx.waker().wake_by_ref();
+        }
+        Poll::Pending
     }
 }
 
@@ -394,6 +382,8 @@ impl<S: Stream + Unpin> ReadySources<S> {
 
     /// Polls one ready source, with round-robin service among ready peers.
     /// Pending sources remain asleep until their provider's registered wake.
+    /// Each call consumes at most two wake hints and polls at most one provider.
+    /// Buffered hints and runnable peers fund a subsequent cooperative turn.
     pub fn poll_next(
         &mut self,
         cx: &mut Context<'_>,

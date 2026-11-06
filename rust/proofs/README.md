@@ -29,7 +29,9 @@ and must fail the scalar arithmetic bound. Native ledger costs remain separate.
 The [ready-source allocation control](ready-source-allocation/README.md) retains
 actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record
-allocation only; source-index comparison and wake-drain complexity remain open.
+allocation only. The [bounded provider-turn control](ready-source-turn/README.md)
+challenges actual wake draining, parent registration and record delivery on the
+same scheduler. Physical source-index comparison complexity remains open.
 
 The [exact budget-refusal control](budget-errors/README.md) extends the existing
 generated verifier oracle with an isolated refusal for every declared counter.
@@ -107,3 +109,14 @@ The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot
 certify non-owner members, partial writes, upgrades or larger fork trees.
+
+The [follow digest control](follow-digest-cost/README.md) measures the actual
+digest's scratch allocation as admitted clauses repeat at fixed size. Its
+retained production mutation discards that scratch buffer; the same signed
+provider-hop control must reject it. An independent v1 framing oracle retains
+format stability without using a copied authorization builder as a cost oracle.
+
+The [change marker control](change-marker-cost/README.md) measures original
+attribute probes against the fixture's marker position. Its retained mutation
+repeats the production lookup, replacing a copied classifier and simulated old
+calls while keeping the retained-version identity and refusal property.

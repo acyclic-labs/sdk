@@ -28,7 +28,7 @@ impl transport::Transport for Peer {
     fn session(
         &self,
         _: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Response, transport::Failure>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             let response: Response = stream::iter([Ok(frame(

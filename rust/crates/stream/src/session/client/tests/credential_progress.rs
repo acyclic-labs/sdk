@@ -216,7 +216,10 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     assert!(
                         matches!(
                             operation.now_or_never(),
-                            Some(Err(StreamError::AccessDenied))
+                            Some(Err(transport::Failure {
+                                error: StreamError::AccessDenied,
+                                transient: false
+                            }))
                         ),
                         "{stage}: source change must cancel the owner wait immediately"
                     );
@@ -226,7 +229,10 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     drop(release);
                     assert!(matches!(
                         operation.now_or_never(),
-                        Some(Err(StreamError::AccessDenied))
+                        Some(Err(transport::Failure {
+                            error: StreamError::AccessDenied,
+                            transient: false
+                        }))
                     ));
                 }
                 _ => {
@@ -237,7 +243,13 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                             matches!(result?.map(Frame::into_wire), Some(wire::SessionFrame { body: Some(Body::InterestApplied(applied)), .. }) if applied.revision == 7)
                         );
                     } else {
-                        assert!(matches!(result, Err(StreamError::AccessDenied)));
+                        assert!(matches!(
+                            result,
+                            Err(transport::Failure {
+                                error: StreamError::AccessDenied,
+                                transient: false
+                            })
+                        ));
                     }
                 }
             }

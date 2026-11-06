@@ -49,24 +49,17 @@ async fn input_result<T>(
 async fn session_error(
     error: tonic::Status,
     lease: Option<&acyclic_auth::credential::ResolvedCredential>,
-) -> StreamError {
+) -> transport::Failure {
     if error.code() == tonic::Code::Unauthenticated && std::error::Error::source(&error).is_none() {
         if let Some(lease) = lease {
             if lease.reject().await.is_err() {
-                return StreamError::AccessDenied;
+                return StreamError::AccessDenied.into();
             }
         }
     }
-    if grpc::retryable(&error) {
-        StreamError::Unavailable
-    } else {
-        match grpc::status(&error) {
-            // Unknown peer statuses are terminal; only the transport
-            // classifier above may request another physical connection. A
-            // member's refusal stays terminal with its original diagnostics.
-            StreamError::Unavailable => StreamError::InvalidResponse,
-            error => error,
-        }
+    transport::Failure {
+        error: grpc::status(&error),
+        transient: grpc::retryable(&error),
     }
 }
 impl futures::Stream for Input {
@@ -121,7 +114,7 @@ impl transport::Transport for Grpc {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Response, transport::Failure>> {
         Box::pin(async move {
             let mut changed = match &self.credential {
                 Some(provider) => provider
@@ -205,18 +198,13 @@ impl Client {
                     Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
                     None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
                 }
-                .map_err(|error| {
-                    if error.transient() {
-                        StreamError::Unavailable
-                    } else {
-                        StreamError::InvalidResponse
-                    }
-                })
+                .map_err(transport::Failure::from)
             })
         });
         Self::connector(channel, authorization, credential, connect, revisions)
     }
 
+    #[cfg(test)]
     pub(super) fn with_connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,

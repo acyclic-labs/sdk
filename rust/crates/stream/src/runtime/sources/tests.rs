@@ -5,7 +5,6 @@ use crate::{
 };
 use futures::StreamExt;
 
-#[test]
 fn late_cancelled_wakes_cannot_disarm_a_live_source() {
     use crate::FollowRequest;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -97,6 +96,7 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
 
 #[test]
 fn ready_records_reuse_the_registered_source_node() {
+    late_cancelled_wakes_cannot_disarm_a_live_source();
     futures::executor::block_on(async {
         let provider = MemoryStream::default();
         let path = StreamPath::new("ready/allocation").unwrap();
@@ -114,7 +114,7 @@ fn ready_records_reuse_the_registered_source_node() {
         // reads and registration allocations from scheduler work.
         let records: Vec<_> = provider
             .read(ReadRequest {
-                path,
+                path: path.clone(),
                 from: 0,
                 limit: 32,
                 key: None,
@@ -127,6 +127,23 @@ fn ready_records_reuse_the_registered_source_node() {
             .await;
         assert_eq!(records.len(), 32);
         let mut shared = ReadySources::new();
+        // Cancel real captured record cursors while retaining their callbacks.
+        // A burst of stale provider hints must not delay a ready live record.
+        let mut cancelled = Vec::new();
+        for (channel_id, record) in (1_u64..).zip(&records) {
+            shared.register(
+                wire::SessionChannel {
+                    channel_id,
+                    generation: 1,
+                },
+                futures::stream::iter(vec![record.clone()]),
+            );
+            cancelled.push(shared.entries[&channel_id].wake.clone());
+            shared.remove(channel_id);
+        }
+        for wake in cancelled {
+            wake.notify();
+        }
         shared.register(
             wire::SessionChannel {
                 channel_id: 0,
@@ -139,6 +156,7 @@ fn ready_records_reuse_the_registered_source_node() {
         acyclic_test_support::measure(|| {});
         for (sequence, expected) in (0_u64..).zip(records) {
             let mut current = Poll::Pending;
+            let pending = shared.signal.pending();
             let allocation = acyclic_test_support::measure(|| {
                 current = shared.poll_next(&mut cx);
             });
@@ -148,9 +166,61 @@ fn ready_records_reuse_the_registered_source_node() {
             assert_eq!(current, expected);
             assert_eq!(current.sequence, sequence);
             assert_eq!(
+                shared.signal.pending(),
+                pending.saturating_sub(1),
+                "ready record delivery drained unrelated provider hints"
+            );
+            assert_eq!(
                 allocation.count_total, 0,
                 "ready record scheduling allocated physical heap storage"
             );
         }
+        // Each opening is known runnable; one owner turn polls one original
+        // provider, even when every registered follow will initially park.
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut idle = ReadySources::new();
+        for channel_id in 0..32 {
+            let mut follow = crate::records_only(
+                provider
+                    .follow(crate::FollowRequest::new(path.clone(), 32))
+                    .await
+                    .unwrap(),
+            );
+            let polls = polls.clone();
+            idle.register(
+                wire::SessionChannel {
+                    channel_id,
+                    generation: 1,
+                },
+                futures::stream::poll_fn(move |cx| {
+                    polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    follow.poll_next_unpin(cx)
+                }),
+            );
+        }
+        for expected in 1..=32 {
+            assert!(idle.poll_next(&mut cx).is_pending());
+            assert_eq!(
+                polls.load(std::sync::atomic::Ordering::Relaxed),
+                expected,
+                "owner turn polled unrelated pending providers"
+            );
+        }
+        provider
+            .append(AppendRequest {
+                path,
+                records: vec![b"published".as_slice().into()],
+                if_tail: Some(32),
+                idempotency_key: IdempotencyKey::new(b"published".to_vec()).unwrap(),
+            })
+            .await
+            .unwrap();
+        let record = std::future::poll_fn(|cx| idle.poll_next(cx))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.sequence, 32);
+        assert_eq!(record.value.as_slice(), b"published");
     });
 }

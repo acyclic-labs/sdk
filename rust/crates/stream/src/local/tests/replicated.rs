@@ -65,9 +65,15 @@ async fn real_journal_pages_pin_a_head_while_the_source_advances()
     let root = tempfile::tempdir()?;
     let source = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     let path = StreamPath::new("paged/events")?;
-    for sequence in 0..65 {
-        source.append(append(&path, sequence)).await?;
-    }
+    // Paging requires the initial prefix durable, not each setup append.
+    deferring_durability(async {
+        for sequence in 0..65 {
+            source.append(append(&path, sequence)).await?;
+        }
+        Ok::<_, StreamError>(())
+    })
+    .await?;
+    source.flush()?;
     for (index, budget) in [1, 8, 64].into_iter().enumerate() {
         let head = 65 + index as u64 * 2;
         let clock = Arc::new(ReplicaClock::default());
