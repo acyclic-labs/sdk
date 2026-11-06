@@ -226,3 +226,91 @@ async fn checkpoint_policy_settles_original_invocation_and_reopens() -> TestResu
     }
     Ok(())
 }
+
+/// The original platform deadline ends an invocation with its exact policy
+/// cause, retaining the previous checkpoint and the same durable input cut.
+#[tokio::test(start_paused = true)]
+async fn handler_deadline_settles_original_invocation_and_reopens() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let previous = Checkpoint {
+        codec: conformance::codec(),
+        bytes: Bytes::from_static(b"previous checkpoint"),
+    };
+    let mut restored = Vec::new();
+    for maximum_millis in [1, 50, 10_000] {
+        let name = format!("deadline-{maximum_millis}");
+        let address = actor(&name)?;
+        let mut create = PreparedPublish::foreign(key(&format!("{name}/create"))?);
+        for effect in store.create(
+            &address,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: StreamPath::new(format!("{name}/inbox"))?,
+                    cursor: 0,
+                },
+            )]),
+            Some(previous.clone()),
+        )? {
+            create.join(effect)?;
+        }
+        store.submit(create).await?;
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Limited::new(maximum_millis, None, true)?),
+            Arc::new(SystemClock),
+        );
+        runtime.track(address.clone())?;
+        let invocation = Invocation::new(
+            StreamPath::new("handler-deadline/caller")?,
+            address.clone(),
+            "inbox".into(),
+            Bytes::from_static(b"deadline"),
+            Bytes::from_static(b"original request"),
+        )?;
+        let ticket = store.enqueue_invoke(&invocation).await?;
+        let drained = runtime.drain_actor(&address).await;
+        assert!(
+            drained.is_ok(),
+            "handler deadline lost original terminal: maximum={maximum_millis}, {drained:?}"
+        );
+        let Err(Error::InvocationFailed { source, receipt }) =
+            store.wait_invocation(ticket.clone()).await
+        else {
+            return Err("handler deadline lost its original failure".into());
+        };
+        assert_eq!(
+            source,
+            crate::guest::GuestError::HandlerTimeout { maximum_millis }
+        );
+        assert_eq!(receipt.ticket(), &ticket);
+        assert_eq!(receipt.state().commit_id, receipt.terminal().commit_id);
+        let state = State::decode(&receipt.state().value)?;
+        assert_eq!(state.cursor("inbox"), Some(1));
+        assert_eq!(state.checkpoint(), Some(&previous));
+        match store.invoke(&invocation).await {
+            Err(Error::InvocationFailed {
+                source: repeated,
+                receipt: original,
+            }) => {
+                assert_eq!(repeated, source);
+                assert_eq!(original, receipt);
+            }
+            _ => return Err("handler deadline lost its original replay".into()),
+        }
+        restored.push(address);
+    }
+    drop(store);
+    drop(provider);
+    let reopened = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(reopened, root()?);
+    for address in restored {
+        let snapshot = store.load(&address).await?;
+        let state = snapshot.state().ok_or("missing reopened deadline state")?;
+        assert_eq!(state.cursor("inbox"), Some(1));
+        assert_eq!(state.checkpoint(), Some(&previous));
+    }
+    Ok(())
+}

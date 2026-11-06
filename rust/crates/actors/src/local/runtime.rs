@@ -880,9 +880,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 control.cancellation = Some(cancellation.clone());
             }
             let _active = ActiveDelivery(&slot.delivery_control);
-            // A handler past its manifest timeout (wall time, not the actor
-            // clock) is abandoned with its input unconsumed; the actor lock is
-            // released for the next attempt.
+            // The manifest deadline uses wall time, independently of actor
+            // alarms. Its refusal settles an invocation through the original
+            // failed-input publication; ordinary inputs remain unconsumed.
             let handled = self.handler.on_record(
                 Delivery {
                     actor: actor.clone(),
@@ -905,8 +905,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
                 let timeout = async {
                     match limits.handler_timeout_millis() {
-                        Some(timeout) => sleep(timeout).await,
-                        None => futures::future::pending::<Result<(), ClockError>>().await,
+                        Some(timeout) => sleep(timeout).await.map(|()| timeout),
+                        None => futures::future::pending::<Result<u64, ClockError>>().await,
                     }
                 };
                 let interrupted = core::pin::pin!(interrupted);
@@ -924,7 +924,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         futures::future::Either::Left((elapsed, _)),
                         _,
                     )) => match elapsed {
-                        Ok(()) => Err(Error::Invalid("handler exceeded its manifest timeout")),
+                        Ok(maximum_millis) => {
+                            Err(crate::guest::GuestError::HandlerTimeout { maximum_millis }.into())
+                        }
                         Err(error) => Err(Error::from(error)),
                     },
                     futures::future::Either::Right((

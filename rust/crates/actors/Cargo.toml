@@ -84,7 +84,7 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tracing-subscriber.workspace = true

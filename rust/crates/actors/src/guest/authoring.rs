@@ -68,6 +68,12 @@ pub enum GuestError {
         /// Maximum encoded checkpoint bytes selected by the caller.
         maximum: u64,
     },
+    /// The handler reached the caller's explicit execution deadline.
+    #[error("handler exceeded the manifest timeout of {maximum_millis} milliseconds")]
+    HandlerTimeout {
+        /// Maximum wall-clock execution time selected by the caller.
+        maximum_millis: u64,
+    },
     /// Guest handler failed; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),

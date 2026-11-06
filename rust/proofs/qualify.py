@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy", "handler-policy"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -101,6 +101,12 @@ elif claim == "checkpoint-policy":
     crate = "acyclic-actors"
     test = "local::runtime::tests::checkpoint::checkpoint_policy_settles_original_invocation_and_reopens"
     diagnostic = "checkpoint policy lost original terminal:"
+    features = []
+elif claim == "handler-policy":
+    source = "rust/crates/actors/src/local/runtime.rs"
+    crate = "acyclic-actors"
+    test = "local::runtime::tests::checkpoint::handler_deadline_settles_original_invocation_and_reopens"
+    diagnostic = "handler deadline lost original terminal:"
     features = []
 elif claim == "view-demand":
     source = "rust/crates/harness-client/src/demand.rs"
