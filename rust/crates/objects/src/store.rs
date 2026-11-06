@@ -284,6 +284,7 @@ impl<M> Clone for Store<M> {
 
 struct State {
     prefix: String,
+    scrub: Scrub,
     gate: tokio::sync::RwLock<()>,
     availability: crate::AvailabilitySource,
     /// This account's revisions, opened from the medium on first use.
@@ -294,9 +295,10 @@ struct State {
 }
 
 impl State {
-    fn new(prefix: String) -> Self {
+    fn new(prefix: String, scrub: Scrub) -> Self {
         Self {
             prefix,
+            scrub,
             gate: tokio::sync::RwLock::default(),
             availability: crate::AvailabilitySource::default(),
             revisions: tokio::sync::OnceCell::default(),
@@ -399,12 +401,16 @@ impl<M: Medium> Store<M> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entry(id)
-                .or_insert_with(|| Arc::new(State::new(format!("{}/", id.to_hex())))),
+                .or_insert_with(|| {
+                    Arc::new(State::new(
+                        format!("{}/", id.to_hex()),
+                        Arc::clone(&self.scrub),
+                    ))
+                }),
         );
         Ok(Account {
             medium: Arc::clone(&self.medium),
             state,
-            scrub: Arc::clone(&self.scrub),
             _medium: PhantomData,
         })
     }
@@ -420,7 +426,6 @@ impl<M: Medium> Store<M> {
 pub struct Account<M, P = Arc<M>> {
     medium: P,
     state: Arc<State>,
-    scrub: Scrub,
     _medium: PhantomData<fn() -> M>,
 }
 
@@ -453,7 +458,6 @@ impl<M, P: Clone> Clone for Account<M, P> {
         Self {
             medium: self.medium.clone(),
             state: Arc::clone(&self.state),
-            scrub: Arc::clone(&self.scrub),
             _medium: PhantomData,
         }
     }
@@ -478,8 +482,10 @@ impl MemoryObjects {
     fn over_memory(medium: MemoryMedium) -> Self {
         Self {
             medium: Arc::new(medium),
-            state: Arc::new(State::new(format!("{}/", Digest::of(b"memory").to_hex()))),
-            scrub: Arc::default(),
+            state: Arc::new(State::new(
+                format!("{}/", Digest::of(b"memory").to_hex()),
+                Arc::default(),
+            )),
             _medium: PhantomData,
         }
     }
@@ -550,7 +556,6 @@ impl<M, P: Deref<Target = M>> Account<M, P> {
         Account {
             medium,
             state: Arc::clone(&self.state),
-            scrub: Arc::clone(&self.scrub),
             _medium: PhantomData,
         }
     }
@@ -598,7 +603,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     /// Waits until the medium is as a clean close leaves it.
     async fn scrubbed(&self) -> Result<(), Error> {
         if self.medium.recovered() {
-            self.scrub.get_or_try_init(|| self.scrub_medium()).await?;
+            self.state
+                .scrub
+                .get_or_try_init(|| self.scrub_medium())
+                .await?;
         }
         Ok(())
     }
@@ -627,8 +635,10 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             };
             let account = Account {
                 medium: &*self.medium,
-                state: Arc::new(State::new(format!("{account}/"))),
-                scrub: Arc::clone(&self.scrub),
+                state: Arc::new(State::new(
+                    format!("{account}/"),
+                    Arc::clone(&self.state.scrub),
+                )),
                 _medium: PhantomData,
             };
             let repaired = account.repair().await?;
