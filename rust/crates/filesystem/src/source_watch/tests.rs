@@ -137,7 +137,9 @@ impl Recorded {
             .extend(changes.iter().map(|change| match change {
                 super::HostChangeWide::Path { action, path, .. } => {
                     let path = PathBuf::from(std::ffi::OsString::from_wide(path));
-                    if *action == 3 {
+                    if matches!(action, 2 | 4) {
+                        HostChange::Departed(path)
+                    } else if *action == 3 {
                         HostChange::Altered(path)
                     } else {
                         HostChange::Rebound(path)
@@ -161,13 +163,11 @@ impl Recorded {
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {
         changes.iter().any(|change| match change {
-            HostChange::Rebound(reported) | HostChange::Altered(reported) => reported == path,
+            HostChange::Departed(reported)
+            | HostChange::Rebound(reported)
+            | HostChange::Altered(reported) => reported == path,
             _ => false,
         })
-    }
-
-    fn rebound(changes: &[HostChange], path: &Path) -> bool {
-        changes.contains(&HostChange::Rebound(path.to_path_buf()))
     }
 
     fn everything(changes: &[HostChange]) -> bool {
@@ -246,15 +246,19 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
     }
     // A write changes the entry in place (which `FSEvents`, coalescing a
     // recent creation into it, may report as the rebinding it could be);
-    // every name operation rebinds.
+    // departure and arrival retain their distinct native phases.
     #[cfg(not(target_os = "macos"))]
     assert!(changes.contains(&HostChange::Altered(PathBuf::from("d").join("f"))));
-    for path in ["new", "g", "h", "e"] {
+    for path in ["new", "h", "e"] {
         assert!(
-            Recorded::rebound(&changes, Path::new(path)),
+            changes.contains(&HostChange::Rebound(PathBuf::from(path))),
             "{path}: {changes:?}"
         );
     }
+    #[cfg(not(target_os = "macos"))]
+    assert!(changes.contains(&HostChange::Departed(PathBuf::from("g"))));
+    #[cfg(target_os = "macos")]
+    assert!(changes.contains(&HostChange::Rebound(PathBuf::from("g"))));
     // Nothing was lost.
     assert!(
         !Recorded::everything(&changes),
