@@ -11,6 +11,7 @@ pub(crate) use pool::Pool;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
     Starting,
+    Waiting,
     Running,
     Parked,
     Finished,
@@ -109,7 +110,30 @@ impl Host {
     }
 
     pub(super) fn run<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
-        lock(&self.state).phase = Phase::Running;
+        let mut state = lock(&self.state);
+        if let Some(driver) = state.take_start_waiter() {
+            // A saturated pool let the driver yield before this worker began.
+            // Publish availability, then wait for that driver to own the first
+            // physical step before user work can wake any other simulated task.
+            state.phase = Phase::Waiting;
+            state.notifying += 1;
+            let saturated = self.pool.park();
+            drop(state);
+            self.notify(Some(driver));
+            if saturated {
+                self.pool.changed();
+            }
+            state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while state.phase == Phase::Waiting {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        } else {
+            state.phase = Phase::Running;
+        }
+        drop(state);
         self.pool.changed();
         let _finished = Finished(self.clone());
         let context = Context::simulation().map(|mut context| {
@@ -134,19 +158,9 @@ impl Host {
                 return output;
             }
             let mut state = lock(&self.state);
-            // A startup wake must precede the phase it announces. Otherwise
-            // the driver can observe Parked, advance, and receive a late wake
-            // from this same handoff as an extra simulated poll.
-            if let Some(driver) = state.take_start_waiter() {
-                drop(state);
-                driver.wake();
-                state = lock(&self.state);
-            }
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
             // Parking does not make the callback ready.
-            // A driver that yielded before startup must now produce this
-            // callback's reply. Wake it once at the original parking event.
             if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
@@ -200,6 +214,11 @@ impl Host {
                         Phase::Finished => {
                             drop(state);
                             return Poll::Ready(executor::complete_io(future.as_mut()));
+                        }
+                        Phase::Waiting => {
+                            self.pool.resume();
+                            state.phase = Phase::Running;
+                            self.changed.notify_one();
                         }
                         Phase::Parked if state.ready => {
                             state.ready = false;
@@ -269,7 +288,7 @@ impl Drop for Driver {
         let driver = {
             let mut state = self.0.notifications_finished();
             state.detached = true;
-            if state.phase == Phase::Parked && state.ready {
+            if state.phase == Phase::Waiting || (state.phase == Phase::Parked && state.ready) {
                 state.ready = false;
                 self.0.pool.resume();
                 state.phase = Phase::Running;
@@ -308,11 +327,6 @@ struct Finished(Arc<Host>);
 impl Drop for Finished {
     fn drop(&mut self) {
         let mut state = lock(&self.0.state);
-        if let Some(driver) = state.take_start_waiter() {
-            drop(state);
-            driver.wake();
-            state = lock(&self.0.state);
-        }
         state.phase = Phase::Finished;
         drop(state);
         self.0.changed.notify_one();

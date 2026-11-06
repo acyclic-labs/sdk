@@ -198,64 +198,88 @@ fn queue_capacity_and_physical_terminal_wakes_are_latched() {
 
 #[test]
 fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
-    loom::model(|| {
-        struct DriverWake(Mutex<bool>, Condvar);
-        impl Wake for DriverWake {
-            fn wake(self: Arc<Self>) {
-                *lock(&self.0) = true;
-                self.1.notify_one();
+    for abandon in [false, true] {
+        loom::model(move || {
+            struct DriverWake(Mutex<bool>, Condvar);
+            impl Wake for DriverWake {
+                fn wake(self: Arc<Self>) {
+                    *lock(&self.0) = true;
+                    self.1.notify_one();
+                }
             }
-        }
-        let host = Host::new(1);
-        let worker = host.clone();
-        let reply = Arc::new(AtomicBool::new(false));
-        let callback = reply.clone();
-        let (started, start) = loom::sync::mpsc::channel();
-        let (release, released) = loom::sync::mpsc::channel();
-        let (callback_wake, callback_wait) = loom::sync::mpsc::channel();
-        let thread = loom::thread::spawn(move || {
-            let occupant = worker.pool.unscoped();
-            started.send(()).unwrap();
-            released.recv().unwrap();
-            drop(occupant);
-            worker.run(|| {
-                let mut callback_wake = Some(callback_wake);
-                worker.block(std::future::poll_fn(|cx| {
-                    if let Some(wake) = callback_wake.take() {
-                        wake.send(cx.waker().clone()).unwrap();
-                    }
-                    if callback.load(Ordering::SeqCst) {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                }));
+            let host = Host::new(1);
+            let worker = host.clone();
+            let reply = Arc::new(AtomicBool::new(false));
+            let callback = reply.clone();
+            let ran = Arc::new(AtomicBool::new(false));
+            let callback_ran = ran.clone();
+            let (started, start) = loom::sync::mpsc::channel();
+            let (release, released) = loom::sync::mpsc::channel();
+            let (callback_wake, callback_wait) = loom::sync::mpsc::channel();
+            let thread = loom::thread::spawn(move || {
+                let occupant = worker.pool.unscoped();
+                started.send(()).unwrap();
+                released.recv().unwrap();
+                drop(occupant);
+                worker.run(|| {
+                    callback_ran.store(true, Ordering::SeqCst);
+                    let mut callback_wake = Some(callback_wake);
+                    worker.block(std::future::poll_fn(|cx| {
+                        if let Some(wake) = callback_wake.take() {
+                            wake.send(cx.waker().clone()).unwrap();
+                        }
+                        if callback.load(Ordering::SeqCst) {
+                            Poll::Ready(())
+                        } else {
+                            Poll::Pending
+                        }
+                    }));
+                });
             });
-        });
-        start.recv().unwrap();
-        let mut drive = std::pin::pin!(host.drive(std::future::poll_fn(|_| {
-            if lock(&host.state).phase == Phase::Finished {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
+            start.recv().unwrap();
+            let mut drive = Box::pin(host.drive(std::future::poll_fn(|_| {
+                if lock(&host.state).phase == Phase::Finished {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })));
+            let awakened = Arc::new(DriverWake(Mutex::new(false), Condvar::new()));
+            let waker = Waker::from(awakened.clone());
+            let mut cx = PollContext::from_waker(&waker);
+            assert!(drive.as_mut().poll(&mut cx).is_pending());
+            release.send(()).unwrap();
+            // The queued worker starts after its driver yielded to a different
+            // occupant, then needs that SAME driver to produce its callback reply.
+            // Observe the actual handoff before publishing any reply readiness.
+            let mut resumed = awakened.0.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*resumed {
+                resumed = awakened.1.wait(resumed).unwrap();
             }
-        })));
-        let awakened = Arc::new(DriverWake(Mutex::new(false), Condvar::new()));
-        let waker = Waker::from(awakened.clone());
-        let mut cx = PollContext::from_waker(&waker);
-        assert!(drive.as_mut().poll(&mut cx).is_pending());
-        release.send(()).unwrap();
-        // The queued worker starts after its driver yielded to a different
-        // occupant, then needs that SAME driver to produce its callback reply.
-        // Observe the actual handoff before publishing any reply readiness.
-        let mut resumed = awakened.0.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*resumed {
-            resumed = awakened.1.wait(resumed).unwrap();
-        }
-        drop(resumed);
-        reply.store(true, Ordering::SeqCst);
-        callback_wait.recv().unwrap().wake();
-        executor::complete_io(drive);
-        thread.join().unwrap();
-    });
+            drop(resumed);
+            assert!(
+                !ran.load(Ordering::SeqCst),
+                "worker ran before its original driver admitted the first step"
+            );
+            if abandon {
+                // Accepted work still owns its completion after its driver leaves.
+                drop(drive);
+                reply.store(true, Ordering::SeqCst);
+                callback_wait.recv().unwrap().wake();
+            } else {
+                // The original driver transfers the first-step permit, then waits
+                // for this callback's actual reply readiness.
+                assert!(drive.as_mut().poll(&mut cx).is_pending());
+                reply.store(true, Ordering::SeqCst);
+                callback_wait.recv().unwrap().wake();
+                executor::complete_io(drive);
+            }
+            thread.join().unwrap();
+            assert!(
+                host.pool.park(),
+                "startup retained or returned a slot twice"
+            );
+            host.pool.resume();
+        });
+    }
 }
