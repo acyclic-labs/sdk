@@ -99,10 +99,14 @@ impl Clock for ControlledClock {
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
         let mut time = self.time.clone();
         Box::pin(async move {
-            time.wait_for(|now| *now >= deadline_unix_ms)
-                .await
-                .map(|_| ())
-                .map_err(|_| ClockError::ProducerDropped)
+            loop {
+                if *time.borrow_and_update() >= deadline_unix_ms {
+                    return Ok(());
+                }
+                time.changed()
+                    .await
+                    .map_err(|_| ClockError::ProducerDropped)?;
+            }
         })
     }
 }
