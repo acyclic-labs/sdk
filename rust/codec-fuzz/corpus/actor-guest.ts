@@ -1,22 +1,9 @@
 // Generated from acyclic_actors::guest. Do not edit.
 export const GUEST_ABI_VERSION = 1 as const;
-export const WEB_SOCKET_TAG_COUNT = 10 as const;
-export const WEB_SOCKET_TAG_CHARACTERS = 256 as const;
-export const WEB_SOCKET_ATTACHMENT_BYTES = 2048 as const;
-export const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS = 2048 as const;
 /** Original streaming response. Trailers are terminal metadata, never initial headers.
  * The host must retain close through EOF, failure and cancellation. */
 export type GuestResponseStream = { readonly status: number; readonly headers: Headers; readonly body: ReadableStream<Uint8Array> | null; readonly trailers: Promise<Headers>; close(): void; };
 export type GuestFetchResponse = Response | GuestResponseStream;
-export type AlarmInfo = {
-/**
- * Zero for first delivery, increasing on each retry.
- */
-retryCount: number,
-/**
- * Whether this delivery follows a failed attempt.
- */
-isRetry: boolean, };
 export type WebSocketId = string;
 export type WebSocketAutoResponse = {
 /**
@@ -173,11 +160,7 @@ payload: Uint8Array, } | { "type": "fetch",
 /**
  * Portable request.
  */
-request: GuestRequest, } | { "type": "alarm",
-/**
- * The sole alarm delivery counter.
- */
-info: AlarmInfo, } | { "type": "timer",
+request: GuestRequest, } | { "type": "alarm" } | { "type": "timer",
 /**
  * Timer identity, also the inbox append idempotency key.
  */
@@ -204,11 +187,11 @@ payload: Uint8Array, } | { "type": "socketAccept",
  */
 subprotocol: string | null,
 /**
- * Opaque checkpointed attachment (contract maximum 2 KiB).
+ * Opaque checkpointed attachment.
  */
 attachment: Uint8Array,
 /**
- * Checkpointed broadcast tags (at most ten, each at most 256 characters).
+ * Checkpointed broadcast tags.
  */
 tags: Array<string>, } | { "type": "socketReject",
 /**
@@ -237,7 +220,15 @@ codec: CodecIdentity,
  * Encoded logical state. No runtime heap format is implied.
  */
 bytes: Uint8Array, };
-export type GuestError = { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string };
+export type GuestError = { "type": "preconditionChanged" } | { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "checkpointLimit", "detail": {
+/**
+ * Maximum encoded checkpoint bytes selected by the caller.
+ */
+maximum: bigint, } } | { "type": "handlerTimeout", "detail": {
+/**
+ * Maximum wall-clock execution time selected by the caller.
+ */
+maximum_millis: bigint, } } | { "type": "handler", "detail": string };
 export type CheckpointCodec<State> = {
 /**
  * Identity written on the next checkpoint.
@@ -367,6 +358,10 @@ export type ActorStateCommit = {
  * Last assignment for each changed metadata key.
  */
 writes: Array<ActorMetadataWrite>,
+/**
+ * Keys removed in this same publication, before applying assignments.
+ */
+deletions: Array<string>,
 /**
  * Original committed journal tail, as exact u64 decimal.
  */
