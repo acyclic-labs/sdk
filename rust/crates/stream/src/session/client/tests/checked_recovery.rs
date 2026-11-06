@@ -52,7 +52,7 @@ impl transport::Transport for Observed {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Response, transport::Failure>> {
         let mut owner = ResponseOwner {
             received: self.received.clone(),
             attempt: self.received.attempts.fetch_add(1, Ordering::Relaxed) + 1,
@@ -88,14 +88,15 @@ impl transport::Transport for Observed {
             let source = match self.inner.session(Box::pin(requests)).await {
                 Ok(source) => source,
                 Err(error) => {
-                    owner.cause = error.clone();
+                    owner.cause = error.error.clone();
+                    drop(owner);
                     return Err(error);
                 }
             };
             let received = self.received.clone();
             Ok(Box::pin(source.map(move |frame| {
                 if let Err(error) = &frame {
-                    owner.cause = error.clone();
+                    owner.cause = error.error.clone();
                 }
                 // Retain the complete drop owner through the original response.
                 let _owner = &owner;
@@ -222,7 +223,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let connect = std::sync::Arc::new(move |_| {
         let destination = destination.clone();
         Box::pin(async move { Ok(destination) })
-            as crate::BoxProviderFuture<'static, Result<transport::Endpoint, StreamError>>
+            as crate::BoxProviderFuture<'static, Result<transport::Endpoint, transport::Failure>>
     });
     let client = Client::with_transport(home, connect, std::sync::Arc::new(PlatformExecutor));
     client.register_credential(0, crate::session::testing::credential())?;
@@ -328,7 +329,7 @@ async fn buffered_observation_ends_when_its_original_response_producer_fails() -
     let received = std::sync::Arc::new(Received::default());
     let client = Client::with_transport(
         endpoint(fixture._channel.clone(), &received, false),
-        std::sync::Arc::new(|_| Box::pin(async { Err(StreamError::InvalidResponse) })),
+        std::sync::Arc::new(|_| Box::pin(async { Err(StreamError::InvalidResponse.into()) })),
         std::sync::Arc::new(PlatformExecutor),
     );
     client.register_credential(0, crate::session::testing::credential())?;

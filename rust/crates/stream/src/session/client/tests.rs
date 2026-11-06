@@ -193,7 +193,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     let dialing = Arc::clone(&started);
     let connect: Connect = Arc::new(move |node| {
         if node.node_id != "new" || node.endpoint != "https://new.invalid" {
-            return Box::pin(future::ready(Err(StreamError::AccessDenied)));
+            return Box::pin(future::ready(Err(StreamError::AccessDenied.into())));
         }
         observed.fetch_add(1, Ordering::Relaxed);
         dialing.notify_one();

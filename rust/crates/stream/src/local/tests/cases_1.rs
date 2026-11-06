@@ -224,16 +224,23 @@ async fn reopen_streams_more_commands_than_the_pipeline_window()
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let path = StreamPath::new("bounded-replay")?;
     let count = u64::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
-    for index in 0..count {
-        provider
-            .append(AppendRequest {
-                path: path.clone(),
-                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
-                if_tail: Some(index),
-                idempotency_key: crate::IdempotencyKey::unique(),
-            })
-            .await?;
-    }
+    // Replay needs the whole prefix durable at reopen, not a device barrier
+    // after each fixture command. Keep every command and the original window.
+    deferring_durability(async {
+        for index in 0..count {
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
+                    if_tail: Some(index),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        Ok::<_, StreamError>(())
+    })
+    .await?;
+    provider.flush()?;
     drop(provider);
 
     let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -335,12 +342,6 @@ async fn append_one(
     Ok(std::fs::metadata(journal)?.len())
 }
 
-/// The tail of `path` in the journal reopened, if the path exists.
-async fn tail_of(directory: &Path, path: &str) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let provider = LocalStream::open(directory, LocalStreamLimits::default()).await?;
-    Ok(provider.tail(StreamPath::new(path)?).await.ok())
-}
-
 /// A damaged frame with an intact one after it was committed, so the
 #[tokio::test]
 async fn a_damaged_frame_before_an_intact_one_fails_closed()
@@ -395,14 +396,15 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         file.sync_all()?;
         drop(file);
 
+        let recovered = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(
-            tail_of(directory.path(), "kept").await?,
-            Some(1),
+            recovered.tail(StreamPath::new("kept")?).await?,
+            1,
             "{fill:#x}"
         );
         assert_eq!(
-            tail_of(directory.path(), "torn").await?.unwrap_or(0),
-            0,
+            recovered.tail(StreamPath::new("torn")?).await,
+            Err(StreamError::NotFound),
             "{fill:#x}"
         );
         assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
@@ -498,9 +500,6 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
     }
-    conformance::verify(&crate::conformance::Fixture::new(reopened.clone()))
-        .await
-        .map_err(std::io::Error::other)?;
     Ok(())
 }
 

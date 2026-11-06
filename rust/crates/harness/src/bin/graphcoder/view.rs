@@ -275,8 +275,8 @@ impl View {
                     .compact(&id, (!instructions.is_empty()).then_some(instructions))
                     .await?
             }
-            CommandRequest::Rewind => conversation.rewind(&id).await?,
-            CommandRequest::ClearAll => conversation.clear_all(&id).await?,
+            CommandRequest::Rewind {} => conversation.rewind(&id).await?,
+            CommandRequest::ClearAll {} => conversation.clear_all(&id).await?,
             _ => {
                 self.notice = Some(format!("{request:?} is not available in this view"));
                 return Ok(());
@@ -397,7 +397,7 @@ impl View {
     }
 
     fn status(&self) -> String {
-        if let Some(Prompt::Confirm(CommandRequest::ClearAll)) = &self.prompt {
+        if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
         if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
@@ -702,7 +702,7 @@ pub async fn run(
                                 }
                                 match catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
-                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit })) => {
+                                    Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
                                         return Ok(view.outcome.code());
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {

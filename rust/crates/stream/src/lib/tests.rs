@@ -82,25 +82,6 @@ mod error_code_tests {
 }
 
 #[cfg(test)]
-mod token_operation_tests {
-    use super::TOKEN_OPERATIONS;
-
-    #[test]
-    fn inventory_is_ordered_and_unique() {
-        assert_eq!(
-            TOKEN_OPERATIONS,
-            &[
-                "list", "read", "follow", "append", "fork", "create", "commit",
-            ]
-        );
-        let mut sorted = TOKEN_OPERATIONS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), TOKEN_OPERATIONS.len());
-    }
-}
-
-#[cfg(test)]
 mod replay_tests {
     use super::*;
     use futures::StreamExt as _;

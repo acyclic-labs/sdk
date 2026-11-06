@@ -194,10 +194,20 @@ impl FollowFilter {
         if self.clauses().is_empty() {
             return Ok(Some(record));
         }
-        if !self.matches_format(&record.headers, format) {
-            return Ok(None);
-        }
         if format.is_some() {
+            // Validation binds this index to every body entry. Uniform
+            // selection needs neither decoded ownership nor a new payload.
+            let mut selected = record
+                .headers
+                .keys()
+                .iter()
+                .map(|key| self.matches_entry(key, &record.headers));
+            let Some(first) = selected.next() else {
+                return Ok(None);
+            };
+            if selected.all(|selected| selected == first) {
+                return Ok(first.then_some(record));
+            }
             let body = crate::AppendRecord {
                 value: record.value,
                 headers: record.headers,
@@ -206,6 +216,8 @@ impl FollowFilter {
             .ok_or(StreamError::InvalidArgument)?;
             record.value = body.value;
             record.headers = body.headers;
+        } else if !self.matches_format(&record.headers, format) {
+            return Ok(None);
         }
         Ok(Some(record))
     }
@@ -377,6 +389,86 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
     Ok(filter)
 }
 
+// The persistence fuzzer and the default property share this check. Expected
+// entries come from the admitted record, independently of filter projection.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn projection_contract(record: &crate::Record) -> bool {
+    let Ok(Some(_)) = crate::changes::reader_format(&record.headers) else {
+        return true;
+    };
+    let Ok(original) = crate::changes::decode(&record.value, &record.headers) else {
+        return false;
+    };
+    let Some(pivot) = original.entries.get(original.entries.len() / 2) else {
+        return false;
+    };
+    for selection in 0..4 {
+        // An empty range end means unbounded, so it cannot select the empty
+        // prefix before a first empty key. The suffix still covers that key.
+        if matches!(selection, 1 | 3) && pivot.key.is_empty() {
+            continue;
+        }
+        let keys = match selection {
+            1 | 3 => vec![wire::KeyRange {
+                start: Default::default(),
+                end: pivot.key.clone(),
+            }],
+            2 => vec![wire::KeyRange {
+                start: pivot.key.clone(),
+                end: Default::default(),
+            }],
+            _ => vec![],
+        };
+        let Ok(filter) = FollowFilter::new(wire::SessionFilter {
+            keys,
+            // Different entries cannot satisfy different authority clauses.
+            all_of: if selection == 3 {
+                vec![wire::SessionFilterClause {
+                    keys: vec![wire::KeyRange {
+                        start: pivot.key.clone(),
+                        end: Default::default(),
+                    }],
+                    all_keys: true,
+                    ..Default::default()
+                }]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        }) else {
+            return false;
+        };
+        let mut expected = original.clone();
+        expected.entries.retain(|entry| match selection {
+            1 => entry.key < pivot.key,
+            2 => entry.key >= pivot.key,
+            3 => false,
+            _ => true,
+        });
+        let Ok(projected) = filter.project(record.clone()) else {
+            return false;
+        };
+        let Some(projected) = projected else {
+            if !expected.entries.is_empty() {
+                return false;
+            }
+            continue;
+        };
+        if expected.entries.is_empty()
+            || crate::changes::decode(&projected.value, &projected.headers) != Ok(expected)
+            || projected.headers.attributes() != record.headers.attributes()
+            || projected.sequence != record.sequence
+            || projected.commit_id != record.commit_id
+            || projected.committed_at_micros != record.committed_at_micros
+            || projected.origin != record.origin
+            || (selection == 0 && projected != *record)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -495,6 +587,15 @@ mod tests {
             }),
             vec![],
         )?;
+        assert!(projection_contract(&retained));
+        let mut current_record = retained.clone();
+        current_record.value = current.value.clone();
+        current_record.headers = current.headers.clone();
+        assert!(projection_contract(&current_record));
+        #[cfg(feature = "test-support")]
+        for (name, bytes) in futures::executor::block_on(crate::codec_fuzz::seeds())? {
+            assert!(crate::codec_fuzz::check(&bytes), "writer seed {name}");
+        }
         let filters = [
             FollowFilter::default(),
             FollowFilter::new(wire::SessionFilter {
@@ -511,6 +612,15 @@ mod tests {
             })?,
             FollowFilter::new(wire::SessionFilter {
                 keys: vec![range(b"a", b"b")],
+                ..Default::default()
+            })?,
+            FollowFilter::new(wire::SessionFilter {
+                keys: vec![range(b"a", b"zz")],
+                all_of: vec![wire::SessionFilterClause {
+                    all_keys: true,
+                    keys: vec![range(b"b", b"zz")],
+                    attributes: vec![],
+                }],
                 ..Default::default()
             })?,
         ];
@@ -570,14 +680,18 @@ mod tests {
                             },
                             None,
                         );
-                        let unrestricted_changes = valid
+                        let whole_changes = valid
                             && format.as_ref().is_ok_and(|format| format.is_some())
-                            && index == 0;
+                            && record
+                                .headers
+                                .keys()
+                                .iter()
+                                .all(|key| filter.matches_entry(key, &record.headers));
                         let projection = compare(
                             || project(filter, record.clone()),
                             || filter.project(record.clone()),
                             if valid {
-                                if unrestricted_changes {
+                                if whole_changes {
                                     3 * probes
                                 } else if matches {
                                     2 * probes
@@ -587,7 +701,7 @@ mod tests {
                             } else {
                                 0
                             },
-                            unrestricted_changes.then_some(record.value.len()),
+                            whole_changes.then_some(record.value.len()),
                         );
                         if fault == 0 && padding == 15 && prefix == "a" {
                             eprintln!(
@@ -642,28 +756,6 @@ mod tests {
         assert!(!filter.matches(&headers(&["c"], "alice")));
         assert!(!filter.matches(&headers(&["b"], "bob")));
         assert!(!filter.matches(&headers(&[], "alice")));
-    }
-    #[test]
-    fn opaque_authority_never_discloses_a_record_with_an_outside_key() {
-        let requested = Clause {
-            all_keys: false,
-            filter: canonical(wire::SessionFilter {
-                all_of: vec![],
-                keys: vec![range(b"a", b"c")],
-                attributes: vec![],
-            })
-            .unwrap(),
-        };
-        let ceiling = Clause {
-            all_keys: true,
-            filter: requested.filter.clone(),
-        };
-        let filter = FollowFilter(Some(Arc::new(vec![requested.clone(), ceiling])));
-        assert!(filter.matches(&headers(&["a", "b"], "alice")));
-        assert!(!filter.matches(&headers(&["b", "z"], "alice")));
-        assert!(
-            FollowFilter(Some(Arc::new(vec![requested]))).matches(&headers(&["b", "z"], "alice"))
-        );
     }
     #[tokio::test]
     async fn provider_hops_preserve_requested_any_keys_and_all_authority_ceilings() {

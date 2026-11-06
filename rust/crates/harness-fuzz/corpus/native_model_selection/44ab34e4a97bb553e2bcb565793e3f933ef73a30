@@ -1,0 +1,2 @@
+model or/= 'vendor/tiny'
+model_provider = 'or-acle'

@@ -1,4 +1,5 @@
 use crate::*;
+#[cfg(feature = "local")]
 use futures::StreamExt as _;
 
 pub(crate) async fn large_retained_view<P: StreamProvider>(

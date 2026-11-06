@@ -1,5 +1,8 @@
 //! Existing integration scenarios share one executable entrypoint.
 
+#[path = "support/binary.rs"]
+mod binary;
+
 #[path = "identity.rs"]
 mod identity;
 

@@ -30,6 +30,9 @@ typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
 rust/crates/harness-fuzz/corpus/** binary
 rust/fuzz/corpus/** binary
 
+rust/crates/harness-fuzz/corpus/reader_snapshot-*.tsv text eol=lf diff
+rust/crates/stream/fuzz/corpus/status/** binary
+
 # Captured external-tool output retains the generator's Windows newlines.
 scripts/graphcoder-e2e/fixtures/npm-command.cmd -text whitespace=cr-at-eol
 

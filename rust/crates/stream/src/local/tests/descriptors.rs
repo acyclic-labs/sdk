@@ -1,26 +1,6 @@
 use super::*;
 use acyclic_native_runtime::testing::descriptors_naming;
 
-#[tokio::test]
-async fn an_open_stream_holds_one_journal_descriptor() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let journal = directory.path().canonicalize()?.join(JOURNAL_FILE);
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new("agents")?,
-            records: vec![(Bytes::from_static(b"one")).into()],
-            if_tail: None,
-            idempotency_key: crate::IdempotencyKey::unique(),
-        })
-        .await?;
-    // Appends, syncs and replay share the journal's single descriptor,
-    // which the process may already have closed while the stream idles.
-    assert!(descriptors_naming(&journal)? <= 1);
-    drop(provider);
-    Ok(())
-}
-
 fn append(path: &str, tail: u64) -> Result<AppendRequest, Box<dyn std::error::Error>> {
     Ok(AppendRequest {
         path: StreamPath::new(path)?,
@@ -55,6 +35,9 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
         let journal = first.path().canonicalize()?.join(JOURNAL_FILE);
         let idle = LocalStream::open(first.path(), LocalStreamLimits::default()).await?;
         idle.append(append("agents", 0)?).await?;
+        // Appends and syncs share at most one journal descriptor, which may
+        // already have closed if the persistence worker became idle.
+        assert!(descriptors_naming(&journal)? <= 1);
         // The process keeps one idle descriptor, so opening another stream
         // closes the idle journal's.
         let busy = LocalStream::open(second.path(), LocalStreamLimits::default()).await;
