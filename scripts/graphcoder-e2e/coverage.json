@@ -13,6 +13,7 @@
         "pty-first-run",
         "explicit-credential-source",
         "output-destination-aliases",
+        "output-destination-kind",
         "text-responses"
       ]
     },

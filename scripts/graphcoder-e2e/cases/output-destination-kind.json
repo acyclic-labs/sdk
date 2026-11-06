@@ -1,0 +1,40 @@
+{
+  "id": "output-destination-kind",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "exports/retained.txt": "previous export directory\n"
+    }
+  },
+  "model": {
+    "steps": [
+      { "when": {}, "text": ["done"] },
+      { "when": {}, "text": ["done"] },
+      { "when": {}, "text": ["done"] }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": ["--default-config", "--output-format", "jsonl", "--output", "{{workspace}}/exports", "exec", "hello"],
+      "exit": 1
+    },
+    {
+      "mode": "headless",
+      "args": ["--default-config", "--output-format", "jsonl", "--usage-jsonl", "{{workspace}}/exports", "exec", "hello"],
+      "exit": 1
+    },
+    {
+      "mode": "headless",
+      "args": ["--default-config", "--output-format", "jsonl", "--event-cursor", "{{workspace}}/exports", "exec", "hello"],
+      "exit": 1
+    }
+  ],
+  "assert": {
+    "requests": 0,
+    "steps": [],
+    "files": {
+      "exports/retained.txt": "previous export directory\n"
+    }
+  }
+}
