@@ -61,38 +61,16 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
         })?;
-        let put = match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let receipt = self
-                    .provider
-                    .put_native(
-                        packet(
-                            crate::kernel::Owned::new(
-                                (body, references.value),
-                                references.allocation,
-                                references.bytes,
-                            ),
-                            original,
-                        )?,
-                        original.runtime_meter(),
-                    )
-                    .map_err(|error| native_error(error, original))?
-                    .await
-                    .map_err(|error| native_error(error, original))?;
-                receipt.put().clone()
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let put = self.provider.put_sealed(body, references.value).await;
-                release(work, references.allocation, references.bytes)?;
-                put.map_err(ObjectStoreError::LogicalObjects)?
-            }
-        };
+        let put = invocation::put(
+            &*self.provider,
+            crate::kernel::Owned::new(
+                (body, references.value),
+                references.allocation,
+                references.bytes,
+            ),
+            work,
+        )
+        .await?;
         let written = settle(id, length, put)?;
         record_write(work, written)?;
         work.check()
@@ -191,37 +169,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             durability_operations: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        let (root, mut references) = retention(self.epoch.current(), scope.objects, work)?;
-        match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let request = acyclic_objects::ObjectsNativeRequest::new(
-                    (root.value, references.value),
-                    (root.allocation, references.allocation),
-                    &original.runtime_meter(),
-                )
-                .map_err(|error| native_error(error, original))?;
-                self.provider
-                    .retain_native(request, original.runtime_meter())
-                    .map_err(|error| native_error(error, original))?
-                    .await
-                    .map_err(|error| native_error(error, original))?;
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let retained = self
-                    .provider
-                    .retain(&root.value, std::mem::take(&mut references.value))
-                    .await;
-                drop(root);
-                drop(references);
-                retained.map_err(ObjectStoreError::LogicalObjects)?;
-            }
-        }
+        let request = retention(self.epoch.current(), scope.objects, work)?;
+        invocation::retain(&*self.provider, request, work).await?;
         #[cfg(all(test, not(target_arch = "wasm32")))]
         self.epoch.hooks.retained().await;
         work.check()
