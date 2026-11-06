@@ -1,5 +1,5 @@
 {
-  "provenance": "Seven caller byte inputs, 97 original SDK serializer captures (37 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes. Two further ResourceProbe captures (action-37 and action-38) were emitted by the existing production serializer oracle at db545f70a38422ce59e6bed4a2dcb19a4bdcd3d2; all 389 prior file hashes are unchanged.",
+  "provenance": "Seven caller byte inputs, 97 original SDK serializer captures (37 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes. Two further ResourceProbe captures (action-37 and action-38) were emitted by the existing production serializer oracle at db545f70a38422ce59e6bed4a2dcb19a4bdcd3d2; all 389 prior file hashes are unchanged. Two duplicate-field caller inputs derive from the same production serializer captures at 89007ab8bdb8096a420e7e8f18dad5663382488e: duplicate-field repeats the original top-level discriminator, and duplicate-claim repeats the original nested claim identity. They are caller mutations, not external output fixtures; all391 prior file hashes are unchanged.",
   "qualification": {
     "source_commit": "ad8386bea8d18f062d4dab5d23e3db59630bc663",
     "source_tree": "6524f84769f5a00496bc78b3103e54b3a34fcc2a",
@@ -424,7 +424,9 @@
     "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
     "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
     "action-37": "681a45d7b3edf485024c197c7b69bc8d35047d3a979a14e8b5d0012f4f037f6f",
-    "action-38": "c7a21a5a7467086cad68fbd6e3d367b48a8ac47e55ba8222416eeaf83bf36056"
+    "action-38": "c7a21a5a7467086cad68fbd6e3d367b48a8ac47e55ba8222416eeaf83bf36056",
+    "duplicate-claim": "4d86bab1562af267e95235aec42fb8d59dbd503835e49af3ebc7e37764356205",
+    "duplicate-field": "e80f5b8b155a0f3256d6617178391aa4c25f9c20ff4e8ae5e3837806e28f0ad8"
   },
   "prior_qualifications": [
     {
@@ -633,5 +635,41 @@
     "instrumented_edges": 7498,
     "features": 15674,
     "scope": "Production input decoder and shared core contracts/catalog through the existing OS-pipe oracle. Full runtime, real binary dispatch and platform acceptance remain separate."
+  },
+  "typed_admission_qualification": {
+    "source_commit": "89007ab8bdb8096a420e7e8f18dad5663382488e",
+    "source_tree": "92b7d08fa49a794e78d7cb15ed92d595a9481dbd",
+    "source_sha256": {
+      "plugin/src/input.rs": "5988b5ab578f79d0987840e33b65c711e6103ab0537f985e089c1c27c57194b3",
+      "plugin/src/main.rs": "29f5ff5b4268a9aed9825c8a167d3a618b075d5b1685d25b028c36885503778d",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input.rs": "8dbd52f6b65f84d77061bfed6cfeaa23dfcb4bf2fac025c954f09eff73f9d435",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input/actions.rs": "d2dc7b081d4910a210db30ca93486a11752a48cfeb4e81b8052f7fd8d482fa7c",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "2a7611ad968d6277475847e5a5fe06ee1616de4d882c5f1ca656a68ccde13200"
+    },
+    "result": "pass",
+    "platform": "Linux x86_64",
+    "negative_control": "Original Value normalization restored in the production reader; unchanged original-byte admission oracle failed before exact source restoration.",
+    "actual_source_mutations_detected": 1,
+    "control": 8,
+    "retained_prior_files_unchanged": 391,
+    "retained_files": 393,
+    "retained_bytes": 117780,
+    "nonempty_inputs": 392,
+    "executed_units": 393,
+    "reported_replay_seconds": 1,
+    "edges": 7579,
+    "features": 16060,
+    "new_fuzzer_inputs": 0,
+    "original_serializer_derived_caller_inputs": {
+      "duplicate-claim": {
+        "bytes": 463,
+        "sha256": "4d86bab1562af267e95235aec42fb8d59dbd503835e49af3ebc7e37764356205"
+      },
+      "duplicate-field": {
+        "bytes": 96,
+        "sha256": "e80f5b8b155a0f3256d6617178391aa4c25f9c20ff4e8ae5e3837806e28f0ad8"
+      }
+    },
+    "scope": "The original generic production reader through OS pipe, compared with canonical HostAction deserialization of original bytes. Hook Value input remains dynamic. Existing native binary, package installation, full runtime and three-platform qualification remain separately source-bound."
   }
 }

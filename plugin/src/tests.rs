@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness_core::agent::AgentPath;
 
 #[test]
 fn unknown_internal_commands_fail_before_workspace_lookup() -> Result<()> {
