@@ -482,7 +482,12 @@ mod tests {
                         assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
                         let (preservation, allocations, marker_probes, parsed_bytes) =
                             measure(|| filter.preserves(&record));
-                        assert_eq!(allocations, acyclic_test_support::AllocationInfo::default());
+                        if valid {
+                            assert_eq!(
+                                allocations,
+                                acyclic_test_support::AllocationInfo::default()
+                            );
+                        }
                         assert_eq!(marker_probes, probes, "classify the marker once");
                         let validation_bytes =
                             if format.as_ref().is_ok_and(|format| format.is_some()) {
@@ -519,11 +524,13 @@ mod tests {
                             }
                         }
                         if !valid || index == 0 || format == Ok(None) || !matched {
-                            assert_eq!(
-                                allocations,
-                                acyclic_test_support::AllocationInfo::default(),
-                                "unrestricted projection must transfer the original owners"
-                            );
+                            if valid {
+                                assert_eq!(
+                                    allocations,
+                                    acyclic_test_support::AllocationInfo::default(),
+                                    "unrestricted projection must transfer the original owners"
+                                );
+                            }
                             assert_eq!(marker_probes, probes, "classify the marker once");
                             assert_eq!(
                                 parsed_bytes, validation_bytes,

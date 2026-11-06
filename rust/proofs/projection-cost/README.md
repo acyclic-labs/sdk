@@ -7,6 +7,8 @@ python3 rust/proofs/qualify.py projection-cost
 The retained production property uses the actual v1 protocol golden and v2
 `AppendRecord::changes` writer. It checks marker and body-pass counters and actual
 heap allocations across the original malformed marker, body and index matrix.
+Zero-allocation assertions cover valid records; malformed compact varints can
+allocate the original Prost decoding error before rejection.
 Matching, preservation and projection must agree, and delivered records retain
 identity and attributes. Separate signed-provider conformance retains authority
 and transport assertions.
