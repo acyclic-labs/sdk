@@ -11,6 +11,7 @@
         "doctor-all-missing",
         "doctor-ok",
         "pty-first-run",
+        "output-destination-aliases",
         "text-responses"
       ]
     },
