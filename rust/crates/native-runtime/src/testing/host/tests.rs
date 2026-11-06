@@ -87,7 +87,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
     struct StartupWake {
         host: std::sync::Weak<Host>,
         seen: AtomicBool,
-        running: AtomicBool,
+        waiting: AtomicBool,
         notified: Arc<crate::NativeWake>,
     }
     impl Wake for StartupWake {
@@ -96,8 +96,8 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
         }
         fn wake_by_ref(self: &Arc<Self>) {
             if !self.seen.swap(true, Ordering::SeqCst) {
-                self.running.store(
-                    lock(&self.host.upgrade().unwrap().state).phase == Phase::Running,
+                self.waiting.store(
+                    lock(&self.host.upgrade().unwrap().state).phase == Phase::Waiting,
                     Ordering::SeqCst,
                 );
             }
@@ -108,7 +108,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
         let startup = Arc::new(StartupWake {
             host: Arc::downgrade(host),
             seen: AtomicBool::new(false),
-            running: AtomicBool::new(false),
+            waiting: AtomicBool::new(false),
             notified: Arc::new(crate::NativeWake::default()),
         });
         let mut state = lock(&host.state);
@@ -132,21 +132,34 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
             }));
         });
     });
-    let mut state = host.state.lock().unwrap_or_else(PoisonError::into_inner);
-    while state.phase != Phase::Parked {
-        state = host
-            .changed
-            .wait(state)
-            .unwrap_or_else(PoisonError::into_inner);
-    }
-    drop(state);
     startup.notified.wait(None);
+    let mut drive = std::pin::pin!(host.drive(std::future::poll_fn(|_| {
+        if lock(&host.state).phase == Phase::Finished {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })));
+    let driver_wake = Waker::from(startup.clone());
+    let mut cx = PollContext::from_waker(&driver_wake);
+    assert!(drive.as_mut().poll(&mut cx).is_pending());
     let (invented, waiting_start) = {
         let state = lock(&host.state);
         (state.ready, state.waiting_start)
     };
     ready.store(true, Ordering::SeqCst);
     host.wake_by_ref();
+    executor::complete_io(drive);
+    thread.join().unwrap();
+    assert!(!invented, "parking invented callback readiness");
+    assert!(!waiting_start, "parking retained its startup waiter");
+    let parked_waiting = startup.waiting.load(Ordering::SeqCst);
+    // An immediately completing callback obeys the same first-step permit.
+    let host = Host::with_pool(Pool::new(1));
+    let startup = startup_for(&host);
+    let worker = host.clone();
+    let thread = std::thread::spawn(move || worker.run(|| ()));
+    startup.notified.wait(None);
     executor::complete_io(host.drive(std::future::poll_fn(|_| {
         if lock(&host.state).phase == Phase::Finished {
             Poll::Ready(())
@@ -155,21 +168,10 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
         }
     })));
     thread.join().unwrap();
-    assert!(!invented, "parking invented callback readiness");
-    assert!(!waiting_start, "parking retained its startup waiter");
-    let parked_running = startup.running.load(Ordering::SeqCst);
-    // The same producer ordering applies when the original callback completes
-    // without parking: no late startup wake may follow its terminal phase.
-    let host = Host::with_pool(Pool::new(1));
-    let startup = startup_for(&host);
-    let worker = host.clone();
-    std::thread::spawn(move || worker.run(|| ()))
-        .join()
-        .unwrap();
     assert_eq!(
-        (parked_running, startup.running.load(Ordering::SeqCst)),
+        (parked_waiting, startup.waiting.load(Ordering::SeqCst)),
         (true, true),
-        "startup wake followed the observable handoff"
+        "startup work escaped its original driver permit"
     );
 }
 
