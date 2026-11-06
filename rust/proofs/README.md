@@ -21,6 +21,12 @@ an oracle that rejects a population-dependent implementation.
 
 ## Current closure work
 
+The [persisted-turn control](persisted-turn/README.md) reopens the actual native
+store and resumes the original paused turn only on its matching approval. A
+mutation of the production checkpoint decoder must fail the unchanged retained
+checkpoint assertion. The shared qualifier runs the integration target directly;
+this does not qualify native executor or transport behavior.
+
 The [ready-source allocation control](ready-source-allocation/README.md) retains
 actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record

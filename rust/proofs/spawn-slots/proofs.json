@@ -56,14 +56,14 @@
     {
       "id": "persisted_turn_inputs",
       "production": "rust/crates/harness-core/src/agent/checkpoint.rs",
+      "command": "python3 rust/proofs/qualify.py persisted-turn",
       "proofs": [
         "harness-core: agent_model::runtime::native_reopen_preserves_the_turn_until_the_matching_approval"
       ],
       "controls": [
         {
           "file": "rust/crates/harness-core/src/agent/checkpoint.rs",
-          "before": "    Ok(state)\n}",
-          "after": "    state.turn = None;\n    Ok(state)\n}",
+          "mutation": "rust/proofs/persisted-turn/mutation.patch",
           "expected": "The unchanged native reopen oracle rejects loss of the paused turn; compilation failure does not qualify the control."
         }
       ],
