@@ -890,10 +890,12 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
         host.drain(&root).await?;
         let parent_committed = host.state(&root).await?;
         assert_eq!(parent_committed.open_children, parent_before.open_children);
+        drop(parent_before);
         // Reopening decodes the actual checkpoint published by the handler.
         let committed = host.state(&child).await?;
         assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
         assert_eq!(committed.status_tail, before.status_tail + 1);
+        drop(before);
         assert_eq!(
             values(provider.as_ref(), child.conversation()?).await?,
             vec![b"first".to_vec(), b"second".to_vec()]
@@ -942,6 +944,10 @@ async fn committed_checkpoints_carry_final_tails_after_native_reopen() -> Result
         let actor_state = snapshot.state().expect("committed child actor").clone();
         assert!(actor_state.alarm().pending().is_none());
         assert_eq!(actor_state.cursor(INBOX), Some(inbox + 1));
+        // Retain durable data, not the child index's original provider owner.
+        let committed: AgentState = serde_json::from_value(serde_json::to_value(committed)?)?;
+        let parent_committed: AgentState =
+            serde_json::from_value(serde_json::to_value(parent_committed)?)?;
         drop(host);
         drop(provider);
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -1019,6 +1025,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
         for id in first.open_children.page(None, 3).await? {
             host.drain(&root.child(&id)).await?;
         }
+        let first: AgentState = serde_json::from_value(serde_json::to_value(first)?)?;
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let first_actor = snapshot.state().ok_or("missing waiting actor")?.clone();
         drop(host);
@@ -1047,6 +1054,7 @@ async fn native_reopen_preserves_and_replaces_deadlines_until_control_clears_the
             second.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
             Some(b"second".as_slice())
         );
+        drop(second);
         let snapshot = host.runtime().store().load(&host.actor(&root)?).await?;
         let second_actor = snapshot.state().ok_or("missing resumed actor")?.clone();
         assert!(second_actor.alarm().generation() > first_actor.alarm().generation());
@@ -1150,6 +1158,7 @@ async fn native_reopen_preserves_the_turn_until_the_matching_approval() -> Resul
         paused.turn.as_ref().map(|turn| turn.checkpoint.as_slice()),
         Some([7; 8].as_slice())
     );
+    let paused: AgentState = serde_json::from_value(serde_json::to_value(paused)?)?;
     // Neither the runtime nor the native provider survives the reopen.
     drop(host);
     drop(provider);
