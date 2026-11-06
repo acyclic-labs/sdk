@@ -595,10 +595,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     resolutions_digest,
                 })
             }
-            crate::facade::WorkspaceJoinOutcome::Applied(_)
-            | crate::facade::WorkspaceJoinOutcome::AlreadyApplied(_) => {
-                return Err(WorkspaceError::IncompatibleWorkspace);
-            }
             crate::facade::WorkspaceJoinOutcome::NoChanges(id) => {
                 JoinOutcome::NoChanges(generation(id))
             }
