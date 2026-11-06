@@ -1129,6 +1129,7 @@ dependencies = [
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "axum",
  "blake3",

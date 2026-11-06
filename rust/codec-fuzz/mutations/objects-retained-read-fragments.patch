@@ -142,12 +142,12 @@ index ece7b5f03ba..6eabd13f60c 100644
      pub(crate) async fn put_inner(
          &self,
          body: crate::Sealed,
-diff --git b/rust/crates/objects/src/store/read.rs a/rust/crates/objects/src/store/read.rs
+diff --git a/rust/crates/objects/src/store/read.rs b/rust/crates/objects/src/store/read.rs
 deleted file mode 100644
-index 20aecaaa6f7..00000000000
---- b/rust/crates/objects/src/store/read.rs
+index 409ec06fe5a6d371ed6f7935e6ac9c3be3e45725..0000000000000000000000000000000000000000
+--- a/rust/crates/objects/src/store/read.rs
 +++ /dev/null
-@@ -1,161 +0,0 @@
+@@ -1,213 +0,0 @@
 -use super::*;
 -
 -/// A single fragment stays an alias. On the second, admit the final output
@@ -211,59 +211,61 @@ index 20aecaaa6f7..00000000000
 -
 -impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 -    /// Appends the selected logical bytes of `digest` to `out`.
--    fn select<'a>(
--        &'a self,
+-    async fn select(
+-        &self,
 -        digest: Digest,
--        envelope: &'a Envelope,
+-        envelope: &Envelope,
 -        range: std::ops::Range<u64>,
--        out: &'a mut Selection,
--    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
--        Box::pin(async move {
--            if range.is_empty() {
--                return Ok(());
--            }
--            match envelope.kind {
--                Kind::Blob => {
--                    let whole = range.start == 0 && range.end == envelope.length;
--                    // A whole read checks its bytes; a partial one first
--                    // proves a payload a crash could have torn complete.
--                    if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await?
--                    {
--                        return Err(ErrorCode::NotFound.into());
--                    }
--                    out.push(
--                        self.read_payload(&digest, envelope, (!whole).then_some(range))
--                            .await?,
--                        &*self.medium,
--                    )?;
+-        out: &mut Selection,
+-    ) -> Result<(), Error> {
+-        if range.is_empty() {
+-            return Ok(());
+-        }
+-        match envelope.kind {
+-            Kind::Blob => {
+-                let whole = range.start == 0 && range.end == envelope.length;
+-                // A whole read checks its bytes; a partial one first
+-                // proves a payload a crash could have torn complete.
+-                if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await? {
+-                    return Err(ErrorCode::NotFound.into());
 -                }
--                Kind::Manifest => {
--                    let manifest = self.manifest(&digest, envelope).await?;
--                    let mut offset = 0u64;
--                    for part in manifest.parts {
--                        let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
--                        let start = range.start.max(offset);
--                        let stop = range.end.min(end);
--                        if start < stop {
--                            let (_, child) = self
--                                .stored_envelope(&part.digest)
--                                .await?
--                                .ok_or_else(corrupt)?;
--                            if child.length != part.length {
--                                return Err(corrupt());
--                            }
--                            self.select(part.digest, &child, start - offset..stop - offset, out)
--                                .await?;
+-                out.push(
+-                    self.read_payload(&digest, envelope, (!whole).then_some(range))
+-                        .await?,
+-                    &*self.medium,
+-                )?;
+-            }
+-            Kind::Manifest => {
+-                let manifest = self.manifest(&digest, envelope).await?;
+-                let mut offset = 0u64;
+-                for part in manifest.parts {
+-                    let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
+-                    let start = range.start.max(offset);
+-                    let stop = range.end.min(end);
+-                    if start < stop {
+-                        let (_, child) = self
+-                            .stored_envelope(&part.digest)
+-                            .await?
+-                            .ok_or_else(corrupt)?;
+-                        if child.length != part.length {
+-                            return Err(corrupt());
 -                        }
--                        if end >= range.end {
--                            break;
--                        }
--                        offset = end;
+-                        Box::pin(self.select(
+-                            part.digest,
+-                            &child,
+-                            start - offset..stop - offset,
+-                            out,
+-                        ))
+-                        .await?;
 -                    }
+-                    if end >= range.end {
+-                        break;
+-                    }
+-                    offset = end;
 -                }
 -            }
--            Ok(())
--        })
+-        }
+-        Ok(())
 -    }
 -
 -    pub(crate) async fn get_inner(
@@ -307,5 +309,55 @@ index 20aecaaa6f7..00000000000
 -                    .map_err(medium)
 -            }
 -        )
+-    }
+-}
+-
+-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+-mod tests {
+-    use super::*;
+-
+-    #[tokio::test]
+-    async fn real_local_selection_starts_without_a_heap_frame()
+-    -> Result<(), Box<dyn std::error::Error>> {
+-        let directory = tempfile::tempdir()?;
+-        let store =
+-            Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+-        let account = store.account(b"inline-selection")?;
+-        let bytes = OwnedBytes::from_static(b"original physical selection");
+-        let leaf = account.put(bytes.clone(), Vec::new()).await?;
+-        let leaf = leaf.verified().ok_or("leaf publication is known")?;
+-        let manifest = account
+-            .put_manifest(Manifest {
+-                parts: vec![crate::Part {
+-                    digest: leaf.digest,
+-                    length: leaf.length,
+-                }],
+-                edges: Vec::new(),
+-            })
+-            .await?;
+-        let manifest = manifest.verified().ok_or("manifest publication is known")?;
+-        for digest in [leaf.digest, manifest.digest] {
+-            let (_, envelope) = account.stored_envelope(&digest).await?.ok_or("envelope")?;
+-            let mut selected = Selection::new(envelope.length)?;
+-            // Isolate the real engine's selection-frame construction from
+-            // allocations required by the subsequent physical I/O.
+-            let allocation = acyclic_test_support::measure(|| {
+-                drop(std::hint::black_box(account.select(
+-                    digest,
+-                    &envelope,
+-                    0..envelope.length,
+-                    &mut selected,
+-                )));
+-            });
+-            assert_eq!(
+-                allocation.count_total, 0,
+-                "root selection allocated an unnecessary heap frame"
+-            );
+-            assert_eq!(
+-                account.get(digest, ByteRange::FULL, u64::MAX).await?.body(),
+-                &bytes
+-            );
+-        }
+-        Ok(())
 -    }
 -}
