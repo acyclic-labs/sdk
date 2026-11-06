@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "src/process_tree/record.rs",
         "src/process_tree/warden.rs",
         "src/execution/linux/entry.rs",
+        "src/execution/instruction.rs",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

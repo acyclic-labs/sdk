@@ -76,11 +76,11 @@ mod record;
 mod release;
 #[cfg(target_os = "linux")]
 mod runner;
-#[cfg(all(target_os = "linux", feature = "test-support"))]
+#[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 mod runner_fuzz;
 #[cfg(target_os = "linux")]
 pub use release::ProcessExitAction;
-#[cfg(all(target_os = "linux", feature = "test-support"))]
+#[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 pub use runner_fuzz::fuzz_runner_request;
 #[cfg(unix)]
 mod sys;

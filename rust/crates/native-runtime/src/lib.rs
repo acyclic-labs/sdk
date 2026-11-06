@@ -39,7 +39,7 @@ mod output;
 pub use output::InheritedOutput;
 pub mod obs;
 mod process_tree;
-#[cfg(all(target_os = "linux", feature = "test-support"))]
+#[cfg(all(target_pointer_width = "64", feature = "test-support"))]
 pub use process_tree::fuzz_runner_request;
 #[cfg(windows)]
 mod windows;
