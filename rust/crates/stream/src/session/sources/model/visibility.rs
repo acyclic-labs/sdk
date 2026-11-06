@@ -55,7 +55,7 @@ pub(super) fn verify(release_only: bool) {
         ));
         // Drain the original hint but leave queued==1, exactly the boundary
         // before recheck. The publisher's second wake can join that hint.
-        let wake = sources.entries[&1].wake.clone();
+        let wake = sources.entries.get(&1).unwrap().wake.clone();
         Wake::wake_by_ref(&wake);
         let hint = sources.signal.try_next().unwrap().unwrap();
         sources.wake(hint);

@@ -30,7 +30,7 @@ pub fn verify_source_wakes(omit_signal: bool) {
                 futures::stream::pending().boxed(),
                 Some(ALL),
             );
-            cancelled.push(sources.entries[&channel_id].wake.clone());
+            cancelled.push(sources.entries.get(&channel_id).unwrap().wake.clone());
             sources.remove(channel_id);
         }
         let source =
@@ -123,7 +123,7 @@ pub fn verify_source_recheck(fault: u8) {
         let mut cx = Context::from_waker(&waker);
         assert!(sources.poll((true, true, true), &mut cx).is_ready());
         assert!(sources.poll((true, true, true), &mut cx).is_pending());
-        let wake = sources.entries[&1].wake.clone();
+        let wake = sources.entries.get(&1).unwrap().wake.clone();
         let writer = loom::thread::spawn(move || {
             Wake::wake_by_ref(&wake);
             Wake::wake_by_ref(&wake);

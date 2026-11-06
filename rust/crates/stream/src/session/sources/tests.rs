@@ -50,11 +50,17 @@ fn partition(sources: &Sources) -> Result<(), TestCaseError> {
         }
         prop_assert_eq!(queue.last, before);
     }
-    for (id, entry) in &sources.entries {
-        let runnable = entry.ready && (entry.opening || entry.mode.is_some());
-        prop_assert_eq!(seen.contains(id), runnable);
-        prop_assert_eq!(entry.links.is_some(), runnable);
+    // The generated schedule below owns exactly these three channel ids.
+    let mut retained = 0;
+    for id in 1..=3 {
+        if let Some(entry) = sources.entries.get(&id) {
+            retained += 1;
+            let runnable = entry.ready && (entry.opening || entry.mode.is_some());
+            prop_assert_eq!(seen.contains(&id), runnable);
+            prop_assert_eq!(entry.links.is_some(), runnable);
+        }
     }
+    prop_assert_eq!(retained, sources.len());
     Ok(())
 }
 fn mode(value: u8) -> Option<usize> {

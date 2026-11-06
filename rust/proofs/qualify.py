@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection'])
+parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection', 'ready-source-index'])
 parser.add_argument("--instrumented", action="store_true",
                     help="challenge the actual projection fuzz target and explore 1000 inputs")
 arguments = parser.parse_args()
@@ -118,11 +118,12 @@ elif claim == "children-selection":
     test = "head_tests::trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound"
     diagnostic = "child page escaped its original selection"
     features = ["--features", "local"]
-elif claim in ("ready-source-allocation", "ready-source-turn"):
+elif claim in ("ready-source-allocation", "ready-source-turn", "ready-source-index"):
     source = "rust/crates/stream/src/runtime/sources.rs"
     crate = "acyclic-stream"
     test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
     diagnostic = ("ready record scheduling allocated physical heap storage" if claim == "ready-source-allocation"
+                  else "source lookup exceeded the fixed key width" if claim == "ready-source-index"
                   else "ready record delivery drained unrelated provider hints")
     features = ["--no-default-features"]
 elif claim == "guest-refusal":

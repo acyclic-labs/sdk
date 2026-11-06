@@ -125,3 +125,8 @@ The [change marker control](change-marker-cost/README.md) measures original
 attribute probes against the fixture's marker position. Its retained mutation
 repeats the production lookup, replacing a copied classifier and simulated old
 calls while keeping the retained-version identity and refusal property.
+
+The [source index control](ready-source-index/README.md) binds the scheduler's
+original channel identities to the shared fixed-width collection. Actual
+record delivery traverses all 64 branch positions; a repeated production
+lookup must fail the original physical node/key examination bound.

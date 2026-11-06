@@ -43,7 +43,7 @@ fn late_cancelled_wakes_cannot_disarm_a_live_source() {
                 },
                 Box::pin(futures::stream::pending()),
             );
-            let cancelled = sources.entries[&0].wake.clone();
+            let cancelled = sources.entries.get(&0).unwrap().wake.clone();
             sources.remove(0);
             let mut records = crate::records_only(
                 provider
@@ -138,11 +138,25 @@ fn ready_records_reuse_the_registered_source_node() {
                 },
                 futures::stream::iter(vec![record.clone()]),
             );
-            cancelled.push(shared.entries[&channel_id].wake.clone());
+            cancelled.push(shared.entries.get(&channel_id).unwrap().wake.clone());
             shared.remove(channel_id);
         }
         for wake in cancelled {
             wake.notify();
+        }
+        // Original record cursors occupy every bit of the actual channel key.
+        // Disabled neighbours must not affect delivery or its allocation cost.
+        // The zero key then traverses the full fixed-width production index.
+        for bit in 0..64 {
+            let channel_id = 1_u64 << bit;
+            shared.register(
+                wire::SessionChannel {
+                    channel_id,
+                    generation: 2,
+                },
+                futures::stream::iter(records.clone()),
+            );
+            shared.mode(channel_id, None);
         }
         shared.register(
             wire::SessionChannel {
@@ -175,6 +189,13 @@ fn ready_records_reuse_the_registered_source_node() {
                 "ready record scheduling allocated physical heap storage"
             );
         }
+        assert_eq!(shared.len(), 65);
+        for bit in 0..64 {
+            let channel_id = 1_u64 << bit;
+            assert!(shared.take(channel_id).is_some());
+            assert!(shared.get(channel_id).is_none());
+        }
+        assert_eq!(shared.len(), 1);
         // Each opening is known runnable; one owner turn polls one original
         // provider, even when every registered follow will initially park.
         let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
