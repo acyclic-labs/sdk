@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 mod clock;
+mod checkpoint;
 mod completion;
 mod drain;
 mod invocation_failure;
