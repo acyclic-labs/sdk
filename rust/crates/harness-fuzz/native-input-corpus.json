@@ -422,7 +422,9 @@
     "partial": "b0099d11d07ec318328beb00f4e5019ed830cff0c7f18960b05101745b769223",
     "task-invalid": "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824",
     "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
-    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0"
+    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
+    "duplicate-field": "e80f5b8b155a0f3256d6617178391aa4c25f9c20ff4e8ae5e3837806e28f0ad8",
+    "duplicate-claim": "4d86bab1562af267e95235aec42fb8d59dbd503835e49af3ebc7e37764356205"
   },
   "prior_qualifications": [
     {
@@ -617,5 +619,11 @@
     },
     "scope": "One production reader through original OS pipe EOF, bounded hook frames and unbounded request JSON. The real CLI retains original read failures for three entry points and admits the serialized workspace envelope to the original client refusal in an unowned workspace. Session settlement, complete source branch coverage and Windows/macOS remain unqualified.",
     "source_content_sha256": "c001c136805fcef29a0c3b865f9a3bee319b9b1287cb5a9cc6d275e4a8d82a68"
+  },
+  "typed_admission_source": {
+    "source_commit": "89007ab8bdb8096a420e7e8f18dad5663382488e",
+    "provenance": "Original production HostAction serializer output with a repeated action or nested claim member, emitted by the retained native_input oracle.",
+    "negative_control": "native_input control 8 restores intermediate Value normalization; original byte admission assertion fails.",
+    "scope": "Original source qualification only; later compositions require their own qualification. Both typed CLI callers reuse the one production reader."
   }
 }

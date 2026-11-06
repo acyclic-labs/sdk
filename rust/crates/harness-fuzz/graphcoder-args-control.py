@@ -87,8 +87,8 @@ additional_controls = {
     "native_stdin_binary": [
         (
             "plugin/src/main.rs",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), Some(65_536))?)?;",
+            b"let action = read_json(io::stdin().lock(), None)?;",
+            b"let action = read_json(io::stdin().lock(), Some(65_536))?;",
             "null",
             b"workspace envelope must reach the original workspace client",
         ),
@@ -202,6 +202,13 @@ additional_controls = {
             b"if false {",
             "catalog-installed",
             b"catalog argument-shape-",
+        ),
+        (
+            "plugin/src/input.rs",
+            b"Ok(serde_json::from_slice(&bytes)?)",
+            b"Ok(serde_json::from_value(serde_json::from_slice::<serde_json::Value>(&bytes)?)?)",
+            "duplicate-field",
+            b"typed native input must preserve original byte admission",
         ),
     ],
     "command_result": [
