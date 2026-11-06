@@ -277,7 +277,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
     let mut encoded = Vec::new();
     write_buffered_json(
         &mut encoded,
-        &Bytes::from_static(b"retained metadata bytes"),
+        &bytes::Bytes::from_static(b"retained metadata bytes"),
     )?;
     seeds.push(("core-byte-buffer".into(), encoded));
     for (name, text) in [
