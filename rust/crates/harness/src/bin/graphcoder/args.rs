@@ -174,6 +174,10 @@ impl Args {
     /// opens. Atomic replacement addresses a directory entry, not the inode
     /// currently at that name, so retain the final component unchanged.
     pub fn prepare_outputs(&mut self) -> std::io::Result<()> {
+        let report = match &mut self.command {
+            Some(Command::Study(study)) => Some(&mut study.report),
+            _ => None,
+        };
         for path in [
             &mut self.output,
             &mut self.event_cursor,
@@ -181,6 +185,7 @@ impl Args {
         ]
         .into_iter()
         .flatten()
+        .chain(report)
         .filter(|path| path.as_os_str() != "-")
         {
             let name = path.file_name().ok_or_else(|| {
@@ -201,6 +206,28 @@ impl Args {
                     )
                 })?;
             resolved.push(name);
+            match std::fs::symlink_metadata(&resolved) {
+                Ok(metadata) if metadata.is_dir() => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "output files: {} is a directory; recovery: graphcoder --output-format jsonl --output final.json exec 'TASK'",
+                            resolved.display()
+                        ),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "output files: inspect {}: {error}; recovery: graphcoder --output-format jsonl --output final.json exec 'TASK'",
+                            resolved.display()
+                        ),
+                    ));
+                }
+            }
             *path = resolved;
         }
         // Every writer uses the resolved directory spelling when comparing
