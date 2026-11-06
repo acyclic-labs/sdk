@@ -1881,6 +1881,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),
