@@ -2,14 +2,45 @@
 use acyclic_fs::native_mount::capture_mount_clock_callbacks;
 use acyclic_native_runtime::testing::Schedule;
 
+#[test]
+fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
+    fn trace(seed: u64) -> std::io::Result<[u8; 128]> {
+        Ok(
+            acyclic_native_runtime::testing::seeded_runtime(seed)?.block_on(async {
+                let mut trace = [0; 128];
+                for branch in &mut trace {
+                    *branch = tokio::select! {
+                        () = std::future::ready(()) => 0,
+                        () = std::future::ready(()) => 1,
+                        () = std::future::ready(()) => 2,
+                    };
+                }
+                trace
+            }),
+        )
+    }
+    let original = trace(71)?;
+    assert_eq!(
+        original,
+        trace(71)?,
+        "runtime branch order escaped the seed"
+    );
+    // Change the actual runtime input, retaining the original futures and
+    // comparator. A fixed seed or biased selection would miss this control.
+    assert_ne!(
+        original,
+        trace(72)?,
+        "runtime seed did not control selection"
+    );
+    Ok(())
+}
+
 fn trace(
     seed: u64,
     host_millis: u64,
     restore_host_callback: bool,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(seed)?;
     let (schedule, _) = Schedule::seeded(seed);
     let callback = runtime.block_on(async {
         tokio::time::pause();
@@ -57,10 +88,7 @@ fn mount_callbacks_replay_identically_despite_host_clock_skew()
 fn captured_provider_clock_tracks_simulated_jumps_and_elapsed_time() {
     use acyclic_native_runtime::testing::CapturedClock;
     use std::time::Duration;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .unwrap();
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).unwrap();
     let (schedule, _) = Schedule::seeded(71);
     let clock = runtime.block_on(async {
         tokio::time::pause();
