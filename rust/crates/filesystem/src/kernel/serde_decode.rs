@@ -34,6 +34,28 @@ impl<W: DecodeWork> MaterializationDecode<'_, W> {
         "materialization decode failed"
     }
 
+    fn copy<T, E: serde::de::Error>(
+        &self,
+        bytes: usize,
+        effect: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let copied = crate::WorkCounters {
+            bytes_copied: bytes as u64,
+            ..Default::default()
+        };
+        self.work
+            .admit(copied)
+            .map_err(|error| E::custom(self.error(error)))?;
+        self.work
+            .grow(&mut self.allocation.borrow_mut(), bytes as u64)
+            .map_err(|error| E::custom(self.error(error)))?;
+        let value = effect()?;
+        self.work
+            .spent(copied)
+            .map_err(|error| E::custom(self.error(error)))?;
+        Ok(value)
+    }
+
     fn grow_sequence(&self, width: usize, capacity: &mut usize) -> Result<(), &'static str> {
         let minimum = match width {
             1 => 8,
@@ -62,6 +84,7 @@ impl<W: DecodeWork> MaterializationDecode<'_, W> {
 pub(crate) enum DecodeKind {
     Borrowed,
     String,
+    ByteBuffer,
     Sequence,
     Tree,
     Item,
@@ -108,7 +131,7 @@ impl<'de, W: DecodeWork, D: serde::Deserializer<'de>> serde::Deserializer<'de>
     deserialize!(deserialize_str);
     deserialize!(deserialize_string, DecodeKind::String);
     deserialize!(deserialize_bytes);
-    deserialize!(deserialize_byte_buf, DecodeKind::String);
+    deserialize!(deserialize_byte_buf, DecodeKind::ByteBuffer);
     deserialize!(deserialize_option, DecodeKind::Borrowed);
     deserialize!(deserialize_unit);
     deserialize!(deserialize_unit_struct, DecodeKind::Borrowed, name: &'static str);
@@ -176,28 +199,12 @@ impl<'de, W: DecodeWork, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
     visit!(visit_u64, u64);
     visit!(visit_f64, f64);
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
-        let copy = crate::WorkCounters {
-            bytes_copied: value.len() as u64,
-            ..Default::default()
-        };
-        if self.kind == DecodeKind::String {
+        if matches!(self.kind, DecodeKind::String | DecodeKind::ByteBuffer) {
             self.decode
-                .work
-                .admit(copy)
-                .map_err(|error| E::custom(self.decode.error(error)))?;
-            self.decode
-                .work
-                .grow(&mut self.decode.allocation.borrow_mut(), value.len() as u64)
-                .map_err(|error| E::custom(self.decode.error(error)))?;
+                .copy(value.len(), || self.inner.visit_str(value))
+        } else {
+            self.inner.visit_str(value)
         }
-        let output = self.inner.visit_str(value)?;
-        if self.kind == DecodeKind::String {
-            self.decode
-                .work
-                .spent(copy)
-                .map_err(|error| E::custom(self.decode.error(error)))?;
-        }
-        Ok(output)
     }
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
         self.decode
@@ -209,9 +216,32 @@ impl<'de, W: DecodeWork, V: serde::de::Visitor<'de>> serde::de::Visitor<'de>
             .map_err(|error| E::custom(self.decode.error(error)))?;
         self.inner.visit_string(value)
     }
-    visit!(visit_bytes, &[u8]);
-    visit!(visit_borrowed_bytes, &'de [u8]);
-    visit!(visit_byte_buf, Vec<u8>);
+    fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+        if self.kind == DecodeKind::ByteBuffer {
+            self.decode
+                .copy(value.len(), || self.inner.visit_bytes(value))
+        } else {
+            self.inner.visit_bytes(value)
+        }
+    }
+    fn visit_borrowed_bytes<E: serde::de::Error>(self, value: &'de [u8]) -> Result<Self::Value, E> {
+        if self.kind == DecodeKind::ByteBuffer {
+            self.decode
+                .copy(value.len(), || self.inner.visit_borrowed_bytes(value))
+        } else {
+            self.inner.visit_borrowed_bytes(value)
+        }
+    }
+    fn visit_byte_buf<E: serde::de::Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+        self.decode
+            .work
+            .grow(
+                &mut self.decode.allocation.borrow_mut(),
+                value.capacity() as u64,
+            )
+            .map_err(|error| E::custom(self.decode.error(error)))?;
+        self.inner.visit_byte_buf(value)
+    }
     fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
         self.inner.visit_none()
     }
@@ -325,7 +355,9 @@ impl<'de, W: DecodeWork, A: serde::de::SeqAccess<'de>> serde::de::SeqAccess<'de>
                         .absorb(&mut decode.allocation.borrow_mut(), &mut entry)
                         .map_err(|error| Self::Error::custom(decode.error(error)))?;
                 }
-                DecodeKind::Sequence if width != 0 && self.length == self.capacity => {
+                DecodeKind::Sequence | DecodeKind::ByteBuffer
+                    if width != 0 && self.length == self.capacity =>
+                {
                     decode
                         .grow_sequence(width, &mut self.capacity)
                         .map_err(Self::Error::custom)?;
