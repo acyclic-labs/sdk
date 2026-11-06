@@ -90,10 +90,10 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
     ?? (Array.isArray(value.settled) ? value.settled.find(child => child.phase?.done?.outcome?.failed)?.phase.done.outcome.failed : undefined)
     ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
       ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
-    : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
+    : typeof value === "string" && value.startsWith("tool execution failed: ") ? value : undefined;
   if (error !== undefined && error !== null) assert.ok(
     expectedErrors?.some(text => JSON.stringify(error).includes(text)),
-    `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+    `step=admit tool outcome: unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
 }
 
 export function toolResults(records) {
