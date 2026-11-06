@@ -35,10 +35,11 @@ provider poll, instead of draining the backlog and polling the runnable populati
 The one extra wake names already buffered or runnable work; it is not a readiness
 probe. Signal lock failure remains typed `Unavailable`.
 
-This bounds scheduler visits, not the provider's own requested work or physical
-source-index comparisons: the source map remains a B-tree. Complete operation cost,
-all-platform acceptance and deployment topology remain separate obligations. The
-existing production-scheduler Loom publication/recheck models remain in place.
+This bounds scheduler visits. The [source-index control](../ready-source-index/README.md)
+separately bounds physical lookup work in the shared fixed-width index. The
+provider's own requested work, wake-hint queue allocation, complete operation
+cost, all-platform acceptance and deployment topology remain separate obligations.
+The existing production-scheduler Loom publication/recheck models remain in place.
 
 `python3 rust/proofs/qualify.py ready-source-race` selects the existing production
 Loom publication model. Two original removed-source callbacks publish during the

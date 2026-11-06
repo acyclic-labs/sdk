@@ -36,7 +36,9 @@ actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record
 allocation only. The [bounded provider-turn control](ready-source-turn/README.md)
 challenges actual wake draining, parent registration and record delivery on the
-same scheduler. Physical source-index comparison complexity remains open.
+same scheduler. The [source-index control](ready-source-index/README.md) separately
+bounds physical lookup work in the shared fixed-width index. Wake-hint queue
+allocation and complete operation cost remain open.
 
 The [exact budget-refusal control](budget-errors/README.md) extends the existing
 generated verifier oracle with an isolated refusal for every declared counter.
