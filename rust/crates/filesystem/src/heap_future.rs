@@ -242,11 +242,12 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
 // A borrowed operation cannot move its ledger into the box it funds. Keep
 // the owner outside, and lend the same ledger until the whole box is gone.
 // One expansion owns admission, destruction order and retirement for every
-// borrowed phase; callers only supply their operation and error conversion.
+// borrowed phase. A provider boundary may erase this same funded allocation,
+// rather than wrapping it in another box just to stop concrete type growth.
 macro_rules! in_borrowed_frame {
-    ($context:expr, |$accounting:ident| $future:expr) => {{
+    ($context:expr, |$accounting:ident| $future:expr $(, $erase:ident)?) => {{
         let mut frame = $crate::heap_future::AdmittedFrame::new($context);
-        let (mut future, _) = $crate::heap_future::in_heap_admitted(
+        let (future, _) = $crate::heap_future::in_heap_admitted(
             &mut frame,
             |frame, bytes| frame.admit(bytes),
             |frame| {
@@ -254,6 +255,7 @@ macro_rules! in_borrowed_frame {
                 $future
             },
         )?;
+        let mut future = future$(.$erase())?;
         let result = future.as_mut().await;
         drop(future);
         frame.finish(Ok(()))?;
