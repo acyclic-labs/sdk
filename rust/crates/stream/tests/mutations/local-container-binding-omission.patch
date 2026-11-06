@@ -1,0 +1,28 @@
+--- a/rust/crates/stream/src/local/frames.rs
++++ b/rust/crates/stream/src/local/frames.rs
+@@ -69,3 +69,6 @@
+         .ok_or(LocalStreamError::Corrupt)?;
+-    if found != encode_limits(limits)?.as_slice() {
++    if found != encode_limits(limits)?.as_slice()
++        && std::env::var_os("ACYCLIC_CODEC_BINDING").as_deref()
++            != Some(std::ffi::OsStr::new("journal-limits"))
++    {
+         return Err(LocalStreamError::Corrupt);
+--- a/rust/crates/stream/src/local/snapshot.rs
++++ b/rust/crates/stream/src/local/snapshot.rs
+@@ -49,3 +49,6 @@
+     let body = &encoded[..encoded.len() - 32];
+-    if snapshot_checksum(body) != *checksum {
++    if snapshot_checksum(body) != *checksum
++        && std::env::var_os("ACYCLIC_CODEC_BINDING").as_deref()
++            != Some(std::ffi::OsStr::new("snapshot-checksum"))
++    {
+         return Err(LocalStreamError::Corrupt);
+@@ -55,3 +58,6 @@
+         .ok_or(LocalStreamError::Corrupt)?;
+-    if found != encode_limits(limits)?.as_slice() {
++    if found != encode_limits(limits)?.as_slice()
++        && std::env::var_os("ACYCLIC_CODEC_BINDING").as_deref()
++            != Some(std::ffi::OsStr::new("snapshot-limits"))
++    {
+         return Err(LocalStreamError::Corrupt);

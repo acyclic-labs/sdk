@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/lib/provider_ext.rs b/rust/crates/stream/src/lib/provider_ext.rs
+--- a/rust/crates/stream/src/lib/provider_ext.rs
++++ b/rust/crates/stream/src/lib/provider_ext.rs
+@@ -306,5 +306,5 @@ async fn named_head<P: StreamProvider + ?Sized>(
+     };
+     let mut view = provider.heads(request.clone()).await?;
+     view.validate_for(&request)?;
+-    view.heads.pop().flatten().ok_or(StreamError::NotFound)
++    view.heads.pop().flatten().ok_or(StreamError::Unavailable)
+ }

@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/local/prepared_frame.rs b/rust/crates/stream/src/local/prepared_frame.rs
+--- a/rust/crates/stream/src/local/prepared_frame.rs
++++ b/rust/crates/stream/src/local/prepared_frame.rs
+@@ -152,7 +152,9 @@ impl PreparedFrame {
+             .as_mut()
+             .ok_or(LocalStreamError::IncompleteFrame)?;
+         let result = acyclic_native_runtime::write_file_with(&self.encoded, |bytes| {
+-            let (result, observed) = operation.attempt(|| writer.write(bytes));
++            let (result, observed) = operation.attempt(|| {
++                writer.write(bytes.get(1..).unwrap_or_default())
++            });
+             let _ = work.record(observed);
+             let actual = result.as_ref().copied().unwrap_or(0);
+             let _ = work.record(transfer.record(actual));

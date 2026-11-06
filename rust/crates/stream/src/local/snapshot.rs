@@ -53,7 +53,7 @@ fn decode_snapshot(
     let (found, rest) = rest
         .split_at_checked(LIMITS_BYTES)
         .ok_or(LocalStreamError::Corrupt)?;
-    if found != encode_limits(limits)? {
+    if found != encode_limits(limits)?.as_slice() {
         return Err(LocalStreamError::Corrupt);
     }
     let (epoch, rest) = rest

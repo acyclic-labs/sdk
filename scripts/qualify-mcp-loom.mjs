@@ -19,7 +19,7 @@ export const gateQualifications = [
   { args: ["--native-signal"] }, { args: ["--native-wake"] },
   { args: ["--native-owner"] },
   { args: ["--native-host"] },
-  { args: ["--guest"] },
+  { args: ["--stream-retry"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
@@ -290,6 +290,14 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
   });
 }
 
+export function qualifyStreamRetryLoom(run = runCommand) {
+  return qualifyLoom("acyclic-stream", "main", [
+    "--no-default-features", "--features", "local",
+  ], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["retry_recovery_loom::", 2]],
+  });
+}
+
 export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
     env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 3]],
@@ -550,6 +558,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom,
+  "--stream-retry": qualifyStreamRetryLoom,
   "--native-signal": qualifyNativeSignalLoom,
   "--native-host": qualifyNativeHostLoom,
   "--native-host-source": run => qualifyNativeHostLoom(run, true),
