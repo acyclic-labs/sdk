@@ -2,6 +2,7 @@
   "id": "output-destination-aliases",
   "workspace": {
     "files": {
+      "AGENTS.md": "EXPORT_WORKSPACE_INSTRUCTION\n",
       "result.json": "previous export\n",
       "exports/.keep": ""
     },
@@ -101,6 +102,9 @@
     }
   ],
   "assert": {
+    "each_model_contains": [
+      "EXPORT_WORKSPACE_INSTRUCTION"
+    ],
     "files": {
       "result.json": "previous export\n",
       "final.json": "done"
