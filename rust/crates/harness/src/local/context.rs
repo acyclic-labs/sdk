@@ -579,7 +579,7 @@ impl crate::context::DiscoverySource for VolumeInstructions<'_> {
         maximum: u32,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        Result<crate::context::DiscoveryPage<Self::Revision, String>>,
+        Result<Option<crate::context::DiscoveryPage<Self::Revision, String>>>,
     > {
         self.source.page(directory, revision, cursor, maximum)
     }

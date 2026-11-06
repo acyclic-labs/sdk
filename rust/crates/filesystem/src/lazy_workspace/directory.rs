@@ -392,8 +392,12 @@ impl<
                             .await;
                         let (page, mut guard) = match listed {
                             Ok(page) => page,
-                            Err(crate::FsError::NotFound) if !absent => {
-                                return Ok((Owned::allocate(0, ctx)?, None));
+                            Err(crate::FsError::NotFound) => {
+                                return if absent {
+                                    Err(LazyWorkspaceError::NotFound)
+                                } else {
+                                    Ok((Owned::allocate(0, ctx)?, None))
+                                };
                             }
                             Err(error) => return Err(error.into()),
                         };
