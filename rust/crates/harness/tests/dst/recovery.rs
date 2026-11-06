@@ -1,48 +1,43 @@
 //! Crash the shipping local composition, then reopen with no retained agent state.
 use super::*;
-use acyclic_harness::test_support::ScriptedReconciliation;
+use acyclic_harness::{
+    model::{ModelDispatch, ModelEvent},
+    test_support::ScriptedReconciliation,
+};
 use acyclic_native_runtime::testing::DurableFault;
 use driver::{Driver, Outcome};
-use std::{
-    cell::Cell,
-    sync::atomic::{AtomicUsize, Ordering},
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Clone, Copy)]
 enum Cut {
     FirstTurnWrite,
-    DispatchIntent,
+    FirstModelEvent,
 }
 
 fn local_turn<'a>(
     directory: &'a Path,
     schedule: &'a acyclic_native_runtime::testing::Schedule,
-    first_turn_write: &'a Cell<Option<usize>>,
-    dispatch_write: Arc<AtomicUsize>,
-    prompt_id: &'a str,
-) -> EntryFuture<'a, Result<Arc<ScriptedModelProvider>>> {
+    cut: Option<Cut>,
+    ordinal: Arc<AtomicUsize>,
+    provider: Arc<ScriptedModelProvider>,
+) -> EntryFuture<'a, Result<()>> {
     entry(async move {
         let model = Model::new("scripted".into(), "dst".into(), "1".into())?;
-        let dispatch_schedule = schedule.clone();
-        let provider = Arc::new(
-            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
-                .with_reconciliations([ScriptedReconciliation {
-                    orphan: true,
-                    observed: Vec::new(),
-                    continuation: None,
-                }])
-                .with_dispatch_observer(move |_| {
-                    dispatch_write.store(dispatch_schedule.durable_write_count(), Ordering::SeqCst);
-                    Box::pin(async { Ok(()) })
-                }),
-        );
-        let config = local_harness_config(directory.join("checkout"), (model, provider.clone()))?
+        let config = local_harness_config(directory.join("checkout"), (model, provider))?
             .without_user_settings()
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        first_turn_write.set(Some(schedule.durable_write_count()));
-        prompt(&harness, prompt_id, "finish this turn", "done").await?;
-        Ok(provider)
+        if matches!(cut, Some(Cut::FirstTurnWrite)) {
+            ordinal.store(schedule.cut_next(DurableFault::After), Ordering::SeqCst);
+        }
+        prompt(&harness, "first", "finish this turn", "done").await?;
+        if cut.is_none() {
+            prompt(&harness, "second", "submit after recovery", "done").await?;
+        }
+        Ok(())
     })
 }
 
@@ -53,99 +48,96 @@ fn crash_reopen(point: Cut) -> Result<()> {
         .map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
-        let baseline_directory = tempfile::tempdir().map_err(storage)?;
-        std::fs::create_dir(baseline_directory.path().join("checkout")).map_err(storage)?;
-        let mut baseline = Driver::new(71, None);
-        let marker = Cell::new(None);
-        let schedule = baseline.schedule.clone();
-        let dispatched = Arc::new(AtomicUsize::new(usize::MAX));
-        match baseline
-            .run(local_turn(
-                baseline_directory.path(),
-                &schedule,
-                &marker,
-                dispatched.clone(),
-                "first",
-            ))
-            .await
-        {
-            Outcome::Completed(result) => drop(result?),
-            Outcome::Crashed(cause) => panic!("uncut local turn crashed: {cause}"),
-        }
-        let start = marker.get().expect("local turn was never admitted");
-        let dispatched = dispatched.load(Ordering::SeqCst);
-        assert_ne!(dispatched, usize::MAX, "provider dispatch was bypassed");
-        let cut = match point {
-            Cut::FirstTurnWrite => start,
-            Cut::DispatchIntent => dispatched
-                .checked_sub(1)
-                .expect("missing durable dispatch intent"),
-        };
-        assert!(cut >= start, "cut precedes turn admission");
-        assert!(
-            baseline.schedule.durable_write_count() > cut,
-            "turn made no durable writes"
-        );
-        drop(baseline);
-        drop(schedule);
         let directory = tempfile::tempdir().map_err(storage)?;
         std::fs::create_dir(directory.path().join("checkout")).map_err(storage)?;
-        let mut crash = Driver::new(71, Some((cut, DurableFault::After)));
+        let mut crash = Driver::new(71, None);
         let schedule = crash.schedule.clone();
-        let marker = Cell::new(None);
+        let ordinal = Arc::new(AtomicUsize::new(usize::MAX));
+        let dispatched = Arc::new(Mutex::new(None::<ModelDispatch>));
+        let original_dispatch = Arc::clone(&dispatched);
+        let dispatch_schedule = schedule.clone();
+        let dispatch_ordinal = Arc::clone(&ordinal);
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_dispatch_observer(
+                move |dispatch| {
+                    *original_dispatch
+                        .lock()
+                        .expect("dispatch observation poisoned") = Some(dispatch);
+                    if matches!(point, Cut::FirstModelEvent) {
+                        dispatch_ordinal.store(
+                            dispatch_schedule.cut_next(DurableFault::After),
+                            Ordering::SeqCst,
+                        );
+                    }
+                    Box::pin(async { Ok(()) })
+                },
+            ),
+        );
         let Outcome::Crashed(cause) = crash
             .run(local_turn(
                 directory.path(),
                 &schedule,
-                &marker,
-                Arc::new(AtomicUsize::new(usize::MAX)),
-                "first",
+                Some(point),
+                Arc::clone(&ordinal),
+                provider,
             ))
             .await
         else {
             panic!("turn escaped its durable write cut");
         };
-        assert_eq!(cause.ordinal, cut);
+        assert_eq!(cause.ordinal, ordinal.load(Ordering::SeqCst));
         assert_eq!(cause.fault, DurableFault::After);
-        assert_eq!(marker.get(), Some(start), "crashed a different operation");
+        let dispatched = *dispatched.lock().expect("dispatch observation poisoned");
+        assert_eq!(dispatched.is_some(), matches!(point, Cut::FirstModelEvent));
         drop(schedule);
         drop(crash);
-        // This epoch derives from the same seed. Its providers, stores, clocks,
-        // identity source and executor are constructed independently.
+        // Independent providers, stores, clocks, identity source and executor
+        // reopen the original files. The provider explicitly recovers the
+        // previously accepted request; no old provider object crosses the cut.
         let mut recovery = Driver::new(72, None);
         let schedule = recovery.schedule.clone();
-        let marker = Cell::new(None);
-        let provider = match recovery
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                ScriptedTurn::Text("done".into()),
+                ScriptedTurn::Text("done".into()),
+            ])
+            .with_reconciliations(dispatched.map(|_| ScriptedReconciliation {
+                orphan: true,
+                observed: vec![],
+                continuation: Some(vec![
+                    ModelEvent::Content {
+                        delta: "done".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    },
+                ]),
+            })),
+        );
+        let result = match recovery
             .run(local_turn(
                 directory.path(),
                 &schedule,
-                &marker,
+                None,
                 Arc::new(AtomicUsize::new(usize::MAX)),
-                "second",
+                Arc::clone(&provider),
             ))
             .await
         {
-            Outcome::Completed(result) => result?,
+            Outcome::Completed(result) => result,
             Outcome::Crashed(cause) => panic!("uncut recovery crashed: {cause}"),
         };
-        assert!(
-            marker.get().is_some(),
-            "workspace did not reopen before the new prompt"
+        result?;
+        assert_eq!(
+            provider.reconciliations(),
+            dispatched.into_iter().collect::<Vec<_>>()
         );
-        // A fresh provider cannot recover the killed request. Its terminal
-        // refusal must release that turn before a distinct prompt dispatches.
         assert_eq!(
             provider.request_count(),
-            1,
-            "regenerated the killed request"
+            1 + usize::from(dispatched.is_none()),
+            "the old request was regenerated or the new prompt did not dispatch"
         );
-        let reconciled = provider.reconciliations();
-        assert_eq!(
-            reconciled.len(),
-            usize::from(matches!(point, Cut::DispatchIntent)),
-            "reconciled a different durable cut"
-        );
-        if let Some(interrupted) = reconciled.first() {
+        if let Some(interrupted) = dispatched {
             assert_ne!(
                 interrupted.operation_id,
                 provider.dispatches()[0].operation_id,
@@ -163,5 +155,5 @@ fn checkout_reopens_after_first_turn_write() -> Result<()> {
 
 #[test]
 fn live_f3_killed_head_accepts_a_new_prompt() -> Result<()> {
-    crash_reopen(Cut::DispatchIntent)
+    crash_reopen(Cut::FirstModelEvent)
 }
