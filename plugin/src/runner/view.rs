@@ -787,22 +787,9 @@ pub async fn run(
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
-                            InputEffect::Scroll(rows) if queries.source().is_some() && query_future.is_none() && credit != 0 => {
-                                if let Some(panel) = queries.page.as_ref()
-                                    && !panel.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))
-                                {
-                                    continue;
-                                }
-                                let next = if rows < 0 {
-                                    queries.page.as_mut().and_then(|panel| panel.next.take())
-                                } else if queries.page.as_ref().is_some_and(|panel| panel.continued) {
-                                    queries.source().map(query::Source::newest)
-                                } else {
-                                    None
-                                };
-                                if let Some(next) = next {
-                                    queries.select(next, query_future.as_mut());
-                                }
+                            InputEffect::Scroll(rows) if queries.source().is_some() && credit != 0 => {
+                                queries.scroll(&mut overlay_top, rows, areas.overlay_rows(0),
+                                    query_future.as_mut(), query::Source::newest);
                             }
                             InputEffect::Scroll(_) if queries.source().is_some() => {}
                             InputEffect::Scroll(rows) if overlay.is_some() => {
