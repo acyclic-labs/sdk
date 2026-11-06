@@ -110,6 +110,21 @@ pub(super) async fn contains<P: Blobs + ?Sized>(
     digest: acyclic_objects::Digest,
     work: &mut KernelAccounting<'_>,
 ) -> Result<bool, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let KernelAccounting::NativeOriginal { work: original, .. } = work {
+        let original = *original;
+        let request = crate::kernel::Owned::new(digest, guard(work)?, 0);
+        let future = provider
+            .contains_native(packet(request, original)?, original.runtime_meter())
+            .map_err(|error| native_error(error, original))?;
+        work.charge(WorkCounters {
+            object_probes: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        return future
+            .await
+            .map_err(|error| native_error(error, original).into());
+    }
     work.charge(WorkCounters {
         object_probes: 1,
         backend_read_operations: 1,

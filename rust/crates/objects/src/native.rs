@@ -282,18 +282,40 @@ pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     })
 }
 
+pub(crate) fn contains<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
+    account: &'a Account<M, P>,
+    request: ObjectsNativeRequest<Digest>,
+    meter: Meter,
+) -> Result<ObjectsNativeFuture<'a, bool>, NativeObjectsError> {
+    native_input_meter(&meter, &request)?;
+    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
+    native_future(&meter, async move {
+        let account = account.over(&medium);
+        // Consume head metadata while its original medium funding is live.
+        let present = match account.head(request.data).await {
+            Ok(_) => Ok(true),
+            Err(error) if error.code == crate::wire::ErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error),
+        };
+        drop(request);
+        checked(&medium, present)
+    })
+}
+
 pub(crate) fn get<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     account: &'a Account<M, P>,
     request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, Object>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let ((digest, range, maximum), custody) = request.split();
     let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
     native_future(&meter, async move {
         let account = account.over(&medium);
-        let _custody = custody;
-        checked(&medium, account.get_inner(digest, range, maximum).await)
+        let result = account
+            .get_inner(request.data.0, request.data.1, request.data.2)
+            .await;
+        drop(request);
+        checked(&medium, result)
     })
 }
 

@@ -409,6 +409,19 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         results
     }
 
+    /// Checks complete blob presence under the caller's original meter.
+    /// Every physical read is admitted before dispatch; cancellation and
+    /// physical failures remain errors. Only absence returns `false`.
+    /// Temporary head metadata retires within the call.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        _request: ObjectsNativeRequest<Digest>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
     /// Reads under the caller's original allocation owner.
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
@@ -533,6 +546,14 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
         requests: Vec<(Digest, ByteRange, u64)>,
     ) -> Vec<Result<Object, Error>> {
         (**self).get_batch(requests).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: ObjectsNativeRequest<Digest>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        (**self).contains_native(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(

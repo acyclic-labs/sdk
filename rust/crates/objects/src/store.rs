@@ -2150,6 +2150,15 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: crate::ObjectsNativeRequest<Digest>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<crate::ObjectsNativeFuture<'_, bool>, crate::NativeObjectsError> {
+        crate::native::contains(self, request, meter)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
         request: crate::ObjectsNativeRequest<(Digest, ByteRange, u64)>,
