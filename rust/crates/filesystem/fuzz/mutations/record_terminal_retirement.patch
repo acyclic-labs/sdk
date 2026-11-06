@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/record_store.rs
++++ b/rust/crates/filesystem/src/record_store.rs
+@@ -91,7 +91,7 @@
+         self.locked(|records| {
+             let matched = stored_revision(records, key) == expected;
+             if matched {
+-                records.remove(key);
++                // Inverse: acknowledge retirement without removing the record.
+             }
+             matched
+         })

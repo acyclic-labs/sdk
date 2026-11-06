@@ -163,11 +163,6 @@ pub trait MultiRootPublicationStore: Send + Sync {
         replacement: MultiRootPublication,
     ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
-    /// Lists durable operations that may require restart recovery.
-    fn list_operations(
-        &self,
-    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + ProviderTask;
-
     /// Removes a terminal record only when its exact revision still matches.
     fn compare_and_delete(
         &self,
@@ -688,12 +683,6 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
     ) -> Result<bool, Self::Error> {
         self.records
             .compare_and_swap(operation_id, expected_revision, replacement)
-            .map_err(|_| MemoryMultiRootPublicationStoreError)
-    }
-
-    async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
-        self.records
-            .keys()
             .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 
