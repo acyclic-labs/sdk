@@ -64,7 +64,7 @@ fn check(sequence: u64, result: &Result<Value>, completion: &str, exit: u8) {
                     (Ok(_), Err(Error::OutputOmitted(id))) if decoded["output_omitted"] == true => {
                         assert_eq!(id, operation);
                     }
-                    (Err(original), Err(received)) => {
+                    (Err(original), Err(mut received)) => {
                         assert_eq!(
                             received.operation_id(),
                             original.operation_id(),
@@ -91,7 +91,7 @@ fn check(sequence: u64, result: &Result<Value>, completion: &str, exit: u8) {
                             original.classification(),
                             "receiver must preserve the original failure's semantic facts"
                         );
-                        match received {
+                        match &received {
                             Error::Command(failure) if decoded["output_omitted"] == true => {
                                 assert!(
                                     failure.diagnostic().is_none(),
@@ -105,6 +105,23 @@ fn check(sequence: u64, result: &Result<Value>, completion: &str, exit: u8) {
                                 );
                             }
                             _ => panic!("a valid failure must remain a typed remote projection"),
+                        }
+                        for _ in 0..2 {
+                            received = Error::after_cleanup::<()>(
+                                Err(received),
+                                Err(Error::Conflict("retirement refused".into())),
+                            )
+                            .unwrap_err();
+                            assert_eq!(
+                                received.request_operation_id(),
+                                Some(operation),
+                                "cleanup must retain the original request identity"
+                            );
+                            assert_eq!(
+                                received.operation_id(),
+                                original.operation_id(),
+                                "cleanup must retain the distinct uncertain effect identity"
+                            );
                         }
                     }
                     (_, received) => panic!("receiver changed the original result: {received:?}"),
@@ -159,6 +176,81 @@ fn check(sequence: u64, result: &Result<Value>, completion: &str, exit: u8) {
     }
 }
 
+fn check_cleanup_outcomes() {
+    use acyclic_harness_core::goal::GoalBlockedReason;
+
+    for cleanup in 0..3 {
+        for (original, outcomes) in [
+            #[cfg(any(feature = "runtime", feature = "native-skill-records"))]
+            (
+                Error::NativeBoundary {
+                    code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                    reason: "original native boundary failure",
+                },
+                [("failed", 1), ("indeterminate", 4), ("failed", 1)],
+            ),
+            #[cfg(any(feature = "runtime", feature = "native-skill-records"))]
+            (
+                Error::NativeJson {
+                    code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                    source: serde_json::from_slice::<Value>(b"{").unwrap_err(),
+                    custody: None,
+                },
+                [("failed", 1), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::GoalBlocked(GoalBlockedReason::Declared),
+                [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::GoalBlocked(GoalBlockedReason::TaskViewUnreachable),
+                [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::InteractionRejected(InteractionRejection::Denied),
+                [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::InteractionRejected(InteractionRejection::Declined),
+                [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::InteractionRejected(InteractionRejection::Expired),
+                [("blocked", 3), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::InteractionRejected(InteractionRejection::Cancelled),
+                // An interaction refusal is settled; uncertain cleanup takes precedence.
+                [("cancelled", 2), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (Error::Cancelled, [("cancelled", 2); 3]),
+            (
+                Error::Unsupported("missing capability".into()),
+                [("failed", 1), ("indeterminate", 4), ("failed", 1)],
+            ),
+            (
+                Error::Storage("provider write failed".into()),
+                [("failed", 1); 3],
+            ),
+            (
+                Error::Indeterminate(OperationId::from_bytes([7; 16])),
+                [("indeterminate", 4); 3],
+            ),
+        ] {
+            let (terminal, exit) = outcomes[cleanup];
+            let cleanup = match cleanup {
+                1 => Error::Indeterminate(OperationId::from_bytes([8; 16])),
+                2 => Error::Storage("retirement write failed".into()),
+                _ => Error::Conflict("retirement failed".into()),
+            };
+            let mut result = Error::after_cleanup::<Value>(Err(original), Err(cleanup));
+            for _ in 0..3 {
+                check(3, &result, terminal, exit);
+                result = Error::after_cleanup(result, Err(Error::Conflict("x".repeat(1024))));
+            }
+        }
+    }
+}
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     use wire::ErrorCode;
     // Caller-supplied typed refusal classes, not fabricated provider responses.
@@ -240,6 +332,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
 
     static ADMISSION: std::sync::Once = std::sync::Once::new();
     ADMISSION.call_once(|| {
+        check_cleanup_outcomes();
         #[cfg(feature = "runtime")]
         {
             check(

@@ -11,9 +11,9 @@
         "tools": [
           {
             "id": "mcp",
-            "name": "mcp__fixture__echo",
+            "name": "code",
             "arguments": {
-              "text": "hello"
+              "code": "await tools['mcp.fixture.echo']({text: 'hello'})"
             }
           }
         ]
