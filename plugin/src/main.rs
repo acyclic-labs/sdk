@@ -4,10 +4,7 @@ mod install;
 #[cfg(test)]
 mod tests;
 
-use acyclic_harness::{
-    agent::AgentPath,
-    local::{host_files, host_owner::HostAction},
-};
+use acyclic_harness::local::{host_files, host_owner::HostAction};
 use input::{Result, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
@@ -123,7 +120,7 @@ fn internal(args: &[String]) -> Result<bool> {
             println!("{answer}");
         }
         "__workspace" => {
-            let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
+            let action = read_json(io::stdin().lock(), None)?;
             println!("{}", host_files::request(&env::current_dir()?, action)?);
         }
         "install" | "uninstall" | "doctor" => {
@@ -162,8 +159,7 @@ fn internal(args: &[String]) -> Result<bool> {
 }
 
 fn install_package() -> Result<()> {
-    let request: acyclic_fs::package_install::Request =
-        serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
+    let request: acyclic_fs::package_install::Request = read_json(io::stdin().lock(), None)?;
     let recovery = serde_json::to_string(&json!(["node", request.directory.join("install.js")]))?;
     let test = env::var("NODE_ENV").as_deref() == Ok("test");
     use acyclic_fs::package_install::Stage;
