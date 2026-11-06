@@ -70,6 +70,8 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod read;
+
 const PAGE: usize = 1000;
 
 #[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
@@ -1448,61 +1450,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
     }
 
-    /// Appends the selected logical bytes of `digest` to `out`.
-    fn select<'a>(
-        &'a self,
-        digest: Digest,
-        envelope: &'a Envelope,
-        range: std::ops::Range<u64>,
-        out: &'a mut Vec<OwnedBytes>,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
-        Box::pin(async move {
-            if range.is_empty() {
-                return Ok(());
-            }
-            match envelope.kind {
-                Kind::Blob => {
-                    let whole = range.start == 0 && range.end == envelope.length;
-                    // A whole read checks its bytes; a partial one first
-                    // proves a payload a crash could have torn complete.
-                    if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await?
-                    {
-                        return Err(ErrorCode::NotFound.into());
-                    }
-                    out.push(
-                        self.read_payload(&digest, envelope, (!whole).then_some(range))
-                            .await?,
-                    );
-                }
-                Kind::Manifest => {
-                    let manifest = self.manifest(&digest, envelope).await?;
-                    let mut offset = 0u64;
-                    for part in manifest.parts {
-                        let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
-                        let start = range.start.max(offset);
-                        let stop = range.end.min(end);
-                        if start < stop {
-                            let (_, child) = self
-                                .stored_envelope(&part.digest)
-                                .await?
-                                .ok_or_else(corrupt)?;
-                            if child.length != part.length {
-                                return Err(corrupt());
-                            }
-                            self.select(part.digest, &child, start - offset..stop - offset, out)
-                                .await?;
-                        }
-                        if end >= range.end {
-                            break;
-                        }
-                        offset = end;
-                    }
-                }
-            }
-            Ok(())
-        })
-    }
-
     /// Every reference held by a retained root. Unsupported formats retain
     /// their refusal; other failures suspend an incomplete scan.
     async fn rooted(&self) -> Result<Vec<Digest>, Error> {
@@ -1626,68 +1573,6 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     references: references.len() as u64,
                     revision: Some(issued.commit()),
                 })
-            }
-        )
-    }
-
-    pub(crate) async fn get_inner(
-        &self,
-        digest: Digest,
-        range: ByteRange,
-        maximum_bytes: u64,
-    ) -> Result<Object, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.get",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                // Everything committed by `served` is visible to the read after it.
-                let served = self.read_revision().await?;
-                // Reading the payload proves the blob complete; an empty selection
-                // reads none, so it checks the payload instead.
-                let (_, envelope) = self
-                    .stored_envelope(&digest)
-                    .await?
-                    .ok_or(Error::from(ErrorCode::NotFound))?;
-                let selected = range.resolve(envelope.length)?;
-                if selected.is_empty() && !self.complete(&digest, &envelope).await? {
-                    return Err(ErrorCode::NotFound.into());
-                }
-                if selected.end - selected.start > maximum_bytes {
-                    return Err(ErrorCode::QuotaExceeded.into());
-                }
-                let mut parts = Vec::new();
-                self.select(digest, &envelope, selected.clone(), &mut parts)
-                    .await?;
-                let body = match parts.len() {
-                    0 => OwnedBytes::new(),
-                    1 => parts.pop().ok_or_else(corrupt)?,
-                    _ => {
-                        self.medium
-                            .allocate(selected.end - selected.start)
-                            .map_err(medium)?;
-                        let mut bytes = Vec::new();
-                        bytes
-                            .try_reserve_exact(
-                                usize::try_from(selected.end - selected.start)
-                                    .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?,
-                            )
-                            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-                        for part in &parts {
-                            bytes.extend_from_slice(part);
-                        }
-                        self.medium.finish_allocation(bytes).map_err(medium)?
-                    }
-                };
-                if body.len() as u64 != selected.end - selected.start {
-                    return Err(corrupt());
-                }
-                self.medium
-                    .finish_object(
-                        Object::new(Self::head_of(digest, envelope), selected.start, body)
-                            .served_at(served),
-                    )
-                    .map_err(medium)
             }
         )
     }
