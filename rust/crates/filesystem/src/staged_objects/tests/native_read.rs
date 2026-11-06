@@ -418,7 +418,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         maximum_bytes: bytes.len() as u64,
     });
     let mut batch_preserved = true;
-    let mut concurrent_admission = true;
+    let mut batch_admitted = true;
     for native in [false, true] {
         for stored in [false, true] {
             let original = NativeMaterializationWork::new(native_read_budget(), &token)
@@ -439,9 +439,16 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                     }
                 }));
                 let first_poll = futures::poll!(read.as_mut());
-                // All native submission barriers are still held. Counting
-                // accepted jobs here cannot mistake a later scalar for overlap.
-                let admitted = schedule.pending_native_work();
+                // LocalMedium accepts each original persistence task before
+                // returning its result future. Native submission happens only
+                // when that task is polled, after its task:submitted barrier.
+                // Count the original accepted owners while every barrier is
+                // still held; later scalar submissions cannot enter this cut.
+                let admitted = schedule
+                    .trace()
+                    .iter()
+                    .filter(|entry| entry.as_str() == "task:dispatch")
+                    .count();
                 let driver = tokio::spawn(async move {
                     while let Some(boundary) = events.recv().await {
                         boundary.release();
@@ -454,7 +461,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
                 schedule.drained().await;
                 driver.abort();
                 let _ = driver.await;
-                concurrent_admission &= admitted >= 2;
+                batch_admitted &= admitted == 3;
                 result?
             } else if stored {
                 store.read_many_stored(&mixed_requests, &mut work).await?
@@ -480,9 +487,9 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         }
     }
     assert_eq!(
-        (batch_preserved, concurrent_admission),
+        (batch_preserved, batch_admitted),
         (true, true),
-        "mixed reads must preserve the provider batch and admit independent native misses before first release"
+        "mixed reads must preserve the provider batch and admit all persistence owners before first release"
     );
     for native in [false, true] {
         for cancelled in [false, true] {
