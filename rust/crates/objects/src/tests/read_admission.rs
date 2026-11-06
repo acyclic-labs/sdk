@@ -78,6 +78,81 @@ impl Medium for Applied<'_> {
 }
 
 #[tokio::test]
+async fn native_local_batch_refusals_belong_to_their_original_members()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store =
+        Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+    let blobs = store.account(b"original-members")?;
+    let bytes = OwnedBytes::from(b"real local batch".to_vec());
+    let digest = blobs
+        .put(bytes.clone(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original publication is known")?
+        .digest;
+    for read in [false, true] {
+        for refused in [true, false] {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            if refused {
+                // The first member submits real I/O. Later members refuse
+                // while its completion still fences ordered batch delivery.
+                *(if read { &budget.reads } else { &budget.writes })
+                    .lock()
+                    .unwrap() = Some(1);
+            }
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let causes = if read {
+                blobs
+                    .get_batch_native(
+                        crate::ObjectsNativeRequest::new(
+                            vec![(digest, ByteRange::FULL, bytes.len() as u64); 4],
+                            (),
+                            &meter,
+                        )?,
+                        Arc::clone(&meter),
+                    )?
+                    .await?
+                    .map(|result| result.map(|object| assert_eq!(object.body(), &bytes)))
+                    .collect::<Vec<_>>()
+            } else {
+                blobs
+                    .put_batch_native(
+                        crate::ObjectsNativeRequest::new(
+                            super::sealed(
+                                (0..4)
+                                    .map(|member| {
+                                        (vec![u8::from(refused), member].into(), Vec::new())
+                                    })
+                                    .collect(),
+                            ),
+                            (),
+                            &meter,
+                        )?,
+                        Arc::clone(&meter),
+                    )?
+                    .await?
+                    .map(|result| result.map(|receipt| assert!(receipt.put().verified().is_some())))
+                    .collect::<Vec<_>>()
+            };
+            for (member, result) in causes.into_iter().enumerate() {
+                if refused {
+                    let cause = result.err().map(|error| error.into_cause());
+                    assert!(
+                        matches!(&cause, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::QuotaExceeded),
+                        "original member refusal: read={read} member={member} {cause:?}"
+                    );
+                } else {
+                    result?;
+                }
+            }
+            assert_eq!(budget.held.lock().unwrap().0, 0, "member custody retained");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_stream::RevisionCut;

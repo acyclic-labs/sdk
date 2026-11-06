@@ -304,18 +304,21 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<Object>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
     let (requests, custody) = requests.split();
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
+    let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let account = account.over(&medium);
         let _custody = custody;
-        let meter = &medium.meter;
+        let meter = &batch_meter;
         let (mut values, allocation) = results(requests.len(), meter)?;
         crate::batch::drive(
             requests.into_iter(),
             crate::BATCH_WINDOW,
             |bytes| ReadAllocation::new(meter, bytes),
-            |(digest, range, maximum)| account.get_inner(digest, range, maximum),
-            |got| values.push(checked(&medium, got)),
+            |(digest, range, maximum)| async move {
+                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+                let account = account.over(&medium);
+                checked(&medium, account.get_inner(digest, range, maximum).await)
+            },
+            |got| values.push(got),
         )
         .await?;
         ObjectsBatch::new(values, allocation)
@@ -355,18 +358,22 @@ pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
     let (requests, custody) = requests.split();
-    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
+    let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let account = account.over(&medium);
         let _custody = custody;
-        let meter = &medium.meter;
+        let meter = &batch_meter;
         let (mut values, allocation) = results(requests.len(), meter)?;
         crate::batch::drive(
             requests.into_iter(),
             window,
             |bytes| ReadAllocation::new(meter, bytes),
-            |(body, references)| account.put_inner(body, references),
-            |put| values.push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None))),
+            |(body, references)| async move {
+                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+                let account = account.over(&medium);
+                checked(&medium, account.put_inner(body, references).await)
+                    .map(|put| ObjectsPutReceipt::new(put, None))
+            },
+            |put| values.push(put),
         )
         .await?;
         ObjectsBatch::new(values, allocation)
