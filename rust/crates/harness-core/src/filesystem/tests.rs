@@ -372,7 +372,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(page.entries.len(), 1);
     let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
     let portable_page = erased
@@ -386,7 +387,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             None,
             None,
         )?
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(portable_page.generation, listed_generation);
     assert_eq!(
         portable_page.entries,
@@ -447,7 +449,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(old_generation, listed_generation);
     assert_eq!(old_page.entries, page.entries);
     let (_, current_page) = delegated_reader
@@ -462,7 +465,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(current_page.entries.len(), 2);
     let (old_ref, old_bytes) = delegated_reader
         .read_private_path(

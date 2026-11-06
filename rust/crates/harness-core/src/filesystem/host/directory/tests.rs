@@ -38,7 +38,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     };
     let (_, before) = host
         .list_private_directory(&volume, &grant, "rows", options)
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(before.entries.len(), 8);
     let (current, _) = host
         .list_private_directory(
@@ -50,7 +51,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 ..options
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(current, generation);
     host.put_content(
         &volume,
@@ -272,7 +274,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         }
         let (_, page) = host
             .list_private_directory(&volume, &grant, "rows", options)
-            .await?;
+            .await?
+            .expect("fixture directory exists");
         assert!(!page.entries.iter().any(|entry| entry.name.as_bytes() == hidden.rsplit('/').next().unwrap().as_bytes()));
         assert!(
             !page
@@ -291,7 +294,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                     ..options
                 },
             )
-            .await?;
+            .await?
+            .expect("fixture directory exists");
         assert_eq!(current.entries.len(), page.entries.len());
     }
     let before_refusal = child
@@ -356,7 +360,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 ..options
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(
         current.entries.len(),
         7,
@@ -364,7 +369,8 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     );
     let (selected, page) = host
         .list_private_directory(&volume, &grant, "rows", options)
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(
         selected, generation,
         "policy changes must not replace the pinned data cut"

@@ -294,7 +294,8 @@ impl Fixture {
         let page = self
             .reader
             .list_private_directory(&self.root.volume, "", "", None, None, 128, None, None)?
-            .await?;
+            .await?
+            .expect("fixture directory exists");
         Ok(PinnedContextPath {
             root: self.root.clone(),
             generation: page.generation,

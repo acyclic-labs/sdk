@@ -221,7 +221,8 @@ impl TaskContext {
                 Some(self.scope.grants()),
                 None,
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))?;
         page.validate()?;
         if page.generation.as_resource().provider() != volume.provider()
             || expected_generation.is_some_and(|expected| &page.generation != expected)

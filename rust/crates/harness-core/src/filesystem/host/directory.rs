@@ -54,13 +54,14 @@ fn visible(parent: PreparedPath<'_>, name: &LogicalName, root: bool, now: u64) -
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Lists visible names at one selected generation under the current policy.
+    /// `None` means only that the authorized directory is absent.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
         options: crate::filesystem::DirectoryOptions<'_>,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<Option<(GenerationRef, DirectoryPage)>> {
         let crate::filesystem::DirectoryOptions {
             generation: expected_generation,
             after,
@@ -69,7 +70,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } = options;
 
         let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-        let (page, hold) = self
+        let selected = self
             .list_directory_page(
                 DirectoryListing {
                     volume,
@@ -84,8 +85,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &mut || std::future::ready(Ok(())),
             )
             .await?;
-        hold.into_retained()?;
-        Ok(page)
+        selected
+            .map(|(page, hold)| {
+                hold.into_retained()?;
+                Ok(page)
+            })
+            .transpose()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -100,7 +105,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
         let io = PreparationIo::from_native_work(work)?;
-        let (page, hold) = self.list_directory_page(request, &io, &mut guard).await?;
+        let (page, hold) = self
+            .list_directory_page(request, &io, &mut guard)
+            .await?
+            .ok_or_else(|| {
+                stock_boundary(
+                    Some(&io),
+                    crate::wire::ErrorCode::NotFound,
+                    "selected directory does not exist",
+                )
+            })?;
         let retained = hold.bytes();
         hold.into_retained()?;
         Ok((page, io.into_native_custody(retained)?))
@@ -179,7 +193,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: DirectoryListing<'_>,
         io: &'io PreparationIo,
         guard: &mut F,
-    ) -> Result<((GenerationRef, DirectoryPage), DecodeReservation<'io>)>
+    ) -> Result<Option<((GenerationRef, DirectoryPage), DecodeReservation<'io>)>>
     where
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
@@ -208,10 +222,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let requested = (requested, requested_hold);
         let mut cursor: Option<(LogicalName, DecodeReservation<'io>)> = None;
         let mut spent = WorkCounters::default();
-        loop {
+        let selected = loop {
             guard().await?;
             let after = cursor.as_ref().map(|cursor| &cursor.0).or(request.after);
-            let (mut page, custody) = io.sdk(
+            let Some((mut page, custody)) = io.sdk_if_present(
                 generation
                     .list_directory(
                         &requested.0,
@@ -221,7 +235,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         io.cancellation(),
                     )
                     .await,
-            )?;
+            )?
+            else {
+                break None;
+            };
             let page_bytes = owned_bytes(&page)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(custody) = custody {
@@ -266,13 +283,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             page.work = spent;
             let reference = bounded_io::generation_ref(&self.provider, generation.id(), Some(io))?;
             page_hold.adopt(reference.logical_owned_bytes()?)?;
-            super::super::access::require_current(&workspace, &view.0, io).await?;
-            if let Some((workspace, view)) = &data_access {
-                super::super::access::require_current(workspace, &view.0, io).await?;
-            }
-            request.grant.recheck(Some(io))?;
-            return Ok(((reference, page), page_hold));
+            break Some(((reference, page), page_hold));
+        };
+        super::super::access::require_current(&workspace, &view.0, io).await?;
+        if let Some((workspace, view)) = &data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
         }
+        request.grant.recheck(Some(io))?;
+        Ok(selected)
     }
 }
 

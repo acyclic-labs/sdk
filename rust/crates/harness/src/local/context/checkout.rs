@@ -251,7 +251,7 @@ impl crate::context::DiscoverySource for CheckoutInstructions<'_> {
         maximum: u32,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        Result<crate::context::DiscoveryPage<Self::Revision, Self::Cursor>>,
+        Result<Option<crate::context::DiscoveryPage<Self::Revision, Self::Cursor>>>,
     > {
         self.directory.page(path, revision, cursor, maximum)
     }
