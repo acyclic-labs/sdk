@@ -80,12 +80,34 @@
         "completion": "failed",
         "error": "must name distinct files"
       }
+    },
+    {
+      "mode": "headless",
+      "stdout_contains": [
+        "\"text\":\"done\""
+      ],
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/final.json",
+        "--event-cursor",
+        "{{workspace}}/exports/../cursor.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/usage.jsonl",
+        "exec",
+        "hello"
+      ]
     }
   ],
   "assert": {
     "files": {
-      "result.json": "previous export\n"
+      "result.json": "previous export\n",
+      "final.json": "done"
     },
-    "requests": 0
+    "requests": 1
   }
 }

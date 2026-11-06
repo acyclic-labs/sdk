@@ -162,8 +162,43 @@ impl Args {
                 "output projection: usage export also selects stdout; recovery: graphcoder --usage-jsonl usage.jsonl --output-format jsonl exec 'TASK'",
             );
         }
-        // Each writer replaces its own file whole; one shared destination
-        // would let a later writer erase an earlier one's committed content.
+        Ok(())
+    }
+
+    /// Resolve the output directory once, before any export or conversation
+    /// opens. Atomic replacement addresses a directory entry, not the inode
+    /// currently at that name, so retain the final component unchanged.
+    pub fn prepare_outputs(&mut self) -> std::io::Result<()> {
+        for path in [
+            &mut self.output,
+            &mut self.event_cursor,
+            &mut self.usage_jsonl,
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|path| path.as_os_str() != "-")
+        {
+            let name = path.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "output files: destination has no file name; recovery: graphcoder --output-format jsonl --output final.json exec 'TASK'",
+                )
+            })?;
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            *path = std::fs::canonicalize(parent)
+                .map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!("output files: resolve {}: {error}; recovery: graphcoder --output-format jsonl --output final.json exec 'TASK'", parent.display()),
+                    )
+                })?
+                .join(name);
+        }
+        // Every writer uses the resolved directory spelling when comparing
+        // destinations and later replacing its entry.
         let files = [&self.output, &self.event_cursor, &self.usage_jsonl];
         let files = files
             .iter()
@@ -174,9 +209,10 @@ impl Args {
             .enumerate()
             .any(|(index, path)| files.clone().skip(index + 1).any(|other| other == path))
         {
-            return Err(
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
                 "output files: --output, --event-cursor and --usage-jsonl must name distinct files; recovery: graphcoder --output-format jsonl --output final.json --event-cursor cursor.json exec 'TASK'",
-            );
+            ));
         }
         Ok(())
     }
