@@ -204,7 +204,7 @@ fn configure(
         .working_directory(&std::env::current_dir()?)?;
     if let Some(path) = &args.approval_policy {
         config = config.approval_policy(serde_json::from_slice(
-            &acyclic_fs::native_host::read_regular_file(path)?,
+            &acyclic_harness::local::read_regular_file(path)?,
         )?);
     }
     if let Some(directory) = &args.directory {
@@ -278,8 +278,8 @@ async fn run(
             (Some(certificate), Some(key), Some(url)) => {
                 Some(acyclic_harness::server::TlsIdentity {
                     url: url.clone(),
-                    certificate: acyclic_fs::native_host::read_regular_file(certificate)?,
-                    key: acyclic_fs::native_host::read_regular_file(key)?,
+                    certificate: acyclic_harness::local::read_regular_file(certificate)?,
+                    key: acyclic_harness::local::read_regular_file(key)?,
                     peer: None,
                 })
             }
@@ -326,7 +326,7 @@ async fn host_workspace(
     let policy = match &args.approval_policy {
         Some(path) => Some(serde_json::from_slice::<
             acyclic_harness::approvals::ApprovalPolicy,
-        >(&acyclic_fs::native_host::read_regular_file(
+        >(&acyclic_harness::local::read_regular_file(
             path,
         )?)?),
         None => None,
