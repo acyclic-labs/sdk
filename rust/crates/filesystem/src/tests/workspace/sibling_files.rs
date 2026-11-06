@@ -65,6 +65,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     main.write_text("/README.md", "base\n").await?;
     let base = unbounded!(main, head())?;
     let mut forks = Vec::new();
+    let same = "same\n".repeat(71);
     for (name, other) in [
         ("file-fold-first", "first\n"),
         ("file-fold-second", "second\n"),
@@ -75,8 +76,29 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
         )
         .await?;
-        fork.write_text("/same.rs", "same\n").await?;
+        fork.write_text("/same.rs", &same).await?;
         fork.write_text("/other.rs", other).await?;
+        if !forks.is_empty() {
+            let mut rewrite = unbounded!(fork, begin_transaction(IdempotencyKey::new()))?;
+            unbounded!(
+                rewrite.checkout,
+                change_content(
+                    NamespacePath::from_portable(
+                        &PortablePath::parse("/same.rs", fork.limits())?,
+                        fork.limits()
+                    )?,
+                    crate::ContentChange::Write {
+                        offset: 1,
+                        bytes: OwnedBytes::from_static(b"a")
+                    },
+                    crate::ContentTimes::Preserve
+                )
+            )?;
+            assert!(matches!(
+                commit(&mut rewrite).await?,
+                TransactionCommit::Committed(_)
+            ));
+        }
         forks.push(fork);
     }
     let mut outcomes = Vec::new();
@@ -114,7 +136,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         ForkOptions::from_generation(base, IdempotencyKey::new()),
     )
     .await?;
-    fork.write_text("/same.rs", "same\n").await?;
+    fork.write_text("/same.rs", &same).await?;
     let plan = unbounded!(fork.join_into(&main), plan())?;
     match plan
         .apply(
@@ -139,8 +161,8 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         _ => panic!("an identical independent creation changes nothing"),
     }
     assert_eq!(
-        unbounded!(main, read("/same.rs", 16))?,
-        OwnedBytes::from_static(b"same\n")
+        unbounded!(main, read("/same.rs", same.len() as u64))?.as_ref(),
+        same.as_bytes()
     );
     assert_eq!(
         unbounded!(main, read("/other.rs", 16))?,

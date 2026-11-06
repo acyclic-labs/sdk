@@ -1,21 +1,20 @@
-use crate::mcp::sync::{
-    Arc,
-    atomic::{AtomicU32, Ordering},
-};
+use crate::{Arc, AtomicU32, Ordering};
 use bytes::{BufMut as _, BytesMut};
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Write};
 use tokio_util::codec::{Decoder, Encoder};
 
-pub(super) struct BoundedCodec<T> {
+/// JSON-line codec with a shared, atomically published frame bound.
+pub struct BoundedCodec<T> {
     decoder: JsonRpcMessageCodec<T>,
     maximum: Arc<AtomicU32>,
     decoder_maximum: u32,
 }
 
 impl<T> BoundedCodec<T> {
-    pub(super) fn new(maximum: Arc<AtomicU32>) -> Self {
+    /// Creates a codec that observes updates to `maximum` on each operation.
+    pub fn new(maximum: Arc<AtomicU32>) -> Self {
         let decoder_maximum = maximum.load(Ordering::Acquire);
         Self {
             decoder: JsonRpcMessageCodec::new_with_max_length(decoder_maximum as usize),

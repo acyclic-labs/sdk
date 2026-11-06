@@ -1,4 +1,4 @@
-//! The one stdio MCP tool server for harness tool providers.
+//! The shared stdio MCP tool server.
 //!
 //! Newline-delimited JSON-RPC over blocking pipes, read through the shared
 //! [`JsonLineReader`] codec. A provider answers each call at once or parks it
@@ -11,8 +11,7 @@
 //! server stops reading new requests only while a bounded reply backlog
 //! waits for that client.
 use super::JsonLineReader;
-use crate::mcp::PROTOCOL_VERSION;
-use crate::{Error, Result};
+use crate::PROTOCOL_VERSION;
 use futures::channel::{mpsc, oneshot};
 use futures::executor::block_on;
 use futures::future;
@@ -61,12 +60,15 @@ pub type Settled = std::result::Result<Value, Value>;
 
 /// A tool provider served by [`ToolServer`].
 pub trait ToolProvider {
+    /// Provider failure retained by the serving result.
+    type Error: std::fmt::Display;
+
     /// The `tools/list` result: `{"tools": [...]}`. A call naming no listed
     /// tool is refused before it reaches [`Self::call`].
     fn tools(&self) -> Value;
 
     /// Runs one `tools/call`; an error answers it as a tool failure.
-    fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall>;
+    fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall, Self::Error>;
 
     /// The client cancelled the last call parked under `key`; its answer is
     /// no longer read.
@@ -86,7 +88,18 @@ pub trait ToolProvider {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> Result<Option<Wake>>;
+    ) -> Result<Option<Wake>, Self::Error>;
+}
+
+/// A transport failure or the original provider failure that ended serving.
+#[derive(Debug, thiserror::Error)]
+pub enum ServeError<E> {
+    /// Reading, encoding or writing the native transport failed.
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// The provider could no longer progress its admitted work.
+    #[error("{0}")]
+    Provider(E),
 }
 
 /// The server's identity and its bounds.
@@ -105,12 +118,12 @@ impl ToolServer {
     /// Serves `provider` until `input` ends, then writes the queued replies.
     /// A framing, decoding or I/O failure answers a parse error and ends the
     /// server with that error; so does an output failure.
-    pub fn serve(
+    pub fn serve<P: ToolProvider>(
         &self,
-        provider: &mut impl ToolProvider,
+        provider: &mut P,
         input: impl Read + Send + 'static,
         output: impl Write + Send + 'static,
-    ) -> Result<()> {
+    ) -> Result<(), ServeError<P::Error>> {
         let (mut replies, mut failed, writer) = writer(output);
         let mut backlog = VecDeque::new();
         let served = self.run(provider, input, &mut replies, &mut backlog, &mut failed);
@@ -124,27 +137,29 @@ impl ToolServer {
         drop(replies);
         let written = writer
             .join()
-            .map_err(|_| Error::Storage("MCP output writer stopped".into()))?;
+            .map_err(|_| io::Error::other("MCP output writer stopped"))?;
         // An output failure outranks the serving result it ended.
-        written.map_err(|error| Error::Storage(error.to_string()))?;
+        written?;
         served
     }
 
-    fn run(
+    fn run<P: ToolProvider>(
         &self,
-        provider: &mut impl ToolProvider,
+        provider: &mut P,
         input: impl Read + Send + 'static,
         replies: &mut mpsc::Sender<Vec<u8>>,
         backlog: &mut VecDeque<Vec<u8>>,
         failed: &mut oneshot::Receiver<()>,
-    ) -> Result<()> {
+    ) -> Result<(), ServeError<P::Error>> {
         let mut messages = lines(input, self.frame_bytes);
         let mut parked: Vec<(Value, String)> = Vec::new();
         let mut initialized = false;
         let mut settled = Vec::new();
         loop {
             let keys = parked.iter().map(|(_, key)| key.clone()).collect();
-            let wake = provider.progress(&keys, &mut settled)?;
+            let wake = provider
+                .progress(&keys, &mut settled)
+                .map_err(ServeError::Provider)?;
             for (key, value) in settled.drain(..) {
                 for (id, _) in parked.extract_if(.., |(_, parked)| *parked == key) {
                     queue(backlog, &result(&id, value.clone()))?;
@@ -187,7 +202,7 @@ impl ToolServer {
                 Some(Ok(message)) => message,
                 Some(Err(error)) => {
                     queue(backlog, &failure(&Value::Null, -32700, "Parse error"))?;
-                    return Err(Error::Storage(error.to_string()));
+                    return Err(error.into());
                 }
                 None => return Ok(()),
             };
@@ -298,8 +313,8 @@ fn failure(id: &Value, code: i32, message: &str) -> Value {
 }
 
 /// Queues one reply line for the writer.
-fn queue(backlog: &mut VecDeque<Vec<u8>>, value: &Value) -> Result<()> {
-    let mut line = serde_json::to_vec(value).map_err(|error| Error::Storage(error.to_string()))?;
+fn queue(backlog: &mut VecDeque<Vec<u8>>, value: &Value) -> io::Result<()> {
+    let mut line = serde_json::to_vec(value)?;
     line.push(b'\n');
     backlog.push_back(line);
     Ok(())

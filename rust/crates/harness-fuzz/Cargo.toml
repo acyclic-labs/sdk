@@ -84,6 +84,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 
 [features]
 default = ["runtime"]
+mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
@@ -100,6 +101,7 @@ native-execution = []
 
 
 [dependencies]
+acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
@@ -246,7 +248,7 @@ bench = false
 [[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
-required-features = ["runtime"]
+required-features = ["mcp-stdio-codec"]
 test = false
 doc = false
 bench = false

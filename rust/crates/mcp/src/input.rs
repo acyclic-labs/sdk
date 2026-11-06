@@ -1,5 +1,5 @@
 //! Blocking stdio admission over the same codec as native MCP clients.
-use super::{Arc, AtomicU32, codec::BoundedCodec};
+use crate::{Arc, AtomicU32, BoundedCodec};
 use bytes::BytesMut;
 use serde_json::Value;
 use std::io::{self, Read};

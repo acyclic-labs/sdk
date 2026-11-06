@@ -39,8 +39,8 @@ conformance = ["acyclic-stream/conformance", "acyclic-objects?/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
 tui = []
-test-support = ["acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
-model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
+test-support = ["acyclic-auth/test-support", "acyclic-machines?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
+model-checking = ["acyclic-mcp/model-checking", "dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-model-render/browser"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
@@ -52,7 +52,7 @@ native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
-mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml"]
+mcp-stdio = ["acyclic-mcp/stdio", "tokio/process", "tokio/io-util", "dep:toml"]
 # Native environment access for acyclic-harness-search credentials.
 search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
@@ -61,6 +61,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
+acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }
 oxttl = { version = "=0.2.5", default-features = false, optional = true }
 arrow-array = { version = "=57.0.0", optional = true }
