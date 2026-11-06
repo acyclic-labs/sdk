@@ -458,7 +458,16 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
     drop(graph);
 
     let restarted = WorkspaceGraph::new(store);
-    let ancestors = restarted.ancestors(grandchild.id(), 3).await?;
+    let ancestors = restarted
+        .ancestors(
+            grandchild.id(),
+            3,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     assert_eq!(
         ancestors
             .iter()
@@ -467,14 +476,39 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         vec![child.id(), root.id()]
     );
     restarted
-        .authorize_join(grandchild.id(), child.id())
-        .await?;
+        .authorize_join(
+            grandchild.id(),
+            child.id(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     assert!(matches!(
-        restarted.authorize_join(grandchild.id(), root.id()).await,
+        restarted
+            .authorize_join(
+                grandchild.id(),
+                root.id(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::UnauthorizedJoin)
     ));
     assert!(matches!(
-        restarted.ancestors(grandchild.id(), 1).await,
+        restarted
+            .ancestors(
+                grandchild.id(),
+                1,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::TraversalLimit)
     ));
     Ok(())
