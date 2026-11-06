@@ -1437,7 +1437,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn select<'a>(
         &'a self,
         digest: Digest,
-        envelope: Envelope,
+        envelope: &'a Envelope,
         range: std::ops::Range<u64>,
         out: &'a mut Vec<OwnedBytes>,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
@@ -1450,19 +1450,17 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     let whole = range.start == 0 && range.end == envelope.length;
                     // A whole read checks its bytes; a partial one first
                     // proves a payload a crash could have torn complete.
-                    if !whole
-                        && self.medium.volatile()
-                        && !self.complete(&digest, &envelope).await?
+                    if !whole && self.medium.volatile() && !self.complete(&digest, envelope).await?
                     {
                         return Err(ErrorCode::NotFound.into());
                     }
                     out.push(
-                        self.read_payload(&digest, &envelope, (!whole).then_some(range))
+                        self.read_payload(&digest, envelope, (!whole).then_some(range))
                             .await?,
                     );
                 }
                 Kind::Manifest => {
-                    let manifest = self.manifest(&digest, &envelope).await?;
+                    let manifest = self.manifest(&digest, envelope).await?;
                     let mut offset = 0u64;
                     for part in manifest.parts {
                         let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
@@ -1476,7 +1474,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                             if child.length != part.length {
                                 return Err(corrupt());
                             }
-                            self.select(part.digest, child, start - offset..stop - offset, out)
+                            self.select(part.digest, &child, start - offset..stop - offset, out)
                                 .await?;
                         }
                         if end >= range.end {
@@ -1644,7 +1642,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                     return Err(ErrorCode::QuotaExceeded.into());
                 }
                 let mut parts = Vec::new();
-                self.select(digest, envelope.clone(), selected.clone(), &mut parts)
+                self.select(digest, &envelope, selected.clone(), &mut parts)
                     .await?;
                 let body = match parts.len() {
                     0 => OwnedBytes::new(),
