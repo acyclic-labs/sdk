@@ -21,6 +21,11 @@ fn check_type<T: DeserializeOwned + Serialize>(
     {
         return false;
     }
+    let original_baseline = original
+        .standalone_parts()
+        .expect("ordinary decode uses the caller's standalone ledger")
+        .0
+        .live_bytes();
     let agrees = (|| {
         let ordinary = serde_json::from_slice::<T>(bytes);
         let funded =
@@ -72,7 +77,7 @@ fn check_type<T: DeserializeOwned + Serialize>(
         && work.live_allocation_bytes() == baseline
         && original
             .standalone_parts()
-            .is_some_and(|(ledger, _, _, _)| ledger.live_bytes() == 73)
+            .is_some_and(|(ledger, _, _, _)| ledger.live_bytes() == original_baseline)
 }
 
 struct LostReader<'a> {
