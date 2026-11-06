@@ -111,7 +111,7 @@ impl<A, O> Fs<A, O> {
         Ok((name, id))
     }
 
-    pub(super) fn workspace_id_for_name(
+    pub(crate) fn workspace_id_for_name(
         &self,
         destination: &crate::WorkspaceName,
         accounting: &mut KernelAccounting<'_>,

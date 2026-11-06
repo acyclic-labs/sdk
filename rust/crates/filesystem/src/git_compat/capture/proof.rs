@@ -70,8 +70,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> GitCapture
                 &child,
                 parent.id(),
                 *initial_generation,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
             )
-            .await?;
+            .await
+            .map_err(|failure| failure.error)?;
         Ok(Some(GitCaptureProof {
             fork_parent: GitTreeRef::exact(parent.workspace_id(), parent.id()),
             initial_generation: *initial_generation,

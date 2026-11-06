@@ -138,8 +138,11 @@ where
                 self.lazy_current.workspace(),
                 workspace.workspace(),
                 fork_generation,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
             .await
+            .map_err(|failure| failure.error)
             .map_err(S::lineage_error)?;
         let workspace_id = workspace.workspace().id();
         if switch {

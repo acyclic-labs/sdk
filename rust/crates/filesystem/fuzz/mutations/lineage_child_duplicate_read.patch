@@ -1,0 +1,16 @@
+diff --git a/rust/crates/filesystem/src/lineage/mod.rs b/rust/crates/filesystem/src/lineage/mod.rs
+--- a/rust/crates/filesystem/src/lineage/mod.rs
++++ b/rust/crates/filesystem/src/lineage/mod.rs
+@@ -350,6 +350,12 @@
+             let initial = child
+                 .observed_generation_accounted(initial, &mut accounting)
+                 .await?;
++            let initial = child
++                .observed_generation_accounted(
++                    crate::model::GenerationSelector::Exact(initial.id()),
++                    &mut accounting,
++                )
++                .await?;
+             let expected_child = parent
+                 .volume
+                 .fs

@@ -271,86 +271,105 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     pub async fn register_existing_child<
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
     >(
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
         fork_generation: crate::GenerationId,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let initial_generation = child
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-            .id();
-        self.register_existing_child_at_generation(
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        self.register_child(
             parent,
             child,
             fork_generation,
-            initial_generation,
+            crate::model::GenerationSelector::Head,
+            work,
+            cancellation,
         )
         .await
     }
 
-    /// Registers an existing child after it has advanced beyond its initial
+    /// Registers an existing child at its authenticated initial generation.
     pub async fn register_existing_child_at_generation<
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
     >(
         &self,
         parent: &Workspace<A, O>,
         child: &Workspace<A, O>,
         fork_generation: crate::GenerationId,
         initial_generation: crate::GenerationId,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        // Do not let a metadata adapter manufacture publication authority.
-        // The child's authenticated initial generation must be the generation
-        // root produced by an SDK fork from the claimed parent generation.
-        parent
-            .generation(
-                fork_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?;
-        let initial = child
-            .generation(
-                initial_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        let expected_child = parent
-            .volume
-            .fs
-            .workspace_id(child.name().as_str())
-            .map_err(WorkspaceError::from)?;
-        if child.id() != expected_child {
-            return Err(WorkspaceLineageError::UnauthorizedJoin);
-        }
-        let (parents, _allocation) = initial
-            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
-        if parents.as_slice() != [fork_generation] {
-            return Err(WorkspaceLineageError::UnauthorizedJoin);
-        }
-        self.register(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: child.id(),
-            workspace_name: child.name().as_str().to_owned(),
-            parent_workspace_id: Some(parent.id()),
-            parent_workspace_name: Some(parent.name().as_str().to_owned()),
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        self.register_child(
+            parent,
+            child,
             fork_generation,
-            initial_generation,
-        })
+            crate::model::GenerationSelector::Exact(initial_generation),
+            work,
+            cancellation,
+        )
         .await
+    }
+
+    async fn register_child<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
+    >(
+        &self,
+        parent: &Workspace<A, O>,
+        child: &Workspace<A, O>,
+        fork_generation: crate::GenerationId,
+        initial: crate::model::GenerationSelector,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check().map_err(WorkspaceError::from)?;
+            // Do not let a metadata adapter manufacture publication authority.
+            // The child's authenticated initial generation must be the generation
+            // root produced by an SDK fork from the claimed parent generation.
+            let parent_generation = parent
+                .observed_generation_accounted(
+                    crate::model::GenerationSelector::Exact(fork_generation),
+                    &mut accounting,
+                )
+                .await?;
+            let initial = child
+                .observed_generation_accounted(initial, &mut accounting)
+                .await?;
+            let expected_child = parent
+                .volume
+                .fs
+                .workspace_id_for_name(child.name(), &mut accounting)?;
+            if child.id() != expected_child {
+                return Err(WorkspaceLineageError::UnauthorizedJoin);
+            }
+            let (parents, _allocation) = initial.parents_accounted(&mut accounting).await?;
+            if parents.as_slice() != [parent_generation.id()] {
+                return Err(WorkspaceLineageError::UnauthorizedJoin);
+            }
+            self.register(WorkspaceLineageRecord {
+                version: LINEAGE_VERSION,
+                revision: 1,
+                ready: true,
+                workspace_id: child.id(),
+                workspace_name: child.name().as_str().to_owned(),
+                parent_workspace_id: Some(parent.id()),
+                parent_workspace_name: Some(parent.name().as_str().to_owned()),
+                fork_generation,
+                initial_generation: initial.id(),
+            })
+            .await
+        }
+        .await;
+        work.finish(result, &accounting)
     }
 
     /// Verifies that `parent` is the child's exact direct publication target.
