@@ -97,7 +97,7 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
     : typeof value === "string" && TOOL_FAILURE.test(value) ? value : undefined;
   if (error !== undefined && error !== null) assert.ok(
     expectedErrors?.some(text => typeof text === "string" && text.length !== 0 && JSON.stringify(error).includes(text)),
-    `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+    `step=admit tool outcome: unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
 }
 
 export function toolResults(records) {

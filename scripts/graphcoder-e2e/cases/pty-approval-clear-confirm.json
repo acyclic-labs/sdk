@@ -90,6 +90,9 @@
     ],
     "tool_errors": [
       "tool execution failed: interaction declined"
+    ],
+    "tool_contains": [
+      "tool execution failed: interaction declined"
     ]
   },
   "settings": {

@@ -5,6 +5,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
 import { fuzz } from "./tool-outcome.fuzz.mjs";
+import { requireTools } from "./live.mjs";
+
+const rejectedWait = JSON.parse(readFileSync(new URL("./fixtures/rejected-wait.json", import.meta.url), "utf8"));
+
+test("captured argument refusal cannot qualify a successful child conversation", () => {
+  const fixture = { id: rejectedWait.case, assert: { requests: 1, steps: [rejectedWait.record.step] } };
+  const records = [rejectedWait.record];
+  const output = toolResults(records)[0];
+  assert.throws(() => requests(fixture, records), /unexpected tool error/);
+  // The live driver shares the same refusal admission after hook projection.
+  assert.throws(() => requireTools([
+    { hook_event_name: "PostToolUse", tool_name: "wait", tool_response: output },
+  ], ["wait"]), /unexpected tool error/);
+  requests({ ...fixture, assert: { ...fixture.assert, tool_errors: [output] } }, records);
+  assert.throws(() => requests({ ...fixture, assert: { ...fixture.assert, tool_errors: ["another refusal"] } }, records), /unexpected tool error/);
+});
 
 const directory = mkdtempSync(join(tmpdir(), "e2e-records-"));
 after(() => rmSync(directory, { recursive: true }));
