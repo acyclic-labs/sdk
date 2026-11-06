@@ -165,34 +165,34 @@ async function execute(test, prepared) {
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       await withFileSource(processes, fixture, input.file_source, async (path, closed) => {
-      const arguments_ = [...fixture.args, ...args, ...(input.extra_args ?? [])]
-        .map(argument => argument === "{{file_source}}" ? path : argument);
-      const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
-      if (input.kill_on) {
-        await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
-        running.child.kill("SIGKILL");
-        const result = await running.exited;
-        assert.ok(result.signal || result.code !== 0);
-        interrupted.push(retainCapture(running.closed, captures));
-        return;
-      } else if (input.mode === "jsonl") {
-        // Message `<operation>:e2e`: rerunning the operation replays its answer.
-        running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
-      } else running.child.stdin.end();
-      const result = await closed(running); captures.push(result);
-      if ((input.exit ?? 0) === 0) executionSucceeded(result);
-      else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
-      if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);
-      if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}; stderr: ${result.stderr.trim().slice(-1500) || "(empty)"}`);
-      for (const text of input.stdout_absent ?? []) assert.ok(!result.stdout.includes(text), `unexpected stdout ${text}`);
-      if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
-        const settled = outcome(input, result, messageId);
-        if (input.outcome !== undefined) {
-          assert.equal(settled.completion, input.outcome.completion, `terminal outcome mismatch: ${JSON.stringify(settled)}`);
-          if (input.outcome.error !== undefined) assert.ok(settled.error.includes(input.outcome.error), `terminal error mismatch: ${JSON.stringify(settled)}`);
-        } else assert.equal(settled.completion, "completed", JSON.stringify(settled));
-        if (input.answer !== undefined) assert.equal(settled.ok.text, input.answer);
-      }
+        const arguments_ = [...fixture.args, ...args, ...(input.extra_args ?? [])]
+          .map(argument => argument === "{{file_source}}" ? path : argument);
+        const running = await processes.startReported(binary, arguments_, { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
+        if (input.kill_on) {
+          await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
+          running.child.kill("SIGKILL");
+          const result = await running.exited;
+          assert.ok(result.signal || result.code !== 0);
+          interrupted.push(retainCapture(running.closed, captures));
+          return;
+        } else if (input.mode === "jsonl") {
+          // Message `<operation>:e2e`: rerunning the operation replays its answer.
+          running.child.stdin.end(input.stdin ?? JSON.stringify({ prompt: input.text ?? "hello", id: messageId }) + "\n");
+        } else running.child.stdin.end();
+        const result = await closed(running); captures.push(result);
+        if ((input.exit ?? 0) === 0) executionSucceeded(result);
+        else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
+        if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);
+        if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}; stderr: ${result.stderr.trim().slice(-1500) || "(empty)"}`);
+        for (const text of input.stdout_absent ?? []) assert.ok(!result.stdout.includes(text), `unexpected stdout ${text}`);
+        if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
+          const settled = outcome(input, result, messageId);
+          if (input.outcome !== undefined) {
+            assert.equal(settled.completion, input.outcome.completion, `terminal outcome mismatch: ${JSON.stringify(settled)}`);
+            if (input.outcome.error !== undefined) assert.ok(settled.error.includes(input.outcome.error), `terminal error mismatch: ${JSON.stringify(settled)}`);
+          } else assert.equal(settled.completion, "completed", JSON.stringify(settled));
+          if (input.answer !== undefined) assert.equal(settled.ok.text, input.answer);
+        }
       });
     }
     // Check while the mock's held response is still open. Killing the mock

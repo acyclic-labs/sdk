@@ -138,7 +138,7 @@ impl Prepared {
             .as_ref()
             .map(|path| -> Result<_, Failure> {
                 Ok(acyclic_harness::model::OutputSchema::new(
-                    serde_json::from_slice(&std::fs::read(path)?)?,
+                    serde_json::from_slice(&acyclic_fs::native_host::read_regular_file(path)?)?,
                 )?)
             })
             .transpose()?;
@@ -177,7 +177,10 @@ impl Projection {
         if path.is_some_and(|path| path.as_os_str() == "-") {
             return Err("event cursor: stdout is not a cursor file; recovery: pass --event-cursor events.cursor.json".into());
         }
-        let state = match path.map(std::fs::read).transpose() {
+        let state = match path
+            .map(acyclic_fs::native_host::read_regular_file)
+            .transpose()
+        {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes)?,
             Ok(None) => acyclic_harness::local::EventProjection::new(operation.to_owned()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
