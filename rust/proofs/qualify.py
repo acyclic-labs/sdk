@@ -146,8 +146,13 @@ else:
     diagnostic = "kernel charge allocated physical heap storage"
     features = []
 SOURCE = ROOT / source
-COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target, test,
-           "--", "--exact", "--nocapture"]
+tests = [test]
+diagnostics = [diagnostic]
+if claim == "publication-retirement":
+    tests.append("collection::tests::a_collection_begins_after_every_admitted_record_is_written")
+    diagnostics.append("cancelled collection retained an active admission registry")
+COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target,
+           "--", "--exact", "--nocapture", *tests]
 RECOVERY = f"git diff -- {source}; inspect target/{claim}/*.log; correct source or command, then python3 rust/proofs/qualify.py {claim}"
 
 
@@ -185,13 +190,14 @@ def main():
         require(subprocess.run(["git", "apply", patch], cwd=ROOT).returncode == 0,
                 "apply production mutation")
         code, output = run("mutated")
-        require(code == 101 and diagnostic in output and "0 passed; 1 failed" in output,
+        require(code == 101 and all(message in output for message in diagnostics)
+                and f"0 passed; {len(tests)} failed" in output,
                 "unchanged oracle rejects production mutation")
     finally:
         SOURCE.write_bytes(original)
     require(SOURCE.read_bytes() == original, "restore exact original source")
     code, output = run("restored")
-    require(code == 0 and "1 passed; 0 failed" in output,
+    require(code == 0 and f"{len(tests)} passed; 0 failed" in output,
             "restored original oracle completes")
 
 
