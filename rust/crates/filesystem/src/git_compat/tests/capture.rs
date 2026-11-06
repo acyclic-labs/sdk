@@ -400,45 +400,36 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
         + initial.work.backend_read_operations
         + ancestry.work.backend_read_operations
         + captured_ancestry.work.backend_read_operations;
-    let check = |result: Option<GitCaptureProof>, spent: crate::WorkCounters| {
-        spent
-            .verify(budget)
-            .expect("original receipt within credit");
-        assert_eq!(
-            spent.backend_read_operations, expected_reads,
-            "Git proof repeated or detached authenticated reads"
-        );
-        assert!(
-            spent.bytes_encoded >= 32,
-            "Git proof detached original encoding work"
-        );
-        assert_eq!(result, Some(proof.clone()));
+    #[cfg(not(target_arch = "wasm32"))]
+    let expected_native_reads = {
+        // Native providers charge physical medium operations. Derive their
+        // count from the same authentication primitives on original work.
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)
+            .expect("native authentication work");
+        workspace
+            .generation(
+                proof.fork_parent.authored_generation(),
+                &original,
+                &cancellation,
+            )
+            .await
+            .expect("native parent authentication");
+        let initial = child
+            .generation(proof.initial_generation, &original, &cancellation)
+            .await
+            .expect("native initial authentication");
+        initial
+            .parents(&original, &cancellation)
+            .await
+            .expect("native initial ancestry");
+        first
+            .generation
+            .parents(&original, &cancellation)
+            .await
+            .expect("native captured ancestry");
+        original.receipt().backend_read_operations
     };
-    for captured in [&first, &retry] {
-        let original = crate::workspace::Prefunded {
-            budget,
-            held: Mutex::new(None),
-        };
-        let (result, spent, live, baseline) = captured
-            .authenticated_proof(operation_id, &graph, &original, &cancellation)
-            .await;
-        assert!(
-            live >= baseline,
-            "Git proof retired earlier original backing"
-        );
-        check(result.expect("ordinary proof"), spent);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                .map_err(|(error, _)| error)
-                .expect("original native work");
-            let result = captured
-                .authenticated_proof(operation_id, &graph, &original, &cancellation)
-                .await
-                .expect("native proof");
-            check(result, original.receipt());
-        }
-    }
     let wrong_operation = first
         .authenticated_proof(
             OperationId::from_bytes([0; 16]),
@@ -453,6 +444,46 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
         GitCaptureAuthenticationError::Capture(GitCaptureError::Conflict)
     ));
     assert_eq!(wrong_operation.work.backend_read_operations, 0);
+    let check =
+        |result: Option<GitCaptureProof>, spent: crate::WorkCounters, expected_reads: u64| {
+            spent
+                .verify(budget)
+                .expect("original receipt within credit");
+            assert_eq!(
+                spent.backend_read_operations, expected_reads,
+                "Git proof repeated or detached authenticated reads"
+            );
+            assert!(
+                spent.bytes_encoded >= 32,
+                "Git proof detached original encoding work"
+            );
+            assert_eq!(result, Some(proof.clone()));
+        };
+    for captured in [&first, &retry] {
+        let original = crate::workspace::Prefunded {
+            budget,
+            held: Mutex::new(None),
+        };
+        let (result, spent, live, baseline) = captured
+            .authenticated_proof(operation_id, &graph, &original, &cancellation)
+            .await;
+        assert!(
+            live >= baseline,
+            "Git proof retired earlier original backing"
+        );
+        check(result.expect("ordinary proof"), spent, expected_reads);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)
+                .expect("original native work");
+            let result = captured
+                .authenticated_proof(operation_id, &graph, &original, &cancellation)
+                .await
+                .expect("native proof");
+            check(result, original.receipt(), expected_native_reads);
+        }
+    }
     for (cancelled, reads, encoded) in [
         (true, budget.backend_read_operations, budget.bytes_encoded),
         (false, 0, budget.bytes_encoded),
