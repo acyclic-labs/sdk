@@ -491,6 +491,32 @@ async fn a_missing_lease_cannot_cache_a_rejected_append_attempt() -> TestResult 
 
 #[tokio::test]
 async fn a_closed_lease_attempt_does_not_poison_a_new_lease_for_the_same_operation() -> TestResult {
+    struct NativeClose(Arc<ReleaseSpy>);
+
+    impl AuthorityGuard for NativeClose {
+        type Error = AuthorityStoreError;
+
+        async fn seal(
+            &mut self,
+            _: &mut AuthorityWork<'_>,
+        ) -> Result<(), AuthorityError<Self::Error>> {
+            Ok(())
+        }
+
+        async fn native_commit<P: acyclic_stream::NativeStreamProvider>(
+            &mut self,
+            provider: &P,
+            request: acyclic_stream::CommitRequest,
+            deadline: Option<u64>,
+            work: &mut AuthorityWork<'_>,
+        ) -> acyclic_stream::NativeStreamResult<CommitOutcome, AuthorityError<Self::Error>>
+        {
+            // Interleave after filesystem preflight, then keep the real native
+            // provider, original meter, request and completion owner unchanged.
+            self.0.interleave().await.map_err(std::io::Error::other)?;
+            ().native_commit(provider, request, deadline, work).await
+        }
+    }
     for native in [false, true] {
         let stream = Arc::new(MemoryStream::default());
         let store = StreamAuthorityStore::new(stream.clone());
@@ -518,13 +544,18 @@ async fn a_closed_lease_attempt_does_not_poison_a_new_lease_for_the_same_operati
         };
         let mut spy = ReleaseSpy::new(stream.clone());
         spy.before_lease_close = Some(path);
-        let racing = StreamAuthorityStore::new(Arc::new(spy));
-        assert!(matches!(
-            racing
+        let spy = Arc::new(spy);
+        let outcome = if native {
+            let mut guard = NativeClose(spy);
+            store
+                .compare_and_append(request.clone(), &mut work, Some(&mut guard))
+                .await?
+        } else {
+            StreamAuthorityStore::new(spy)
                 .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
-                .await?,
-            FsAppendOutcome::Fenced { .. }
-        ));
+                .await?
+        };
+        assert!(matches!(outcome, FsAppendOutcome::Fenced { .. }));
         assert_eq!(store.head(id, &mut work).await?, request.expected);
         assert!(
             store
