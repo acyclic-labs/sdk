@@ -587,7 +587,7 @@ impl DiscoverySource for ProjectCatalog<'_> {
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<Self::Revision, Self::Cursor>>>> {
         self.directory.page(directory, revision, cursor, maximum)
     }
 }
@@ -679,7 +679,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
         revision: Option<&'a SourceReference>,
         cursor: Option<Self::Cursor>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<SourceReference, Self::Cursor>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<SourceReference, Self::Cursor>>>> {
         Box::pin(async move {
             let reference = revision.copied().unwrap_or_else(|| self.source.reference());
             let cancellation = self.work.cancellation();
@@ -699,11 +699,15 @@ impl DiscoverySource for UserCatalogSource<'_> {
             self.sources
                 .user_pages
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut page = self
+            let selected = self
                 .source
                 .list_page(reference, &path, cursor, maximum, self.work, cancellation)
-                .await
-                .map_err(storage)?;
+                .await;
+            let mut page = match selected {
+                Ok(page) => page,
+                Err(acyclic_fs::demand::DemandError::Absent) => return Ok(None),
+                Err(error) => return Err(storage(error)),
+            };
             let mut entries = Vec::with_capacity(page.entries.len());
             let scanned = u32::try_from(page.entries.len())
                 .map_err(|_| Error::Invalid("entry count overflow".into()))?;
@@ -720,12 +724,12 @@ impl DiscoverySource for UserCatalogSource<'_> {
             if let Some(publication) = page.publication.as_mut() {
                 publication.accept(&mut accounting).map_err(storage)?;
             }
-            Ok(DiscoveryPage {
+            Ok(Some(DiscoveryPage {
                 revision: reference,
                 scanned,
                 entries,
                 next: page.next,
-            })
+            }))
         })
     }
 }

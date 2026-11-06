@@ -375,7 +375,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                     ceiling: context.map(|context| context.effective_scope().grants()),
                 },
             )
-            .await?;
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))?;
         let wire = list_files_page_wire(&generation, &page)?;
         let maximum_bytes = context.map_or(self.maximum_bytes, |context| {
             self.maximum_bytes

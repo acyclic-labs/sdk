@@ -12,10 +12,11 @@ impl DiscoverySource for Pages {
         _: Option<&'a u8>,
         _: Option<u8>,
         _: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<u8, u8>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<u8, u8>>>> {
         Box::pin(async {
             self.0
                 .pop_front()
+                .map(Some)
                 .ok_or_else(|| Error::Storage("page script exhausted".into()))
         })
     }
@@ -49,7 +50,8 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
     );
     let (_, entries) = DiscoveryWork::default()
         .list_source(&mut source, "", None)
-        .await?;
+        .await?
+        .expect("scripted directory exists");
     assert_eq!(
         entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
         ["a", "z"]
