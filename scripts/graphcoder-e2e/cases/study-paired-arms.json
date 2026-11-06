@@ -54,6 +54,18 @@
   },
   "inputs": [
     {
+      "file_source": "{{workspace}}/study.json",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000002",
+        "study",
+        "{{file_source}}",
+        "--report",
+        "refused-study-report.jsonl"
+      ],
+      "exit": 1
+    },
+    {
       "mode": "headless",
       "args": [
         "--operation",
