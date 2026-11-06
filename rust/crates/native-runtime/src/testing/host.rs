@@ -21,6 +21,7 @@ struct State {
     ready: bool,
     io_ready: bool,
     waiting_start: bool,
+    notifying: usize,
     detached: bool,
     driver: Option<Waker>,
 }
@@ -98,6 +99,7 @@ impl Host {
                 ready: false,
                 io_ready: false,
                 waiting_start: false,
+                notifying: 0,
                 detached: false,
                 driver: None,
             }),
@@ -177,11 +179,18 @@ impl Host {
                     .as_mut()
                     .poll(&mut PollContext::from_waker(&io_waker))
                 {
+                    drop(self.notifications_finished());
                     return Poll::Ready(output);
                 }
                 let mut state = self.pool.start_or_saturation(&self.state);
                 state.driver = Some(cx.waker().clone());
                 loop {
+                    while state.notifying != 0 {
+                        state = self
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(PoisonError::into_inner);
+                    }
                     if state.io_ready {
                         state.io_ready = false;
                         drop(state);
@@ -214,6 +223,34 @@ impl Host {
         })
         .await
     }
+
+    fn notifications_finished(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while state.notifying != 0 {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state
+    }
+
+    fn notify(&self, driver: Option<Waker>) {
+        if let Some(driver) = driver {
+            // The readiness bit and its notification retire together. The
+            // guard releases the driver even if a custom waker unwinds.
+            let _publication = Notification(self);
+            driver.wake();
+        }
+    }
+}
+
+struct Notification<'a>(&'a Host);
+impl Drop for Notification<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.state).notifying -= 1;
+        self.0.changed.notify_all();
+    }
 }
 
 // Accepted physical work outlives its replay driver. Once that driver goes
@@ -230,7 +267,7 @@ impl Drop for Driver {
             return;
         }
         let driver = {
-            let mut state = lock(&self.0.state);
+            let mut state = self.0.notifications_finished();
             state.detached = true;
             if state.phase == Phase::Parked && state.ready {
                 state.ready = false;
@@ -255,19 +292,15 @@ impl Wake for IoWake {
         let driver = {
             let mut state = lock(&self.0.state);
             state.io_ready = true;
-            (
-                state.phase == Phase::Starting,
-                state.waiting_start.then(|| state.driver.clone()).flatten(),
-            )
+            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
+            state.notifying += usize::from(driver.is_some());
+            (state.phase == Phase::Starting, driver)
         };
         self.0.changed.notify_one();
         if driver.0 {
             self.0.pool.changed();
         }
-        let driver = driver.1;
-        if let Some(driver) = driver {
-            driver.wake();
-        }
+        self.0.notify(driver.1);
     }
 }
 
@@ -303,13 +336,13 @@ impl Wake for Host {
             // Running work belongs to the current physical step. Its driver
             // waits for Parked/Finished and consumes this latched readiness
             // there; waking it as well can arrive after that step has ended.
-            (state.phase == Phase::Parked)
+            let driver = (state.phase == Phase::Parked)
                 .then(|| state.driver.clone())
-                .flatten()
+                .flatten();
+            state.notifying += usize::from(driver.is_some());
+            driver
         };
-        if let Some(driver) = driver {
-            driver.wake();
-        }
+        self.notify(driver);
     }
 }
 
