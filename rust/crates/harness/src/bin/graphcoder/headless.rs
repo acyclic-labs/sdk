@@ -718,6 +718,24 @@ pub(super) async fn write_event(
     output.write(task, bytes).await
 }
 
+/// Completion follows the invocation's requested file publications.
+pub(super) async fn completed(
+    output: &mut Output,
+    task: OperationId,
+    operation: &str,
+    success: bool,
+) -> std::io::Result<()> {
+    write_event(
+        output,
+        task,
+        &VersionedLine {
+            line: &json!({"kind": "completed", "success": success}),
+            operation,
+        },
+    )
+    .await
+}
+
 async fn emit(
     output: &mut EventOutput<'_>,
     line: &Value,
@@ -1019,12 +1037,6 @@ pub(super) async fn jsonl(
                         if execution_complete
                             && drain.as_ref().is_some_and(|drain| drain.complete()) =>
                     {
-                        emit(
-                            output,
-                            &json!({"kind": "completed", "success": !outstanding.failed}),
-                            event_operation,
-                        )
-                        .await?;
                         return Ok(u8::from(outstanding.failed));
                     }
                     Some(_) => {}
