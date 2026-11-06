@@ -788,10 +788,14 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
         active_directory: String::new(),
     });
     declaration.policy.skill_name = None;
-    assert!(matches!(
-        declaration.capture(instructions.reader.as_ref()).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        declaration
+            .capture(instructions.reader.as_ref())
+            .await
+            .unwrap_err()
+            .code(),
+        acyclic_harness::wire::ErrorCode::Invalid
+    );
 
     let skills = Fixture::new().await?;
     skills
@@ -799,10 +803,14 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
         .await?;
     let mut declaration = skills.declaration();
     declaration.instructions.clear();
-    assert!(matches!(
-        declaration.capture(skills.reader.as_ref()).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        declaration
+            .capture(skills.reader.as_ref())
+            .await
+            .unwrap_err()
+            .code(),
+        acyclic_harness::wire::ErrorCode::Invalid
+    );
     Ok(())
 }
 
