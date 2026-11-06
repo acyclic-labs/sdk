@@ -55,6 +55,8 @@ pub(super) struct Wall {
     pub(super) runtime: Option<tokio::runtime::Handle>,
     #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
     alarms: Option<Arc<crate::wall_alarm::Simulated>>,
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    alarms_closed: bool,
 }
 
 impl Default for Wall {
@@ -65,6 +67,8 @@ impl Default for Wall {
             runtime: None,
             #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
             alarms: None,
+            #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+            alarms_closed: false,
         }
     }
 }
@@ -96,20 +100,22 @@ pub fn unix_millis() -> Option<u64> {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
-pub(crate) fn wall_alarms() -> Option<Arc<crate::wall_alarm::Simulated>> {
-    let context = Context::simulation()?;
+pub(crate) fn wall_alarms() -> std::io::Result<Option<Arc<crate::wall_alarm::Simulated>>> {
+    let Some(context) = Context::simulation() else {
+        return Ok(None);
+    };
     if !context.schedule.is_seeded() {
-        return None;
+        return Ok(None);
     }
-    let alarms = context
-        .schedule
-        .0
-        .state()
-        .wall
-        .alarms
-        .get_or_insert_with(Default::default)
-        .clone();
-    Some(alarms)
+    let mut state = context.schedule.0.state();
+    let wall = &mut state.wall;
+    // An existing index retains its original failure. Without one, closure
+    // must still refuse creation without allocating an index during shutdown.
+    if wall.alarms_closed && wall.alarms.is_none() {
+        return Err(crate::wall_alarm::Simulated::producer_lost());
+    }
+    let alarms = wall.alarms.get_or_insert_with(Default::default).clone();
+    Ok(Some(alarms))
 }
 
 impl Schedule {
@@ -152,7 +158,11 @@ impl Schedule {
 
     pub(super) fn close_wall_alarms(&self) {
         #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
-        let alarms = self.0.state().wall.alarms.clone();
+        let alarms = {
+            let mut state = self.0.state();
+            state.wall.alarms_closed = true;
+            state.wall.alarms.clone()
+        };
         #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
         if let Some(alarms) = alarms {
             alarms.close();
