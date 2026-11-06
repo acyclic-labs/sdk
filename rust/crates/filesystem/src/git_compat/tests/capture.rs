@@ -29,12 +29,7 @@ async fn persisted_foreign_commit_tree_needs_capture_provenance() {
         .expect("branch")
         .tracked_paths = commit.tracked_paths.clone();
     state.commits.insert(commit.id, commit);
-    store
-        .states
-        .0
-        .lock()
-        .expect("state lock")
-        .insert(workspace(), state);
+    assert!(store.compare_and_swap(workspace(), 0, state).await.unwrap());
     let repository = GitCompatRepository::new(workspace(), store);
     assert!(matches!(
         repository.execute(GitCommand::Status, tree(1)).await,
