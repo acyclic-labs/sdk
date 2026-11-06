@@ -25,14 +25,28 @@ allow = [
 ]
 
 [[licenses.exceptions]]
-allow = ["MPL-2.0"]
-name = "imbl"
-version = "=7.0.2"
+# LLVM's libFuzzer runtime, retained by the fuzz packages.
+allow = ["NCSA"]
+name = "libfuzzer-sys"
+version = "=0.4.13"
 
 [[licenses.exceptions]]
+# Unmodified platform-directory dependency through dirs-sys.
 allow = ["MPL-2.0"]
-name = "imbl-sized-chunks"
+name = "option-ext"
 version = "=0.2.0"
+
+[[licenses.exceptions]]
+# Snapshot dependency of the public-api contract checker.
+allow = ["Unlicense"]
+name = "snapshot-testing"
+version = "=0.1.8"
+
+[[licenses.exceptions]]
+# Hash implementation used by the public S3 conformance server.
+allow = ["BSL-1.0"]
+name = "xxhash-rust"
+version = "=0.8.18"
 
 [bans]
 multiple-versions = "warn"

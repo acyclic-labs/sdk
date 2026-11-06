@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "native-callback-path-fuzz"
 version = "0.0.0"
 publish = false
