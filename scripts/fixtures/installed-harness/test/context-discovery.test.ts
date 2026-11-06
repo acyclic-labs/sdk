@@ -27,11 +27,14 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   const reader: ContextDiscoveryReader = {
     async list(query) {
       expect(query.maximum_entries).toBeGreaterThan(0);
-      return { generation, hasMore: false, entries: query.path === "project"
+      const entries: Awaited<ReturnType<ContextDiscoveryReader["list"]>>["entries"] = query.path === "project"
         ? [{ name: "AGENTS.md", kind: "file" }, { name: "sibling", kind: "directory" }, { name: "src", kind: "directory" }]
         : query.path === "project/src"
         ? [{ name: "CLAUDE.md", kind: "file" }, { name: "child", kind: "directory" }]
-        : query.path === "" ? [{ name: "inspect", kind: "directory" }] : [{ name: "SKILL.md", kind: "file" }] };
+        : query.path === "" ? [{ name: "inspect", kind: "directory" }] : [{ name: "SKILL.md", kind: "file" }];
+      const available = entries.filter(entry => query.after === null || entry.name > query.after);
+      return { generation, hasMore: available.length > query.maximum_entries,
+        entries: available.slice(0, query.maximum_entries) };
     },
     async prefix(query) {
       expect(query.maximum_bytes).toBe(256n);
@@ -40,6 +43,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
     async read(query) {
       reads++;
       expect(query.maximum_bytes).toBe(512n);
+      if (!instructionText.has(query.source.path) && query.source.path !== "inspect/SKILL.md") return null;
       const content = instructionText.has(query.source.path)
         ? new TextEncoder().encode(instructionText.get(query.source.path)!) : bytes.slice();
       return { bytes: content, file: { volume, path: query.source.path, version: "pinned",
@@ -47,7 +51,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
     },
   };
   const snapshot = await captureDiscoveredContext(declaration, reader);
-  expect(reads).toBe(2);
+  expect(reads).toBe(4);
   expect(snapshot.instructions).toMatchObject([...instructionText.keys()].map(path => ({ path })));
   const fields = decodeClientJson(encodeCanonicalJson(snapshot.skills[0]!.fields)) as Record<string, unknown>;
   expect(fields.rank).toBe(7n);
@@ -67,7 +71,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   const body = await readPinnedContextPath(snapshot.skills[0]!.source, reader, 512);
   expect(body.bytes).toEqual(bytes);
   expect(typeof body.file.descriptor.byte_length).toBe("number");
-  expect(reads).toBe(3);
+  expect(reads).toBe(5);
   const part = { kind: "file" as const, file: body.file, policy: "reference" as const };
   const base = { messages: [{ role: "user" as const, content: part },
     { role: "user" as const, content: [part] }],
@@ -91,7 +95,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   await expect(readPinnedContextPath(snapshot.skills[0]!.source, { ...reader,
     async read(query) {
       const result = await reader.read(query);
-      return { ...result, bytes: Uint8Array.of(0) };
+      return result === null ? null : { ...result, bytes: Uint8Array.of(0) };
     },
   }, 512)).rejects.toThrow();
 });
