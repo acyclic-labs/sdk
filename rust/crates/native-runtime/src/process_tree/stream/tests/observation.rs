@@ -72,6 +72,7 @@ fn child_tree() -> io::Result<ProcessTree> {
 
 #[tokio::test]
 async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::Result<()> {
+    crate::initialize_native_io_services()?;
     let credit = Arc::new(Semaphore::new(8));
     let (export, mut output) = Export::channel(Arc::clone(&credit), true);
     let (minimal, mut minimal_output) = Export::channel(Arc::clone(&credit), false);
@@ -84,13 +85,16 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
         "capture-error",
         "before-capture",
         "callback-loss",
+        "launch-refused",
+        "launch-control",
+        "launch-indeterminate",
     ] {
-        let error = if mode == "capture-error" {
+        let error = if matches!(mode, "capture-error" | "launch-control") {
             Some(std::fs::File::open(directory.path().join("missing")).unwrap_err())
         } else {
             None
         };
-        let native_error = error.as_ref().and_then(io::Error::raw_os_error);
+        let mut native_error = error.as_ref().and_then(io::Error::raw_os_error);
         let (handler, retained) = tracing::dispatcher::with_default(&dispatch, || {
             let observation = CaptureObservation::new();
             let retained = observation.context().clone();
@@ -104,40 +108,78 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
                 retained,
             )
         });
-        let capture = child_tree()?.capture(
-            if mode == "before-capture" {
-                CaptureSchedule::Overflow
-            } else {
-                CaptureSchedule::Unbounded
-            },
-            usize::MAX,
-            None,
-            crate::ProcessControl::unbounded()?.bind(handler),
-        );
-        // The original callback runs on the native worker. Its panic must not
-        // emit successful cleanup telemetry, even after physical cleanup.
-        if mode == "callback-loss" {
-            match tokio::spawn(capture).await {
-                Err(error) => assert!(error.is_panic()),
-                Ok(_) => panic!("lost original callback returned normally"),
+        if mode.starts_with("launch-") {
+            let request = crate::CaptureRequest {
+                command: ProcessCommand::new(if mode == "launch-refused" {
+                    std::path::PathBuf::new()
+                } else {
+                    directory.path().join("absent-executable")
+                }),
+                custody: None,
+                execution_grant: None,
+                input: None,
+                schedule: CaptureSchedule::Unbounded,
+                maximum_output_bytes: usize::MAX,
+            };
+            match request.capture(handler).await {
+                Err(crate::LaunchFailure::Refused { failure, handler }) => {
+                    assert_eq!(mode, "launch-refused");
+                    assert_eq!(handler.retired, Some(true));
+                    assert!(failure.cleanup_completed);
+                    assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+                }
+                Err(crate::LaunchFailure::Control { error, handler }) => {
+                    assert_eq!(mode, "launch-control");
+                    assert_eq!(handler.retired, Some(true));
+                    assert_eq!(error.raw_os_error(), native_error);
+                }
+                Err(crate::LaunchFailure::Indeterminate {
+                    error,
+                    handler: Some(handler),
+                }) => {
+                    assert_eq!(mode, "launch-indeterminate");
+                    assert_eq!(handler.retired, Some(false));
+                    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+                    native_error = error.raw_os_error();
+                }
+                _ => panic!("original launch failure lost its handler or classification"),
             }
         } else {
-            let outcome = capture.await?;
-            let handler = outcome.handler.into_inner();
-            assert_eq!(handler.retired, Some(true));
-            match outcome.result {
-                Ok(output) => {
-                    assert_eq!(mode, "success");
-                    assert_eq!(output.status.code(), Some(7));
-                    assert_eq!(output.stderr, [0, 255, 7]);
+            let capture = child_tree()?.capture(
+                if mode == "before-capture" {
+                    CaptureSchedule::Overflow
+                } else {
+                    CaptureSchedule::Unbounded
+                },
+                usize::MAX,
+                None,
+                crate::ProcessControl::unbounded()?.bind(handler),
+            );
+            // The original callback runs on the native worker. Its panic must not
+            // emit successful cleanup telemetry, even after physical cleanup.
+            if mode == "callback-loss" {
+                match tokio::spawn(capture).await {
+                    Err(error) => assert!(error.is_panic()),
+                    Ok(_) => panic!("lost original callback returned normally"),
                 }
-                Err(failure) => {
-                    assert_ne!(mode, "success");
-                    assert!(failure.cleanup_completed);
-                    if mode == "capture-error" {
-                        assert_eq!(failure.error.raw_os_error(), native_error);
-                    } else {
-                        assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+            } else {
+                let outcome = capture.await?;
+                let handler = outcome.handler.into_inner();
+                assert_eq!(handler.retired, Some(true));
+                match outcome.result {
+                    Ok(output) => {
+                        assert_eq!(mode, "success");
+                        assert_eq!(output.status.code(), Some(7));
+                        assert_eq!(output.stderr, [0, 255, 7]);
+                    }
+                    Err(failure) => {
+                        assert_ne!(mode, "success");
+                        assert!(failure.cleanup_completed);
+                        if mode == "capture-error" {
+                            assert_eq!(failure.error.raw_os_error(), native_error);
+                        } else {
+                            assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+                        }
                     }
                 }
             }
@@ -155,8 +197,10 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             cleanup.cleanup_completed,
             match mode {
                 "callback-loss" => None,
+                "launch-indeterminate" => Some(false),
                 _ => Some(true),
-            }
+            },
+            "original retirement observation must preserve cleanup for {mode}"
         );
         assert_eq!(
             sample.outcome,
