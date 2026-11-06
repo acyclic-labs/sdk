@@ -546,6 +546,15 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
+    let directory = open_root_directory_handle(path, work)?;
+    let identity = directory_identity(&directory, work)?;
+    Ok((directory, identity))
+}
+
+pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
+    path: &Path,
+    work: &mut W,
+) -> Result<Dir, W::Error> {
     #[cfg(unix)]
     let file = unix_name(path.as_os_str(), work, |name, work| {
         let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
@@ -562,9 +571,7 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
             work.attempt_io(READ, || open_windows_root_name(name, fs::FILE_GENERIC_READ))
         })?
     };
-    let directory = Dir::from_std_file(file);
-    let identity = directory_identity(&directory, work)?;
-    Ok((directory, identity))
+    Ok(Dir::from_std_file(file))
 }
 
 #[cfg(windows)]

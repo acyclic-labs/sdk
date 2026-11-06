@@ -177,7 +177,7 @@ async function execute(test, prepared) {
           } else assert.equal(settled.completion, "completed", JSON.stringify(settled));
           if (input.answer !== undefined) assert.equal(settled.ok.text, input.answer);
         }
-        });
+      });
     }
     // Check while the mock's held response is still open. Killing the mock
     // first would let an unfenced descendant exit and produce a false pass.

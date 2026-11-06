@@ -99,7 +99,8 @@ impl Registry {
     /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
-        let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
+        let bytes = acyclic_fs::native_host::read_regular_file(path)
+            .map_err(|_| invalid("cannot read provider catalog"))?;
         let catalog = crate::catalog_document::parse(&bytes)?;
         self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
