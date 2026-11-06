@@ -287,7 +287,19 @@ impl DemandWork {
         let bytes = NativeAllocationAccounting::ALLOCATION_BYTES;
         #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         let bytes = metadata_tests::admitted_bytes(bytes);
-        self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+        // This shared control belongs to the original ledger, not the first
+        // resource or capture that needs deferred retirement.
+        self.scope(
+            |work| &mut work.native_resource,
+            None,
+            |work| {
+                work.scope(
+                    |work| &mut work.capture_custody,
+                    None,
+                    |work| work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED),
+                )
+            },
+        )?;
         let shared = Arc::new(NativeAllocationAccounting::default());
         self.roots.allocation_accounting = Some(shared.clone());
         Ok(shared)

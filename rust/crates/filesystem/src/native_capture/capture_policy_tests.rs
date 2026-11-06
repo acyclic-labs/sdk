@@ -31,11 +31,12 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
     let roots = [path("/")?];
     let policy = CapturePolicy::default();
     let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(
-        crate::performance::work_budget(1_000_000, 64_000_000),
-        &cancellation,
-    )
-    .map_err(|(cause, _)| cause)?;
+    let budget = crate::performance::work_budget(1_000_000, 64_000_000);
+    let original =
+        NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    let work = original.native_volume_work(budget)?;
+    let resource = work.resource.as_ref().ok_or("original volume allowance")?;
+    let remaining = resource.remaining()?.peak_allocation_bytes;
     let baseline = work.live_allocation_bytes();
     let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(83);
     let mut capture = Box::pin(schedule.scope(capture_subtrees_with_native_work(
@@ -61,6 +62,7 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
         }
     };
     assert!(work.live_allocation_bytes() > baseline);
+    assert!(resource.remaining()?.peak_allocation_bytes < remaining);
     cancellation.cancel();
     schedule.cancel();
     // The accepted scan owns its inputs. Caller destruction must not wait for it.
@@ -77,6 +79,7 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
     }
     work.receipt();
     assert_eq!(work.live_allocation_bytes(), baseline);
+    assert_eq!(resource.remaining()?.peak_allocation_bytes, remaining);
     assert!(!checkout.has_pending_mutations());
     Ok(())
 }
