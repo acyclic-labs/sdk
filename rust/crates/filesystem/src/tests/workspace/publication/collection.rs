@@ -641,8 +641,12 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
             };
             assert!(!finished, "a collection finished past a paused publication");
             assert_eq!(
-                epoch.current(),
-                1,
+                (
+                    epoch.current(),
+                    crate::logical_objects::Epoch::open(directory.path().join("objects-epoch"))?
+                        .current()
+                ),
+                (1, 1),
                 "cancelled drain retired another publication generation"
             );
         }
@@ -665,6 +669,14 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
     );
     in_flight?;
     collected?;
+    assert_eq!(
+        unbounded!(main, read("/in-flight.txt", 64))?,
+        OwnedBytes::from_static(b"retained under epoch 0")
+    );
+    drop(main);
+    close_local(fs).await?;
+    let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
+    let main = unbounded!(fs, open_workspace("repo"))?;
     assert_eq!(
         unbounded!(main, read("/in-flight.txt", 64))?,
         OwnedBytes::from_static(b"retained under epoch 0")
