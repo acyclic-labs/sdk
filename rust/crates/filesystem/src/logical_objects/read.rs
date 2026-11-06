@@ -78,7 +78,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             work.claim_owned(maximum, 0)?
         };
         let custody = guard(work)?;
-        let result = invocation::get(
+        let result = invocation::Provider::get(
             &*self.provider,
             crate::kernel::Owned::new((blob(id), ByteRange::FULL, maximum), custody, 0),
             work,
@@ -177,7 +177,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             request.2 = request.2.min(left);
             left -= request.2;
         }
-        invocation::get_batch(
+        invocation::Provider::get_batch(
             &*self.provider,
             incoming,
             work,

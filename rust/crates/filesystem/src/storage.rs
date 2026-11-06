@@ -692,7 +692,7 @@ impl HashedObject {
 }
 
 /// A single canonical reference with its authenticated immutable bytes.
-pub(crate) trait ObjectWriteSource {
+pub(crate) trait ObjectWriteSource: acyclic_stream::ProviderPlatform {
     fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes);
     fn sealed(&self) -> Option<&acyclic_stream::SealedBytes>;
 }
