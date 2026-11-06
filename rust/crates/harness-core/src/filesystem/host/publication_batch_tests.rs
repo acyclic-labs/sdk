@@ -65,6 +65,22 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
             VolumeOwner::Agent(agent),
             &mut None,
         )?;
+        // Recover the same original creation when a prior initializer chose
+        // another concurrency contract. Its config and content remain intact.
+        let (name, operation) = host.volume_creation(&volume)?;
+        let mut initialization = host.volume_initialization();
+        initialization.config.concurrency = acyclic_fs::model::ConcurrencyMode::Optimistic;
+        host.filesystem
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
+                &name,
+                initialization,
+                operation,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+                None,
+            )
+            .await
+            .map_err(|failure| map_error(failure.error))?;
         host.create_volume(&volume).await?;
         let (write, read) = publication_grants(&volume, agent)?;
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -95,6 +111,13 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
                 access,
             )
             .await?;
+        host.create_volume(&volume).await?;
+        assert_eq!(
+            host.open(&workspace_ref(provider.clone(), &name)?, None)
+                .await?
+                .volume_config(),
+            initialization.config
+        );
         let replacement = host
             .put_content(
                 &volume,

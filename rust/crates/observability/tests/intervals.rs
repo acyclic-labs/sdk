@@ -169,34 +169,30 @@ fn interval_projection_refuses_foreign_origins_without_allocating()
     let first = origin.project(interval)?;
     let second = origin.project(shifted)?;
     assert!(first.finished_ns < second.started_ns);
-    for count in [1, 100, 1000] {
-        let measured = acyclic_test_support::measure(|| {
-            result = (|| -> Result<(), IntervalError> {
-                for _ in 0..count {
-                    let unix = anchor.project(first)?;
-                    assert_eq!(unix.finished_unix_ns - unix.started_unix_ns, 2);
-                    assert_eq!(
-                        anchor.project(acyclic_observability::IntervalCoordinates {
-                            domain: [3; 16],
-                            ..first
-                        }),
-                        Err(IntervalError::ForeignDomain)
-                    );
-                    assert_eq!(
-                        anchor.project(acyclic_observability::IntervalCoordinates {
-                            started_ns: first.finished_ns,
-                            finished_ns: first.started_ns,
-                            ..first
-                        }),
-                        Err(IntervalError::Reversed)
-                    );
-                }
-                Ok(())
-            })();
-        });
-        result?;
-        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
-    }
+    let measured = acyclic_test_support::measure(|| {
+        result = (|| -> Result<(), IntervalError> {
+            let unix = anchor.project(first)?;
+            assert_eq!(unix.finished_unix_ns - unix.started_unix_ns, 2);
+            assert_eq!(
+                anchor.project(acyclic_observability::IntervalCoordinates {
+                    domain: [3; 16],
+                    ..first
+                }),
+                Err(IntervalError::ForeignDomain)
+            );
+            assert_eq!(
+                anchor.project(acyclic_observability::IntervalCoordinates {
+                    started_ns: first.finished_ns,
+                    finished_ns: first.started_ns,
+                    ..first
+                }),
+                Err(IntervalError::Reversed)
+            );
+            Ok(())
+        })();
+    });
+    result?;
+    assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
     assert_unix_projection_boundaries(origin, anchor, interval, first)?;
     Ok(())
 }

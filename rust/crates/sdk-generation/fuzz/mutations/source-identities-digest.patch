@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -94,7 +94,7 @@
+             &b.sha256,
+         ))
+     });
+-    sources.dedup();
++    sources.dedup_by(|a, b| a.physical_path == b.physical_path && a.logical_path == b.logical_path);
+ }
+ 
+ #[cfg(test)]

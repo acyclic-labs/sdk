@@ -151,7 +151,7 @@ include!("local_stream.rs");
 
 include!("persistence_cut.rs");
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod codec_fuzz;
 mod port;
 

@@ -217,6 +217,16 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
+The roster seed uses `Roster::new` and its retained canonical announcement. The
+same `harness_codecs` oracle compares original wire records, exact target
+positions and each owner's first attached device, including an offline first
+device and complete maximum-width name and owner bytes. Cached positions cannot
+be supplied through JSON. The retained `roster-owner-position.patch` publishes
+the wrong owner position; the writer-corpus check below must refuse it. The
+`roster-deep-clone.patch` restores the original value storage; the retained
+`agent::targets::tests::admitted_roster_retains_exact_announcement_across_decode_and_changes`
+control must detect its clone allocations.
+
 The shared agent oracle checks record version and checkpoint codec refusals
 before payload decoding. Record checks alter original writer output, including
 short and foreign fixed headers, trailing values and truncated payloads.
@@ -856,3 +866,12 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+
+The `harness_codecs` target also compares the shared native MCP `BoundedCodec`
+and `JsonLineReader` on the same bytes under one-byte, fragmented and full reads,
+including terminal failures at two frame bounds. It reuses the recorded
+`mcp-everything-2.1.0-stdio` and `mcp-filesystem-2.1.0-stdio` inputs and their
+original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` removes
+the reader's decoder bound; replaying the same captured input must then fail the
+fragmentation oracle. The retained codec controls additionally reject a dropped
+bound publication and an ignored notification hiding a buffered response.

@@ -82,7 +82,13 @@ impl StockExecution<'_> {
                     journal,
                     input,
                     step,
-                    request::ModelStepHistory::Turn(&mut prior_messages, &mut steering),
+                    request::ModelStepRequest {
+                        history: request::ModelStepHistory::Turn(
+                            &mut prior_messages,
+                            &mut steering,
+                        ),
+                        prepared: None,
+                    },
                     ModelPurpose::Response,
                     phase,
                 )?

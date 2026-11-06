@@ -4,6 +4,90 @@ use crate::executor::content::validate_model_content_scope;
 use crate::resources::ProviderRef;
 use proptest::prelude::*;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn summary_source_encoding_owns_its_bound_without_a_count_pass(
+        texts in prop::collection::vec(".{0,64}", 1..4),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let source = crate::context::Context {
+            messages: texts.into_iter().map(|text| ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(text),
+            }).collect(),
+            ..Default::default()
+        };
+        let expected = crate::contract::canonical_json_bytes(&source).unwrap();
+        let mut stock = StockExecutor::new(
+            Model::new("test".into(), "summary-source".into(), "1".into()).unwrap(),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([])),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+            .with_max_output_tokens(128).unwrap();
+        stock.limits.file_bytes = expected.len() as u64;
+        let check = |execution: &StockExecution<'_>| {
+            let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
+            assert_eq!(bytes.as_ref(), expected);
+            assert_eq!(digest, *blake3::hash(&expected).as_bytes());
+            assert_eq!(messages as usize, source.messages.len());
+        };
+        check(&StockExecution::ordinary(&stock));
+        for native in [false, true] {
+            let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+                crate::AgentId::new(), 65_536,
+            )).unwrap();
+            let journal = storage.journal();
+            let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                check(&execution);
+                let material = (source.clone(), ModelContent::Text("Summarize".into()));
+                let (result, trace) = acyclic_test_support::differential::observe::<_, _, super::super::json::SerializedType>(
+                    || (),
+                    |()| runtime.block_on(execution.summarize(
+                        journal.as_ref(), None, OperationId::new(), 0, material,
+                        &mut DispatchPhase::new(),
+                    )),
+                );
+                // The original entry point encodes before model admission.
+                // This provider has no native producer: require its typed
+                // refusal, without inventing an unaccounted model fallback.
+                match result {
+                    Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                        reason: "model provider has no original native-ledger producer" }) if native => (),
+                    Err(Error::Unsupported(reason)) if !native =>
+                        assert_eq!(reason, "stock model capacity requires original native work"),
+                    other => panic!("unexpected original summary admission: {other:?}"),
+                }
+                assert_eq!(
+                    trace.iter().filter(|event| event.0 == std::any::type_name::<crate::context::Context>()).count(),
+                    1, "summarize must encode its source without a separate count pass",
+                );
+            });
+            prop_assert!(observed.is_ok());
+        }
+        stock.limits.file_bytes -= 1;
+        prop_assert!(matches!(StockExecution::ordinary(&stock).summary_source_identity(&source), Err(Error::Invalid(_))));
+        for native in [false, true] {
+            let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
+                let execution = StockExecution {
+                    io: Some(io),
+                    ..StockExecution::ordinary(&stock)
+                };
+                assert!(matches!(execution.summary_source_identity(&source),
+                    Err(Error::Invalid(_) | Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
+            });
+            prop_assert!(observed.is_ok());
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 

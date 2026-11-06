@@ -9,14 +9,14 @@ pub trait WorkerInvoker: Send + Sync {
     /// Invoke once through the holder's named service binding.
     fn invoke(
         &self,
-        request: &domain::InvokeWorkerRequest,
+        request: domain::InvokeWorkerRequest,
     ) -> impl Future<Output = Result<domain::InvokeActorResponse, client::Error>> + Send;
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl WorkerInvoker for client::Client {
     async fn invoke(
         &self,
-        request: &domain::InvokeWorkerRequest,
+        request: domain::InvokeWorkerRequest,
     ) -> Result<domain::InvokeActorResponse, client::Error> {
         self.invoke_worker(request).await
     }
@@ -76,7 +76,7 @@ impl<T: WorkerInvoker> WorkerServiceBinding<T> {
         headers: Vec<domain::Header>,
     ) -> Result<domain::InvokeActorResponse, client::Error> {
         self.authority
-            .invoke(&self.request(method, url, body, headers)?)
+            .invoke(self.request(method, url, body, headers)?)
             .await
     }
     /// Invoke an exported RPC method using the same binding authority.
@@ -87,14 +87,13 @@ impl<T: WorkerInvoker> WorkerServiceBinding<T> {
     ) -> Result<domain::InvokeActorResponse, client::Error> {
         self.authority
             .invoke(
-                &self
-                    .request(
-                        "RPC".into(),
-                        "https://worker.internal/".into(),
-                        payload,
-                        vec![],
-                    )?
-                    .with_rpc(method)?,
+                self.request(
+                    "RPC".into(),
+                    "https://worker.internal/".into(),
+                    payload,
+                    vec![],
+                )?
+                .with_rpc(method)?,
             )
             .await
     }

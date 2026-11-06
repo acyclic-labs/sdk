@@ -1,0 +1,1 @@
+[{"name":"goal","description":"Show GOAL.md","arguments":"word","action":{"kind":"builtin","command":"goal"}}]

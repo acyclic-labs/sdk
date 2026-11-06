@@ -408,6 +408,25 @@ async fn connected(
         .await?;
         return Ok(0);
     }
+    if let Some(Command::Study(study)) = &args.command {
+        // Admitted before any model call.
+        let admitted = acyclic_harness::local::study::Study::load(&study.arms)?;
+        admitted.admit_model(args.model.as_deref())?;
+        let mut report = usage_export::Output::open(&study.report)?;
+        let operation = args
+            .operation
+            .clone()
+            .unwrap_or_else(|| OperationId::new().to_string());
+        let failures =
+            acyclic_harness::local::study::run(&connection, &admitted, &operation, report.writer())
+                .await?;
+        report.finish()?;
+        // Failed trials are report rows; the operator also sees each one.
+        for failure in failures {
+            eprintln!("graphcoder: study trial failed: {failure}");
+        }
+        return Ok(0);
+    }
     drive(args, Conversation::open(connection), output, event_output).await
 }
 

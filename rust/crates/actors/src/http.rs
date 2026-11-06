@@ -167,8 +167,8 @@ pub struct Client {
 #[cfg(test)]
 mod credential_tests;
 
-macro_rules! operations {
-    ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+macro_rules! http_operations {
+    ($(($name:literal, $method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
         /// Methods emitted with this client's canonical operation table.
         pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),+];
         $(/// Executes the canonical HTTP operation.
@@ -339,19 +339,5 @@ impl Client {
         .await
     }
 
-    operations! {
-        (deploy_namespace, 0, DeploymentRequest, DeploymentResponse),
-        (invoke_worker, 10, InvokeWorkerRequest, InvokeActorResponse),
-        (delete_worker, 11, DeleteWorkerRequest, DeleteWorkerResponse),
-        (deploy_worker, 9, DeploymentRequest, DeploymentResponse),
-        (update_namespace, 1, UpdateNamespaceRequest, UpdateNamespaceResponse),
-        (inspect_actor, 2, InspectActorRequest, InspectActorResponse),
-        (add_subscription, 3, AddSubscriptionRequest, AddSubscriptionResponse),
-        (remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
-        (resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
-        (checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
-        (fork_actor, 12, ForkActorRequest, ForkActorResponse),
-        (invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
-        (delete_all, 8, DeleteAllRequest, DeleteAllResponse),
-    }
+    crate::client::operations!(http_operations);
 }

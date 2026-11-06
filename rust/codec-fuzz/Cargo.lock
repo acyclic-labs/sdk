@@ -103,6 +103,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-inference",
  "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -124,6 +125,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -214,6 +216,7 @@ dependencies = [
 name = "acyclic-fs-wire"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-proto-build",
  "prost",
  "tonic",
@@ -264,6 +267,8 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-host-platform",
+ "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -366,6 +371,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-mcp"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio-util",
+]
+
+[[package]]
 name = "acyclic-model-render"
 version = "0.2.0"
 dependencies = [
@@ -460,6 +478,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",
+ "serde_json",
  "tonic-prost-build",
 ]
 

@@ -252,7 +252,7 @@ impl NativeChanges {
         let result = (|| {
             for change in changes {
                 work.check()?;
-                let (relative, altered, _file) = match change {
+                let (relative, departed, altered, _file) = match change {
                     HostChange::Everything => {
                         reported.push(SourceChange::Everything);
                         continue;
@@ -263,11 +263,15 @@ impl NativeChanges {
                         continue;
                     }
                     #[cfg(windows)]
-                    HostChange::Observed { action, path, file } => {
-                        (path, !matches!(action, 1 | 2 | 4 | 5), Some(*file))
-                    }
-                    HostChange::Rebound(relative) => (relative, false, None::<u64>),
-                    HostChange::Altered(relative) => (relative, true, None::<u64>),
+                    HostChange::Observed { action, path, file } => (
+                        path,
+                        matches!(action, 2 | 4),
+                        !matches!(action, 1 | 2 | 4 | 5),
+                        Some(*file),
+                    ),
+                    HostChange::Departed(relative) => (relative, true, false, None::<u64>),
+                    HostChange::Rebound(relative) => (relative, false, false, None::<u64>),
+                    HostChange::Altered(relative) => (relative, false, true, None::<u64>),
                 };
                 let (name, exact, allocation, mut guard) = inner.name(relative, work)?;
                 claimed += allocation;
@@ -290,6 +294,8 @@ impl NativeChanges {
                 let observed = None;
                 let node = if observed.is_some() {
                     observed
+                } else if departed {
+                    None
                 } else {
                     let metadata = crate::native_host::host_path(relative, work, |path, work| {
                         inner.root.held(work).and_then(|root| root.stat(path, work))
@@ -315,6 +321,8 @@ impl NativeChanges {
                     SourceChange::Entry(name)
                 } else if name.is_root() {
                     SourceChange::Everything
+                } else if departed {
+                    SourceChange::Departed(name)
                 } else {
                     SourceChange::Name(name)
                 });
@@ -364,9 +372,8 @@ impl NativeChanges {
                                 path: name.into(),
                                 file: *file,
                             },
-                            None if matches!(action, 1 | 2 | 4 | 5) => {
-                                HostChange::Rebound(name.into())
-                            }
+                            None if matches!(action, 2 | 4) => HostChange::Departed(name.into()),
+                            None if matches!(action, 1 | 5) => HostChange::Rebound(name.into()),
                             None => HostChange::Altered(name.into()),
                         }
                     }
@@ -380,6 +387,11 @@ impl NativeChanges {
     }
 }
 impl crate::source_watch::HostChangeSink for NativeChanges {
+    #[cfg(windows)]
+    fn observes_birth_time(&self) -> bool {
+        self.sink.observes_birth_time()
+    }
+
     fn delivery_lost(&self) {
         self.sink.delivery_lost();
     }

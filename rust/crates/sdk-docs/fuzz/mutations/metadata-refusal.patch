@@ -1,0 +1,8 @@
+diff --git a/rust/crates/sdk-docs/src/child.rs b/rust/crates/sdk-docs/src/child.rs
+--- a/rust/crates/sdk-docs/src/child.rs
++++ b/rust/crates/sdk-docs/src/child.rs
+@@ -148,3 +148,3 @@
+         return Err(cargo_metadata::Error::CargoMetadata {
+-            stderr: String::from_utf8(output.stderr)?,
++            stderr: String::new(),
+         });

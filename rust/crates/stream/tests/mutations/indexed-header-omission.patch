@@ -1,0 +1,15 @@
+--- a/rust/crates/stream/src/wire_codec/records.rs
++++ b/rust/crates/stream/src/wire_codec/records.rs
+@@ -95,2 +95,4 @@
+ fn headers_wire(headers: &crate::RecordHeaders) -> (Vec<Bytes>, Vec<wire::Attribute>) {
++    let omission = std::env::var("ACYCLIC_CODEC_HEADER_OMISSION").ok();
++    let opaque = !crate::changes::is_changes(headers);
+     (
+@@ -98,2 +100,3 @@
+             .iter()
++            .filter(|_| !(opaque && omission.as_deref() == Some("keys")))
+             .cloned()
+@@ -104,2 +107,3 @@
+             .iter()
++            .filter(|_| !(opaque && omission.as_deref() == Some("attributes")))
+             .map(|attribute| wire::Attribute {

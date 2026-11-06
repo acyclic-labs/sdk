@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_native_runtime::testing::descriptors_naming;
+use acyclic_native_runtime::resources::descriptors_naming;
 
 #[tokio::test]
 async fn an_open_stream_holds_one_journal_descriptor() -> Result<(), Box<dyn std::error::Error>> {

@@ -3,7 +3,7 @@ use super::*;
 /// Registration precedes publication, but the consumer does not pull until
 /// after creation and a second append. A read-then-subscribe implementation
 /// loses this wake or skips the first record.
-pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     for progress in [false, true] {
         let path = path(if progress {
             "absence/progress"
@@ -18,7 +18,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         .await
             != Some(StreamError::NotFound)
         {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         let mut request = crate::FollowRequest::new(path.clone(), 0);
         request.when_absent = crate::WhenAbsent::Wait;
@@ -43,11 +43,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 Some(Ok(crate::FollowUpdate::Opening { tail: 0 }))
             )
         {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         for sequence in 0..2 {
             let Some(Ok(crate::FollowUpdate::Record(record))) = follow.next().await else {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             };
             let expected = if sequence == 0 {
                 b"created".as_slice()
@@ -55,7 +55,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 b"appended"
             };
             if record.sequence != sequence || record.value.as_ref() != expected {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             }
         }
     }
@@ -64,7 +64,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     checked.preceding = Some(crate::CommitId::from_bytes([1; 32]));
     checked.when_absent = crate::WhenAbsent::Wait;
     if refusal(provider.follow(checked).await).await != Some(StreamError::PrefixNotRetained) {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     let source = path("absence/fork-source/status")?;
     provider
@@ -91,7 +91,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         Some(Ok(crate::FollowUpdate::Record(record))) if record.value.as_ref() == b"inherited" => {
             Ok(())
         }
-        _ => Err(StreamError::Unavailable),
+        _ => Err(violated!()),
     }
 }
 

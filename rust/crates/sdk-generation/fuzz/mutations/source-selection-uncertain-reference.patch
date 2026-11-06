@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -71,7 +71,7 @@
+             Some(name) if !windows || !uncertain(&name) => {
+                 names.insert(key(name, windows));
+             }
+-            _ => all = true,
++            _ => {},
+         }
+     }
+     sources

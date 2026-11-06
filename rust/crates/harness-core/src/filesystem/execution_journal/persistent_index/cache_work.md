@@ -7,14 +7,17 @@ well as fixed-population churn. A frequently read page must never be evicted.
 ```sh
 cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
 
+git apply rust/crates/harness-core/src/model/instruction_radix.patch
 git apply rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache_relocating.patch
 cargo test --locked -p acyclic-harness-core --features filesystem,test-support --lib filesystem::execution_journal::persistent_index::cache::tests::frequently_read_page_survives_unrelated_publication_churn -- --exact
 
 git apply -R rust/crates/harness-core/src/filesystem/execution_journal/persistent_index/cache_relocating.patch
+git apply -R rust/crates/harness-core/src/model/instruction_radix.patch
 ```
 
-The mutation restores the former production radix, value vector, free-slot
-vector and second-chance loop. Its only adaptation maintains the current
+The shared mutation restores the retired private radix only for this control.
+The cache mutation restores the former value vector, free-slot vector and
+second-chance loop. Its only adaptation maintains the current
 occupancy scalar for the unchanged bound assertions. Require the runtime
 assertion `page cache insertion copied prior backing` to fail, then require
 the same check to pass after exact restoration. A compiler failure does not

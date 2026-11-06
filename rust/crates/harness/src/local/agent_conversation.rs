@@ -253,9 +253,11 @@ impl Conversation {
         match self.deliver(id, prompt).await? {
             Sent::Accepted(inbox) => Ok(inbox),
             Sent::Refused(reason) => Err(Error::Storage(reason)),
-            Sent::Unknown => Err(Error::Storage(
-                "the message's commit outcome is unknown; resend it".into(),
-            )),
+            // The session retains the terminal cause that left the outcome
+            // undecided; report it with the outcome instead of dropping it.
+            Sent::Unknown => Err(self
+                .connection
+                .stream_failure("the message's commit outcome is unknown; resend it")),
         }
     }
 
@@ -437,6 +439,27 @@ impl Conversation {
         usage::write_tree(&self.connection, self.agent(), output, prices).await
     }
 
+    /// Visits this agent's committed model calls, and with
+    /// [`UsageScope::Tree`] its descendants' outside the pruned subtrees, in
+    /// the same order and with the same bounds as
+    /// [`Self::write_usage_jsonl`], without encoding them. A visitor error
+    /// stops the traversal and is returned.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures, or the visitor's error.
+    pub async fn visit_usage(
+        &self,
+        scope: UsageScope<'_>,
+        visit: &mut dyn FnMut(&crate::executor::ModelUsageRecord) -> Result<()>,
+    ) -> Result<()> {
+        match scope {
+            UsageScope::Tree(prune) => {
+                usage::visit_tree(&self.connection, self.agent(), prune, visit).await
+            }
+            UsageScope::Agent => usage::visit_agent(&self.connection, self.agent(), visit).await,
+        }
+    }
+
     /// The prompt and answer text of a settled turn.
     ///
     /// # Errors
@@ -499,6 +522,47 @@ impl Conversation {
         }
     }
 
+    /// Waits for message `id`, committed at inbox sequence `inbox`, on
+    /// `events`, which the caller opened before sending it so no committed
+    /// reply loses its event. Returns once the reply settles, or at the first
+    /// status that needs the caller: the agent ended, or asks for an approval.
+    /// Waiting is on the observer's follows; no read is repeated without an
+    /// event.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn settle(
+        &self,
+        id: &str,
+        inbox: u64,
+        events: &mut super::Observer,
+    ) -> Result<Settlement> {
+        let mut status: Option<StatusRecord> = None;
+        loop {
+            match self.reply(id, inbox).await? {
+                reply @ (Reply::Answered { .. } | Reply::Dropped) => {
+                    return Ok(Settlement::Reply(reply));
+                }
+                Reply::Pending | Reply::Continuing { .. } => {}
+            }
+            if let Some(status) = status.take() {
+                if let Some(reason) = ended(&status) {
+                    return Ok(Settlement::Ended(reason));
+                }
+                if let Phase::WaitingApproval { id, binding } = status.phase {
+                    return Ok(Settlement::Approval { id, binding });
+                }
+            }
+            status = loop {
+                match events.next().await? {
+                    super::Event::Status(next) => break Some(next),
+                    super::Event::Turn(_) => break None,
+                    super::Event::Output => {}
+                }
+            };
+        }
+    }
+
     /// Why a dropped prompt got no turn: the agent finished, or a cancel
     /// cleared it.
     ///
@@ -545,6 +609,32 @@ impl Conversation {
     ) -> Result<super::Observer> {
         super::Observer::replay(&self.connection, projection)
     }
+}
+
+/// Which calls [`Conversation::visit_usage`] visits.
+#[derive(Clone, Copy)]
+pub enum UsageScope<'p> {
+    /// The agent's own calls.
+    Agent,
+    /// The agent's and its descendants', skipping each subtree whose root
+    /// `prune` names.
+    Tree(&'p dyn Fn(&AgentPath) -> bool),
+}
+
+/// Where [`Conversation::settle`] stopped waiting.
+#[derive(Debug)]
+pub enum Settlement {
+    /// The message's reply settled: answered or dropped.
+    Reply(Reply),
+    /// The agent finished before answering, for this reason.
+    Ended(String),
+    /// The agent waits on this approval before it can answer.
+    Approval {
+        /// Approval request identity.
+        id: IntentId,
+        /// The displayed action's binding, when the status carries one.
+        binding: Option<ApprovalBinding>,
+    },
 }
 
 /// The selection a settled `entry` made when it is a checkpoint (a

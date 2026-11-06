@@ -126,7 +126,9 @@ impl<F: Fn(notify::Result<notify::Event>) + Send + Sync> HostChangeSink for Obse
         work.check()?;
         for change in changes {
             match change {
-                HostChange::Rebound(path) | HostChange::Altered(path) => self.path(path, work)?,
+                HostChange::Departed(path)
+                | HostChange::Rebound(path)
+                | HostChange::Altered(path) => self.path(path, work)?,
                 #[cfg(windows)]
                 HostChange::Observed { path, .. } => self.path(path, work)?,
                 HostChange::Everything => self.rescan(),

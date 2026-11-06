@@ -127,19 +127,19 @@ pub(crate) async fn records_match_content<S: AsyncObjectStore>(
     store: &S,
     left: FileRecord,
     right: FileRecord,
-    config: crate::model::VolumeConfig,
+    bounds: (DecodeLimits, u64),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
     let mut scratch = accounting.allocation_scope()?;
-    compare(store, left, right, config, &mut scratch, cancellation).await
+    compare(store, left, right, bounds, &mut scratch, cancellation).await
 }
 
 async fn compare<S: AsyncObjectStore>(
     store: &S,
     left: FileRecord,
     right: FileRecord,
-    config: crate::model::VolumeConfig,
+    (limits, maximum_read_bytes): (DecodeLimits, u64),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
@@ -159,7 +159,6 @@ async fn compare<S: AsyncObjectStore>(
     if length != size(right)? {
         return Ok(false);
     }
-    let limits = DecodeLimits::for_volume(config);
     let mut offset = 0;
     while offset < length {
         accounting.check()?;
@@ -175,7 +174,7 @@ async fn compare<S: AsyncObjectStore>(
         }
         // Partial chunk comparisons retain at most one admitted range per side,
         // rather than allocating or hashing a whole potentially enormous file.
-        let length = length.min(config.limits.maximum_read_bytes);
+        let length = length.min(maximum_read_bytes);
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }

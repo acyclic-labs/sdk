@@ -1,0 +1,1 @@
+[{"name":"FIND","aliases":["F"],"description":"Search the transcript","arguments":"none","action":{"kind":"select","query":"find"}}]

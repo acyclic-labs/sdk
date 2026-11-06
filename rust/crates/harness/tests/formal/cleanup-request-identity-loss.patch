@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-core/src/contract_errors.rs
++++ b/rust/crates/harness-core/src/contract_errors.rs
+@@ -594,9 +594,7 @@
+                         tool_failure: false,
+                         model_failure: false,
+                     },
+-                    request_operation_id: primary
+-                        .request_operation_id()
+-                        .or_else(|| cleanup.request_operation_id()),
++                    request_operation_id: None,
+                     causes: Box::new([primary, cleanup]),
+                 }))
+             }

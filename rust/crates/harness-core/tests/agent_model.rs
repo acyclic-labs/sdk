@@ -971,6 +971,7 @@ fn spawn_request(sequence: u64) -> Wake {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),

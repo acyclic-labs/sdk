@@ -28,7 +28,10 @@
         "child-fork-message-merge",
         "child-result",
         "child-discard",
-        "nested-children"
+        "nested-children",
+        "topology-pipeline",
+        "topology-debate-ring",
+        "topology-group-chat"
       ]
     },
     "A4": {
@@ -38,7 +41,8 @@
         "child-conflict",
         "child-disjoint",
         "fs-branch-merge-git",
-        "fs-branch-merge-plain"
+        "fs-branch-merge-plain",
+        "study-paired-arms"
       ]
     },
     "A5": {

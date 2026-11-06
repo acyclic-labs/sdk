@@ -123,7 +123,8 @@ pub enum Action {
 
 /// `live/agents/self/admissions/<version>.json`: what happened to one write
 /// of a settings file, where <version> is the version the write produced.
-/// "invalid" and "rejected" leave the previous good settings in force.
+/// "invalid" and "rejected" cannot relax enforcement: retain previously
+/// admitted settings, or refuse the session when no retained generation exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Admission {

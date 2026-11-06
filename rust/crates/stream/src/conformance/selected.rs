@@ -1,7 +1,7 @@
 use super::*;
 
 /// A write between open and delivery must not change the opening observation.
-pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     let path = path("selected/history")?;
     let AppendOutcome::Committed(seed) = provider
         .append(AppendRequest {
@@ -12,7 +12,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         })
         .await?
     else {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     };
     let request = ReadRequest {
         key: None,
@@ -53,7 +53,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             .as_ref()
             .is_none_or(|record| record.sequence != 1 || record.commit_id != seed.commit_id)
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     let AppendOutcome::Committed(later) = provider
         .append(AppendRequest {
@@ -64,7 +64,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         })
         .await?
     else {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     };
     // Negative control for the retired post-open sample: it now observes later,
     // while every original cursor must still report and retain the seed cut.
@@ -75,7 +75,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         || records.snapshot != seed.revision
         || empty.next().await.is_some()
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     for sequence in 0..2 {
         if records
@@ -85,11 +85,11 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             .is_none_or(|record| record.commit_id != seed.commit_id || record.sequence != sequence)
             || !matches!(finite.next().await.transpose()?, Some(crate::FollowUpdate::Record(record)) if record.commit_id == seed.commit_id && record.sequence == sequence)
         {
-            return Err(StreamError::InvalidResponse);
+            return Err(violated!());
         }
     }
     if records.next().await.is_some() || finite.next().await.is_some() {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     provider
         .append(AppendRequest {
@@ -101,7 +101,7 @@ pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         .await?;
     if !matches!(waiting.next().await.transpose()?, Some(crate::FollowUpdate::Record(record)) if record.sequence == 0)
     {
-        return Err(StreamError::InvalidResponse);
+        return Err(violated!());
     }
     Ok(())
 }

@@ -1,0 +1,1 @@
+[{"name":"history","description":"Browse committed conversation cuts","arguments":"required_text","action":{"kind":"select","query":"history"}}]

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/actors/src/guest/state.rs b/rust/crates/actors/src/guest/state.rs
+--- a/rust/crates/actors/src/guest/state.rs
++++ b/rust/crates/actors/src/guest/state.rs
+@@ -60,7 +60,7 @@
+     /// Mutate synchronously. Nested operations fail before attempting another lock.
+     pub fn with(&self, mutate: impl FnOnce(&mut State)) -> Result<(), GuestError> {
+         if IN_MUTATION.with(Cell::get) {
+-            return Err(GuestError::NestedMutation);
++            return Ok(());
+         }
+         let mut state = self
+             .value

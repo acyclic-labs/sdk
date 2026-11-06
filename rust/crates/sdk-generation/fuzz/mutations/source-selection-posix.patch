@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -3,7 +3,7 @@
+ 
+ fn basename(path: &Path, windows: bool) -> Option<OsString> {
+     let text = path.to_str()?;
+-    let name = if windows {
++    let name = if true {
+         text.rsplit(['\\', '/']).next()?
+     } else {
+         text.rsplit('/').next()?

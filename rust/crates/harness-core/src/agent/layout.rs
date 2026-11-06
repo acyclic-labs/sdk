@@ -268,7 +268,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}/{}", self.id()))
+        stream(&format!("{STATUSES}/{}", self.id_text()))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -284,18 +284,21 @@ impl AgentPath {
     /// The root of this agent's tree: itself for a root.
     #[must_use]
     pub fn tree_root(&self) -> Self {
-        let end = AGENTS.len() + 1 + ID_HEX;
         Self {
-            text: self.text[..end].to_owned(),
+            text: self.tree_root_text().to_owned(),
             depth: 0,
         }
+    }
+
+    fn tree_root_text(&self) -> &str {
+        &self.text[..AGENTS.len() + 1 + ID_HEX]
     }
 
     /// The status stream of the tree's target `name`, under the tree's root
     /// whichever agent of the tree asks; `children_page` of its parent lists
     /// every target of the tree.
     pub fn target(&self, name: &str) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{TARGETS}/{name}", self.tree_root().text))
+        stream(&format!("{}/{TARGETS}/{name}", self.tree_root_text()))
     }
 
     /// The binding of this agent's own Machine on provisioned target `name`.
@@ -422,6 +425,23 @@ mod tests {
             assert_eq!(parsed, descendant);
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
+            // Addressing borrows the canonical identity and root; owning either
+            // again is the retained allocation negative control.
+            let (_, status_work) = acyclic_test_support::differential(
+                || stream(&format!("{STATUSES}/{}", parsed.id())).expect("canonical status"),
+                || parsed.status().expect("canonical status"),
+            );
+            let (_, target_work) = acyclic_test_support::differential(
+                || {
+                    stream(&format!("{}/{TARGETS}/pc", parsed.tree_root().text))
+                        .expect("canonical target")
+                },
+                || parsed.target("pc").expect("canonical target"),
+            );
+            for [former, current] in [status_work, target_work] {
+                assert_eq!(current.count_total + 1, former.count_total);
+                assert!(current.bytes_total < former.bytes_total);
+            }
             let parent = parsed.parent().expect("nested path");
             let mut foreign_parent = foreign.tree_root();
             for _ in 0..parent.depth() {

@@ -80,15 +80,19 @@ doc = false
 bench = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'cfg(feature, values("hooks"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'cfg(feature, values("hooks", "wasm"))'] }
 
 [features]
 default = ["runtime"]
+mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
-runtime = ["core", "filesystem-local", "native-execution", "dep:acyclic-harness", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
+client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
+native-input = ["dep:acyclic-harness", "dep:tempfile", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
+runtime = ["native-settings", "filesystem-local", "native-execution", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
@@ -97,11 +101,15 @@ native-execution = []
 
 
 [dependencies]
+acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "objects"], optional = true }
+base64 = "=0.22.1"
+clap.workspace = true
+acyclic-harness-client = { path = "../harness-client", features = ["agents"], optional = true }
+acyclic-harness = { path = "../harness", default-features = false, optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=2.0.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -110,6 +118,7 @@ acyclic-fs = { path = "../filesystem", default-features = false, features = ["lo
 acyclic-stream = { path = "../stream", default-features = false, optional = true }
 futures = { workspace = true, optional = true }
 serde_json.workspace = true
+toml.workspace = true
 tempfile = { version = "3.27.0", optional = true }
 
 bytes = { workspace = true, optional = true }
@@ -124,6 +133,67 @@ which = { version = "=8.0.6", optional = true }
 name = "code_mode"
 path = "fuzz_targets/code_mode.rs"
 required-features = ["code-mode"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_workspace"
+path = "fuzz_targets/native_workspace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_settings"
+path = "fuzz_targets/native_settings.rs"
+required-features = ["native-settings"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_marketplace"
+path = "fuzz_targets/native_marketplace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_model_selection"
+path = "fuzz_targets/native_model_selection.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "event_projection"
+path = "fuzz_targets/event_projection.rs"
+required-features = ["client"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_input"
+path = "fuzz_targets/native_input.rs"
+required-features = ["native-input"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphcoder_args"
+path = "fuzz_targets/graphcoder_args.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "graphcoder_input"
+path = "fuzz_targets/graphcoder_input.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -178,7 +248,7 @@ bench = false
 [[bin]]
 name = "mcp_stdio_codec"
 path = "fuzz_targets/mcp_stdio_codec.rs"
-required-features = ["runtime"]
+required-features = ["mcp-stdio-codec"]
 test = false
 doc = false
 bench = false

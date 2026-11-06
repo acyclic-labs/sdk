@@ -338,8 +338,5 @@ fn boundary(
         return Error::NativeBoundary { code, reason };
     }
     let _ = work;
-    match code {
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Unauthorized(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }

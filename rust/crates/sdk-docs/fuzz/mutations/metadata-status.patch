@@ -1,0 +1,8 @@
+diff --git a/rust/crates/sdk-docs/src/child.rs b/rust/crates/sdk-docs/src/child.rs
+--- a/rust/crates/sdk-docs/src/child.rs
++++ b/rust/crates/sdk-docs/src/child.rs
+@@ -146,3 +146,3 @@
+ pub fn decode_metadata_output(output: Output) -> cargo_metadata::Result<cargo_metadata::Metadata> {
+-    if !output.status.success() {
++    if false {
+         return Err(cargo_metadata::Error::CargoMetadata {

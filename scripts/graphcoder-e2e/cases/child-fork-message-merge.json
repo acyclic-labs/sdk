@@ -90,7 +90,8 @@
       },
       {
         "when": {
-          "user": "PARENT_E2E_TASK"
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "CHILD_MESSAGE_DONE"
         },
         "tools": [
           {
@@ -165,6 +166,19 @@
   ],
   "assert": {
     "requests": 11,
+    "tool_results": [
+      {
+        "running": [],
+        "settled": [
+          {
+            "name": "worker",
+            "branch": "agents/worker",
+            "answer": "CHILD_MESSAGE_DONE",
+            "phase": "idle"
+          }
+        ]
+      }
+    ],
     "files": {
       "child.txt": "CHILD_E2E_CONTENT\n"
     }

@@ -139,29 +139,30 @@ pub(crate) fn provider_error(error: ProviderError) -> JsValue {
     };
     crate::js_error(code, error.to_string())
 }
-fn parse_id<T>(
+fn normalize_id<T>(
     kind: &str,
     value: String,
-    parse: impl FnOnce(&str) -> Result<T, acyclic_machines::IdentityError>,
+    admit: impl FnOnce([u8; 16]) -> Result<T, acyclic_machines::IdentityError>,
 ) -> Result<T, JsValue> {
-    let value = super::normalize_identity(kind, &value)?;
-    parse(&value).map_err(|e| err(e.to_string()))
+    let identity = acyclic_machines::normalize_identity(kind, &value)
+        .map_err(|_| err("identity value is required"))?;
+    admit(*identity.as_bytes()).map_err(|e| err(e.to_string()))
 }
 fn key(value: String) -> Result<acyclic_machines::IdempotencyKey, JsValue> {
-    parse_id(
+    normalize_id(
         "idempotency",
         value,
-        acyclic_machines::IdempotencyKey::parse,
+        acyclic_machines::IdempotencyKey::from_bytes,
     )
 }
 fn machine(value: String) -> Result<MachineId, JsValue> {
-    parse_id("machine", value, MachineId::parse)
+    normalize_id("machine", value, MachineId::from_bytes)
 }
 fn checkpoint(value: String) -> Result<CheckpointId, JsValue> {
-    parse_id("checkpoint", value, CheckpointId::parse)
+    normalize_id("checkpoint", value, CheckpointId::from_bytes)
 }
 pub(crate) fn operation(value: String) -> Result<OperationId, JsValue> {
-    parse_id("operation", value, OperationId::parse)
+    normalize_id("operation", value, OperationId::from_bytes)
 }
 
 fn digest(value: &str, field: &str) -> Result<[u8; 32], JsValue> {

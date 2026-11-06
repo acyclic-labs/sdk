@@ -1,7 +1,10 @@
 use super::*;
+use crate::cache_record;
 use proptest::prelude::*;
 use std::cell::Cell;
 use std::fs::{File, FileTimes};
+#[path = "../../fuzz/identity_record.rs"]
+mod identity_record;
 
 proptest! {
     #[test]
@@ -127,16 +130,27 @@ proptest! {
     }
 
     #[test]
-    fn shared_record_round_trip_binds_every_digest_byte(key in any::<[u8;32]>(), digest in any::<[u8;32]>()) {
+    fn shared_record_admission_authenticates_original_bytes(
+        key in any::<[u8;32]>(), digest in any::<[u8;32]>(),
+        untrusted in prop::collection::vec(any::<u8>(), 0..1024),
+    ) {
         let key = crate::sha256_bytes(&key);
         let digest = crate::sha256_bytes(&digest);
         let bytes = crate::cache_record::encode(&key, &digest);
-        prop_assert_eq!(crate::cache_record::decode(&bytes, &key), Some(digest.clone()));
-        let different_key = format!("{key}0");
-        prop_assert!(crate::cache_record::decode(&bytes, &different_key).is_none());
-        let mut changed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        changed["digest"] = serde_json::json!(crate::sha256_bytes(digest.as_bytes()));
-        prop_assert!(crate::cache_record::decode(&serde_json::to_vec(&changed).unwrap(), &key).is_none());
+        prop_assert_eq!(identity_record::check(&bytes, &key), Some(digest.clone()));
+        let mut different_key = key.clone().into_bytes();
+        different_key[7] = if different_key[7] == b'0' { b'1' } else { b'0' };
+        identity_record::check(&bytes, std::str::from_utf8(&different_key).unwrap());
+        for (field, value) in [
+            ("digest", serde_json::json!(crate::sha256_bytes(digest.as_bytes()))),
+            ("checksum", serde_json::json!("")),
+            ("unexpected", serde_json::json!(true)),
+        ] {
+            let mut changed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            changed[field] = value;
+            identity_record::check(&serde_json::to_vec(&changed).unwrap(), &key);
+        }
+        identity_record::check(&untrusted, &key);
     }
 }
 

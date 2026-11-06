@@ -240,6 +240,17 @@ mod tests {
             producer.send(()).is_err(),
             "cancelled work released its event"
         );
+
+        let cancellation = NativeStreamCancellation::new();
+        let polls = std::cell::Cell::new(0);
+        let ready = std::future::poll_fn(|_| {
+            polls.set(polls.get() + 1);
+            // Cancellation cannot preempt a result returned by this poll.
+            cancellation.cancel();
+            std::task::Poll::Ready(Ok::<_, StreamError>(()))
+        });
+        assert!(run_operation!(ready, Some(&cancellation)).await.is_ok());
+        assert_eq!(polls.get(), 1);
     }
 }
 use acyclic_stream::StreamProviderExt as _;

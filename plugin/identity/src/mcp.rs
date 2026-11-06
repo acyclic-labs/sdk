@@ -1,9 +1,9 @@
-//! Model-visible identity tools, served by the shared harness stdio MCP
+//! Model-visible identity tools, served by the shared stdio MCP
 //! tool server. The server owns the protocol; this provider runs one identity
 //! operation at a time on the command's runtime.
 
 use super::*;
-use acyclic_harness_core::mcp::stdio::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
+use acyclic_mcp::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, PoisonError};
 #[cfg(test)]
@@ -154,11 +154,13 @@ impl Identities {
 }
 
 impl ToolProvider for Identities {
+    type Error = Error;
+
     fn tools(&self) -> Value {
         json!({ "tools": tools() })
     }
 
-    fn call(&mut self, name: &str, arguments: &Value) -> acyclic_harness_core::Result<ToolCall> {
+    fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall, Self::Error> {
         if !arguments.is_null()
             && arguments
                 .as_object()
@@ -249,7 +251,7 @@ impl ToolProvider for Identities {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> acyclic_harness_core::Result<Option<Wake>> {
+    ) -> Result<Option<Wake>, Self::Error> {
         let Some(active) = &self.active else {
             return Ok(None);
         };

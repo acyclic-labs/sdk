@@ -46,12 +46,13 @@ async fn fold_additions<S: AsyncObjectStore>(
             return Err(FsError::InvalidDiff);
         };
         let metadata = if ours.kind == theirs.kind
-            && ours.payload == theirs.payload
             && ours.link_count == 1
             && theirs.link_count == 1
+            && matching_payloads(store, ours, theirs, limits, accounting, cancellation).await?
         {
-            converge_metadata_async(
+            merge_metadata_async(
                 store,
+                None,
                 ours.metadata,
                 theirs.metadata,
                 limits,

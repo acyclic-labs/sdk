@@ -3,8 +3,7 @@ use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Initialized-session protocol revision.
-pub const PROTOCOL_VERSION: &str = "2025-11-25";
+pub use acyclic_mcp::PROTOCOL_VERSION;
 
 /// Remote tool contract.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]

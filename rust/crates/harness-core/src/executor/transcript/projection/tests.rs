@@ -1,13 +1,5 @@
 use super::*;
 
-#[derive(Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-struct RequestBackedProjectionControl {
-    request: FileRef,
-}
-#[cfg(feature = "filesystem")]
-impl PreparationRecord for RequestBackedProjectionControl {}
-
 #[tokio::test]
 async fn inline_projection_recovers_accounting_and_checkpoint_with_original_custody() -> Result<()>
 {
@@ -27,42 +19,52 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
     context
         .metadata
         .insert("original".into(), checkpoint.clone());
+    let prepared = crate::model::PreparedModelRequest::prepare(
+        crate::model::ModelRequest {
+            summary: false,
+            compose_tools: false,
+            model: crate::model::Model::new("fixture".into(), "projection".into(), "1".into())?,
+            messages: context.messages.clone(),
+            tools: Vec::new(),
+            sampling: Default::default(),
+            max_output_tokens: None,
+        },
+        Limits::default(),
+        None,
+    )?;
     for compacted in [false, true] {
         let accounting = ContextAccounting {
             capacity: crate::context::ModelContextCapacity {
                 context_tokens: 65_536,
                 output_tokens: Some(4_096),
             },
-            count: crate::context::ModelTokenCount {
-                request_digest: [9; 32],
-                input_tokens: 128,
-                fixed_tokens: 0,
-                message_tokens: vec![128],
-            },
+            count: crate::context::ModelTokenCount::from_upper_bounds(
+                prepared.request_digest(),
+                0,
+                vec![128],
+            ),
         };
-        let fixture = serde_json::json!({
-            "context": context, "canonical": null,
-            "checkpoint": if compacted { Some(&checkpoint) } else { None },
-            "working": checkpoint,
-            "accounting": accounting,
-        });
-        let bytes = crate::contract::canonical_json_bytes(&fixture)?;
-        let rejected =
-            crate::executor::payload::decode_json::<RequestBackedProjectionControl>(&bytes, None);
-        assert!(
-            rejected.is_err(),
-            "request-backed reader accepted the inline envelope"
-        );
-        let control = serde_json::from_value::<RequestBackedProjectionControl>(
-            serde_json::json!({"request": checkpoint}),
-        )
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(control.request, checkpoint);
-        let reference = stage_json(
+        let expected_accounting =
+            serde_json::to_value(&accounting).map_err(|error| Error::Invalid(error.to_string()))?;
+        let projection = ResponseProjection {
+            context: crate::context::Context {
+                messages: Vec::new(),
+                metadata: context.metadata.clone(),
+                current_input_index: context.current_input_index,
+            },
+            steering: None,
+            canonical: None,
+            checkpoint: compacted.then(|| checkpoint.clone()),
+            working: Some(checkpoint.clone()),
+            accounting: None,
+        };
+        let reference = stage_projection(
             journal,
             OperationId::new(),
             "main-projection",
-            &fixture,
+            &projection,
+            &prepared,
+            Some(&accounting),
             None,
         )
         .await?;
@@ -87,7 +89,7 @@ async fn inline_projection_recovers_accounting_and_checkpoint_with_original_cust
             assert_eq!(
                 serde_json::to_value(&projection.accounting)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
-                fixture["accounting"]
+                expected_accounting
             );
             let full_bytes = projection
                 .decoded_owned_bytes()?

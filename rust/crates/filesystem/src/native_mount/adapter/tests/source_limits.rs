@@ -431,7 +431,8 @@ fn retirement_paths_keep_source_until_its_last_physical_io_lease_retires()
 #[test]
 fn physical_source_cleanup_joins_last_lease_after_caller_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
-    physical_cleanup_joins_last_lease(PhysicalCleanupPath::Source)
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::Source)?;
+    physical_cleanup_joins_last_lease(PhysicalCleanupPath::SourceRecordingRefusal)
 }
 
 #[test]
@@ -470,6 +471,7 @@ fn physical_projfs_stop_joins_last_lease_after_caller_cancellation()
 #[derive(Clone, Copy)]
 enum PhysicalCleanupPath {
     Source,
+    SourceRecordingRefusal,
     DriverPacket,
     LazySource,
     #[cfg(target_os = "linux")]
@@ -532,7 +534,14 @@ fn physical_cleanup_worker(
     if matches!(path, PhysicalCleanupPath::ProjFsStop) {
         return crate::native_mount::projfs::retire_source_in_physical_stop(mounted);
     }
-    mounted.shutdown_physical_cleanup()?;
+    let retired = mounted.shutdown_physical_cleanup();
+    if matches!(path, PhysicalCleanupPath::SourceRecordingRefusal) {
+        assert!(
+            retired.is_ok(),
+            "physical acknowledgement survives the original recording refusal: {retired:?}"
+        );
+    }
+    retired?.into_result()?;
     Ok(true)
 }
 
@@ -558,6 +567,8 @@ fn physical_cleanup_joins_last_lease(
         (source.clone(), source as Arc<dyn MountFilesystem>, lease)
     };
     let weak = Arc::downgrade(&source);
+    let source_control =
+        matches!(path, PhysicalCleanupPath::SourceRecordingRefusal).then(|| Arc::clone(&source));
     let alias = lease.clone();
     root_stop.cancel();
     let wait = CancellationToken::new();
@@ -585,6 +596,11 @@ fn physical_cleanup_joins_last_lease(
         observed.recv()?,
         crate::native_mount::retirement::SourceRetirementWait::Physical
     ));
+    if source_control.is_some() {
+        // Fail the original ledger after submission, while its physical lease
+        // still owns completion. The reserved final record must report refusal.
+        original.state(crate::demand::DemandWork::poison_native_original_work);
+    }
     assert!(
         !worker.is_finished(),
         "physical cleanup returned before its last lease"
@@ -609,11 +625,28 @@ fn physical_cleanup_joins_last_lease(
     let result = worker
         .join()
         .map_err(|_| "physical cleanup worker panicked")?;
-    assert!(
-        result.is_ok(),
-        "physical cleanup refused its last lease completion: {result:?}"
-    );
-    assert!(result?);
+    if let Some(source) = source_control {
+        assert!(matches!(
+            result,
+            Err(NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::OriginalWorkPoisoned
+            ))
+        ));
+        assert!(
+            source.capture_retired(),
+            "recording refusal cannot undo physical source quiescence"
+        );
+        let completed = root.receipt();
+        assert!(!source.shutdown_physical_cleanup()?.into_result()?);
+        assert_eq!(root.receipt(), completed);
+        drop(source);
+    } else {
+        assert!(
+            result.is_ok(),
+            "physical cleanup refused its last lease completion: {result:?}"
+        );
+        assert!(result?);
+    }
     assert!(
         weak.upgrade().is_none(),
         "original physical source custody did not retire"

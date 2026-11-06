@@ -35,6 +35,19 @@ pub(super) enum FilePublication<'a> {
 }
 
 impl FilePublication<'_> {
+    /// Whether a conflicting candidate may rebase onto the new head: it pins
+    /// no generation and no fence depends on one. The rebase itself still
+    /// refuses any changed observed or mutated region.
+    fn rebases(self) -> bool {
+        match self {
+            Self::Replace(expected) => expected.is_none(),
+            Self::Authorized(fence, _, root) => {
+                !fence.generation_sensitive()
+                    && root.is_none_or(|root| !root.generation_sensitive())
+            }
+        }
+    }
+
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
             Self::Authorized(fence, _, _) => Some(fence),
@@ -283,10 +296,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     TransactionCommit::Committed(generation)
                     | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
                     TransactionCommit::Conflict { .. }
-                        if expected_generation.is_none()
-                            && publication
-                                .fence()
-                                .is_none_or(|fence| !fence.generation_sensitive()) =>
+                        if expected_generation.is_none() && publication.rebases() =>
                     {
                         // Reuse the original candidate only when the SDK proves its
                         // exact observations and mutation dependencies still hold.

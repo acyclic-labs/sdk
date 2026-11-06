@@ -68,10 +68,7 @@
   ],
   "assert": {
     "requests": 5,
-    "model_contains": [
-      "GOAL.md is used only when looping on a goal",
-      "Plans and notes go in plans/"
-    ],
+    "default_conventions": true,
     "last_model_contains": [
       "---\\nstatus: active\\n---\\nGOAL_E2E\\n"
     ],

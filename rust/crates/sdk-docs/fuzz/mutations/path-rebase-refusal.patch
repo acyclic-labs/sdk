@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-docs/src/path_identity.rs
++++ b/rust/crates/sdk-docs/src/path_identity.rs
+@@ -92,7 +92,7 @@
+ }
+ 
+ pub fn rebase(path: &str, old: &str, new: &str, windows: bool) -> Option<String> {
+-    let parts = components(path, windows)?;
++    let parts = components(path, windows).filter(|_| false)?;
+     let prefix = components(old, windows)?;
+     let destination = components(new, windows)?;
+     if [prefix[0].as_str(), destination[0].as_str()]

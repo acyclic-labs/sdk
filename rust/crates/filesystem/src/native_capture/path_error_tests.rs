@@ -102,7 +102,7 @@ fn check(
         let width = ((parent.depth() + 1) * std::mem::size_of::<LogicalName>()) as u64;
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
-            allocation_operations: if denied == 1 { 3 } else { u64::MAX },
+            allocation_operations: if denied == 1 { 4 } else { u64::MAX },
             bytes_copied: if denied == 2 { leaf_bytes } else { u64::MAX },
             items_examined: if denied == 3 { 1 } else { u64::MAX },
             ..WorkBudget::UNBOUNDED
@@ -112,13 +112,17 @@ fn check(
         let admitted_leaf = clone_capture_name(&leaf, &scope.native).unwrap();
         let live = work.live_allocation_bytes();
         let before = WorkCounters {
-            allocation_operations: 3,
+            allocation_operations: 4,
             source_path_components: 1,
             items_examined: 1,
             source_bytes_read: leaf_bytes,
             bytes_copied: leaf_bytes,
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
-                + std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64
+                + crate::demand::NativeAllocationAccounting::ALLOCATION_BYTES
+                + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                    crate::demand::CaptureTransientCustody,
+                >())
+                .unwrap() as u64
                 + leaf_bytes,
             ..WorkCounters::UNCHARGED
         };

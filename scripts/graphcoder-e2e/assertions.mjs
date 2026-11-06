@@ -7,6 +7,8 @@ import { readFile } from "node:fs/promises";
 export function executionSucceeded(result) {
   assert.equal(result.termination?.startup_rejection ?? result.termination?.execution_failure,
     undefined, "selected native execution reported failure");
+  assert.equal(result.termination?.control_failure, undefined,
+    "step=admit complete native report stream; recovery=node --test scripts/graphcoder-e2e/process-report-tail.test.mjs");
   if (result.code !== 0) assert.equal(result.code, 0, `executable exit ${result.code}: ${result.stderr}`);
   assert.equal(result.signal, null, "executable was interrupted");
 }
@@ -84,16 +86,24 @@ export function subset(actual, expected) {
 // Both provider records and PostToolUse carry the original ToolResult value.
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
+function toolFailure(error, expectedErrors, recovery, caseId) {
+  if (error === undefined || error === null) return;
+  const encoded = JSON.stringify(error);
+  assert.ok(expectedErrors?.some(text => encoded.includes(text)),
+    `step=admit tool outcome: unexpected tool error ${encoded}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+}
+
 export function toolOutcome(value, expectedErrors, recovery, caseId) {
-  const error = value && typeof value === "object" ? value.error
-    ?? (value.version === 2 && Array.isArray(value.context) ? value.output?.error : undefined)
-    ?? (Array.isArray(value.settled) ? value.settled.find(child => child.phase?.done?.outcome?.failed)?.phase.done.outcome.failed : undefined)
-    ?? (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0)
-      ? `tool reported success=${value.success}, exit_code=${value.exit_code}` : undefined)
-    : typeof value === "string" && value.startsWith("tool executor rejected the admitted call (") ? value : undefined;
-  if (error !== undefined && error !== null) assert.ok(
-    expectedErrors?.some(text => JSON.stringify(error).includes(text)),
-    `unexpected tool error ${JSON.stringify(error)}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
+  if (value && typeof value === "object") {
+    toolFailure(value.error, expectedErrors, recovery, caseId);
+    if (value.version === 2 && Array.isArray(value.context))
+      toolFailure(value.output?.error, expectedErrors, recovery, caseId);
+    if (Array.isArray(value.settled)) for (const child of value.settled)
+      toolFailure(child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
+    if (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0))
+      toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
+  } else if (typeof value === "string" && value.startsWith("tool execution failed: "))
+    toolFailure(value, expectedErrors, recovery, caseId);
 }
 
 export function toolResults(records) {
@@ -112,13 +122,17 @@ export function toolResults(records) {
 // Evidence names a provider body, never an observer's path or diagnostic.
 // Each selected body is encoded once for all presence/absence queries.
 export function modelInputs(expected, generations) {
-  const all = expected.model_contains?.length || expected.model_absent?.length
+  const contains = expected.default_conventions
+    ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
+      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8"))]
+    : expected.model_contains;
+  const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;
   if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
   const selected = all || generations.length === 0 ? generations : [generations.at(-1)];
   const inputs = selected.map(request => JSON.stringify(request.body));
   const last = inputs.at(-1) ?? "";
-  for (const text of expected.model_contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
+  for (const text of contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
   for (const text of expected.model_absent ?? []) assert.ok(inputs.every(input => !input.includes(text)), `model wire contains forbidden ${text}`);
   for (const text of expected.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
   for (const text of expected.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);

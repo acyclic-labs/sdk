@@ -205,7 +205,7 @@ impl NativeChildren {
                 .map_err(storage)?;
         for reference in references {
             // Settles the orphaned claim, then carries the next input.
-            let mut recovered = children.request(&reference, SessionAction::Recover, true)?;
+            let mut recovered = children.request(&reference, SessionAction::Recover {}, true)?;
             children.launch(&reference, &mut recovered)?;
         }
         Ok(children)
@@ -639,7 +639,7 @@ impl NativeChildren {
                 id: id.clone(),
                 inbox: *inbox,
             },
-            None => SessionAction::Observe,
+            None => SessionAction::Observe {},
         };
         self.request(reference, action, false).map(Some)
     }

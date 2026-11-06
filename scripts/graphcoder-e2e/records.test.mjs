@@ -4,6 +4,22 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
+import { requireTools } from "./live.mjs";
+
+const rejectedWait = JSON.parse(readFileSync(new URL("./fixtures/rejected-wait.json", import.meta.url), "utf8"));
+
+test("captured argument refusal cannot qualify a successful child conversation", () => {
+  const fixture = { id: rejectedWait.case, assert: { requests: 1, steps: [rejectedWait.record.step] } };
+  const records = [rejectedWait.record];
+  const output = toolResults(records)[0];
+  assert.throws(() => requests(fixture, records), /unexpected tool error/);
+  // The live driver shares the same refusal admission after hook projection.
+  assert.throws(() => requireTools([
+    { hook_event_name: "PostToolUse", tool_name: "wait", tool_response: output },
+  ], ["wait"]), /unexpected tool error/);
+  requests({ ...fixture, assert: { ...fixture.assert, tool_errors: [output] } }, records);
+  assert.throws(() => requests({ ...fixture, assert: { ...fixture.assert, tool_errors: ["another refusal"] } }, records), /unexpected tool error/);
+});
 
 const directory = mkdtempSync(join(tmpdir(), "e2e-records-"));
 let files = 0;
@@ -44,9 +60,6 @@ test("request assertions reject omitted, duplicated, unmatched and fabricated re
   assert.throws(() => requests(fixture, [valid[0], { ...valid[1], status: 409 }]), /unmatched/);
   assert.throws(() => requests(fixture, [valid[0], record(1, [{ role: "user", content: "REAL_RESULT" }])]), /actual tool result missing/);
   assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], record(1, [{ type: "function_call_output", output: '{"error":"failed"}' }])]), /unexpected tool error/);
-  const rejected = record(1, [{ type: "function_call_output", output: "tool executor rejected the admitted call (conflict): workspace generation changed" }]);
-  assert.throws(() => requests({ ...fixture, assert: { requests: 2 } }, [valid[0], rejected]), /unexpected tool error/);
-  requests({ ...fixture, assert: { requests: 2, tool_errors: ["workspace generation changed"] } }, [valid[0], rejected]);
   const gemini = [{ path: "models/tiny:streamGenerateContent", step: 0, status: 200,
     body: { contents: [{ role: "user", parts: [{ functionResponse: { name: "bash", response: { text: "REAL_RESULT" } } }] }] } }];
   requests({ model: { steps: [{}] }, assert: { requests: 1, tool_contains: ["REAL_RESULT"] } }, gemini);

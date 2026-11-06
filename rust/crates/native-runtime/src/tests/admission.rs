@@ -271,8 +271,16 @@ fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_alloc
     assert!(meter.memory.load(Ordering::Acquire) > 0);
     let stages = meter.used_allocations.load(Ordering::Acquire);
     meter.deny_allocations.store(true, Ordering::Release);
-    assert_eq!(task.wait(None, std::future::pending(), || {})??, 17);
-    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    let mut result = Err(io::Error::from(io::ErrorKind::Other));
+    let waiting = acyclic_test_support::measure(|| {
+        result = task.wait(None, std::future::pending(), || {});
+    });
+    assert_eq!(result??, 17);
+    assert_eq!(waiting.count_total, 0);
+    assert_eq!(meter.used_allocations.load(Ordering::Acquire), stages);
+    // Publication can precede the worker's final shared-state or notifier
+    // release. Observe that original release after measuring the caller's wait.
+    meter.wait_for_memory_retirement()?;
     for accepted in 0..stages {
         let mut limits = ReadBudgetMeter::new(1, 0);
         limits.allocation_limit = accepted;

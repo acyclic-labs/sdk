@@ -1,7 +1,7 @@
 // Native shells execute this same filesystem effect on every platform. It
 // supplies no host loop, tool response, process event or authentication input.
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
+import {execFileSync,spawn} from 'node:child_process';
 import {openSync,closeSync} from 'node:fs';
 import {access,readFile,realpath,writeFile} from 'node:fs/promises';
 import {isAbsolute,join,relative,sep} from 'node:path';
@@ -46,6 +46,7 @@ try {
   const binary=process.env.E2E_PLUGIN_BINARY;
   assert.ok(isAbsolute(binary??''),'staged plugin executable must be an absolute admitted path');
   const args=['fs','merge','agents/native-child'];
+  step='merge original native child';
   try {execFileSync(binary,args,{stdio:['ignore','inherit','inherit']});}
   catch(cause) {throw new Error('native merge failed; recovery argv: '+JSON.stringify([binary,...args])+'; '+cause.message,{cause});}
   assert.equal(await text('parent.txt'),'PARENT');
@@ -59,8 +60,18 @@ try {
   const current=phase==='merge'?initial:join(root,'.volumes/home/native-resumed-session.json');
   const descriptor=openSync(current,'w');
   try {
-   execFileSync(binary,['__workspace'],{input:JSON.stringify({kind:'hook',host,event:'NativeSession',
-    input:{task:original.task}}),stdio:['pipe',descriptor,'inherit']});
+   step='read original native session';
+   await new Promise((resolve,reject)=>{
+    const query=spawn(binary,['__workspace'],{stdio:['pipe',descriptor,'inherit']});
+    let failure;
+    query.once('error',cause=>{failure??=cause;});
+    query.stdin?.once('error',cause=>{failure??=cause;query.kill();});
+    query.once('close',(code,signal)=>{
+     if(failure||code!==0)reject(new Error('native session query exited '+code+' '+signal,{cause:failure}));
+     else resolve();
+    });
+    query.stdin?.end(JSON.stringify({kind:'hook',host,event:'NativeSession',input:{task:original.task}}));
+   });
   } finally {closeSync(descriptor);}
   const session=JSON.parse(await text(current));
   nativeSessionIdentity(session);

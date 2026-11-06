@@ -8,6 +8,7 @@ import { performance } from "node:perf_hooks";
 import { inventory, readCoverage } from "./coverage.mjs";
 import { Processes } from "./process.mjs";
 import { failureReport, publishReport } from "./report.mjs";
+import { executionSucceeded } from "./assertions.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { nativeHost } from "../../plugin/tests/hosts/native-host.mjs";
 import { sha256File } from "../file-digest.mjs";
@@ -25,7 +26,13 @@ export function collect(cases, receipts, platform, coverage) {
     const test = expectedSuites[index], { code, report, failure: receiptFailure, seconds, execution } = receipts[index];
     const expected = [test.id];
     try {
+      assert.ok(!execution?.expired && !execution?.cancelled,
+        "original suite execution expired or was cancelled");
       assert.ok(report, receiptFailure?.error ?? "missing suite receipt");
+      if (code === 0) {
+        assert.ok(execution, "missing original suite execution");
+        executionSucceeded(execution);
+      }
       assert.equal(report.platform, platform, "suite OS mismatch");
       assert.deepEqual(report.selected, [test.id], "suite must select exactly its case");
       assert.equal(report.qualification, false, "selected suite is diagnostic");
@@ -78,7 +85,7 @@ export function partition(cases, value) {
     Math.floor((index + 1) * cases.length / count)) };
 }
 
-export function collectPartitions(cases, bundles, platform, coverage) {
+export function collectPartitions(cases, bundles, platform, coverage, binding) {
   assert.ok(bundles.length > 0, "no partition receipts supplied");
   const ordered = [...bundles].sort((a, b) => a.index - b.index), first = ordered[0];
   for (const key of ["binary", "mock", "cases"])
@@ -97,6 +104,7 @@ export function collectPartitions(cases, bundles, platform, coverage) {
   for (const [name, digest] of Object.entries(first.binding.source))
     assert.ok(name.length > 0 && typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
       `invalid partition acceptance source digest: ${name}`);
+  assert.deepEqual(first.binding, binding, "partition differs from expected acceptance identity");
   assert.equal(ordered.length, first.count, "every partition needs a receipt");
   for (let index = 0; index < ordered.length; index++) {
     const bundle = ordered[index];
@@ -110,7 +118,8 @@ export function collectPartitions(cases, bundles, platform, coverage) {
     assert.deepEqual(bundle.selected, selected.map(test => test.id), "partition selection changed");
     assert.equal(bundle.receipts.length, variants(selected, platform).length, "partition lost a suite receipt");
   }
-  return collect(cases, ordered.flatMap(bundle => bundle.receipts), platform, coverage);
+  return { ...collect(cases, ordered.flatMap(bundle => bundle.receipts), platform, coverage),
+    binding: first.binding };
 }
 
 export async function acceptanceBinding(directory, binary, mock, cases, env=process.env) {
@@ -152,7 +161,7 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
   source['file-digest.mjs'] = await sha256File(new URL('../file-digest.mjs', import.meta.url));
   const executables={ NODE: await executable(process.execPath) };
-  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
+  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST','E2E_GIT_BINARY',
     'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_CLAUDE','E2E_PI','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
     if(env[name])executables[name]=await executable(env[name]);
   const hosts={},closures=new Map();
@@ -178,19 +187,22 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
 
 async function main() {
   const [binary, mock, ...extra] = process.argv.slice(2);
+  const directory = dirname(fileURLToPath(import.meta.url));
   if (binary === "--collect") {
-    assert.ok(mock && extra.length, "usage: node serial.mjs --collect FRESH_OUTPUT PARTITION.json ...");
+    const [model, destination, ...paths] = extra;
+    assert.ok(mock && model && destination && paths.length,
+      "usage: node serial.mjs --collect GRAPHCODER MOCK_MODEL FRESH_OUTPUT PARTITION.json ...");
     const cases = inventory(), coverage = readCoverage(cases);
-    const bundles = await Promise.all(extra.map(async path => JSON.parse(await readFile(path, "utf8"))));
-    const report = collectPartitions(cases, bundles, process.platform, coverage);
+    const binding = await acceptanceBinding(directory, mock, model, cases);
+    const bundles = await Promise.all(paths.map(async path => JSON.parse(await readFile(path, "utf8"))));
+    const report = collectPartitions(cases, bundles, process.platform, coverage, binding);
     report.seconds = bundles.reduce((total, bundle) => total + bundle.seconds, 0);
-    const output = resolve(mock); await mkdir(output);
+    const output = resolve(destination); await mkdir(output);
     await publishReport(join(output, "matrix.json"), report);
     process.exitCode = report.pass ? 0 : 1;
     return;
   }
   assert.ok(binary && mock && extra.length <= 1, "usage: node serial.mjs GRAPHCODER MOCK_MODEL [INDEX/COUNT]");
-  const directory = dirname(fileURLToPath(import.meta.url));
   const scratch = scratchDirectory("graphcoder-e2e-matrix-");
   const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
   await mkdir(dirname(output), { recursive: true });
@@ -213,7 +225,7 @@ async function main() {
   await writeFile(join(output, "partition.json"), JSON.stringify({ index: plan.index, count: plan.count,
     platform: process.platform, inventory: all.map(test => test.id), selected: cases.map(test => test.id),
     coverage, binding, receipts, seconds }, null, 2), { flag: "wx" });
-  const report = { ...collect(cases, receipts, process.platform, coverage), seconds,
+  const report = { ...collect(cases, receipts, process.platform, coverage), binding, seconds,
     qualification: plan.count === 1 };
   await publishReport(join(output, "matrix.json"), report);
   process.exitCode = report.pass ? 0 : 1;

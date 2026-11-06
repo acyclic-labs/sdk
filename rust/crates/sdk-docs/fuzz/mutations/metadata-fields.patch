@@ -1,0 +1,11 @@
+diff --git a/rust/crates/sdk-docs/src/child.rs b/rust/crates/sdk-docs/src/child.rs
+--- a/rust/crates/sdk-docs/src/child.rs
++++ b/rust/crates/sdk-docs/src/child.rs
+@@ -156,3 +156,6 @@
+         .ok_or(cargo_metadata::Error::NoJson)?;
+-    cargo_metadata::MetadataCommand::parse(json)
++    cargo_metadata::MetadataCommand::parse(json).map(|mut metadata| {
++        metadata.packages.clear();
++        metadata
++    })
+ }

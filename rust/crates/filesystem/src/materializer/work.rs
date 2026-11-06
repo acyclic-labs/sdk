@@ -380,7 +380,12 @@ impl NativeMaterializationWork {
     }
     /// Current live allocation.
     pub fn live_allocation_bytes(&self) -> u64 {
-        self.state(|state| state.live_allocation_bytes())
+        self.state(|state| {
+            state
+                .reconcile_native_controls()
+                .expect("balanced native retirement");
+            state.live_allocation_bytes()
+        })
     }
     /// Observes the original root through `native_host`.
     pub fn root_identity(

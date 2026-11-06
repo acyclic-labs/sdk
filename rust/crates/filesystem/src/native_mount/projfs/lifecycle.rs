@@ -75,6 +75,10 @@ impl Projector {
 }
 
 impl ProjFsSession {
+    pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
+        self.controller.is_some()
+    }
+
     pub(super) fn request_retirement(&mut self) -> Result<Arc<Projector>, NativeMountError> {
         let projector = self
             .controller

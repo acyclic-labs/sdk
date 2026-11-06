@@ -211,79 +211,103 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )>,
     ) -> Result<Generation<A, O>> {
         let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
-            let commit = 'commit: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    let fence = publication.fence();
-                    let root_fence = match publication {
-                        FilePublication::Authorized(_, _, root) => root,
-                        FilePublication::Replace(_) => None,
-                    };
-                    let authority = if let FilePublication::Authorized(_, grant, _) = publication {
-                        let before = io.owned_bytes()?;
-                        let verifier = grant.copy_verifier(&mut Some(&mut io.history_io()))?;
-                        let scope = grant.policy_scope().copy(&mut Some(&mut io.history_io()))?;
-                        let metadata = (std::mem::size_of::<(
-                            AuthorityVerifier,
-                            Scope,
-                            acyclic_fs::NativeAllocation,
-                        )>() + 2 * std::mem::size_of::<usize>())
-                            as u64;
-                        io.retain_owned(metadata)?;
-                        io.allocation_attempt(metadata)?;
-                        let custody = io.take_native_custody(io.owned_since(before)?)?;
-                        Some(Arc::new((verifier, scope, custody)))
-                    } else {
-                        None
-                    };
-                    let mut native_before = move |work: &acyclic_fs::NativeMaterializationWork| {
-                        let work = work.clone();
-                        let authority = authority.clone();
-                        async move {
-                            let check = || -> Result<()> {
-                                require_publication_fence(fence)?;
-                                require_publication_fence(root_fence)?;
-                                if let Some(authority) = &authority {
-                                    let io = PreparationIo::from_native_work(&work)?;
-                                    authority
-                                        .0
-                                        .verify(&authority.1, &mut Some(&mut io.history_io()))?;
+            loop {
+                let context = context.clone();
+                let commit = 'commit: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = io.original_native_work() {
+                        let fence = publication.fence();
+                        let root_fence = match publication {
+                            FilePublication::Authorized(_, _, root) => root,
+                            FilePublication::Replace(_) => None,
+                        };
+                        let authority = if let FilePublication::Authorized(_, grant, _) =
+                            publication
+                        {
+                            let before = io.owned_bytes()?;
+                            let verifier = grant.copy_verifier(&mut Some(&mut io.history_io()))?;
+                            let scope =
+                                grant.policy_scope().copy(&mut Some(&mut io.history_io()))?;
+                            let metadata = (std::mem::size_of::<(
+                                AuthorityVerifier,
+                                Scope,
+                                acyclic_fs::NativeAllocation,
+                            )>() + 2 * std::mem::size_of::<usize>())
+                                as u64;
+                            io.retain_owned(metadata)?;
+                            io.allocation_attempt(metadata)?;
+                            let custody = io.take_native_custody(io.owned_since(before)?)?;
+                            Some(Arc::new((verifier, scope, custody)))
+                        } else {
+                            None
+                        };
+                        let mut native_before =
+                            move |work: &acyclic_fs::NativeMaterializationWork| {
+                                let work = work.clone();
+                                let authority = authority.clone();
+                                async move {
+                                    let check = || -> Result<()> {
+                                        require_publication_fence(fence)?;
+                                        require_publication_fence(root_fence)?;
+                                        if let Some(authority) = &authority {
+                                            let io = PreparationIo::from_native_work(&work)?;
+                                            authority.0.verify(
+                                                &authority.1,
+                                                &mut Some(&mut io.history_io()),
+                                            )?;
+                                        }
+                                        Ok(())
+                                    };
+                                    check()
                                 }
-                                Ok(())
                             };
-                            check()
-                        }
-                    };
-                    break 'commit transaction
-                        .commit_with_native_work(
-                            context,
-                            acyclic_fs::PublicationPermit::Unrestricted,
-                            work,
-                            io.cancellation(),
-                            &mut native_before,
-                        )
-                        .await?;
+                        break 'commit transaction
+                            .commit_with_native_work(
+                                context,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                work,
+                                io.cancellation(),
+                                &mut native_before,
+                            )
+                            .await?;
+                    }
+                    break 'commit io.receive(
+                        transaction
+                            .commit(
+                                context,
+                                acyclic_fs::PublicationPermit::Unrestricted,
+                                io.remaining()?,
+                                io.cancellation(),
+                                &mut |_| async move {
+                                    require_publication_time(publication, Some(io))
+                                        .map_err(acyclic_fs::OperationFailure::before_work)?;
+                                    Ok(acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    })
+                                },
+                            )
+                            .await,
+                    )?;
+                };
+                // Concurrent publications to one volume are optimistic; a
+                // candidate whose exact observations and mutations still hold
+                // advances onto the new head, and any overlap stays a conflict.
+                if matches!(commit, TransactionCommit::Conflict { .. })
+                    && publication.rebases()
+                    && matches!(
+                        io.receive(
+                            transaction
+                                .rebase(1, io.remaining()?, io.cancellation())
+                                .await,
+                        )?,
+                        acyclic_fs::TransactionRebase::Rebased(_)
+                    )
+                {
+                    continue;
                 }
-                break 'commit io.receive(
-                    transaction
-                        .commit(
-                            context,
-                            acyclic_fs::PublicationPermit::Unrestricted,
-                            io.remaining()?,
-                            io.cancellation(),
-                            &mut |_| async move {
-                                require_publication_time(publication, Some(io))
-                                    .map_err(acyclic_fs::OperationFailure::before_work)?;
-                                Ok(acyclic_fs::OperationReceipt {
-                                    value: (),
-                                    work: acyclic_fs::WorkCounters::default(),
-                                })
-                            },
-                        )
-                        .await,
-                )?;
-            };
-            Ok(commit)
+                break Ok(commit);
+            }
         })?
         .await?;
         match commit {

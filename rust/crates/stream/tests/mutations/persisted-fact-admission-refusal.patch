@@ -1,0 +1,14 @@
+--- a/rust/crates/stream/src/persistence.rs
++++ b/rust/crates/stream/src/persistence.rs
+@@ -51,2 +51,5 @@
+ ) -> Result<IdempotencyObservation, StreamError> {
++    if std::env::var("ACYCLIC_CODEC_FACT_REFUSAL").ok().as_deref() == Some("observation") {
++        return Err(StreamError::InvalidArgument);
++    }
+     observation_from_wire(decode::<wire::IdempotencyObservation>(
+@@ -84,2 +87,5 @@
+ ) -> Result<CommittedEnvelope, StreamError> {
++    if std::env::var("ACYCLIC_CODEC_FACT_REFUSAL").ok().as_deref() == Some("envelope") {
++        return Err(StreamError::InvalidArgument);
++    }
+     envelope_from_wire(decode::<wire::CommittedEnvelope>(

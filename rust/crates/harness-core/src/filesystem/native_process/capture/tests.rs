@@ -355,7 +355,9 @@ proptest! {
 mod simulation {
     use super::*;
     use acyclic_native_runtime::testing::{Schedule, fill_seeded, unix_millis};
+    use acyclic_observability::{Export, Operations, Outcome};
     use std::{future::Future, pin::Pin, sync::OnceLock};
+    use tracing_subscriber::prelude::*;
 
     #[derive(Debug, PartialEq, Eq)]
     struct Observed {
@@ -371,6 +373,13 @@ mod simulation {
         simulated_process: bool,
         release_control: bool,
     ) -> Result<Observed> {
+        let (export, mut records) = Export::channel(Arc::new(tokio::sync::Semaphore::new(1)), true);
+        let subscriber = tracing_subscriber::registry().with(Operations(export).with_filter(
+            tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.name() == "acyclic.runtime.capture"
+            }),
+        ));
+        let _subscriber = tracing::subscriber::set_default(subscriber);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -518,6 +527,25 @@ mod simulation {
                 if simulated_process { b"sim" } else { b"dst" }
             );
             assert_eq!(custody, output.stdout, "observer lost worker custody");
+            // The original capture has already retired. Observe its terminal
+            // synchronously; a missing producer must fail without another wait.
+            let mut receive = std::pin::pin!(records.recv());
+            let evidence = match receive
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            {
+                std::task::Poll::Ready(Some(evidence)) => evidence,
+                _ => panic!("shared capture retirement observation absent"),
+            };
+            assert_eq!(evidence.sample().outcome, Outcome::Ok);
+            assert_eq!(
+                evidence
+                    .sample()
+                    .capture_retirement
+                    .unwrap()
+                    .cleanup_completed,
+                Some(true)
+            );
             Ok(Observed {
                 source: *source.get().expect("ownership was never checked"),
                 trace: schedule.trace(),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {checkTestSupport} from './check-test-support.mjs';
+import {checkDeserializedTestSupport, checkTestSupport} from './check-test-support.mjs';
 
 /** @param {{optional?: boolean, kind?: string | null, target?: string | null, alias?: string}} options */
 function fixture({optional = false, kind = null, target = null, alias = 'backend-alias'} = {}) {
@@ -51,4 +51,23 @@ test('checks only workspace features, and resolves the exact package version beh
   delete metadata.consumer.features['test-support'];
   assert.equal(checkTestSupport(metadata), 0);
   assert.throws(() => checkTestSupport({...metadata, resolve: null}), /resolved Cargo metadata/);
+});
+
+test('deserialized request members never exist only under test-support', () => {
+  const request = member => ['request.rs', [
+    '#[derive(Clone, Debug, Serialize,', '    Deserialize)]', '#[serde(tag = "kind")]', 'pub enum Request {',
+    '    Shipped { task: String },', ...member, '    Last {', '        nested: Option<u64>,', '    },', '}',
+    '#[cfg(feature = "test-support")]', 'pub fn helper() {}'].join('\n')];
+  assert.equal(checkDeserializedTestSupport([request([])]), 1);
+  for (const attribute of ['#[cfg(feature = "test-support")]', '#[cfg(any(test, feature = "test-support"))]',
+    '#[cfg_attr(not(feature = "test-support"), serde(skip))]'])
+    assert.throws(() => checkDeserializedTestSupport([request([attribute, '    Probe { agents: u64 },'])]),
+      /request\.rs:6: Request has a test-support-only member/);
+  // A field of a struct variant is a member too.
+  assert.throws(() => checkDeserializedTestSupport([request(['    Probe {', '        #[cfg(feature = "test-support")]',
+    '        agents: u64,', '    },'])]), /request\.rs:7: Request has a test-support-only member/);
+  // Serialize-only types and items outside a deserialized body are not requests.
+  const output = ['#[derive(Serialize)]', 'pub struct Reply {', '    #[cfg(feature = "test-support")]',
+    '    probe: u64,', '}'].join('\n');
+  assert.equal(checkDeserializedTestSupport([['reply.rs', output]]), 1);
 });
