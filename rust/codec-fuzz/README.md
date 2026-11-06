@@ -1050,6 +1050,7 @@ The retained native hidden-raw property crosses its 64-item limit with 65
 elements. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
 --hidden-items` to omit the actual final item guard, require the unchanged
 no-admission assertion to fail, and restore the original passing property.
+
 The native Stream boundary retains the same raw Auth refusal envelope. The
 existing `tests::tail::native_tail_preserves_the_complete_real_observation`
 control exercises the actual authenticated service, TCP client and native
