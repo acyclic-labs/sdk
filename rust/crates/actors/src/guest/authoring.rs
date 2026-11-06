@@ -62,6 +62,12 @@ pub enum GuestError {
     /// Artifact encoder failed.
     #[error("checkpoint encode failed: {0}")]
     Encode(String),
+    /// The candidate exceeds the caller's explicit checkpoint policy.
+    #[error("checkpoint exceeds the manifest limit of {maximum} bytes")]
+    CheckpointLimit {
+        /// Maximum encoded checkpoint bytes selected by the caller.
+        maximum: u64,
+    },
     /// Guest handler failed; the host must discard its heap.
     #[error("guest handler failed: {0}")]
     Handler(String),
