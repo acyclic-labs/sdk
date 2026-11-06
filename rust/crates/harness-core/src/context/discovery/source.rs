@@ -58,6 +58,27 @@ pub trait DiscoverySource {
 
 #[doc(hidden)]
 pub trait InstructionReader: DiscoverySource {
+    /// Selects an existing directory and reports entries inspected to do so.
+    /// Native readers classify the path without enumerating its children.
+    fn instruction_directory<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a Self::Revision>,
+    ) -> BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
+        let page = self.page(directory, revision, None, 1);
+        Box::pin(async move {
+            let Some(page) = page.await? else {
+                return Ok(None);
+            };
+            if page.scanned > 1 || page.entries.len() > page.scanned as usize {
+                return Err(Error::Storage(
+                    "discovery page violated pinned range".into(),
+                ));
+            }
+            Ok(Some((page.revision, page.scanned)))
+        })
+    }
+
     /// Reads one regular file at the pinned revision; `None` means absent.
     fn instruction<'a>(
         &'a mut self,
@@ -256,31 +277,27 @@ pub async fn capture_instructions<S: InstructionReader>(
     }
     let mut directory = directory.to_owned();
     let mut segments = active_directory.split('/').filter(|s| !s.is_empty());
-    // Native and admitted volume callers already own a cut. An unpinned
-    // immutable-volume caller selects its generation with one bounded page.
-    let pinned = match revision {
-        Some(revision) => revision.clone(),
-        None => {
-            let page = source
-                .page(&directory, None, None, 1)
-                .await?
-                .ok_or_else(|| Error::NotFound("instruction directory does not exist".into()))?;
-            if page.scanned > 1 || page.entries.len() > page.scanned as usize {
-                return Err(Error::Storage(
-                    "discovery page violated pinned range".into(),
-                ));
-            }
-            work.include(DiscoveryWork {
-                entries: page.scanned,
-                ..Default::default()
-            })?;
-            page.revision
-        }
-    };
+    let mut pinned = revision.cloned();
     let mut result = Vec::new();
     loop {
         work.include(DiscoveryWork {
             directories: 1,
+            ..Default::default()
+        })?;
+        let (selected, scanned) = source
+            .instruction_directory(&directory, pinned.as_ref())
+            .await?
+            .ok_or_else(|| Error::NotFound("instruction directory does not exist".into()))?;
+        if pinned
+            .as_ref()
+            .is_some_and(|revision| revision != &selected)
+        {
+            return Err(Error::Storage(
+                "discovery page violated pinned range".into(),
+            ));
+        }
+        work.include(DiscoveryWork {
+            entries: scanned,
             ..Default::default()
         })?;
         for name in names {
@@ -291,7 +308,7 @@ pub async fn capture_instructions<S: InstructionReader>(
             if let Some(instruction) = source
                 .instruction(
                     &child(&directory, name),
-                    &pinned,
+                    &selected,
                     work.limits.instruction_bytes,
                 )
                 .await?
@@ -299,6 +316,7 @@ pub async fn capture_instructions<S: InstructionReader>(
                 result.push(instruction);
             }
         }
+        pinned = Some(selected);
         match segments.next() {
             Some(segment) => directory = child(&directory, segment),
             None => break,
