@@ -299,7 +299,15 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         .map_err(|failure| failure.error)
         .expect("root");
     let graph = WorkspaceGraph::new(ObservedStore::default());
-    graph.register_root(&parent).await.expect("register root");
+    graph
+        .register_root(
+            &parent,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)
+        .expect("register root");
     assert_eq!(
         graph.store().take_reads(),
         1,

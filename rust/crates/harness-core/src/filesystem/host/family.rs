@@ -274,8 +274,22 @@ mod tests {
             filesystem.stream_provider(),
         ));
         let graph = WorkspaceGraph::new(store.clone());
-        graph.register_root(&root).await?;
-        graph.register_root(&unrelated).await?;
+        graph
+            .register_root(
+                &root,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        graph
+            .register_root(
+                &unrelated,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let child = graph
             .fork(
                 &root,

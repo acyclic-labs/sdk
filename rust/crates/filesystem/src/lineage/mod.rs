@@ -133,45 +133,58 @@ impl<S> WorkspaceGraph<S> {
 }
 
 impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
-    /// Registers a root workspace with no publication parent.
-    pub async fn register_root<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    /// Registers a root workspace using the caller's work and cancellation.
+    pub async fn register_root<
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+        W: crate::facade::FsWork,
+    >(
         &self,
         workspace: &Workspace<A, O>,
-    ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        if let Some(existing) = self
-            .store
-            .load(workspace.id())
-            .await
-            .map_err(WorkspaceLineageError::Store)?
-        {
-            if lineage_shape_is_valid(&existing)
-                && existing.ready
-                && existing.workspace_id == workspace.id()
-                && existing.workspace_name == workspace.name().as_str()
-                && existing.parent_workspace_id.is_none()
-                && existing.parent_workspace_name.is_none()
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check().map_err(WorkspaceError::from)?;
+            if let Some(existing) = self
+                .store
+                .load(workspace.id())
+                .await
+                .map_err(WorkspaceLineageError::Store)?
             {
-                return Ok(existing);
+                if lineage_shape_is_valid(&existing)
+                    && existing.ready
+                    && existing.workspace_id == workspace.id()
+                    && existing.workspace_name == workspace.name().as_str()
+                    && existing.parent_workspace_id.is_none()
+                    && existing.parent_workspace_name.is_none()
+                {
+                    return Ok(existing);
+                }
+                return Err(WorkspaceLineageError::ConflictingRegistration);
             }
-            return Err(WorkspaceLineageError::ConflictingRegistration);
-        }
-        let generation = workspace
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            let generation = workspace
+                .observed_generation_accounted(
+                    crate::model::GenerationSelector::Head,
+                    &mut accounting,
+                )
+                .await?;
+            self.register_absent(WorkspaceLineageRecord {
+                version: LINEAGE_VERSION,
+                revision: 1,
+                ready: true,
+                workspace_id: workspace.id(),
+                workspace_name: workspace.name().as_str().to_owned(),
+                parent_workspace_id: None,
+                parent_workspace_name: None,
+                fork_generation: generation.id(),
+                initial_generation: generation.id(),
+            })
             .await
-            .map_err(|failure| failure.error)?
-            .value;
-        self.register_absent(WorkspaceLineageRecord {
-            version: LINEAGE_VERSION,
-            revision: 1,
-            ready: true,
-            workspace_id: workspace.id(),
-            workspace_name: workspace.name().as_str().to_owned(),
-            parent_workspace_id: None,
-            parent_workspace_name: None,
-            fork_generation: generation.id(),
-            initial_generation: generation.id(),
-        })
-        .await
+        }
+        .await;
+        work.finish(result, &accounting)
     }
 
     /// Forks a real SDK workspace and durably records its direct parent.

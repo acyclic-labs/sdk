@@ -20,6 +20,76 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
         .value;
     root.write_text("/source", "original").await?;
     let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+    for native in [false, true] {
+        let registration = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+        let record = if native {
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            *authority.replay_custody.lock().unwrap() =
+                Some(ReplayCustody::Native(original.clone()));
+            let record = registration
+                .register_root(&root, &original, &cancellation)
+                .await?;
+            original.receipt().verify(budget)?;
+            record
+        } else {
+            let original = Arc::new(Prefunded {
+                budget,
+                held: Mutex::new(None),
+            });
+            *authority.replay_custody.lock().unwrap() =
+                Some(ReplayCustody::Standalone(original.clone()));
+            let (result, spent, live, baseline) = registration
+                .register_root(&root, original.as_ref(), &cancellation)
+                .await;
+            spent.verify(budget)?;
+            assert!(
+                live >= baseline,
+                "registration retired earlier original backing"
+            );
+            result?
+        };
+        assert!(authority.replay_custody.lock().unwrap().is_none());
+        assert_eq!(record.workspace_id, root.id());
+        assert_eq!(record.parent_workspace_id, None);
+        assert_eq!(record.fork_generation, record.initial_generation);
+    }
+    for cancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            cancellation.cancel();
+        }
+        let constrained = WorkBudget {
+            backend_read_operations: 0,
+            ..budget
+        };
+        let registration = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+        *authority.replay_minimum.lock().unwrap() = Some(0);
+        let failure = registration
+            .register_root(&root, constrained, &cancellation)
+            .await
+            .err()
+            .ok_or("registration escaped cancellation or its read allowance")?;
+        if cancelled {
+            assert!(matches!(
+                failure.error,
+                crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
+            ));
+            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+        } else {
+            assert!(matches!(
+                failure.error,
+                crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "backend_read_operations",
+                        ..
+                    }
+                ))
+            ));
+        }
+        assert_eq!(failure.work.backend_read_operations, 0);
+        assert!(authority.replay_minimum.lock().unwrap().take().is_some());
+    }
     let mut workspaces = vec![root];
     for (parent_index, name, native, via_graph) in [
         (0, "left", false, false),

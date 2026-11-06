@@ -16,7 +16,14 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         host.filesystem.stream_provider(),
     ));
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
-    graph.register_root(&root).await?;
+    graph
+        .register_root(
+            &root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let child = graph
         .fork(
             &root,
@@ -391,7 +398,14 @@ async fn descendant_restore_retains_the_original_repository_policy_cut()
         host.filesystem.stream_provider(),
     ));
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
-    graph.register_root(&root).await?;
+    graph
+        .register_root(
+            &root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let access = crate::filesystem::WorkspaceAccess::new(
         &writer.copy_verifier(&mut None)?,
         writer.policy_scope(),
