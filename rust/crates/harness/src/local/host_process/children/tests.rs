@@ -409,7 +409,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     )?;
     assert!(
         sessions
-            .request("held", SessionAction::Next, false)
+            .request("held", SessionAction::Next {}, false)
             .is_err(),
         "a competitor cannot claim the handed-off input"
     );

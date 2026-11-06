@@ -1,0 +1,1 @@
+[{"name":"terminal","aliases":["term"],"description":"Toggle the terminal panel","arguments":"word","action":{"kind":"select","query":"terminal"}}]
