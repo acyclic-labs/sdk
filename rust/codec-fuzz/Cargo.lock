@@ -214,6 +214,7 @@ dependencies = [
 name = "acyclic-fs-wire"
 version = "0.2.0"
 dependencies = [
+ "acyclic-auth-action",
  "acyclic-proto-build",
  "prost",
  "tonic",
@@ -460,6 +461,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "protoc-bin-vendored",
+ "serde_json",
  "tonic-prost-build",
 ]
 
