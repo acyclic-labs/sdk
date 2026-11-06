@@ -125,7 +125,7 @@ impl Mount {
             &diagnostic,
             self.exit_action
                 .as_ref()
-                .ok_or(io::ErrorKind::BrokenPipe)?
+                .ok_or_else(|| io::Error::from(io::ErrorKind::BrokenPipe))?
                 .activity()?,
         )?);
         let received = receive_device(&receive);

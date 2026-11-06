@@ -298,6 +298,14 @@ fn receive(body: &mut Mapped) -> Result<Option<Received>, Errno> {
 #[repr(C, align(8))]
 struct ControlSpace([u8; 64]);
 
+impl Received {
+    fn close(&self) {
+        for fd in self.descriptors.iter().take(self.count) {
+            sys::close(*fd);
+        }
+    }
+}
+
 /// Clones one warden as the owner's child. Every failure is reported on the
 /// request's reply pipe, which closes when this returns.
 fn launch(received: Received, body: &mut Mapped) {

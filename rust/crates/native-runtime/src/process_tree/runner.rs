@@ -308,15 +308,26 @@ pub(super) fn start_with_release(
         .ok_or(io::ErrorKind::InvalidInput)?
         .copy_from_slice(&length.to_ne_bytes());
     #[cfg(feature = "test-support")]
-    if activity.is_some()
-        && command.env.clear
-        && let Some(path) = std::env::var_os("ACYCLIC_RUNNER_REQUEST_CAPTURE")
+    if command.env.clear
+        && let Some(directory) = std::env::var_os("ACYCLIC_RUNNER_REQUEST_CAPTURE")
     {
         // Capture the actual encoded request at its transport boundary. The
         // fixture clears its environment; inherited host secrets are excluded.
         let mut capture = vec![u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?];
         capture.extend_from_slice(&message[8..]);
-        std::fs::write(path, capture)?;
+        static CAPTURE_SEQUENCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let sequence = CAPTURE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::path::Path::new(&directory).join(format!("{}-{sequence}.bin", std::process::id()));
+        std::fs::File::create_new(path)?.write_all(&capture)?;
+        super::fuzz_runner_request(&capture);
+        // Mutate descriptor custody on the actual captured request, without
+        // launching malformed input or creating a parallel request encoder.
+        for count in 0..=8 {
+            capture[0] = count;
+            super::fuzz_runner_request(&capture);
+        }
     }
     // Retain the original runner, including its group anchor and control
     // socket, until the original exec acknowledgement closes this reply.

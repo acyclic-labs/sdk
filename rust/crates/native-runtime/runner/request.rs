@@ -72,14 +72,6 @@ pub(super) struct Received {
     pub(super) length: usize,
 }
 
-impl Received {
-    pub(super) fn close(&self) {
-        for fd in self.descriptors.iter().take(self.count) {
-            sys::close(*fd);
-        }
-    }
-}
-
 pub(super) fn word(bytes: &[u8]) -> usize {
     let mut word = [0; 8];
     if let Some(bytes) = bytes.get(..8) {
