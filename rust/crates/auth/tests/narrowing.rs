@@ -1,4 +1,5 @@
-//! Appended blocks only narrow: typed grant values and allowance products.
+//! Appended blocks only narrow: typed grant values and allowance products;
+//! an allowance restricts each action by what the action catalog says it bills.
 #[path = "common/mod.rs"]
 mod common;
 use acyclic_auth::{authority::*, contract::*};
@@ -254,4 +255,107 @@ fn plain_resource_and_socket_grants_narrow_too() {
     }
     let exact = append(&leaf, granting(vec![plain("fs:/v/file", false, "fs/read")])).unwrap();
     assert!(append(&exact, granting(vec![plain("fs:/v/file", true, "fs/read")])).is_none());
+}
+
+fn owned_execution(action: &str, owner: &str) -> Grant {
+    Grant {
+        kind: GrantKind::Execution(ExecutionGrant {
+            grant: ResourceGrant {
+                resource: ResourcePattern {
+                    name: "execution:/work".into(),
+                    prefix: false,
+                },
+                actions: vec![action.into()],
+            },
+            cpu_millis: None,
+            memory_bytes: None,
+            policy_generation: None,
+            usage_owner: Some(owner.into()),
+            max_concurrency: None,
+            reserved_capacity_units: None,
+        }),
+    }
+}
+
+// The rule this replaces: an action's capability prefix had to be a listed
+// billing product, which refused unmetered renewal and misspelled products.
+fn prefix_rule(products: &[&str], action: &str) -> bool {
+    action
+        .split_once('/')
+        .is_some_and(|(product, _)| products.contains(&product))
+}
+
+#[test]
+fn renewed_allowance_restricts_only_what_each_action_bills() {
+    // What a renewal signs: the billing products the account's usage keys cover.
+    let covered = [
+        "objects",
+        "streams",
+        "actors",
+        "workers",
+        "vmm",
+        "inference",
+    ];
+    let cases = [
+        ("billing/usage", "billing:/account", None, true),
+        ("secrets/put", "secrets:/account/key", None, true),
+        ("actors/deploy-namespace", "actors:/account/ns", None, true),
+        ("machines/create", "machines:/account/m", None, true),
+        ("infer/generate", "infer:/account/model", None, true),
+        (
+            "execution/actor-turn",
+            "execution:/work",
+            Some("actors/receipt"),
+            true,
+        ),
+        (
+            "execution/worker-execute",
+            "execution:/work",
+            Some("managed_agents/a"),
+            false,
+        ),
+        ("fs/write", "fs:/v/file", None, false),
+    ];
+    let mut leaf = Vec::new();
+    for (action, resource, owner, _) in cases {
+        leaf.push(match owner {
+            Some(owner) => owned_execution(action, owner),
+            None => plain(resource, false, action),
+        });
+    }
+    let renewed = append(&chain(leaf), allowance(&covered)).expect("a renewed allowance");
+    let attributes = RecordAttributes::default();
+    let usage = limits(None);
+    let mut prefix_disagrees = false;
+    for (action, resource, _, admitted) in cases {
+        let request = Request {
+            target: Target::Resource { action, resource },
+            audience: "workers:/app",
+            holder: None,
+            now_unix_seconds: 2,
+            keys: &[],
+            attributes: &attributes,
+            usage: &usage,
+            cpu_millis: 0,
+            memory_bytes: 0,
+        };
+        assert_eq!(
+            permits(&renewed, &request, PolicyDecision::Allow, Scope::Exact).is_ok(),
+            admitted,
+            "{action}"
+        );
+        prefix_disagrees |= prefix_rule(&covered, action) != admitted;
+    }
+    // Negative control: the prefix rule refuses billing renewal, secrets,
+    // Machines, inference and Actors execution under the same allowance.
+    assert!(prefix_disagrees);
+    for action in [
+        "billing/usage",
+        "secrets/put",
+        "machines/create",
+        "infer/generate",
+        "execution/actor-turn",
+    ] {
+        assert!(!prefix_rule(&covered, action), "{action}");
+    }
 }
