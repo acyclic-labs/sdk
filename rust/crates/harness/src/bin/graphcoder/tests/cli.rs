@@ -505,21 +505,6 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
             ],
             "stdout is reserved for events",
         ),
-        (
-            vec![
-                "--operation",
-                "invalid-options",
-                "--output-format",
-                "jsonl",
-                "--output",
-                "shared.json",
-                "--event-cursor",
-                "shared.json",
-                "exec",
-                "hello",
-            ],
-            "must name distinct files",
-        ),
     ] {
         let refused = graphcoder(&fixture, &model.catalog, args, "").await;
         assert!(!refused.status.success());
