@@ -177,79 +177,60 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             request.2 = request.2.min(left);
             left -= request.2;
         }
-        match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let future = self
-                    .provider
-                    .get_batch_native(packet(incoming, original)?, original.runtime_meter())
-                    .map_err(|error| native_error(error, original))?;
-                work.charge(WorkCounters {
-                    object_probes: requests.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let results = future
-                    .await
-                    .map_err(|error| native_error(error, original))?;
-                values = self.finish_reads::<STORED>(
-                    results.map(|value| value.map_err(|error| native_error(error, original))),
-                    requests,
-                    quota,
-                    work,
-                    body,
-                    values,
-                )?;
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    object_probes: requests.len() as u64,
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let results = self.provider.get_batch(incoming.value).await;
-                release(work, incoming.allocation, incoming.bytes)?;
-                let records = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
-                let (controls, late) = work.record_actual_owned(records)?;
-                let result = self.finish_reads::<STORED>(
-                    results
-                        .into_iter()
-                        .map(|value| value.map_err(service_error)),
-                    requests,
-                    quota,
-                    work,
-                    body,
-                    values,
-                );
-                release(work, controls, records)?;
-                values = result?;
-                late?;
-            }
-        }
-        Ok(values)
+        invocation::get_batch(
+            &*self.provider,
+            incoming,
+            work,
+            ReadBatch::<_, _, STORED> {
+                store: self,
+                requests,
+                quota,
+                body,
+                values,
+            },
+        )
+        .await
     }
-    fn finish_reads<const STORED: bool>(
-        &self,
+}
+
+struct ReadBatch<'a, P: ?Sized, S, const STORED: bool> {
+    store: &'a LogicalObjectStore<P, S>,
+    requests: &'a [ObjectReadRequest],
+    quota: u64,
+    values: crate::kernel::Owned<Vec<ObjectRead>>,
+    body: KernelOwnedAllocation,
+}
+
+impl<P: Blobs + ?Sized, S: ObjectSealer, const STORED: bool> invocation::BatchFinish<Object>
+    for ReadBatch<'_, P, S, STORED>
+{
+    type Output = crate::kernel::Owned<Vec<ObjectRead>>;
+
+    fn finish(
+        self,
         results: impl ExactSizeIterator<Item = Result<Object, ObjectStoreError>>,
-        requests: &[ObjectReadRequest],
-        mut left: u64,
         work: &mut KernelAccounting<'_>,
-        mut body: KernelOwnedAllocation,
-        mut values: crate::kernel::Owned<Vec<ObjectRead>>,
-    ) -> Result<crate::kernel::Owned<Vec<ObjectRead>>, crate::FsError> {
+    ) -> Result<Self::Output, crate::FsError> {
+        let Self {
+            store,
+            requests,
+            quota,
+            mut body,
+            mut values,
+        } = self;
+        let mut left = quota;
         let count_valid = results.len() == requests.len();
-        let quota = left;
         let mut observed = 0u64;
         let mut failure = None;
         for (index, result) in results.enumerate() {
             let maximum = match requests.get(index) {
-                Some(request) => self
+                Some(request) => store
                     .sealer
                     .stored_limit(
                         request.object_id,
                         request
                             .maximum_bytes
-                            .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                            .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                     )?
                     .min(left),
                 None => 0,
@@ -309,12 +290,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     retention: ObjectReadRetention::Shared,
                 },
             );
-            *value = self.read_representation::<STORED>(
+            *value = store.read_representation::<STORED>(
                 request.object_id,
                 read,
                 request
                     .maximum_bytes
-                    .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                    .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                 work,
             )?;
             retained = retained
