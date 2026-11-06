@@ -227,7 +227,14 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         filesystem.stream_provider(),
     ));
     let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
-    graph.register_root(&root).await?;
+    graph
+        .register_root(
+            &root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let branch = graph
         .fork(
             &root,

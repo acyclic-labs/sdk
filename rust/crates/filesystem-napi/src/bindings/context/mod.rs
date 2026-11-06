@@ -33,11 +33,11 @@ impl NativeWorkspaceGraph {
         &self,
         workspace: &NativeWorkspace,
     ) -> Result<NativeWorkspaceLineageRecord> {
-        self.inner
-            .register_root(&workspace.inner)
-            .await
-            .map(native_workspace_lineage_record)
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            register_root(&workspace.inner)
+        ))
+        .map(native_workspace_lineage_record)
     }
 
     #[napi]
@@ -47,15 +47,15 @@ impl NativeWorkspaceGraph {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        self.inner
-            .fork(
+        sdk_value!(unbounded_future!(
+            self.inner,
+            fork(
                 &parent.inner,
                 destination,
-                native_idempotency_key(idempotency_key)?,
+                native_idempotency_key(idempotency_key)?
             )
-            .await
-            .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+        ))
+        .map(|inner| NativeWorkspace { inner })
     }
 
     #[napi]

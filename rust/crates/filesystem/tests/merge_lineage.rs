@@ -427,7 +427,14 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
     let store = SharedLineageStore::default();
     let graph = WorkspaceGraph::new(store.clone());
     let root = unbounded!(fs, create_workspace("graph-root"))?;
-    graph.register_root(&root).await?;
+    graph
+        .register_root(
+            &root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let child = graph
         .fork(
             &root,

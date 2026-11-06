@@ -175,8 +175,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         }
         let graph = WorkspaceGraph::new(self.store.clone());
         graph
-            .register_root(&root)
+            .register_root(
+                &root,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
+            .map_err(|failure| failure.error)
             .map_err(<StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error)?;
         let (selected, pending) = read_before_effect(&mut cancellation, async {
             repository

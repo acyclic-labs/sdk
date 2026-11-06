@@ -371,8 +371,13 @@ pub(super) async fn open(
     let (view, fresh) = lazy_view(filesystem, attach, root, existing, &store).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     acyclic_fs::WorkspaceGraph::new(store.clone())
-        .register_root(view.workspace())
+        .register_root(
+            view.workspace(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await
+        .map_err(|failure| failure.error)
         .map_err(storage)?;
     let mut mounts = mounts::owner(
         &path,
