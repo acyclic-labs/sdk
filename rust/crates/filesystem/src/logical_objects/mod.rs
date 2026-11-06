@@ -133,11 +133,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 ..WorkCounters::UNCHARGED
             })
             .map_err(crate::async_storage::object_error)?;
-        let (reads, allocation, retained) = self
+        let reads = self
             .fetch_batch::<STORED>(requests, &mut scope)
             .await
             .map_err(crate::async_storage::object_error)?;
-        let reads = crate::kernel::Owned::new(reads, allocation, retained);
         scope
             .charge(WorkCounters {
                 items_returned: count,
@@ -145,7 +144,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             })
             .map_err(crate::async_storage::object_error)?;
         scope
-            .keep_bytes(retained)
+            .keep_bytes(reads.bytes)
             .map_err(crate::async_storage::object_error)?;
         Ok(crate::async_storage::authority_parts(reads))
     }

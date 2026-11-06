@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/kernel/persistent_point.rs
++++ b/rust/crates/filesystem/src/kernel/persistent_point.rs
+@@ -15,2 +15,3 @@
+ pub struct Owned<T> {
++    pub(crate) allocation: KernelOwnedAllocation,
+     /// The retained value.
+@@ -18,3 +19,2 @@
+     pub(crate) bytes: u64,
+-    pub(crate) allocation: KernelOwnedAllocation,
+ }

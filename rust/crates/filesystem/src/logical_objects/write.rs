@@ -56,8 +56,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     ) -> Result<(), crate::FsError> {
         let body = self.admit_write(id, &bytes, plaintext, authenticated, work)?;
         let length = bytes.len() as u64;
-        let (references, custody) = children(id, plaintext, work)?;
-        let reference_bytes = (references.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
+        let references = children(id, plaintext, work)?;
         work.admit(WorkCounters {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
@@ -69,7 +68,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 let receipt = self
                     .provider
                     .put_native(
-                        packet((body, references), custody, original)?,
+                        packet(
+                            crate::kernel::Owned::new(
+                                (body, references.value),
+                                references.allocation,
+                                references.bytes,
+                            ),
+                            original,
+                        )?,
                         original.runtime_meter(),
                     )
                     .map_err(|error| native_error(error, original))?
@@ -82,8 +88,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let put = self.provider.put_sealed(body, references).await;
-                release(work, custody, reference_bytes)?;
+                let put = self.provider.put_sealed(body, references.value).await;
+                release(work, references.allocation, references.bytes)?;
                 put.map_err(ObjectStoreError::LogicalObjects)?
             }
         };
@@ -100,19 +106,18 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         if writes.is_empty() {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
-        let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
-        let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
+        let mut requests = crate::kernel::Owned::<Vec<PutRequest>>::allocate(writes.len(), work)?;
         let mut total = 0u64;
         for write in writes {
             let (id, bytes, plaintext) = write.parts();
             let body = self.admit_write(id, bytes, plaintext, write.sealed(), work)?;
             // Equal identities carry equal bytes; the store dedupes them.
-            let (references, mut reference_custody) = children(id, plaintext, work)?;
-            request_bytes = request_bytes
-                .checked_add((references.capacity() * size_of::<acyclic_objects::Digest>()) as u64)
-                .ok_or(WorkError::Overflow)?;
-            custody.absorb(&mut reference_custody)?;
-            requests.push((body, references));
+            let references = children(id, plaintext, work)?.transfer_to(
+                &mut requests.allocation,
+                &mut requests.bytes,
+                work,
+            )?;
+            requests.value.push((body, references));
             total = total
                 .checked_add(bytes.len() as u64)
                 .ok_or(WorkError::Overflow)?;
@@ -127,10 +132,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 let original = *original;
                 let results = self
                     .provider
-                    .put_batch_native(
-                        packet(requests, custody, original)?,
-                        original.runtime_meter(),
-                    )
+                    .put_batch_native(packet(requests, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?
                     .await
                     .map_err(|error| native_error(error, original))?;
@@ -149,8 +151,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = self.provider.put_batch_sealed(requests).await;
-                release(work, custody, request_bytes)?;
+                let results = self.provider.put_batch_sealed(requests.value).await;
+                release(work, requests.allocation, requests.bytes)?;
                 let bytes = (results.capacity() * size_of::<Result<Put, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(bytes)?;
                 let result = finish_writes(

@@ -85,7 +85,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 let future = self
                     .provider
                     .get_native(
-                        packet((blob(id), ByteRange::FULL, maximum), custody, original)?,
+                        packet(
+                            crate::kernel::Owned::new(
+                                (blob(id), ByteRange::FULL, maximum),
+                                custody,
+                                0,
+                            ),
+                            original,
+                        )?,
                         original.runtime_meter(),
                     )
                     .map_err(|error| native_error(error, original))?;
@@ -141,15 +148,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         &self,
         requests: &[ObjectReadRequest],
         work: &mut KernelAccounting<'_>,
-    ) -> Result<(Vec<ObjectRead>, KernelOwnedAllocation, u64), crate::FsError> {
+    ) -> Result<crate::kernel::Owned<Vec<ObjectRead>>, crate::FsError> {
         work.check()?;
         if requests.is_empty() {
             return Err(ObjectStoreError::EmptyReadBatch.into());
         }
-        let (mut incoming, custody) = vector::<GetRequest>(requests.len(), work)?;
-        let request_bytes = (incoming.capacity() * size_of::<GetRequest>()) as u64;
+        let mut incoming = crate::kernel::Owned::<Vec<GetRequest>>::allocate(requests.len(), work)?;
         for request in requests {
-            incoming.push((
+            incoming.value.push((
                 blob(request.object_id),
                 ByteRange::FULL,
                 self.sealer.stored_limit(
@@ -160,10 +166,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 )?,
             ));
         }
-        let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
-        let mut retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+        let mut values = crate::kernel::Owned::<Vec<ObjectRead>>::allocate(requests.len(), work)?;
         let remaining = work.remaining()?;
         let total = incoming
+            .value
             .iter()
             .try_fold(0u64, |total, request| total.checked_add(request.2));
         #[cfg(not(target_arch = "wasm32"))]
@@ -178,8 +184,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             (total <= quota).then_some(total)
         });
         let Some(quota) = quota else {
-            drop(incoming);
-            release(work, custody, request_bytes)?;
+            incoming.retire(work)?;
             for request in requests {
                 let read = {
                     let (read, _allocation) = self
@@ -187,12 +192,13 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         .await?;
                     read
                 };
-                retained = retained
+                values.bytes = values
+                    .bytes
                     .checked_add(read.retention.owned_bytes())
                     .ok_or(WorkError::Overflow)?;
-                values.push(read);
+                values.value.push(read);
             }
-            return Ok((values, output, retained));
+            return Ok(values);
         };
         let body = if native {
             KernelOwnedAllocation::Standalone
@@ -200,7 +206,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             work.claim_owned(quota, 0)?
         };
         let mut left = quota;
-        for request in &mut incoming {
+        for request in &mut incoming.value {
             request.2 = request.2.min(left);
             left -= request.2;
         }
@@ -210,10 +216,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 let original = *original;
                 let future = self
                     .provider
-                    .get_batch_native(
-                        packet(incoming, custody, original)?,
-                        original.runtime_meter(),
-                    )
+                    .get_batch_native(packet(incoming, original)?, original.runtime_meter())
                     .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
                     object_probes: requests.len() as u64,
@@ -222,13 +225,13 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 let results = future
                     .await
                     .map_err(|error| native_error(error, original))?;
-                (values, retained) = self.finish_reads::<STORED>(
+                values = self.finish_reads::<STORED>(
                     results.map(|value| value.map_err(|error| native_error(error, original))),
                     requests,
                     quota,
                     work,
-                    values,
                     body,
+                    values,
                 )?;
             }
             _ => {
@@ -237,8 +240,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     backend_read_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = self.provider.get_batch(incoming).await;
-                release(work, custody, request_bytes)?;
+                let results = self.provider.get_batch(incoming.value).await;
+                release(work, incoming.allocation, incoming.bytes)?;
                 let records = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(records)?;
                 let result = self.finish_reads::<STORED>(
@@ -248,15 +251,15 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     requests,
                     quota,
                     work,
-                    values,
                     body,
+                    values,
                 );
                 release(work, controls, records)?;
-                (values, retained) = result?;
+                values = result?;
                 late?;
             }
         }
-        Ok((values, output, retained))
+        Ok(values)
     }
     fn finish_reads<const STORED: bool>(
         &self,
@@ -264,9 +267,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         requests: &[ObjectReadRequest],
         mut left: u64,
         work: &mut KernelAccounting<'_>,
-        mut values: Vec<ObjectRead>,
         mut body: KernelOwnedAllocation,
-    ) -> Result<(Vec<ObjectRead>, u64), crate::FsError> {
+        mut values: crate::kernel::Owned<Vec<ObjectRead>>,
+    ) -> Result<crate::kernel::Owned<Vec<ObjectRead>>, crate::FsError> {
         let count_valid = results.len() == requests.len();
         let quota = left;
         let mut observed = 0u64;
@@ -297,7 +300,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     }
                     let bytes = value.into_body();
                     if index < requests.len() {
-                        values.push(ObjectRead {
+                        values.value.push(ObjectRead {
                             retention: retained(&bytes, work),
                             bytes,
                         });
@@ -330,8 +333,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 quota.checked_sub(observed).ok_or(WorkError::Overflow)?,
             )?;
         }
-        let mut retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
-        for (value, request) in values.iter_mut().zip(requests) {
+        let mut retained = values.bytes;
+        for (value, request) in values.value.iter_mut().zip(requests) {
             let read = std::mem::replace(
                 value,
                 ObjectRead {
@@ -351,7 +354,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 .checked_add(value.retention.owned_bytes())
                 .ok_or(WorkError::Overflow)?;
         }
-        Ok((values, retained))
+        values.bytes = retained;
+        Ok(values)
     }
 }
 pub(super) fn hash(

@@ -27,11 +27,11 @@ pub(super) fn children(
     id: ObjectId,
     plaintext: &[u8],
     work: &mut KernelAccounting<'_>,
-) -> Result<(Vec<acyclic_objects::Digest>, KernelOwnedAllocation), crate::FsError> {
+) -> Result<crate::kernel::Owned<Vec<acyclic_objects::Digest>>, crate::FsError> {
     if id.kind == crate::ObjectKind::BlobChunk {
-        return Ok((Vec::new(), guard(work)?));
+        return Ok(crate::kernel::Owned::new(Vec::new(), guard(work)?, 0));
     }
-    let (mut references, custody) = vector(plaintext.len() / 33, work)?;
+    let mut references = crate::kernel::Owned::allocate(plaintext.len() / 33, work)?;
     crate::kernel::visit_object_references(
         id,
         plaintext,
@@ -41,14 +41,14 @@ pub(super) fn children(
             if id.storage.is_some() && child.storage.is_none() {
                 return Err(ObjectStoreError::Corrupt.into());
             }
-            if references.len() == references.capacity() {
+            if references.value.len() == references.value.capacity() {
                 return Err(ObjectStoreError::Corrupt.into());
             }
-            references.push(blob(child));
+            references.value.push(blob(child));
             Ok(())
         },
     )?;
-    Ok((references, custody))
+    Ok(references)
 }
 
 /// Original custody for a request whose data owns no heap storage.
@@ -56,25 +56,6 @@ pub(super) fn guard(
     work: &mut KernelAccounting<'_>,
 ) -> Result<KernelOwnedAllocation, crate::FsError> {
     work.claim_owned(0, 0)
-}
-pub(super) fn vector<T>(
-    length: usize,
-    work: &mut KernelAccounting<'_>,
-) -> Result<(Vec<T>, KernelOwnedAllocation), crate::FsError> {
-    let bytes = length
-        .checked_mul(size_of::<T>())
-        .ok_or(WorkError::Overflow)? as u64;
-    let mut allocation = work.claim_owned(bytes, 1)?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(length)
-        .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    work.reconcile_owned(
-        &mut allocation,
-        bytes,
-        (values.capacity() * size_of::<T>()) as u64,
-    )?;
-    Ok((values, allocation))
 }
 pub(super) fn release(
     work: &mut KernelAccounting<'_>,
@@ -85,14 +66,17 @@ pub(super) fn release(
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn packet<T>(
-    data: T,
-    allocation: KernelOwnedAllocation,
+    owned: crate::kernel::Owned<T>,
     work: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_objects::ObjectsNativeRequest<T>, crate::FsError> {
-    match allocation {
+    match owned.allocation {
         KernelOwnedAllocation::NativeOriginal(allocation) => {
-            acyclic_objects::ObjectsNativeRequest::new(data, allocation, &work.runtime_meter())
-                .map_err(|error| native_error(error, work).into())
+            acyclic_objects::ObjectsNativeRequest::new(
+                owned.value,
+                allocation,
+                &work.runtime_meter(),
+            )
+            .map_err(|error| native_error(error, work).into())
         }
         _ => Err(ObjectStoreError::Corrupt.into()),
     }
