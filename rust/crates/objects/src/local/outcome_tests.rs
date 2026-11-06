@@ -121,7 +121,7 @@ async fn owned_close_reports_physical_completion_and_failure()
         .ok_or("committed put outcome unknown")?
         .digest;
     account
-        .retain(crate::RootId::new(b"root".to_vec())?, vec![digest])
+        .retain(&crate::RootId::new(b"root".to_vec())?, vec![digest])
         .await?;
     drop(account);
     assert!(
