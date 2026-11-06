@@ -86,6 +86,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct StartupWake {
         host: std::sync::Weak<Host>,
+        seen: AtomicBool,
         running: AtomicBool,
         notified: Arc<crate::NativeWake>,
     }
@@ -94,16 +95,19 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
             self.wake_by_ref();
         }
         fn wake_by_ref(self: &Arc<Self>) {
-            self.running.store(
-                lock(&self.host.upgrade().unwrap().state).phase == Phase::Running,
-                Ordering::SeqCst,
-            );
+            if !self.seen.swap(true, Ordering::SeqCst) {
+                self.running.store(
+                    lock(&self.host.upgrade().unwrap().state).phase == Phase::Running,
+                    Ordering::SeqCst,
+                );
+            }
             self.notified.wake_by_ref();
         }
     }
     let startup_for = |host: &Arc<Host>| {
         let startup = Arc::new(StartupWake {
             host: Arc::downgrade(host),
+            seen: AtomicBool::new(false),
             running: AtomicBool::new(false),
             notified: Arc::new(crate::NativeWake::default()),
         });
