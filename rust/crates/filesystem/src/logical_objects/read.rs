@@ -61,22 +61,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
         let plaintext_maximum = maximum.min(self.maximum_object_bytes.unwrap_or(maximum));
         let maximum = self.sealer.stored_limit(id, plaintext_maximum)?;
-        let remaining = work.remaining()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = work.native_work().is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
-        let maximum = maximum.min(remaining.object_bytes_read);
-        let maximum = if native {
-            maximum
-        } else {
-            maximum.min(remaining.peak_allocation_bytes)
-        };
-        let mut body_custody = if native {
-            KernelOwnedAllocation::Standalone
-        } else {
-            work.claim_owned(maximum, 0)?
-        };
+        let maximum = maximum.min(invocation::read_capacity(work)?);
+        let mut body_custody = invocation::read_custody(maximum, work)?;
         let custody = guard(work)?;
         let result = invocation::Provider::get(
             &*self.provider,
@@ -97,7 +83,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             completed?;
             return Err(ObjectStoreError::TooLarge { observed, maximum }.into());
         }
-        if !native {
+        if work.standalone_parts().is_some() {
             work.release_owned(&mut body_custody, maximum - observed)?;
         }
         completed?;
@@ -134,22 +120,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             ));
         }
         let mut values = crate::kernel::Owned::<Vec<ObjectRead>>::allocate(requests.len(), work)?;
-        let remaining = work.remaining()?;
+        let remaining = invocation::read_capacity(work)?;
         let total = incoming
             .value
             .iter()
             .try_fold(0u64, |total, request| total.checked_add(request.2));
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = work.native_work().is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
-        let quota = total.and_then(|total| {
-            let mut quota = remaining.object_bytes_read;
-            if !native {
-                quota = quota.min(remaining.peak_allocation_bytes);
-            }
-            (total <= quota).then_some(total)
-        });
+        let quota = total.filter(|total| *total <= remaining);
         let Some(quota) = quota else {
             incoming.retire(work)?;
             for request in requests {
@@ -167,11 +143,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             }
             return Ok(values);
         };
-        let body = if native {
-            KernelOwnedAllocation::Standalone
-        } else {
-            work.claim_owned(quota, 0)?
-        };
+        let body = invocation::read_custody(quota, work)?;
         let mut left = quota;
         for request in &mut incoming.value {
             request.2 = request.2.min(left);
