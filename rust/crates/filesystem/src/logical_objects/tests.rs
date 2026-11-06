@@ -215,6 +215,79 @@ async fn authenticated_batch_denials_precede_publication() -> Result<(), Box<dyn
 
 #[tokio::test]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "local")]
+async fn native_local_presence_admits_each_physical_read() -> Result<(), Box<dyn std::error::Error>>
+{
+    crate::initialize_test_native_io();
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(
+        acyclic_objects::LocalObjects::open(directory.path(), Default::default(), None).await?,
+    );
+    let store = LogicalObjectStore::new(provider);
+    let cancel = CancellationToken::new();
+    let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"present"));
+    store
+        .put_hashed(object.clone(), &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    let missing = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"absent"));
+    for (id, present, physical_reads) in [
+        (object.object_id(), true, 2),
+        (missing.object_id(), false, 1),
+    ] {
+        for admitted in (1..=physical_reads).chain(std::iter::once(0)) {
+            let budget = WorkBudget {
+                backend_read_operations: admitted,
+                backend_write_operations: 0,
+                object_bytes_read: 0,
+                object_bytes_written: 0,
+                ..BUDGET
+            };
+            let original = crate::NativeMaterializationWork::new(budget, &cancel)
+                .map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let result = store
+                .contains(id, &mut AuthorityWork::native(&original, &cancel))
+                .await;
+            if admitted == physical_reads {
+                assert_eq!(result?, present);
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(ObjectStoreError::Native(
+                            crate::NativeTreeMaterializationError::Work(
+                                WorkError::BudgetExceeded { .. }
+                            )
+                        ))
+                    ),
+                    "presence bypassed original physical admission: {result:?}"
+                );
+            }
+            let receipt = original.receipt();
+            receipt.verify(budget)?;
+            assert_eq!(receipt.backend_read_operations, admitted);
+            assert_eq!(receipt.object_probes, 1);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
+    let original =
+        crate::NativeMaterializationWork::new(BUDGET, &cancel).map_err(|(error, _)| error)?;
+    cancel.cancel();
+    assert!(
+        store
+            .contains(
+                object.object_id(),
+                &mut AuthorityWork::native(&original, &cancel)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
 async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dyn std::error::Error>>
 {
     let cancel = CancellationToken::new();

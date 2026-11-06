@@ -99,6 +99,15 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.inner().get_batch(requests).await
     }
     #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: ObjectsNativeRequest<Digest>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        self.record(RequestClass::Head);
+        self.inner().contains_native(request, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
         request: ObjectsNativeRequest<(Digest, ByteRange, u64)>,

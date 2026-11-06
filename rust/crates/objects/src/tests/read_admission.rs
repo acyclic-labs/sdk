@@ -396,6 +396,69 @@ async fn native_local_batch_refusals_belong_to_their_original_members()
 }
 
 #[tokio::test]
+async fn native_local_presence_finishes_on_original_read_outcomes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"original-presence")?;
+    let digest = blobs
+        .put(b"present".as_slice().into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original publication is known")?
+        .digest;
+    for fragment in ["/e/", "/p/"] {
+        for state in 0..4 {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            *budget.writes.lock().unwrap() = Some(0);
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+            let mut operation = Box::pin(blobs.contains_native(request, Arc::clone(&meter))?);
+            let (mut reached, release) = medium.park("read", fragment);
+            super::drive_to_park(operation.as_mut(), &mut reached).await;
+            if state == 1 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state == 2 {
+                drop(operation);
+                drop(release);
+            } else {
+                if state == 3 {
+                    drop(release);
+                } else {
+                    release.send(()).map_err(|()| "original read withdrew")?;
+                }
+                let result = operation.as_mut().await;
+                match state {
+                    0 => assert!(result?),
+                    1 => assert!(matches!(
+                        result.expect_err("cancelled presence succeeded").into_cause(),
+                        crate::NativeObjectsCause::Admission(error)
+                            if error.kind() == std::io::ErrorKind::Interrupted
+                    )),
+                    _ => assert!(matches!(
+                        result.expect_err("presence hid original read failure").into_cause(),
+                        crate::NativeObjectsCause::Service(error)
+                            if error.code == ErrorCode::Unavailable
+                    )),
+                }
+                drop(operation);
+            }
+            assert_eq!(
+                budget.held.lock().unwrap().0,
+                0,
+                "presence custody retained"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_stream::RevisionCut;
@@ -444,6 +507,8 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     let native = reader.get_native(request, Arc::clone(&meter))?.await?;
     assert_eq!(native.body(), &bytes);
     assert!(native.head().revision.is_none());
+    let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+    assert!(reader.contains_native(request, Arc::clone(&meter))?.await?);
 
     // Original account selection still fences equal digests in another account.
     assert_eq!(
@@ -454,6 +519,9 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
             .map_err(|e| e.code),
         Err(ErrorCode::NotFound),
     );
+    let other = selected.account(b"other-account")?;
+    let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+    assert!(!other.contains_native(request, Arc::clone(&meter))?.await?);
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 0);
     // The same projection refuses a real writer; reads did not borrow authority.
     assert_eq!(
