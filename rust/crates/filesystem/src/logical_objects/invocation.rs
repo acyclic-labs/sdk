@@ -1,6 +1,30 @@
 //! Provider calls borrow the same accounting that admitted their requests.
 use super::*;
 
+/// Native reads admit their actual backing at the original physical producer.
+/// Ordinary providers need bounded scratch before dispatch instead.
+pub(super) fn read_capacity(work: &mut KernelAccounting<'_>) -> Result<u64, crate::FsError> {
+    let remaining = work.remaining()?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if work.native_work().is_some() {
+        return Ok(remaining.object_bytes_read);
+    }
+    Ok(remaining
+        .object_bytes_read
+        .min(remaining.peak_allocation_bytes))
+}
+
+pub(super) fn read_custody(
+    bytes: u64,
+    work: &mut KernelAccounting<'_>,
+) -> Result<KernelOwnedAllocation, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if work.native_work().is_some() {
+        return Ok(KernelOwnedAllocation::Standalone);
+    }
+    work.claim_owned(bytes, 0)
+}
+
 /// Consumes a completed batch while its original result storage remains funded.
 pub(super) trait BatchFinish<T>: acyclic_stream::ProviderTask {
     type Output;

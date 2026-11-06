@@ -1,0 +1,13 @@
+--- a/rust/crates/filesystem/src/logical_objects/invocation.rs
++++ b/rust/crates/filesystem/src/logical_objects/invocation.rs
+@@ -18,10 +18,6 @@
+     bytes: u64,
+     work: &mut KernelAccounting<'_>,
+ ) -> Result<KernelOwnedAllocation, crate::FsError> {
+-    #[cfg(not(target_arch = "wasm32"))]
+-    if work.native_work().is_some() {
+-        return Ok(KernelOwnedAllocation::Standalone);
+-    }
+     work.claim_owned(bytes, 0)
+ }
+ 

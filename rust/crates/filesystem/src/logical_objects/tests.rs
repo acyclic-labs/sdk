@@ -371,6 +371,47 @@ async fn native_object_io_attributes_canonical_bytes_once() -> Result<(), Box<dy
     let meter = original.runtime_meter();
     assert!(meter.admit_read(1).is_err());
     assert!(meter.admit_write(1).is_err());
+
+    // An unbounded request does not reserve its maximum a second time: the
+    // actual local producer admits only the returned backing on this ledger.
+    #[cfg(feature = "local")]
+    {
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                object_bytes_read: u64::MAX,
+                ..BUDGET
+            },
+            &cancel,
+        )
+        .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let root = tempfile::tempdir()?;
+        let provider =
+            acyclic_objects::LocalObjects::open(root.path(), Default::default(), None).await?;
+        let store = LogicalObjectStore::new(Arc::new(provider));
+        store
+            .put_hashed(
+                first.clone(),
+                &mut AuthorityWork::native(&original, &cancel),
+            )
+            .await?;
+        let read = store
+            .read(
+                first.object_id(),
+                u64::MAX,
+                &mut AuthorityWork::native(&original, &cancel),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "native read reserved the requested maximum instead of original backing: {error}"
+                )
+            });
+        assert_eq!(read.bytes, *first.bytes());
+        assert_eq!(original.receipt().object_bytes_read, 4);
+        drop(read);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
     Ok(())
 }
 
