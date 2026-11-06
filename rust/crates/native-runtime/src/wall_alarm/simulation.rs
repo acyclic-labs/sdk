@@ -12,7 +12,7 @@ struct Timer {
 
 #[derive(Default)]
 pub(crate) struct Simulated {
-    index: Arc<Mutex<Index>>,
+    pub(super) index: Mutex<Index>,
     timer: Mutex<Timer>,
 }
 
@@ -22,8 +22,7 @@ impl Simulated {
         deadline: u64,
         fire: AlarmCallback,
     ) -> io::Result<WallAlarm> {
-        let mut registration = WallAlarm::insert(&self.index, deadline, fire)?;
-        registration.owner = Some(self.clone());
+        let registration = Owner::Scoped(self.clone()).register(deadline, fire)?;
         self.changed();
         Ok(registration)
     }
@@ -126,7 +125,7 @@ mod tests {
     fn scoped_alarms_use_the_original_clock_and_retain_producer_loss() {
         let runtime = seeded_runtime(71).unwrap();
         let (schedule, _) = Schedule::seeded(71);
-        let (held, result) = runtime.block_on(async {
+        let (held, mut result) = runtime.block_on(async {
             tokio::time::pause();
             schedule
                 .scope(async {
@@ -157,7 +156,10 @@ mod tests {
                 .await
         });
         drop(schedule);
-        let error = result.blocking_recv().unwrap().unwrap_err();
+        let error = result
+            .try_recv()
+            .expect("original clock producer was dropped without settling its alarm")
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
         assert!(error.to_string().contains("step=wall-alarm-producer"));
         drop(held);
