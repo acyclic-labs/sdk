@@ -11,6 +11,7 @@
         "doctor-all-missing",
         "doctor-ok",
         "pty-first-run",
+        "explicit-credential-source",
         "output-destination-aliases",
         "text-responses"
       ]
