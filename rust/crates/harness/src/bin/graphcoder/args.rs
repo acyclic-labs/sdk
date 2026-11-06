@@ -188,14 +188,15 @@ impl Args {
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or_else(|| std::path::Path::new("."));
-            *path = std::fs::canonicalize(parent)
+            let mut resolved = std::fs::canonicalize(parent)
                 .map_err(|error| {
                     std::io::Error::new(
                         error.kind(),
                         format!("output files: resolve {}: {error}; recovery: graphcoder --output-format jsonl --output final.json exec 'TASK'", parent.display()),
                     )
-                })?
-                .join(name);
+                })?;
+            resolved.push(name);
+            *path = resolved;
         }
         // Every writer uses the resolved directory spelling when comparing
         // destinations and later replacing its entry.
