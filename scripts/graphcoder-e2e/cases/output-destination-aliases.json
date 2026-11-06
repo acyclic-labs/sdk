@@ -105,6 +105,28 @@
       "result.json": "previous export\n",
       "final.json": "done"
     },
+    "jsonl": {
+      "cursor.json": [
+        {
+          "version": 1,
+          "operation": "00000000-0000-0000-0000-000000000001",
+          "execution": {
+            "position": {
+              "input": 1,
+              "after": 0
+            }
+          }
+        }
+      ],
+      "exports/usage.jsonl": [
+        {
+          "version": 2,
+          "usage": {
+            "completed": true
+          }
+        }
+      ]
+    },
     "requests": 1
   }
 }
