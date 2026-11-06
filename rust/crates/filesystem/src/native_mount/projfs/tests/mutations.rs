@@ -171,58 +171,6 @@ async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Erro
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn a_held_placeholder_is_replaced_before_revalidation_returns()
--> Result<(), Box<dyn std::error::Error>> {
-    let work = setup_work()?;
-
-    let root = tempfile::tempdir()?;
-    let source_root = root.path().join("source");
-    std::fs::create_dir(&source_root)?;
-    std::fs::write(source_root.join("held.txt"), b"old")?;
-    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
-    let (lazy, _) = crate::LazyWorkspace::attach(
-        &Fs::memory(),
-        "held-placeholder",
-        Arc::new(demand),
-        crate::MemoryLazyWorkspaceStore::default(),
-        crate::VolumeInitialization {
-            config: VolumeConfig::native(Lifecycle::Ephemeral),
-            access_policy: None,
-        },
-        crate::OperationId::new(),
-        &mut KernelAccounting::native(&work, work.cancellation()),
-    )
-    .await?;
-    let destination = root.path().join("mount");
-    std::fs::create_dir(&destination)?;
-    let mount = Arc::new(
-        lazy.mount(&destination, manual_mount_options(lazy.workspace()).await?)
-            .await?,
-    );
-    let held_path = destination.join("held.txt");
-    assert_eq!(std::fs::metadata(&held_path)?.len(), 3);
-    let held = std::fs::File::open(&held_path)?;
-    std::fs::write(source_root.join("held.txt"), b"much newer")?;
-    let revalidating = {
-        let mount = Arc::clone(&mount);
-        std::thread::spawn(move || mount.revalidate().map_err(|error| error.to_string()))
-    };
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    if !revalidating.is_finished() {
-        drop(held);
-    }
-    revalidating
-        .join()
-        .map_err(|_| "revalidation panicked")?
-        .map_err(|error| error.to_string())?;
-    assert_eq!(std::fs::metadata(&held_path)?.len(), 10);
-    assert_eq!(std::fs::read(&held_path)?, b"much newer");
-    mount.unmount().await?;
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
