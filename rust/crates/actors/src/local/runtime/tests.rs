@@ -1941,17 +1941,22 @@ async fn run_limited(handler: Limited) -> Result<Outcome, Box<dyn std::error::Er
     Ok((failures, records(&*provider, "out/limited").await?))
 }
 
-fn refused(failures: &[(ActorReference, Error)], reason: &str) -> bool {
-    matches!(failures, [(_, Error::Invalid(found))] if found.contains(reason))
-}
-
 /// Manifest limits bind: a stalled handler is abandoned at its timeout and an
 /// oversized checkpoint is refused; neither consumes the input.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult {
     let stalled = run_limited(Limited::new(50, 1 << 16, true)?);
     let (failures, published) = stalled.await?;
-    assert!(refused(&failures, "timeout"), "{failures:?}");
+    assert!(
+        matches!(
+            failures.as_slice(),
+            [(
+                _,
+                Error::Handler(crate::guest::GuestError::HandlerTimeout { maximum_millis: 50 })
+            )]
+        ),
+        "{failures:?}"
+    );
     assert!(published.is_empty());
     // Control: the same package within its limits publishes.
     let (failures, published) = run_limited(Limited::new(10_000, 1 << 16, false)?).await?;
