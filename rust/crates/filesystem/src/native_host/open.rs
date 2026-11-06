@@ -17,7 +17,7 @@ pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
         &crate::CancellationToken::new(),
     );
     let mut open = || -> Result<File, DemandError> {
-        let parent = open_root_directory_handle(parent, &mut work)?;
+        let parent = open_root_directory_handle(parent, DirectoryAccess::Search, &mut work)?;
         #[cfg(windows)]
         directory_identity(&parent, &mut work)?;
         open_leaf(
