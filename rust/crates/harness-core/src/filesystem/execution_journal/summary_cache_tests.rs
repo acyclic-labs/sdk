@@ -19,31 +19,54 @@ fn seed(cache: &mut SummaryCache, operation: OperationId, io: &PreparationIo) ->
 
 #[test]
 fn cache_storage_keeps_its_original_ledger_and_releases_only_its_own_pool() -> Result<()> {
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let io = PreparationIo::from_budget(
-        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
-        &cancellation,
-    )?;
-    let observer = io.scoped()?;
-    let mut cache = SummaryCache::default();
-    seed(&mut cache, OperationId::new(), &io)?;
-    assert_eq!(io.owned_bytes()?, 0);
-    assert!(ledger_live(&io)? > 0);
-    observer.retain_owned(177)?;
-    drop(io);
-    let retained = cache
-        .io
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("cache lost its ledger".into()))?;
-    assert!(retained.shares_ledger(&observer));
-    assert!(retained.owned_bytes()? > 0);
-    assert_eq!(observer.owned_bytes()?, 177);
-    let original_live = ledger_live(&observer)?;
-    assert!(original_live > 177);
-    drop(cache);
-    let original_live = ledger_live(&observer)?;
-    assert_eq!(original_live, 177);
-    drop(observer);
+    for promote in [false, true] {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let io = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &cancellation,
+        )?;
+        let observer = io.scoped()?;
+        let mut cache = SummaryCache::default();
+        seed(&mut cache, OperationId::new(), &io)?;
+        if promote {
+            let inline_live = ledger_live(&io)?;
+            let mut edit = cache.edit();
+            let (summary, retained_io) = edit.parts();
+            summary.accept_verified(
+                (2, [4; 32], [5; 32]),
+                &ExecutionEvent::ToolFailed {
+                    step: 0,
+                    call_id: "rejected".into(),
+                    reason: crate::executor::ToolFailureKind::ExecutorRejected,
+                    cause: crate::executor::ToolFailureCause::of(
+                        &Error::Unauthorized("denied".into()),
+                        &mut None,
+                    )?,
+                },
+                None,
+                Limits::default(),
+                retained_io,
+            )?;
+            edit.finish();
+            assert!(ledger_live(&io)? > inline_live);
+        }
+        assert_eq!(io.owned_bytes()?, 0);
+        assert!(ledger_live(&io)? > 0);
+        observer.retain_owned(177)?;
+        drop(io);
+        let retained = cache
+            .io
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("cache lost its ledger".into()))?;
+        assert!(retained.shares_ledger(&observer));
+        assert_eq!(observer.owned_bytes()?, 177);
+        let original_live = ledger_live(&observer)?;
+        assert!(original_live > 177);
+        drop(cache);
+        let original_live = ledger_live(&observer)?;
+        assert_eq!(original_live, 177);
+        drop(observer);
+    }
     Ok(())
 }
 
