@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
+import { collect, runSuites, variants, acceptanceBinding } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
@@ -10,6 +10,8 @@ import {tmpdir} from 'node:os';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { schedule } from "./process.mjs";
+import { inventory, readCoverage } from "./coverage.mjs";
+import { fuzz, fuzzAdmission } from "./serial.fuzz.mjs";
 
 test("serial collection and command rejection retain original native failure evidence", async () => {
   const root = await mkdtemp(join(tmpdir(), "serial-failure-"));
@@ -144,38 +146,7 @@ test('installed host admission binds second trees, nested hidden files and link 
 });
 
 test('partition provenance includes plugin executables and host helper source',async()=>{
- const root=await mkdtemp(join(tmpdir(),'acceptance-binding-'));
- try {
-  const directory=join(root,'scripts/graphcoder-e2e'),hosts=join(root,'plugin/tests/hosts');
-  for(const path of [directory,hosts,join(root,'scripts/graphcoder-pty')])await mkdir(path,{recursive:true});
-  const binary=join(root,'graphcoder'),mock=join(root,'mock'),plugin=join(root,'plugin-bin'),codex=join(root,'codex');
-  for(const path of [binary,mock,plugin,codex])await writeFile(path,'original');
-  const pluginBytes=Buffer.alloc(2*1024*1024+1,0x37);
-  await writeFile(plugin,pluginBytes);
-  const helper=join(hosts,'qualify-scripted.mjs');await writeFile(helper,'original helper');
-  // These identity-only inputs refer to the actual running executable; no
-  // invented native-tool output or executable image is needed for the check.
-  const env={E2E_PLUGIN_BINARY:plugin,E2E_CODEX:codex,E2E_BUN:process.execPath,
-    E2E_PROCESS_HOST:process.execPath,E2E_CONPTY_HOST:process.execPath};
-  const before=await acceptanceBinding(directory,binary,mock,[],env);
-  assert.equal(before.executables.E2E_PLUGIN_BINARY,createHash('sha256').update(pluginBytes).digest('hex'));
-  assert.equal(before.source['file-digest.mjs'],createHash('sha256')
-    .update(await readFile(new URL('../file-digest.mjs',import.meta.url))).digest('hex'));
-  assert.match(before.executables.NODE,/^[a-f0-9]{64}$/);
-  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST'])
-    assert.equal(before.executables[name],before.executables.NODE,`${name} must bind its admitted executable`);
-  pluginBytes[pluginBytes.length-1]^=1;
-  await writeFile(plugin,pluginBytes);
-  const changedPlugin=await acceptanceBinding(directory,binary,mock,[],env);
-  assert.notDeepEqual(changedPlugin,before,'mixed plugin binaries must not share provenance');
-  await writeFile(codex,'different native host');
-  const changedHost=await acceptanceBinding(directory,binary,mock,[],env);
-  assert.notDeepEqual(changedHost,changedPlugin,'mixed native hosts must not share provenance');
-  await writeFile(helper,'different helper');
-  assert.notDeepEqual(await acceptanceBinding(directory,binary,mock,[],env),changedHost,'mixed host helpers must not share provenance');
-  await rm(plugin);
-  await assert.rejects(acceptanceBinding(directory,binary,mock,[],env),{code:'ENOENT'});
- }finally{await rm(root,{recursive:true,force:true});}
+ await fuzzAdmission(Buffer.alloc(0));
 });
 
 test("Windows starts the next case only after the previous case has exited", async () => {
@@ -193,40 +164,7 @@ test("Windows starts the next case only after the previous case has exited", asy
 });
 
 test("serial qualification requires every OS case, volume variant, exit and completed suite", () => {
-  const cases = [{ id: "case", ntfs: true }], coverage = { pass: true };
-  assert.deepEqual(variants(cases, "win32").map(test => test.id), ["case", "case-ntfs"]);
-  assert.deepEqual(variants(cases, "linux").map(test => test.id), ["case"]);
-  // Each filesystem variant is its own suite and so owns its own envelope.
-  const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, report: { platform: "win32", selected: [id],
-    qualification: false, coverage, seconds: 0.2,
-    results: [{ case: id, platform: "win32", status: "pass" }] } }));
-  assert.equal(collect(cases, receipts, "win32", coverage).pass, true);
-  for (const seconds of [0.2, 10, 30, 1e6]) {
-    const elapsed = structuredClone(receipts);
-    for (const receipt of elapsed) receipt.report.seconds = seconds;
-    assert.equal(collect(cases, elapsed, "win32", coverage).pass, true,
-      `completion is unchanged by elapsed time (${seconds}s)`);
-  }
-  assert.throws(() => collect(cases, [], "win32", coverage), /every case variant/);
-  const shared = structuredClone(receipts[0]);
-  shared.report.results.push({ case: "case-ntfs", platform: "win32", status: "pass" });
-  assert.throws(() => collect(cases, [shared], "win32", coverage), /every case variant/,
-    "variants sharing one suite envelope cannot qualify");
-  for (const edit of [report => report.results.pop(), report => report.results.push(report.results[0]),
-    report => report.platform = "linux", report => report.selected = [],
-    report => report.qualification = true, report => report.coverage = { pass: false },
-    report => report.seconds = null]) {
-    const changed = structuredClone(receipts); edit(changed[0].report);
-    assert.equal(collect(cases, changed, "win32", coverage).pass, false);
-  }
-  for (const edit of [receipt => receipt.code = 1,
-    receipt => receipt.report.results[0].status = "fail"]) {
-    const changed = structuredClone(receipts); edit(changed[0]);
-    assert.equal(collect(cases, changed, "win32", coverage).pass, false);
-  }
-  const incomplete = { pass: false }, changed = structuredClone(receipts);
-  changed[0].report.coverage = incomplete;
-  assert.equal(collect(cases, changed, "win32", incomplete).pass, false);
+  for (const seed of [Buffer.from([0]), Buffer.from([1]), Buffer.from([2]), Buffer.from("1/2")]) fuzz(seed);
 });
 
 test("a missing or malformed suite receipt cannot stop later cases or erase the aggregate", async () => {
@@ -234,7 +172,7 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   const launched = [];
   const receipts = await runSuites(cases, async test => {
     launched.push(test.id);
-    return { code: test.id === "missing" ? 1 : 0,
+    return { code: test.id === "missing" ? 1 : 0, signal: null,
       stdout: `${test.id}: complete capture`, stderr: `${test.id}: diagnostic` };
   }, async test => {
     if (test.id === "missing") throw new Error("ENOENT: missing matrix.json");
@@ -254,56 +192,64 @@ test("a missing or malformed suite receipt cannot stop later cases or erase the 
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(report)));
 });
 
-test("partitions preserve the complete ordered inventory without empty or overlapping work", () => {
-  const cases = Array.from({ length: 5 }, (_, index) => ({ id: String(index) }));
-  assert.deepEqual(partition(cases).cases, cases);
-  for (const count of [1, 2, 3, 5]) {
-    const parts = Array.from({ length: count }, (_, index) => partition(cases, `${index}/${count}`));
-    assert.deepEqual(parts.flatMap(part => part.cases), cases);
-    assert.ok(parts.every(part => part.cases.length > 0));
+test("matrix command rejects stale receipts against its intended inputs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "matrix-identity-")), scope = new Processes();
+  const directory = dirname(fileURLToPath(import.meta.url)), cases = inventory(), coverage = readCoverage(cases);
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith("E2E_")
+    && !["E2E_CODEX", "E2E_CLAUDE", "E2E_PI"].includes(name)) delete env[name];
+  try {
+    // Identity-only inputs use the actual Node executable. Collection launches
+    // no case; this generated stale receipt cannot claim native acceptance.
+    const digest = "0".repeat(64), binding = { binary: digest, mock: digest,
+      cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex"),
+      executables: { NODE: digest }, source: { "serial.mjs": digest } };
+    const input = join(root, "partition.json"), destination = join(root, "stale");
+    await writeFile(input, JSON.stringify({ index: 0, count: 1, platform: process.platform,
+      binding, coverage }));
+    const args = [join(directory, "serial.mjs"), "--collect", process.execPath, process.execPath, destination, input];
+    const result = await scope.run(process.execPath, args, { env });
+    assert.equal(result.code, 1);
+    const failure = JSON.parse(result.stderr);
+    assert.match(failure.error, /expected acceptance identity/);
+    assert.equal(failure.step, "serial matrix admission or collection");
+    assert.deepEqual(failure.recovery.slice(1), args);
+    await assert.rejects(readFile(join(destination, "matrix.json")), { code: "ENOENT" });
+  } finally {
+    await scope.close();
+    await rm(root, { recursive: true, force: true });
   }
-  for (const value of ["1/1", "0/0", "0/6", "-1/2", "0.5/2", "0/9007199254740992"])
-    assert.throws(() => partition(cases, value));
 });
 
-test("partition collection fences runtime, source, definitions and exact case receipts", () => {
-  const cases = [{ id: "first" }, { id: "second" }], coverage = { pass: true };
-  const hash = value => createHash("sha256").update(value).digest("hex");
-  const binding = { binary: hash("binary"), mock: hash("mock"),
-    executables: { NODE: hash("node"), E2E_BUN: hash("bun") },
-    cases: hash(JSON.stringify(cases)), source: { "serial.mjs": hash("source") } };
-  const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
-    inventory: cases.map(item => item.id), selected: [item.id], coverage,
-    receipts: [{ code: 0, report: { platform: "linux", selected: [item.id], qualification: false,
-      coverage, seconds: 0.1,
-      results: [{ case: item.id, platform: "linux", status: "pass" }] } }] }));
-  assert.equal(collectPartitions(cases, [...bundles].reverse(), "linux", coverage).pass, true);
-  assert.throws(() => collectPartitions(cases, [bundles[0]], "linux", coverage), /every partition/);
-  for (const edit of [bundle => bundle.index = 0, bundle => bundle.count = 3,
-    bundle => bundle.platform = "win32", bundle => bundle.binding.binary = hash("changed"),
-    bundle => bundle.binding.source["serial.mjs"] = hash("changed"),
-    bundle => bundle.binding.executables.E2E_BUN = hash("changed"),
-    bundle => bundle.inventory.reverse(), bundle => bundle.selected = ["first"],
-    bundle => bundle.receipts = [], bundle => bundle.coverage = { pass: false }]) {
-    // Give each bundle its own binding, as real receipt files do.
-    const changed = bundles.map(bundle => structuredClone(bundle)); edit(changed[1]);
-    assert.throws(() => collectPartitions(cases, changed, "linux", coverage));
+test("matrix command binds its intended executables and retains refused receipts", async () => {
+  const root = await mkdtemp(join(tmpdir(), "matrix-identity-")), scope = new Processes();
+  const directory = dirname(fileURLToPath(import.meta.url)), cases = inventory(), coverage = readCoverage(cases);
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith("E2E_")
+    && !["E2E_CODEX", "E2E_CLAUDE", "E2E_PI"].includes(name)) delete env[name];
+  try {
+    // Identity-only inputs use the actual Node executable. Collection launches
+    // no case; these generated internal refusals never claim native acceptance.
+    const binding = await acceptanceBinding(directory, process.execPath, process.execPath, cases, env);
+    const bundle = { index: 0, count: 1, platform: process.platform, binding, coverage,
+      inventory: cases.map(test => test.id), selected: cases.map(test => test.id), seconds: .1,
+      receipts: variants(cases, process.platform).map(test => ({ code: 1, report: {
+        platform: process.platform, selected: [test.id], qualification: false, coverage,
+        seconds: .1,
+        results: [{ case: test.id, platform: process.platform, status: "refused" }] } })) };
+    const input = join(root, "partition.json");
+    await writeFile(input, JSON.stringify(bundle));
+    const command = destination => scope.run(process.execPath,
+      [join(directory, "serial.mjs"), "--collect", process.execPath, process.execPath, destination, input], { env });
+    const destination = join(root, "collected"), result = await command(destination);
+    assert.equal(result.code, 1, result.stderr);
+    const report = JSON.parse(await readFile(join(destination, "matrix.json"), "utf8"));
+    assert.deepEqual(JSON.parse(result.stdout), report);
+    assert.deepEqual(report.binding, binding);
+    assert.equal(report.pass, false);
+    assert.deepEqual(report.results.map(row => row.status), bundle.receipts.map(() => "refused"));
+  } finally {
+    await scope.close();
+    await rm(root, { recursive: true, force: true });
   }
-  const changed = structuredClone(cases); changed[0].changed = true;
-  assert.throws(() => collectPartitions(changed, bundles, "linux", coverage), /definitions/);
-  const missing = bundles.map(bundle => structuredClone(bundle)); delete missing[0].binding;
-  assert.throws(() => collectPartitions(cases, missing, "linux", coverage), /identity/);
-  const missingRuntime = bundles.map(bundle => structuredClone(bundle));
-  for (const bundle of missingRuntime) delete bundle.binding.executables.NODE;
-  assert.throws(() => collectPartitions(cases, missingRuntime, "linux", coverage), /Node identity/);
-  // Agreement between partitions cannot turn absent provenance into a digest.
-  // Both bundles carry the same malformed value, so equality alone accepts it.
-  for (const source of [[], [hash("source")], { "serial.mjs": null },
-    { "serial.mjs": true }, { "serial.mjs": "not-a-sha256" }, { "": hash("source") }]) {
-    const invalid = bundles.map(bundle => structuredClone(bundle));
-    for (const bundle of invalid) bundle.binding.source = source;
-    assert.throws(() => collectPartitions(cases, invalid, "linux", coverage), /acceptance source/);
-  }
-  const red = structuredClone(bundles); red[1].receipts[0].code = 1;
-  assert.equal(collectPartitions(cases, red, "linux", coverage).pass, false);
 });

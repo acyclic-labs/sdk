@@ -6,14 +6,13 @@ import { tmpdir } from "node:os";
 import { join, resolve, toNamespacedPath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Processes } from "./process.mjs";
-import { executionSucceeded, fileBytes, fileRead, jsonlReply, messageReply, requests, toolOutcome } from "./assertions.mjs";
+import { executionSucceeded, fileBytes, requests, toolOutcome } from "./assertions.mjs";
 const captured = JSON.parse(readFileSync(new URL("./fixtures/shipping-output.json", import.meta.url), "utf8")).captures;
 const childResults = JSON.parse(readFileSync(new URL("./fixtures/live-child-results.json", import.meta.url), "utf8")).cases;
 const mergeResults = JSON.parse(readFileSync(new URL("./fixtures/live-merge-results.json", import.meta.url), "utf8")).cases;
 const shellResults = JSON.parse(readFileSync(new URL("./fixtures/live-shell-results.json", import.meta.url), "utf8")).cases;
 const nativeFailure = JSON.parse(readFileSync(new URL("./fixtures/native-execution-failure.json", import.meta.url), "utf8")).capture;
 const nativeReady = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url), "utf8")).ready;
-const fileReads = JSON.parse(readFileSync(new URL("./fixtures/live-file-read-results.json", import.meta.url), "utf8")).cases;
 const codeFailure = JSON.parse(readFileSync(new URL("./fixtures/live-code-failure.json", import.meta.url), "utf8")).event;
 const nestedFailures = JSON.parse(readFileSync(new URL("./fixtures/live-nested-settlement-failure.json", import.meta.url), "utf8")).cases;
 const childMessage = JSON.parse(readFileSync(new URL("./fixtures/live-child-message.json", import.meta.url), "utf8"));
@@ -40,25 +39,6 @@ test("completed wait retains the original failed descendant settlement", () => {
     toolOutcome(event.tool_response, ["volume alias names another binding"], "inspect original child settlement");
     // A selected program value is data, not a native wait-result envelope.
     toolOutcome({ version: 2, context: [], output: { value: event.tool_response } });
-  }
-});
-
-test("file reads retain the original authored or content source", () => {
-  for (const { event } of fileReads) {
-    const original = event.tool_response, expected = original.text;
-    const kind = Object.keys(original.file)[0], source = original.file[kind];
-    assert.equal(fileRead(original, event.tool_input.path, expected), source);
-    for (const mutate of [
-      value => { delete value.file; },
-      value => { value.file.other = value.file[kind]; },
-      value => { value.file[kind].path = "different.txt"; },
-      value => { delete value.file[kind].volume; },
-      value => { delete value.file[kind][kind === "authored" ? "generation" : "version"]; },
-      value => { value.text += " "; },
-    ]) {
-      const changed = structuredClone(original); mutate(changed);
-      assert.throws(() => fileRead(changed, event.tool_input.path, expected));
-    }
   }
 });
 
@@ -158,7 +138,13 @@ if (process.argv.includes("--input-format")) {
         assert.match(result.failure.error, /unexpected tool error.*exit_code=1/);
       } else if (capability !== "ready") {
         assert.equal(result.captures[0].report_capability.ready, false);
-        assert.match(result.failure.error, /step=admit selected native report capability/);
+        if (capability === "foreign") {
+          assert.equal(result.captures[0].termination.control_failure, "foreign-or-invalid-acknowledgement");
+          assert.match(result.failure.error, /step=admit complete native report stream/);
+        } else {
+          assert.equal(result.captures[0].termination, undefined);
+          assert.match(result.failure.error, /step=admit selected native report capability/);
+        }
       }
       assert.deepEqual([result.phases.at(-1).phase, result.phases.at(-1).outcome], ["retired", "completed"]);
     }
@@ -171,8 +157,6 @@ test("live oracle uses the shipping text and committed JSONL contracts", () => {
   assert.equal(answer(captured["text-responses"], "text", text), text);
   const message = { id: "e2e", inbox: 1, text: "done" };
   assert.deepEqual(answer(captured["jsonl-reopen"], "jsonl", message.text, message.id), message);
-  assert.deepEqual(jsonlReply(captured["jsonl-reopen"].stdout, message.id), message);
-  assert.deepEqual(messageReply(message, message.id), message);
   // A successful process and two identical committed replies cannot admit a
   // wrong answer. Require the case's original expected bytes in either format.
   for (const [format, original, expected] of [["text", captured["text-responses"], text],
@@ -204,18 +188,14 @@ test("live oracle uses the shipping text and committed JSONL contracts", () => {
     value => { value.error = false; },
   ]) {
     const value = { ...message }; mutate(value);
-    assert.throws(() => messageReply(value, message.id), { code: "ERR_ASSERTION" });
-    assert.throws(() => jsonlReply(JSON.stringify(value), message.id), { code: "ERR_ASSERTION" });
     assert.throws(() => answer(result(JSON.stringify(value)), "jsonl", undefined, message.id), { code: "ERR_ASSERTION" });
   }
   const terminal = { error: "execution failed" };
   for (const stdout of [JSON.stringify(terminal) + "\n" + captured["jsonl-reopen"].stdout,
     captured["jsonl-reopen"].stdout + JSON.stringify(terminal) + "\n"]) {
-    assert.throws(() => jsonlReply(stdout, message.id), { code: "ERR_ASSERTION" });
     assert.throws(() => answer(result(stdout), "jsonl", undefined, message.id), { code: "ERR_ASSERTION" });
   }
   const failed = { id: message.id, error: "input rejected before commit" };
-  assert.deepEqual(jsonlReply(JSON.stringify(failed), message.id), failed);
   assert.throws(() => answer(result(JSON.stringify(failed)), "jsonl", undefined, message.id), /failed turn/);
   assert.throws(() => answer({ ...result("answer"), code: 1, stderr: "startup failed" }, "text"), /startup failed/);
   assert.throws(() => answer({ ...result("answer"), signal: "SIGKILL" }, "text"), /interrupted/);

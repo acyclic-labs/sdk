@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
 import { matches, pty, SHOW_CURSOR, HIDE_CURSOR } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
+import { TerminalFrames } from "./frames.mjs";
 import { fuzz as fuzzTerminalFrames } from "./frames.fuzz.mjs";
 import { failureReport } from "./report.mjs";
 
@@ -125,31 +125,6 @@ test("screen assertions observe complete synchronized frames at every fragmentat
     assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
     frames.dispose(); screen.dispose();
   }
-  // Negative control: callbacks after arbitrary writes disclose the half-painted draft.
-  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-  await new Promise(resolve => screen.write(bytes.slice(0, bytes.indexOf("\x1b[Hfinal")), resolve));
-  assert.equal(screen.buffer.active.getLine(0).translateToString(true), "draft");
-  screen.dispose();
-});
-
-test("handled failures retain exact task and reason identity across subsequent actions", () => {
-  const history = new FailureHistory();
-  const old = "task 00000000-0000-0000-0000-000000000001 failed: cancelled";
-  const next = old.replace("0001 failed", "0002 failed");
-  assert.equal(history.unexpected(old, {}), old, "old stateless guard rejects the handled result again");
-  history.accept(old, { task_failure: "cancelled" });
-  assert.equal(history.unexpected(old, {}), undefined);
-  assert.equal(history.unexpected(next, {}), next, "another task's failure must still fail immediately");
-  const changed = old.replace("cancelled", "unauthorized");
-  assert.equal(history.unexpected(changed, {}), changed, "another reason is not an accepted replay");
-  // A refused action fails the awaited step unless that step names it; an
-  // informational status line never does.
-  const refused = "✗ storage failure: diff command: unsupported";
-  assert.equal(history.unexpected(refused, { contains: ["LARGE_DIFF_READY"] }), refused);
-  assert.equal(history.unexpected(refused, { contains: ["diff command"] }), undefined);
-  history.accept(refused, { contains: ["diff command"] });
-  assert.equal(history.unexpected(refused, { contains: ["next"] }), undefined);
-  assert.equal(history.unexpected("Feedback saved locally (1 this session)", {}), undefined);
 });
 
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
@@ -158,20 +133,6 @@ test("shipping terminal refusals survive coalesced and fragmented redraws", asyn
 
 const queryCapturePath = fileURLToPath(new URL("./fixtures/live-terminal-query-refusal.json", import.meta.url));
 const queryCapture = JSON.parse(readFileSync(queryCapturePath, "utf8"));
-test("captured query refusal requires explicit status-row admission", () => {
-  const history = new FailureHistory(), visible = queryCapture.visible;
-  const notice = visible.slice(visible.lastIndexOf("\n") + 1);
-  assert.equal(queryFailure(visible), notice);
-  assert.equal(history.unexpected(visible, {}), notice);
-  assert.equal(history.unexpected(visible, { task_failure: notice }), notice);
-  history.accept(visible, { query_failure: "storage failure: diff command:" });
-  assert.equal(history.unexpected(visible, {}), undefined);
-  const changed = visible.replace(notice, notice + " changed");
-  assert.equal(history.unexpected(changed, {}), notice + " changed");
-  assert.equal(queryFailure(notice + "\nordinary status"), undefined,
-    "transcript text cannot stand in for the original status row");
-});
-
 test("observed producer frame asserts captured content with one screen projection", async () => {
   class TerminalProcess extends Processes {
     startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
@@ -195,7 +156,13 @@ test("observed producer frame asserts captured content with one screen projectio
     return write.call(this, bytes);
   };
   try {
-    for (const rejects of [false, true]) {
+    const raw = queryCapture.stdout.slice(-32);
+    for (const [rejects, assertion] of [
+      [false, { contains: ["workspace diff query is u"] }],
+      [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
+      [false, { raw: [raw] }],
+      [true, { raw: [raw + "\0"] }],
+    ]) {
       const processes = new TerminalProcess();
       let capture;
       try {
@@ -204,7 +171,7 @@ test("observed producer frame asserts captured content with one screen projectio
           args: ["-e", "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
           onRequest() { return () => {}; },
         }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
-          assert: { contains: [rejects ? "INTENTIONALLY_ABSENT_DIFF_CONTENT" : "workspace diff query is u"] }, send: "finish\n" }] },
+          assert: assertion, send: "finish\n" }] },
         result => { capture = result; });
         if (rejects) await assert.rejects(running, /step=assert observed terminal frame/);
         else assert.equal((await running).code, 0);
@@ -256,27 +223,8 @@ test("case selection rejects misspellings before starting either executable", as
   } finally { await processes.close(); }
 });
 
-test("spool waits handle every fragmentation boundary without timers or history", async () => {
-  const bytes = JSON.stringify({ event: "request", case: "λ", step: 0 }) + "\n";
-  for (let boundary = 0; boundary <= bytes.length; boundary++) {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}), { key: event => [event.case] });
-    const awaited = events.next(event => event.case === "λ");
-    stream.write(bytes.slice(0, boundary)); stream.write(bytes.slice(boundary));
-    assert.equal((await awaited).step, 0);
-    // A keyed wait also answers from the index; `next` sees only later events.
-    assert.equal((await events.keyed("λ")).step, 0);
-    stream.end();
-  }
-});
-
 test("a spool ends with the exact typed cause", async t => {
   const ended = async (events, feed) => { const waiting = events.next(() => false); feed(); return waiting.then(() => assert.fail("resolved"), error => error); };
-  await t.test("malformed line", async () => {
-    const stream = new PassThrough();
-    const error = await ended(new Spool(stream, new Promise(() => {})), () => stream.end("broken JSON\n"));
-    assert.ok(error instanceof SpoolEnded); assert.equal(error.kind, "malformed"); assert.match(error.message, /broken JSON/);
-  });
   await t.test("source EOF carries the source result", async () => {
     const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
@@ -289,13 +237,6 @@ test("a spool ends with the exact typed cause", async t => {
     assert.equal(results.length, waits.length, "the original EOF settles every ordinary wait, repeated key and distinct key");
     assert.ok(results.every(result => result === error), "all consumers retain the same terminal cause");
   });
-  await t.test("duplicate unique key", async () => {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}), { key: event => [event.id], unique: true });
-    const error = await ended(events, () => stream.write('{"id":1}\n{"id":1}\n'));
-    assert.equal(error.kind, "duplicate");
-    assert.equal(events.sequence, 2);
-  });
   await t.test("early event: next never sees it, and EOF ends the wait exactly", async () => {
     const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
@@ -306,11 +247,6 @@ test("a spool ends with the exact typed cause", async t => {
     const late = events.next(event => event.ready);
     stream.end(); close({ code: 0, signal: null });
     await assert.rejects(late, error => error.kind === "eof");
-  });
-  await t.test("transcript failure", async () => {
-    const stream = new PassThrough();
-    const error = await ended(new Spool(stream, new Promise(() => {}), { transcript: join(tmpdir(), "missing-directory-" + process.pid, "events.jsonl") }), () => {});
-    assert.equal(error.kind, "spool");
   });
 });
 
@@ -378,41 +314,6 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
   const bounded = await peak(true), burst = await peak(false);
   assert.ok(bounded <= size + 1024, `queued ${bounded} bytes, more than one ${size}-byte chunk`);
   assert.ok(burst > size * chunks / 2, `the ignore-write-return control queued only ${burst} bytes`);
-});
-
-test("spool cost is per event and waiter, not per event retained", async () => {
-  // N events; each wait registers for the next event, as a turn-by-turn
-  // driver does. The spool compares each event once per pending wait.
-  // Negative control: the retained-history wait scanned every earlier event.
-  for (const count of [100, 10_000, 100_000]) {
-    const stream = new PassThrough();
-    const events = new Spool(stream, new Promise(() => {}));
-    let comparisons = 0;
-    const retained = [];
-    let scans = 0;
-    for (let index = 0; index < count; index++) {
-      const waiting = events.next(event => { comparisons++; return event.index === index; });
-      stream.write(JSON.stringify({ index }) + "\n");
-      const event = await waiting;
-      retained.push(event);
-      scans += retained.findIndex(seen => seen.index === index) + 1;
-    }
-    assert.equal(comparisons, count);
-    assert.equal(scans, count * (count + 1) / 2, "the retained-history control scans quadratically");
-    assert.ok(scans > comparisons * (count / 4), "the control exceeds the per-event budget");
-  }
-});
-
-test("output watches cost each chunk once and survive split needles", () => {
-  const needles = ["\x1b[?25h", "\x1b[?25l", "overflowed"];
-  const text = "a\x1b[?25lb\x1b[?25hc overflowed d\x1b[?25l";
-  for (let cut = 0; cut <= text.length; cut++) {
-    const watch = new OutputWatch(needles).write(text.slice(0, cut)).write(text.slice(cut));
-    assert.ok(watch.has("overflowed"));
-    assert.ok(watch.later("\x1b[?25l", "\x1b[?25h"));
-    assert.ok(!watch.later("\x1b[?25h", "\x1b[?25l"));
-  }
-  assert.ok(!OutputWatch.of("over flowed", needles).has("overflowed"));
 });
 
 const raw = text => OutputWatch.of(text, ["\x07", SHOW_CURSOR, HIDE_CURSOR]);

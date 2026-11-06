@@ -448,10 +448,10 @@ export class Spool {
       stream.once("close", () => { if (!stream.readableEnded) resolve(); });
     });
     stream.pipe(sink);
-    stream.once("error", error => this.#settle(new SpoolEnded("source", error.message, error)));
+    stream.once("error", error => this.#settle(new SpoolEnded("source", "source stream failed", error)));
     // EOF only after every line the source produced has been taken.
     closed.then(result => drained.then(() => this.#settle(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result))),
-      error => this.#settle(new SpoolEnded("source", error.message, error)));
+      error => this.#settle(new SpoolEnded("source", "source completion failed", error)));
   }
   // Why the spool ended, or undefined while it is open.
   get ended() { return this.#state.cause; }
@@ -497,14 +497,14 @@ export class Spool {
         this.#pending.delete(wait); wait.resolve(event);
       }
     } catch (error) {
-      this.#settle(new SpoolEnded("consumer", `step=dispatch event ${this.sequence}: ${error?.message ?? String(error)}; recovery=repair the event callback and rerun ${JSON.stringify(process.argv)}`, error));
+      this.#settle(new SpoolEnded("consumer", `step=dispatch event ${this.sequence}; recovery=repair the event callback and rerun ${JSON.stringify(process.argv)}`, error));
     }
     return room;
   }
   // A transcript failure: latched for history even after another ending,
   // and the end of the spool.
   #break(error) {
-    this.#broken ??= new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error);
+    this.#broken ??= new SpoolEnded("spool", `transcript ${this.#path ?? "sink"} failed`, error);
     for (const wait of this.#reads) wait.reject(this.#broken);
     this.#settle(this.#broken);
   }
