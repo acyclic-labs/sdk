@@ -422,6 +422,20 @@ mod tests {
             assert_eq!(parsed, descendant);
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
+            // Addressing borrows the canonical identity and root; owning either
+            // again is the retained allocation negative control.
+            let (_, status_work) = acyclic_test_support::differential(
+                || stream(&format!("{STATUSES}/{}", parsed.id())),
+                || parsed.status(),
+            );
+            let (_, target_work) = acyclic_test_support::differential(
+                || stream(&format!("{}/{TARGETS}/pc", parsed.tree_root().text)),
+                || parsed.target("pc"),
+            );
+            for [former, current] in [status_work, target_work] {
+                assert_eq!(current.count_total + 1, former.count_total);
+                assert!(current.bytes_total < former.bytes_total);
+            }
             let parent = parsed.parent().expect("nested path");
             let mut foreign_parent = foreign.tree_root();
             for _ in 0..parent.depth() {
