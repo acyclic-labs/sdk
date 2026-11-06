@@ -1,0 +1,20 @@
+diff --git a/rust/crates/actors/src/local/runtime/clock.rs b/rust/crates/actors/src/local/runtime/clock.rs
+--- a/rust/crates/actors/src/local/runtime/clock.rs
++++ b/rust/crates/actors/src/local/runtime/clock.rs
+@@ -112,9 +112,11 @@ impl Clock for ControlledClock {
+ }
+ 
+ /// The original platform deadline, including registration and producer failure.
+-pub(super) async fn sleep(milliseconds: u64) -> Result<(), ClockError> {
+-    PlatformExecutor
+-        .sleep(milliseconds)
+-        .await
+-        .map_err(ClockError::from)
++pub(super) fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, Result<(), ClockError>> {
++    Box::pin(async move {
++        PlatformExecutor
++            .sleep(milliseconds)
++            .await
++            .map_err(ClockError::from)
++    })
+ }
