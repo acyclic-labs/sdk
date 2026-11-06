@@ -13,8 +13,8 @@ use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-mod clock;
 mod checkpoint;
+mod clock;
 mod completion;
 mod drain;
 mod invocation_failure;
@@ -1964,7 +1964,16 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     );
     assert_eq!(published, vec![Bytes::from_static(b"r0")]);
     let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;
-    assert!(refused(&failures, "checkpoint"), "{failures:?}");
+    assert!(
+        matches!(
+            failures.as_slice(),
+            [(
+                _,
+                Error::Handler(crate::guest::GuestError::CheckpointLimit { maximum: 4 })
+            )]
+        ),
+        "{failures:?}"
+    );
     assert!(published.is_empty());
     Ok(())
 }
