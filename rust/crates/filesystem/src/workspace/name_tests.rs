@@ -308,11 +308,15 @@ proptest! {
     // visit/copy traces; compare against raw main as an admission guarantee.
     #[test]
     fn independent_parser_matches_outputs_errors_and_every_observed_phase(
-        text in prop::collection::vec(any::<char>(), 0..300).prop_map(|c| c.into_iter().collect::<String>()),
+        text in prop_oneof![
+            prop::collection::vec(any::<char>(), 0..300).prop_map(|c| c.into_iter().collect::<String>()),
+            "[a-zA-Z0-9_-]{1,255}",
+        ],
         items in 0_u64..1025, copies in 0_u64..1025,
         operations in 0_u64..5, peak in 0_u64..4097,
         mode in 0_u8..4, recheck in any::<bool>(), failure in 0_u8..6,
     ) {
+        name_fuzz::check_workspace_name(text.as_bytes());
         let quota = WorkBudget { items_examined: items, bytes_copied: copies,
             allocation_operations: operations, peak_allocation_bytes: peak,
             ..WorkBudget::UNBOUNDED };
