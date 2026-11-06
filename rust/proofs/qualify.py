@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -96,6 +96,13 @@ elif claim == "borrowed-budget":
     test = "performance::tests::native::borrowed::completed_kernel_work_borrows_the_original_budget_without_allocating"
     diagnostic = "verification copied the original budget"
     features = []
+elif claim == "view-demand":
+    source = "rust/crates/harness-client/src/demand.rs"
+    crate = "acyclic-harness-client"
+    test = "view_capacity_depends_only_on_distinct_interest"
+    diagnostic = "distinct-interest admission:"
+    features = []
+    target = ["--test", "demand"]
 else:
     source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
     crate = "acyclic-fs"
