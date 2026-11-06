@@ -1,8 +1,8 @@
 --- a/rust/crates/objects/src/native.rs
 +++ b/rust/crates/objects/src/native.rs
-@@ -308,9 +308,7 @@
-     native_future(&meter, async move {
-         let _custody = custody;
+@@ -311,9 +311,7 @@
+         let (requests, custody) = requests.split();
+         _custody = custody;
          let meter = &batch_meter;
 -        // Keep the physical vector before its credit on every exit, including
 -        // withdrawal while the driver still holds incomplete members.
@@ -11,7 +11,7 @@
          crate::batch::drive(
              requests.into_iter(),
              crate::BATCH_WINDOW,
-@@ -320,10 +318,10 @@
+@@ -323,10 +321,10 @@
                  let account = account.over(&medium);
                  checked(&medium, account.get_inner(digest, range, maximum).await)
              },
@@ -24,16 +24,16 @@
      })
  }
  
-@@ -364,7 +362,7 @@
-     native_future(&meter, async move {
-         let _custody = custody;
+@@ -373,7 +371,7 @@
+         let (requests, custody) = requests.split();
+         _custody = custody;
          let meter = &batch_meter;
 -        let mut results = results(requests.len(), meter)?;
 +        let (mut values, allocation) = results(requests.len(), meter)?;
          crate::batch::drive(
              requests.into_iter(),
              window,
-@@ -375,9 +373,9 @@
+@@ -384,9 +382,9 @@
                  checked(&medium, account.put_inner(body, references).await)
                      .map(|put| ObjectsPutReceipt::new(put, None))
              },

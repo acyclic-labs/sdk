@@ -635,7 +635,7 @@ impl Default for Shared {
 
 /// Drive one owned operation until the real medium reaches its selected cut.
 /// Unexpected completion fails immediately rather than waiting without a producer.
-async fn drive_to_park<F: Future>(
+async fn drive_to_park<F: Future + ?Sized>(
     operation: std::pin::Pin<&mut F>,
     reached: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
