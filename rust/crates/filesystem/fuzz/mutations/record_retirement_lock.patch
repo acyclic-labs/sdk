@@ -1,0 +1,85 @@
+--- a/rust/crates/filesystem/src/record_store.rs
++++ b/rust/crates/filesystem/src/record_store.rs
+@@ -1,7 +1,7 @@
+ //! Shared optimistic-concurrency primitives for versioned control-plane records.
+ 
+ use crate::sync::Mutex;
+-use std::collections::{BTreeMap, btree_map::Entry};
++use std::collections::BTreeMap;
+ 
+ /// Record carrying a monotonic optimistic-concurrency revision.
+ pub(crate) trait Revisioned {
+@@ -45,8 +45,8 @@
+ pub(crate) struct Poisoned;
+ 
+ /// Process-local revision-checked record map behind every memory adapter.
+-/// Mutations hold one leaf lock with no await. Removed and rejected values
+-/// retire after releasing the guard, before their allocation owners can lock.
++/// Lock order: a leaf lock. No other record lock, callback, or await is held
++/// inside `locked`; callers receive owned values after releasing the guard.
+ pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, V>>);
+ 
+ impl<K, V> Default for MemoryRecords<K, V> {
+@@ -55,10 +55,12 @@
+     }
+ }
+ 
+-impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
++impl<K: Ord, V: Revisioned> MemoryRecords<K, V> {
+     fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, V>) -> T) -> Result<T, Poisoned> {
+-        let mut records = self.0.lock().map_err(|_| Poisoned)?;
+-        Ok(action(&mut records))
++        self.0
++            .lock()
++            .map(|mut records| action(&mut records))
++            .map_err(|_| Poisoned)
+     }
+ 
+     pub(crate) fn load(&self, key: &K) -> Result<Option<V>, Poisoned>
+@@ -75,33 +77,24 @@
+         expected: u64,
+         replacement: V,
+     ) -> Result<bool, Poisoned> {
+-        self.update(key, expected, Some(replacement))
++        self.locked(|records| {
++            let matched = stored_revision(records, &key) == expected;
++            if matched {
++                records.insert(key, replacement);
++            }
++            matched
++        })
+     }
+ 
+     /// Removes `key` only at `expected` (zero means absent).
+     pub(crate) fn compare_and_delete(&self, key: &K, expected: u64) -> Result<bool, Poisoned> {
+-        self.update(*key, expected, None)
+-    }
+-
+-    fn update(&self, key: K, expected: u64, replacement: Option<V>) -> Result<bool, Poisoned> {
+-        let (matched, retired) = self.locked(|records| match records.entry(key) {
+-            Entry::Occupied(mut entry) if entry.get().revision() == expected => {
+-                let retired = match replacement {
+-                    Some(value) => entry.insert(value),
+-                    None => entry.remove(),
+-                };
+-                (true, Some(retired))
++        self.locked(|records| {
++            let matched = stored_revision(records, key) == expected;
++            if matched {
++                records.remove(key);
+             }
+-            Entry::Vacant(entry) if expected == 0 => {
+-                if let Some(value) = replacement {
+-                    entry.insert(value);
+-                }
+-                (true, None)
+-            }
+-            _ => (false, replacement),
+-        })?;
+-        drop(retired);
+-        Ok(matched)
++            matched
++        })
+     }
+ }
+ 
