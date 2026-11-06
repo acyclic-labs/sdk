@@ -40,22 +40,6 @@ impl crate::AuthorityWork<'_> {
             .map_err(backend)?;
         await_cancellable(request, self.cancellation).await
     }
-    pub(super) async fn insert(
-        &self,
-        tx: &Transaction<'_>,
-        store: &str,
-        key: &str,
-        value: JsValue,
-    ) -> Result<(), AuthorityStoreError> {
-        let store = tx.object_store(store).map_err(backend)?;
-        let request = store
-            .add(value)
-            .with_key(key)
-            .primitive()
-            .map_err(backend)?;
-        await_cancellable(request, self.cancellation).await?;
-        Ok(())
-    }
     pub(super) async fn blob_bytes(
         &mut self,
         blob: &Blob,
@@ -69,15 +53,5 @@ impl crate::AuthorityWork<'_> {
             cancellation,
         )
         .await
-    }
-    pub(super) async fn commit(&mut self, tx: Transaction<'_>) -> Result<(), AuthorityStoreError> {
-        charge(
-            self,
-            WorkCounters {
-                durability_operations: 1,
-                ..Default::default()
-            },
-        )?;
-        tx.commit().await.map_err(backend)
     }
 }

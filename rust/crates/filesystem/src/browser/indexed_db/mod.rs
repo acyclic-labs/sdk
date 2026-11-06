@@ -13,7 +13,6 @@ use indexed_db_futures::transaction::{
 };
 use js_sys::{Array, Uint8Array};
 use std::future::{Future, poll_fn};
-use std::mem::size_of;
 use std::task::Poll;
 use thiserror::Error;
 use wasm_bindgen::{JsCast, JsValue};
