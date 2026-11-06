@@ -33,8 +33,8 @@ impl Handler for Persists {
     }
 }
 
-/// A logical checkpoint crosses physical record boundaries without losing its
-/// original invocation result, consumed cursor or exact bytes after reopening.
+/// Logical checkpoints cross record and command boundaries. Replacement and
+/// forks preserve historical invocation receipts and exact bytes after reopen.
 #[tokio::test]
 async fn logical_checkpoint_crosses_record_boundary_and_reopens() -> TestResult {
     let directory = tempfile::tempdir()?;
@@ -56,58 +56,143 @@ async fn logical_checkpoint_crosses_record_boundary_and_reopens() -> TestResult 
         create.join(effect)?;
     }
     store.submit(create).await?;
-    let checkpoint = Checkpoint {
-        codec: CodecIdentity {
-            name: "checkpoint-boundary".into(),
-            version: "1".into(),
-        },
-        bytes: vec![0x35; acyclic_stream::MAX_RECORD_BYTES + 1].into(),
-    };
-    let manifest = Manifest {
-        code: Package::new()?.manifest().code.clone(),
-        codec: checkpoint.codec.clone(),
-        subscriptions: vec!["inbox".into()],
-        interrupts: Vec::new(),
-        bindings: Vec::new(),
-        limits: crate::domain::ActorLimits::new(None, None, None)?,
-    };
-    let runtime = Runtime::new(
-        Store::new(Arc::clone(&provider), root()?),
-        Arc::new(Persists {
-            manifest,
-            checkpoint: checkpoint.clone(),
-        }),
-        Arc::new(SystemClock),
-    );
-    runtime.track(address.clone())?;
-    let invocation = Invocation::new(
-        StreamPath::new("checkpoint-boundary/caller")?,
-        address.clone(),
-        "inbox".into(),
-        Bytes::from_static(b"persist"),
-        Bytes::from_static(b"original response"),
-    )?;
-    let ticket = store.enqueue_invoke(&invocation).await?;
-    let result = runtime.drain_actor(&address).await;
-    assert!(
-        result.is_ok(),
-        "unbounded logical checkpoint must publish independently of record size: {result:?}"
-    );
-    let completed = store.wait_invocation(ticket).await?;
-    assert_eq!(completed.response().as_ref(), invocation.request().as_ref());
-    assert_eq!(
-        completed.receipt().state().commit_id,
-        completed.receipt().terminal().commit_id
-    );
-    drop(completed);
-    drop(runtime);
+    let mut history = Vec::new();
+    for (index, length) in [
+        (0u8, acyclic_stream::MAX_RECORD_BYTES + 1),
+        (1u8, acyclic_stream::MAX_COMMAND_BYTES + 1),
+    ] {
+        let checkpoint = Checkpoint {
+            codec: CodecIdentity {
+                name: "checkpoint-boundary".into(),
+                version: "1".into(),
+            },
+            bytes: vec![0x35 + index; length].into(),
+        };
+        let manifest = Manifest {
+            code: Package::new()?.manifest().code.clone(),
+            codec: checkpoint.codec.clone(),
+            subscriptions: vec!["inbox".into()],
+            interrupts: Vec::new(),
+            bindings: Vec::new(),
+            limits: crate::domain::ActorLimits::new(None, None, None)?,
+        };
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Persists {
+                manifest,
+                checkpoint: checkpoint.clone(),
+            }),
+            Arc::new(SystemClock),
+        );
+        runtime.track(address.clone())?;
+        let invocation = Invocation::new(
+            StreamPath::new("checkpoint-boundary/caller")?,
+            address.clone(),
+            "inbox".into(),
+            format!("persist-{index}").into_bytes().into(),
+            format!("original response {index}").into_bytes().into(),
+        )?;
+        let ticket = store.enqueue_invoke(&invocation).await?;
+        let result = runtime.drain_actor(&address).await;
+        assert!(
+            result.is_ok(),
+            "unbounded logical checkpoint must publish independently of record size: {result:?}"
+        );
+        let completed = store.wait_invocation(ticket.clone()).await?;
+        assert_eq!(completed.response().as_ref(), invocation.request().as_ref());
+        assert_eq!(
+            completed.receipt().state().commit_id,
+            completed.receipt().terminal().commit_id
+        );
+        history.push((invocation, ticket, checkpoint, completed.receipt().clone()));
+    }
+    // A different store observes the original provider, without owning a
+    // runtime or the author's latest retained publication.
+    let observer = Store::new(Arc::clone(&provider), root()?);
+    for (invocation, ticket, checkpoint, receipt) in &history {
+        let original = observer.wait_invocation(ticket.clone()).await?;
+        assert_eq!(original.response().as_ref(), invocation.request().as_ref());
+        assert_eq!(original.receipt(), receipt);
+        assert_eq!(
+            State::decode(&original.receipt().state().value)?.checkpoint(),
+            Some(checkpoint)
+        );
+    }
+    let checkpoint = history.last().ok_or("missing checkpoint")?.2.clone();
+    let mut descendants = Vec::new();
+    for (name, parent) in [
+        ("branch", address.clone()),
+        ("leaf", actor("branch")?),
+        ("sibling", address.clone()),
+    ] {
+        let child = actor(name)?;
+        let parent = observer.load(&parent).await?;
+        let mut fork = PreparedPublish::foreign(key(&format!("checkpoint-boundary/{name}"))?);
+        for effect in store.fork(
+            &parent,
+            &child,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: StreamPath::new(format!("checkpoint-boundary/{name}/inbox"))?,
+                    cursor: 0,
+                },
+            )]),
+        )? {
+            fork.join(effect)?;
+        }
+        store.submit(fork).await?;
+        let inherited = observer.load(&child).await?;
+        let state = inherited.state().ok_or("missing fork state")?;
+        assert_eq!(state.checkpoint(), Some(&checkpoint));
+        let claimed = store
+            .claim(
+                &inherited,
+                state.epoch() + 1,
+                key(&format!("checkpoint-boundary/{name}/claim"))?,
+            )
+            .await?;
+        assert_eq!(
+            claimed.state().and_then(State::checkpoint),
+            Some(&checkpoint)
+        );
+        descendants.push(child);
+    }
+    let seeded = actor("seeded-checkpoint")?;
+    let mut create = PreparedPublish::foreign(key("checkpoint-boundary/seeded")?);
+    for effect in store.create(&seeded, BTreeMap::new(), Some(checkpoint.clone()))? {
+        create.join(effect)?;
+    }
+    store.submit(create).await?;
+    descendants.push(seeded);
+    drop(observer);
     drop(store);
     drop(provider);
     let reopened = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
-    let restored = Store::new(reopened, root()?).load(&address).await?;
+    let store = Store::new(reopened, root()?);
+    let restored = store.load(&address).await?;
     let state = restored.state().ok_or("missing reopened state")?;
-    assert_eq!(state.cursor("inbox"), Some(1));
+    assert_eq!(state.cursor("inbox"), Some(2));
     assert_eq!(state.checkpoint(), Some(&checkpoint));
+    for child in descendants {
+        let restored = store.load(&child).await?;
+        assert_eq!(
+            restored.state().and_then(State::checkpoint),
+            Some(&checkpoint)
+        );
+    }
+    for (invocation, _, checkpoint, receipt) in history {
+        // Keyed reconciliation reissues the original input's read floor in
+        // this provider incarnation, without executing either handler again.
+        let ticket = store.enqueue_invoke(&invocation).await?;
+        let original = store.wait_invocation(ticket).await?;
+        assert_eq!(original.receipt(), &receipt);
+        assert_eq!(original.response().as_ref(), invocation.request().as_ref());
+        assert_eq!(
+            State::decode(&original.receipt().state().value)?.checkpoint(),
+            Some(&checkpoint)
+        );
+    }
     Ok(())
 }
 
