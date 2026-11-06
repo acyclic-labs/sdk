@@ -28,9 +28,28 @@ pub type AlarmCallback = Arc<dyn Fn(Result<(), Arc<io::Error>>) + Send + Sync>;
 #[must_use = "dropping the registration cancels the alarm"]
 pub struct WallAlarm {
     key: (u64, u64),
-    index: Arc<Mutex<Index>>,
+    owner: Owner,
+}
+
+enum Owner {
+    Native(&'static Mutex<Index>),
     #[cfg(feature = "test-support")]
-    owner: Option<Arc<Simulated>>,
+    Scoped(Arc<Simulated>),
+}
+
+impl Owner {
+    fn index(&self) -> &Mutex<Index> {
+        match self {
+            Self::Native(index) => index,
+            #[cfg(feature = "test-support")]
+            Self::Scoped(owner) => &owner.index,
+        }
+    }
+
+    fn register(self, deadline: u64, fire: AlarmCallback) -> io::Result<WallAlarm> {
+        let key = locked(self.index()).insert(deadline, fire)?;
+        Ok(WallAlarm { key, owner: self })
+    }
 }
 
 impl WallAlarm {
@@ -44,21 +63,11 @@ impl WallAlarm {
             return alarms.register(deadline_unix_ms, fire);
         }
         let alarms = alarms()?;
-        let registration = Self::insert(&alarms.index, deadline_unix_ms, fire)?;
+        let registration = Owner::Native(&alarms.index).register(deadline_unix_ms, fire)?;
         if let Err(error) = alarms.waiter.rearm() {
             return Err(retained_error(&fail(&alarms.index, error)));
         }
         Ok(registration)
-    }
-
-    fn insert(index: &Arc<Mutex<Index>>, deadline: u64, fire: AlarmCallback) -> io::Result<Self> {
-        let key = locked(index).insert(deadline, fire)?;
-        Ok(Self {
-            key,
-            index: Arc::clone(index),
-            #[cfg(feature = "test-support")]
-            owner: None,
-        })
     }
 }
 
@@ -66,10 +75,10 @@ impl Drop for WallAlarm {
     fn drop(&mut self) {
         // The thread may still wake for this deadline; it finds nothing due
         // and waits for the next one.
-        let fire = locked(&self.index).remove(self.key);
+        let fire = locked(self.owner.index()).remove(self.key);
         drop(fire);
         #[cfg(feature = "test-support")]
-        if let Some(owner) = &self.owner {
+        if let Owner::Scoped(owner) = &self.owner {
             owner.changed();
         }
     }
