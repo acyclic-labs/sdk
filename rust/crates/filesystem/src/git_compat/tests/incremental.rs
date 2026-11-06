@@ -198,9 +198,15 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     let state_store = crate::LocalCoreStateStore::new(state_root.path());
     let graph = crate::WorkspaceGraph::new(state_store.clone());
     previous_capture
-        .authenticated_proof(OperationId::from_bytes([0x52; 16]), &graph)
+        .authenticated_proof(
+            OperationId::from_bytes([0x52; 16]),
+            &graph,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .expect("durable first capture lineage")
+        .value
         .expect("filtered first capture proof");
 
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x53; 16])).await;
@@ -225,9 +231,15 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     .await
     .expect("incremental capture");
     captured
-        .authenticated_proof(OperationId::from_bytes([0x54; 16]), &graph)
+        .authenticated_proof(
+            OperationId::from_bytes([0x54; 16]),
+            &graph,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .expect("durable incremental lineage")
+        .value
         .expect("filtered incremental proof");
     let lineage = graph
         .resolve(captured.generation.workspace_id())

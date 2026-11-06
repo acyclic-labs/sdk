@@ -316,6 +316,8 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
 
 #[tokio::test]
 async fn filtered_capture_retry_keeps_original_fork_generation() {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let workspace = memory_workspace("git-capture-retry").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x69; 16])).await;
     transaction
@@ -340,16 +342,151 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
     assert_eq!(first.generation.id(), retry.generation.id());
     let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
     let proof = first
-        .authenticated_proof(operation_id, &graph)
+        .authenticated_proof(
+            operation_id,
+            &graph,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .expect("first proof")
+        .value
         .expect("filtered proof");
     let replay = retry
-        .authenticated_proof(operation_id, &graph)
+        .authenticated_proof(
+            operation_id,
+            &graph,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
-        .expect("retry proof");
+        .expect("retry proof")
+        .value;
     assert_eq!(Some(proof.clone()), replay);
     assert_ne!(proof.initial_generation, first.generation.id());
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let cancellation = CancellationToken::new();
+    let child = first.generation.workspace();
+    // Count the required authentication primitives themselves, so an extra
+    // proof read cannot hide behind a self-referential operation receipt.
+    let parent = workspace
+        .generation(
+            proof.fork_parent.authored_generation(),
+            budget,
+            &cancellation,
+        )
+        .await
+        .expect("parent authentication");
+    let initial = child
+        .generation(proof.initial_generation, budget, &cancellation)
+        .await
+        .expect("initial authentication");
+    let ancestry = initial
+        .value
+        .parents(budget, &cancellation)
+        .await
+        .expect("initial ancestry");
+    let captured_ancestry = first
+        .generation
+        .parents(budget, &cancellation)
+        .await
+        .expect("captured ancestry");
+    let expected_reads = parent.work.backend_read_operations
+        + initial.work.backend_read_operations
+        + ancestry.work.backend_read_operations
+        + captured_ancestry.work.backend_read_operations;
+    let check = |result: Option<GitCaptureProof>, spent: crate::WorkCounters| {
+        spent
+            .verify(budget)
+            .expect("original receipt within credit");
+        assert_eq!(
+            spent.backend_read_operations, expected_reads,
+            "Git proof repeated or detached authenticated reads"
+        );
+        assert!(
+            spent.bytes_encoded >= 32,
+            "Git proof detached original encoding work"
+        );
+        assert_eq!(result, Some(proof.clone()));
+    };
+    for captured in [&first, &retry] {
+        let original = crate::workspace::Prefunded {
+            budget,
+            held: Mutex::new(None),
+        };
+        let (result, spent, live, baseline) = captured
+            .authenticated_proof(operation_id, &graph, &original, &cancellation)
+            .await;
+        assert!(
+            live >= baseline,
+            "Git proof retired earlier original backing"
+        );
+        check(result.expect("ordinary proof"), spent);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                .map_err(|(error, _)| error)
+                .expect("original native work");
+            let result = captured
+                .authenticated_proof(operation_id, &graph, &original, &cancellation)
+                .await
+                .expect("native proof");
+            check(result, original.receipt());
+        }
+    }
+    let wrong_operation = first
+        .authenticated_proof(
+            OperationId::from_bytes([0; 16]),
+            &graph,
+            budget,
+            &cancellation,
+        )
+        .await
+        .expect_err("capture accepted another operation's identity");
+    assert!(matches!(
+        wrong_operation.error,
+        GitCaptureAuthenticationError::Capture(GitCaptureError::Conflict)
+    ));
+    assert_eq!(wrong_operation.work.backend_read_operations, 0);
+    for (cancelled, reads, encoded) in [
+        (true, budget.backend_read_operations, budget.bytes_encoded),
+        (false, 0, budget.bytes_encoded),
+        (false, budget.backend_read_operations, 31),
+    ] {
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            cancellation.cancel();
+        }
+        let constrained = WorkBudget {
+            backend_read_operations: reads,
+            bytes_encoded: encoded,
+            ..budget
+        };
+        let failure = first
+            .authenticated_proof(operation_id, &graph, constrained, &cancellation)
+            .await
+            .expect_err("Git proof escaped cancellation or original credit");
+        if cancelled {
+            assert!(matches!(
+                failure.error,
+                GitCaptureAuthenticationError::Capture(GitCaptureError::Workspace(
+                    WorkspaceError::Cancelled(_)
+                ))
+            ));
+            assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+        } else {
+            let expected = if reads == 0 {
+                "backend_read_operations"
+            } else {
+                "bytes_encoded"
+            };
+            assert!(matches!(failure.error,
+                GitCaptureAuthenticationError::Capture(GitCaptureError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
+                | GitCaptureAuthenticationError::Lineage(crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(crate::WorkError::BudgetExceeded { counter, .. })))
+                if counter == expected));
+        }
+        assert_eq!(failure.work.backend_read_operations, 0);
+    }
 }
 
 #[test]

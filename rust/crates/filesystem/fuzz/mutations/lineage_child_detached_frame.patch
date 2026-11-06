@@ -1,14 +1,16 @@
 diff --git a/rust/crates/filesystem/src/lineage/mod.rs b/rust/crates/filesystem/src/lineage/mod.rs
 --- a/rust/crates/filesystem/src/lineage/mod.rs
 +++ b/rust/crates/filesystem/src/lineage/mod.rs
-@@ -333,6 +333,10 @@
-     ) -> W::Output<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-         let mut accounting = work.accounting(cancellation);
-         let result = async {
-+            let mut accounting = crate::kernel::KernelAccounting::standalone(
-+                accounting.remaining().map_err(WorkspaceError::from)?,
-+                cancellation,
-+            );
-             accounting.check().map_err(WorkspaceError::from)?;
-             // Do not let a metadata adapter manufacture publication authority.
-             // The child's authenticated initial generation must be the generation
+@@ -349,6 +349,12 @@
+         accounting: &mut crate::kernel::KernelAccounting<'_>,
+     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
++        let mut detached = crate::kernel::KernelAccounting::standalone(
++            accounting.remaining().map_err(WorkspaceError::from)?,
++            accounting.cancellation(),
++        );
++        let accounting = &mut detached;
++
+         accounting.check().map_err(WorkspaceError::from)?;
+         // Do not let a metadata adapter manufacture publication authority.
+         // The child's authenticated initial generation must be the generation
+         // root produced by an SDK fork from the claimed parent generation.

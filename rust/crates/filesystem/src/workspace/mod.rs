@@ -33,6 +33,8 @@ pub(crate) mod access;
 mod access_tests;
 #[cfg(test)]
 mod accounting_tests;
+#[cfg(test)]
+pub(crate) use accounting_tests::Prefunded;
 mod changed_paths;
 mod checkout;
 mod commit;

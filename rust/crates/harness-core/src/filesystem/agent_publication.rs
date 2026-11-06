@@ -165,8 +165,12 @@ pub async fn record_agent_publication(
             .authenticated_proof(
                 OperationId::from_bytes(capture_id),
                 &WorkspaceGraph::new(state.clone()),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
             )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(Error::from)?;
         repository
             .record_publication(GitPublicationRecord {
