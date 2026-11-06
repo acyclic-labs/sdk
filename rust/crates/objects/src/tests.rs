@@ -3458,7 +3458,11 @@ async fn a_retain_short_of_writes_writes_no_index_key() -> Result<(), Box<dyn st
         let retained = blobs
             .retain_native(request, std::sync::Arc::clone(&meter))?
             .await;
-        assert!(retained.is_err());
+        let refusal = retained.err().map(|error| error.into_cause());
+        assert!(
+            matches!(&refusal, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::QuotaExceeded),
+            "original write refusal: {refusal:?}"
+        );
         blobs.release(&root).await?;
         for _ in 0..3 {
             blobs.collect().await?;
