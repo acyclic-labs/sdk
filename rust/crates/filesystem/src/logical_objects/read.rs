@@ -78,45 +78,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             work.claim_owned(maximum, 0)?
         };
         let custody = guard(work)?;
-        let result = match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let future = self
-                    .provider
-                    .get_native(
-                        packet(
-                            crate::kernel::Owned::new(
-                                (blob(id), ByteRange::FULL, maximum),
-                                custody,
-                                0,
-                            ),
-                            original,
-                        )?,
-                        original.runtime_meter(),
-                    )
-                    .map_err(|error| native_error(error, original))?;
-                work.charge(WorkCounters {
-                    object_probes: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                future.await.map_err(|error| native_error(error, original))
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    object_probes: 1,
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let result = self
-                    .provider
-                    .get(blob(id), ByteRange::FULL, maximum)
-                    .await
-                    .map_err(service_error);
-                release(work, custody, 0)?;
-                result
-            }
-        };
+        let result = invocation::get(
+            &*self.provider,
+            crate::kernel::Owned::new((blob(id), ByteRange::FULL, maximum), custody, 0),
+            work,
+        )
+        .await?;
         let observed = match &result {
             Ok(value) => value.body().len() as u64,
             Err(error) => completed_bytes(error)?,
