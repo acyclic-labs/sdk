@@ -164,6 +164,7 @@ async function execute(test, prepared) {
       if ((input.exit ?? 0) === 0) executionSucceeded(result);
       else assert.equal(result.code, input.exit, result.stderr + `\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}`);
+      if (input.stdout_absent) for (const text of input.stdout_absent) assert.ok(!result.stdout.includes(text), `unexpected stdout ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
         const settled = outcome(input, result, messageId);
         if (input.outcome !== undefined) {
