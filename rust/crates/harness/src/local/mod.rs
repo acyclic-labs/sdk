@@ -48,6 +48,7 @@ mod owner_record;
 mod serve;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;
+pub mod study;
 #[cfg(test)]
 mod tests;
 mod tool_metadata;

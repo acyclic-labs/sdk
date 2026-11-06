@@ -7,7 +7,7 @@ use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply, TurnOutc
 use acyclic_harness::interaction::ApprovalBinding;
 use acyclic_harness::local::{
     Event,
-    agent_conversation::{Conversation, Sent, ended},
+    agent_conversation::{Conversation, Sent, Settlement, ended},
 };
 use acyclic_native_runtime::{InheritedOutput, lines::AsyncLines};
 use serde_json::{Value, json};
@@ -531,34 +531,14 @@ pub(super) async fn prompt(
     let mut answers = None;
     let mut diagnostics = None;
     // Subscribed first, so a committed reply cannot lose its original event.
-    let mut status: Option<acyclic_harness::agent::StatusRecord> = None;
     loop {
-        match conversation.reply(operation, inbox).await? {
-            Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
-            Reply::Dropped => {
-                diagnostic(
-                    &mut diagnostics,
-                    acyclic_native_runtime::InheritedOutput::stderr,
-                    conversation.task(),
-                    format!("graphcoder: {}\n", conversation.dropped().await?),
-                )
-                .await?;
-                return Ok(1);
+        let reason = match conversation.settle(operation, inbox, &mut events).await? {
+            Settlement::Reply(Reply::Answered { entry, .. }) => {
+                return print(conversation, &entry, output).await;
             }
-            Reply::Pending | Reply::Continuing { .. } => {}
-        }
-        if let Some(status) = status.take() {
-            if let Some(reason) = ended(&status) {
-                diagnostic(
-                    &mut diagnostics,
-                    acyclic_native_runtime::InheritedOutput::stderr,
-                    conversation.task(),
-                    format!("graphcoder: {reason}\n"),
-                )
-                .await?;
-                return Ok(1);
-            }
-            if let Phase::WaitingApproval { id, binding } = status.phase {
+            Settlement::Reply(_) => conversation.dropped().await?,
+            Settlement::Ended(reason) => reason,
+            Settlement::Approval { id, binding } => {
                 let (id, binding) =
                     prompt_approval(conversation, &mut diagnostics, id, binding).await?;
                 let answers = match &mut answers {
@@ -570,15 +550,17 @@ pub(super) async fn prompt(
                 conversation
                     .decide_with_binding(&id, binding, approved)
                     .await?;
-            }
-        }
-        status = loop {
-            match events.next().await? {
-                Event::Status(next) => break Some(next),
-                Event::Turn(_) => break None,
-                Event::Output => {}
+                continue;
             }
         };
+        diagnostic(
+            &mut diagnostics,
+            acyclic_native_runtime::InheritedOutput::stderr,
+            conversation.task(),
+            format!("graphcoder: {reason}\n"),
+        )
+        .await?;
+        return Ok(1);
     }
 }
 

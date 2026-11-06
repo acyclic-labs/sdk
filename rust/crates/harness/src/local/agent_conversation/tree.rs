@@ -66,4 +66,9 @@ impl TreeWalk {
         }
         Ok(None)
     }
+
+    /// Skips the descendants of the agent [`Self::next`] just returned.
+    pub(super) fn skip(&mut self) {
+        self.stack.pop();
+    }
 }
