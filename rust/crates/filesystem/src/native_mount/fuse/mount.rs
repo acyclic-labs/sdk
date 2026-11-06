@@ -192,19 +192,32 @@ impl Mount {
     // Only a device acknowledgment can finish an accepted unmount. A refused
     // request remains mounted and permits another explicitly admitted attempt.
     pub(super) fn device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
-        self.poll_detachment(device, 0)
+        self.poll_detachment(device, 0, None)
     }
 
-    pub(super) fn wait_device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
+    pub(super) fn wait_device_detached(
+        &mut self,
+        device: BorrowedFd<'_>,
+        wake: Option<&acyclic_native_runtime::ProcessWake>,
+    ) -> io::Result<bool> {
         // Unmount can return before the last kernel reference releases the
         // connection. Wait for its acknowledgment instead of treating a probe
         // in that interval as a failed retirement.
-        self.poll_detachment(device, -1)
+        self.poll_detachment(device, -1, wake)
     }
 
-    fn poll_detachment(&mut self, device: BorrowedFd<'_>, timeout: i32) -> io::Result<bool> {
+    pub(super) fn observe_closed(&mut self) -> io::Result<bool> {
+        self.observe_detachment(|| Ok(true))
+    }
+
+    fn poll_detachment(
+        &mut self,
+        device: BorrowedFd<'_>,
+        timeout: i32,
+        wake: Option<&acyclic_native_runtime::ProcessWake>,
+    ) -> io::Result<bool> {
         loop {
-            match self.query_detachment(device, timeout) {
+            match self.query_detachment(device, timeout, wake) {
                 // A signal has not completed the admitted observation. Resume
                 // it here, while the session retains the same read credit.
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -213,10 +226,26 @@ impl Mount {
         }
     }
 
-    fn query_detachment(&mut self, device: BorrowedFd<'_>, timeout: i32) -> io::Result<bool> {
+    fn query_detachment(
+        &mut self,
+        device: BorrowedFd<'_>,
+        timeout: i32,
+        wake: Option<&acyclic_native_runtime::ProcessWake>,
+    ) -> io::Result<bool> {
         #[cfg(test)]
         if let Some(poll) = self.detachment_poll.as_mut() {
             return poll(timeout);
+        }
+        if let Some(wake) = wake {
+            loop {
+                match super::transport_io::wait(wake, Some(device), 0)? {
+                    super::transport_io::Ready::Closed => return Ok(true),
+                    super::transport_io::Ready::Device(events) => {
+                        return Ok(events & libc::POLLERR != 0);
+                    }
+                    super::transport_io::Ready::Wake => wake.consume()?,
+                }
+            }
         }
         let mut poll = libc::pollfd {
             fd: device.as_raw_fd(),

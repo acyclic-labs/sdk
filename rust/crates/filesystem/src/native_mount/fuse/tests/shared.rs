@@ -335,6 +335,52 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead as _, BufReader};
 
+    // A live facade and its notification sinks must not retain a device after
+    // the original packet server has stopped. Check physical ownership before
+    // issuing a lookup, so the old-source negative cannot strand a kernel call.
+    let device_count = || -> std::io::Result<usize> {
+        let mut count = 0;
+        for entry in std::fs::read_dir("/proc/self/fd")? {
+            if std::fs::read_link(entry?.path())
+                .is_ok_and(|target| target == Path::new("/dev/fuse"))
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    };
+    let before = device_count()?;
+    let server_root = tempfile::tempdir()?;
+    let (source, _) = shared_sources(posix_config())?;
+    let mut live = mount_view(source, server_root.path(), false)?;
+    let io = {
+        let driver = live.driver.as_ref().ok_or("live FUSE driver")?;
+        driver
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or("live FUSE transport")?
+    };
+    assert_eq!(device_count()?, before + 1);
+    io.stop();
+    let remaining = device_count()?;
+    // Always clean up this exact mount, including the negative control.
+    if remaining != before {
+        let _ = live.stop();
+        assert_eq!(remaining, before, "the stopped server retained /dev/fuse");
+    }
+    let error = std::fs::metadata(server_root.path().join("after-server-exit"))
+        .expect_err("a terminated connection refuses a fresh lookup");
+    assert!(matches!(
+        error.raw_os_error(),
+        Some(libc::ENOTCONN | libc::ENOENT)
+    ));
+    assert!(live.stop()?);
+    assert_eq!(mounts_at(server_root.path())?, 0);
+
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(

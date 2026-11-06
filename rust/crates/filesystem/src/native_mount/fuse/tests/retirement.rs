@@ -318,6 +318,10 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         physical.clone(),
         Arc::clone(&caller_waited),
     )?;
+    let device = Arc::new(super::super::host_io::HostIo::new(
+        std::fs::File::open("/dev/null")?,
+        &original,
+    )?);
     core.stop();
     if !meter {
         // Losing the original caller cannot revoke already accepted cleanup.
@@ -329,7 +333,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         before: Some((0, 0)),
         mount,
         worker: None,
-        device: Some(Arc::new(std::fs::File::open("/dev/null")?)),
+        device: Some(device),
         notifier: None,
         identity: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {

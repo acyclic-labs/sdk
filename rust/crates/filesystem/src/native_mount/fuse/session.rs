@@ -6,7 +6,6 @@ use crate::{
     NativeAllocation, NativeMaterializationWork, NativeRootIdentity, NativeWorkReservation,
     WorkCounters, WorkError,
 };
-use std::os::fd::AsFd;
 
 pub(in crate::native_mount) struct FuseSession {
     pub(super) core: Arc<ProjectionCore>,
@@ -19,7 +18,7 @@ pub(super) struct FuseSessionState {
     pub(super) before: Option<(u64, u64)>,
     pub(super) mount: super::mount::Mount,
     pub(super) worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
-    pub(super) device: Option<Arc<std::fs::File>>,
+    pub(super) device: Option<Arc<super::host_io::HostIo>>,
     pub(super) notifier: Option<CacheNotifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
@@ -71,12 +70,18 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            self.mount
-                .stop(path, self.device.as_ref().map(std::os::fd::AsFd::as_fd))?;
+            match self.device.as_ref() {
+                Some(device) => {
+                    let result = device.with_device(|fd| self.mount.stop(path, fd));
+                    device.stop();
+                    result?;
+                }
+                None => self.mount.stop(path, None)?,
+            }
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            if !self.mount.wait_device_detached(device.as_fd())? {
+            if !device.wait_detached(&mut self.mount)? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
@@ -232,7 +237,11 @@ impl FuseSession {
                 || super::lifecycle::fuse_recovery_helper(work),
                 &mut received,
             );
-            *device = received.map(|descriptor| Arc::new(std::fs::File::from(descriptor)));
+            *device = received
+                .map(|descriptor| {
+                    super::host_io::HostIo::new(std::fs::File::from(descriptor), work).map(Arc::new)
+                })
+                .transpose()?;
             opened?;
             // State retains the actual device throughout handshake and rollback.
             let descriptor = Arc::clone(

@@ -47,7 +47,7 @@ struct SharedFuseRoot {
 #[derive(Default)]
 struct InstanceState {
     mount: super::mount::Mount,
-    device: Option<Arc<std::fs::File>>,
+    device: Option<Arc<super::host_io::HostIo>>,
     worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
     transport: Option<Arc<super::host_io::HostIo>>,
     guard: Option<MountDestinationGuard>,
@@ -59,8 +59,14 @@ impl InstanceState {
     fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
         let mut detached = !self.mount.needs_unmount();
         if !detached {
-            let device = self.device.as_ref().map(std::os::fd::AsFd::as_fd);
-            match self.mount.stop(path, device) {
+            let result = match self.device.as_ref() {
+                Some(device) => device.with_device(|fd| self.mount.stop(path, fd)),
+                None => self.mount.stop(path, None),
+            };
+            if let Some(device) = self.device.as_ref() {
+                device.stop();
+            }
+            match result {
                 Ok(()) => {
                     // Namespace removal is accepted even while a held file
                     // delays device acknowledgement. The transport stop and
@@ -154,7 +160,11 @@ impl SharedFuseInstance {
             || super::lifecycle::fuse_recovery_helper(&work),
             &mut received,
         );
-        state.device = received.map(|descriptor| Arc::new(std::fs::File::from(descriptor)));
+        state.device = received
+            .map(|descriptor| {
+                super::host_io::HostIo::new(std::fs::File::from(descriptor), &work).map(Arc::new)
+            })
+            .transpose()?;
         opened?;
         let descriptor = Arc::clone(
             state

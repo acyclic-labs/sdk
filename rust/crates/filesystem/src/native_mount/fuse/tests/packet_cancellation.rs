@@ -16,7 +16,7 @@ fn original_cancellation_wakes_a_quiet_packet_reader() -> Result<(), Box<dyn std
     let baseline = work.live_allocation_bytes();
     let (reader, _writer) = UnixStream::pair()?;
     let descriptor: OwnedFd = reader.into();
-    let io = Arc::new(HostIo::new(Arc::new(File::from(descriptor)), &work)?);
+    let io = Arc::new(HostIo::new(File::from(descriptor), &work)?);
     let registration = packet_cancellation::register(&work, &io)?;
     let (finished, completion) = sync_channel(1);
     let worker_io = Arc::clone(&io);
