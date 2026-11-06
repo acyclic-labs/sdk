@@ -590,18 +590,21 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
+    {
         Box::pin(async move {
             if path.len() > self.harness.limits.path_bytes {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
-            let instruction = self.source.instruction(path, revision, maximum).await?;
+            let Some(instruction) = self.source.instruction(path, revision, maximum).await? else {
+                return Ok(None);
+            };
             self.harness.limits.validate_file(&instruction, &mut None)?;
             #[cfg(test)]
             if let Some(observer) = self.harness.context_read_observer {
                 observer(self.harness, path).await?;
             }
-            Ok(instruction)
+            Ok(Some(instruction))
         })
     }
 }
