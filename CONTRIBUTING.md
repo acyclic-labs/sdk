@@ -9,6 +9,12 @@ an entry to `provenance/manifest.json` before it is merged.
 
 ## Build and test
 
+The Cargo configuration enables Tokio's `tokio_unstable` API for every workspace
+build. Deterministic simulations use `acyclic_native_runtime::testing::seeded_runtime`
+to seed randomized `select!` order, including selections in dependencies.
+Consumers of `test-support` outside this workspace must also compile Tokio with
+`--cfg tokio_unstable`. Replay requires the same locked dependencies and compiler.
+
 Native x86_64 Linux Rust builds use clang and mold. On Debian or Ubuntu, install
 them before running Cargo:
 

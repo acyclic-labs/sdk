@@ -325,10 +325,7 @@ fn replay_with_directory_times(
 
 #[test]
 fn scripted_native_directory_times_reach_durable_replay_bytes() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
         let first_time = 1_700_000_000_000_000_017_i64;
@@ -359,10 +356,7 @@ fn scripted_native_directory_times_reach_durable_replay_bytes() -> Result<()> {
 fn seeded_production_turn_and_reopen_trace_controls() -> Result<()> {
     digest::startup_value();
     let started = std::time::Instant::now();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     let result = runtime.block_on(async {
         tokio::time::pause();
         // The same-seed peer and entropy-erasure world run in the other process
