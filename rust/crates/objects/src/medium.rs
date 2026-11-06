@@ -87,10 +87,21 @@ pub trait Medium: acyclic_stream::ProviderPlatform {
     fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
         Ok(())
     }
+    /// Reconciles admitted engine storage with the allocator's actual capacity.
+    /// This records no second allocation attempt. On refusal the engine drops
+    /// its buffer before the medium's original custody retires.
+    fn allocation_capacity(&self, _admitted: usize, _actual: usize) -> Result<(), MediumError> {
+        Ok(())
+    }
     /// Transfers an engine buffer admitted by [`Medium::allocate`] into
     /// immutable bytes, retaining its original allocation custody.
     fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
         Ok(bytes.into())
+    }
+    /// Transfers admitted decoded metadata with a completed object. Payload
+    /// backing already carries its own owner, independently of this metadata.
+    fn finish_object(&self, object: crate::Object) -> Result<crate::Object, MediumError> {
+        Ok(object)
     }
     /// Withholds `operations` physical write attempts from the
     /// caller's budget, so the writes after it are never refused for budget;

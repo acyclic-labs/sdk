@@ -1,0 +1,8 @@
+diff --git a/rust/crates/objects/src/native.rs b/rust/crates/objects/src/native.rs
+--- a/rust/crates/objects/src/native.rs
++++ b/rust/crates/objects/src/native.rs
+@@ -216,2 +216,3 @@
+-        Ok(object.retain_metadata(allocation))
++        drop(allocation);
++        Ok(object)
+     }

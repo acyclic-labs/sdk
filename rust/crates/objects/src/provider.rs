@@ -230,6 +230,11 @@ impl Object {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retain_metadata(self, custody: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self::new_native(self.head, self.start, self.body, Some(custody))
+    }
+
     /// The envelope.
     #[must_use]
     pub const fn head(&self) -> &Head {
@@ -423,6 +428,9 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads under the caller's original allocation owner.
+    /// Decoded metadata is admitted before allocation and retains its original
+    /// credit through the returned object's lifetime. Body aliases retain
+    /// their independent original backing credit.
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
@@ -433,6 +441,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads a batch under the caller's original allocation owner.
+    /// Each returned object retains its decoded metadata as in [`Blobs::get_native`].
     #[cfg(not(target_arch = "wasm32"))]
     fn get_batch_native(
         &self,

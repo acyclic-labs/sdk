@@ -187,6 +187,35 @@ impl<M: Medium> Medium for Metered<'_, M> {
         self.hold(usize::try_from(bytes).unwrap_or(usize::MAX))
     }
 
+    fn allocation_capacity(&self, admitted: usize, actual: usize) -> Result<(), MediumError> {
+        if admitted == actual {
+            return Ok(());
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut allocation = self.charge(held.split(admitted))?;
+        let result = allocation.reconcile_capacity(actual);
+        // A refused completed allocation still belongs to the original call
+        // until the engine has dropped its buffer.
+        let restored = held.absorb(&mut allocation);
+        drop(held);
+        self.charge(restored)?;
+        self.charge(result)
+    }
+
+    fn finish_object(&self, object: Object) -> Result<Object, MediumError> {
+        let bytes = object.head().references.capacity() * std::mem::size_of::<Digest>();
+        if bytes == 0 {
+            return Ok(object);
+        }
+        let allocation = self.charge(
+            self.held
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .split(bytes),
+        )?;
+        Ok(object.retain_metadata(allocation))
+    }
+
     fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
         let mut allocation = self.charge(
             self.held

@@ -51,7 +51,10 @@
 //! stalled past that grace fails its commit; no commit references a lost
 //! blob. An index key of a holder that crashed before committing pins its
 //! child; it never refuses wrongly in the unsafe direction.
-use crate::blob::{Envelope, corrupt, decode_batch, decode_incarnation, encode_batch, invalid};
+use crate::blob::{
+    DecodeAllocation, Envelope, corrupt, decode_batch_admitted, decode_incarnation, encode_batch,
+    invalid,
+};
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
     MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
@@ -580,6 +583,18 @@ impl<M> Account<M> {
     }
 }
 
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Account<M, P> {
+    fn admit(&self, bytes: usize) -> Result<(), Error> {
+        self.medium.allocate(bytes as u64).map_err(medium)
+    }
+
+    fn capacity(&self, admitted: usize, actual: usize) -> Result<(), Error> {
+        self.medium
+            .allocation_capacity(admitted, actual)
+            .map_err(medium)
+    }
+}
+
 impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
         let hex = digest.to_hex();
@@ -748,7 +763,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
             return Ok(true);
         };
-        let members = match decode_batch(&bytes) {
+        let members = match decode_batch_admitted(&bytes, self) {
             Ok(members) => members,
             Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
             Err(error) => return Err(error),
@@ -1229,7 +1244,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Ok(None);
         };
-        match Envelope::decode(&bytes.bytes) {
+        match Envelope::decode_admitted(&bytes.bytes, self) {
             Ok(envelope) => Ok(Some((bytes.observation, envelope))),
             Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => Ok(None),
             Err(error) => Err(error),
@@ -1244,7 +1259,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
             return Ok(());
         };
         if self.medium.volatile() {
-            match Envelope::decode(&bytes) {
+            match Envelope::decode_admitted(&bytes, self) {
                 Ok(_) => {}
                 Err(error) if error.code == ErrorCode::Corrupt => {
                     self.medium.remove_if(observation).await.map_err(medium)?;
@@ -1441,7 +1456,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     }
 
     async fn manifest(&self, digest: &Digest, envelope: &Envelope) -> Result<Manifest, Error> {
-        Manifest::decode(&self.read_payload(digest, envelope, None).await?)
+        Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
     }
 
     /// Appends the selected logical bytes of `digest` to `out`.
@@ -1534,7 +1549,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         else {
             return Ok(None);
         };
-        match decode_batch(&bytes) {
+        match decode_batch_admitted(&bytes, self) {
             Ok(batch) => Ok(Some(batch)),
             Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
                 self.medium.remove_if(observation).await.map_err(medium)?;
@@ -1678,10 +1693,12 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
                 if body.len() as u64 != selected.end - selected.start {
                     return Err(corrupt());
                 }
-                Ok(
-                    Object::new(Self::head_of(digest, envelope), selected.start, body)
-                        .served_at(served),
-                )
+                self.medium
+                    .finish_object(
+                        Object::new(Self::head_of(digest, envelope), selected.start, body)
+                            .served_at(served),
+                    )
+                    .map_err(medium)
             }
         )
     }

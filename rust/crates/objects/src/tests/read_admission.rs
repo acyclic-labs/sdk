@@ -405,8 +405,14 @@ async fn native_local_presence_finishes_on_original_read_outcomes()
     );
     let store = Store::new(medium.clone());
     let blobs = store.account(b"original-presence")?;
+    let child = blobs
+        .put(b"presence reference".as_slice().into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original child is known")?
+        .digest;
     let digest = blobs
-        .put(b"present".as_slice().into(), Vec::new())
+        .put(b"present".as_slice().into(), vec![child])
         .await?
         .verified()
         .ok_or("original publication is known")?
@@ -454,6 +460,63 @@ async fn native_local_presence_finishes_on_original_read_outcomes()
                 "presence custody retained"
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_local_decoded_metadata_keeps_its_original_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store =
+        Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+    let blobs = store.account(b"decoded-metadata")?;
+    let mut references = Vec::new();
+    for byte in 0..3 {
+        references.push(
+            blobs
+                .put(vec![byte; 17].into(), Vec::new())
+                .await?
+                .verified()
+                .ok_or("original reference is known")?
+                .digest,
+        );
+    }
+    references.sort_unstable();
+    let digest = blobs
+        .put(vec![7; 19].into(), references.clone())
+        .await?
+        .verified()
+        .ok_or("original object is known")?
+        .digest;
+    for batch in [false, true] {
+        let budget = Arc::new(Budget::new(u64::MAX));
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request = (digest, ByteRange::FULL, 19);
+        let object = if batch {
+            let request = crate::ObjectsNativeRequest::new(vec![request], (), &meter)?;
+            let mut results = blobs.get_batch_native(request, meter)?.await?;
+            results.next().ok_or("original batch member")??
+        } else {
+            let request = crate::ObjectsNativeRequest::new(request, (), &meter)?;
+            blobs.get_native(request, meter)?.await?
+        };
+        assert_eq!(object.head().references, references);
+        let metadata = (object.head().references.capacity() * size_of::<Digest>()) as u64;
+        let before = budget.held.lock().unwrap().0;
+        let body = object.into_body();
+        let after = budget.held.lock().unwrap().0;
+        assert_eq!(
+            before - after,
+            metadata,
+            "decoded metadata escaped its original credit: batch={batch}"
+        );
+        assert!(after >= body.len() as u64);
+        let alias = body.clone();
+        drop(body);
+        assert_eq!(budget.held.lock().unwrap().0, after);
+        drop(alias);
+        assert_eq!(budget.held.lock().unwrap().0, 0);
     }
     Ok(())
 }
