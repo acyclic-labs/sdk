@@ -930,6 +930,32 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
             .is_none(),
         "only an absent filename is optional"
     );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            true,
+        )
+        .await?
+        .is_empty(),
+        "an absent optional skill directory has no catalog"
+    );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            false,
+        )
+        .await
+        .is_err(),
+        "an absent required skill directory must remain an error"
+    );
     let unavailable = FilesystemContentVerifier::new(
         FilesystemHost::new(Fs::memory(), fixture.volume.provider(), None)?,
         &fixture.issuer.verifier(&mut None)?,
