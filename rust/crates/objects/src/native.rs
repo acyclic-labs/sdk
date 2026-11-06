@@ -303,10 +303,13 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<Object>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
-    let (requests, custody) = requests.split();
     let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let _custody = custody;
+        // An unpolled frame keeps the whole request. Once started, declare
+        // funding first so the iterator also retires before it on withdrawal.
+        let _custody;
+        let (requests, custody) = requests.split();
+        _custody = custody;
         let meter = &batch_meter;
         // Keep the physical vector before its credit on every exit, including
         // withdrawal while the driver still holds incomplete members.
@@ -333,11 +336,14 @@ pub(crate) fn put<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsPutReceipt>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let ((body, references), custody) = request.split();
     let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
     native_future(&meter, async move {
+        // Declare funding before the data it protects, and detach only after
+        // this original request has entered its admitted frame.
+        let _custody;
+        let ((body, references), custody) = request.split();
+        _custody = custody;
         let account = account.over(&medium);
-        let _custody = custody;
         checked(&medium, account.put_inner(body, references).await)
             .map(|put| ObjectsPutReceipt::new(put, None))
     })
@@ -359,10 +365,13 @@ pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>
     window: usize,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
-    let (requests, custody) = requests.split();
     let batch_meter = Arc::clone(&meter);
     native_future(&meter, async move {
-        let _custody = custody;
+        // An unpolled frame keeps the whole request. Once started, declare
+        // funding first so the iterator also retires before it on withdrawal.
+        let _custody;
+        let (requests, custody) = requests.split();
+        _custody = custody;
         let meter = &batch_meter;
         let mut results = results(requests.len(), meter)?;
         crate::batch::drive(

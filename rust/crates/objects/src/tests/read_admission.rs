@@ -81,6 +81,126 @@ impl Medium for Applied<'_> {
 }
 
 #[tokio::test]
+async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn std::error::Error>>
+{
+    use acyclic_native_runtime::ReadAllocation;
+    use std::{future::Future, pin::Pin};
+
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"input-frame-custody")?;
+    let child = blobs
+        .put(b"original child".as_slice().into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original child publication is known")?
+        .digest;
+    // Unpolled withdrawal, completion, cancellation, parked withdrawal, and
+    // loss of the original release producer use the same public entry points.
+    for batch in [false, true] {
+        for state in 0..5 {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let payload = vec![u8::from(batch) * 5 + state; 1931];
+            let payload_credit = ReadAllocation::new(&meter, payload.capacity())?;
+            let body = crate::Sealed::new(
+                OwnedBytes::from_vec_with_guard(payload, payload_credit, Arc::clone(&meter))
+                    .map_err(|failure| failure.into_error())?,
+            );
+            let digest = Digest::from_bytes(*body.digest());
+            let references = vec![child; 11];
+            let mut input_bytes = references.capacity() * size_of::<Digest>();
+            let mut operation: Pin<
+                Box<dyn Future<Output = Result<Put, crate::NativeObjectsError>> + '_>,
+            > = if batch {
+                let requests = vec![(body, references)];
+                input_bytes += requests.capacity() * size_of::<(crate::Sealed, Vec<Digest>)>();
+                let custody = ReadAllocation::new(&meter, input_bytes)?;
+                let future = blobs.put_batch_native(
+                    crate::ObjectsNativeRequest::new(requests, custody, &meter)?,
+                    Arc::clone(&meter),
+                )?;
+                Box::pin(async move {
+                    let mut results = future.await?;
+                    assert_eq!(results.len(), 1);
+                    results
+                        .next()
+                        .expect("original member")
+                        .map(|receipt| receipt.put().clone())
+                })
+            } else {
+                let custody = ReadAllocation::new(&meter, input_bytes)?;
+                let future = blobs.put_native(
+                    crate::ObjectsNativeRequest::new((body, references), custody, &meter)?,
+                    Arc::clone(&meter),
+                )?;
+                Box::pin(async move { future.await.map(|receipt| receipt.put().clone()) })
+            };
+            // The original payload was already admitted before arming the
+            // fixed-size trace. Watch its one owner and the actual input claim.
+            *budget.retirement.lock().unwrap() = Some(super::budget::Retirement {
+                results: input_bytes as u64,
+                payload: 1931,
+                live_payloads: 1,
+                result_released: false,
+                early_result: false,
+            });
+            let mut release = None;
+            if state >= 3 {
+                let (mut reached, producer) = medium.park("create", "/p/");
+                super::drive_to_park(operation.as_mut(), &mut reached).await;
+                release = Some(producer);
+            }
+            if state == 2 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state != 0 && state != 3 {
+                // Producer loss must finish with the original indeterminate outcome.
+                drop(release.take());
+                let result = operation.as_mut().await;
+                if state == 1 {
+                    assert!(result?.verified().is_some());
+                    assert_eq!(
+                        blobs.get(digest, ByteRange::FULL, 1931).await?.body().len(),
+                        1931
+                    );
+                } else if state == 4 {
+                    assert_eq!(
+                        result?,
+                        Put::Unknown,
+                        "lost original write reply was acknowledged"
+                    );
+                } else {
+                    let cause = result
+                        .expect_err("original operation must refuse")
+                        .into_cause();
+                    assert!(matches!(
+                        &cause,
+                        crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::Interrupted
+                    ));
+                }
+            }
+            drop(operation);
+            drop(release);
+            let trace = budget.retirement.lock().unwrap();
+            let trace = trace.as_ref().unwrap();
+            assert!(trace.result_released, "original input credit never retired");
+            assert!(
+                !trace.early_result,
+                "input credit retired before its payload owner: batch={batch} state={state}"
+            );
+            assert_eq!(trace.live_payloads, 0);
+            assert_eq!(budget.held.lock().unwrap().0, 0);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_local_batch_retires_results_before_their_credit()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
