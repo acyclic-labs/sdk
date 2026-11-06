@@ -127,7 +127,9 @@ impl Host {
             .and_then(|context| context.schedule.0.state().wall.runtime.clone());
         let mut future = std::pin::pin!(future);
         match runtime {
-            Some(runtime) => runtime.block_on(async { self.block_future(future.as_mut()) }),
+            Some(runtime) => runtime.block_on(tokio::task::unconstrained(async {
+                self.block_future(future.as_mut())
+            })),
             None => self.block_future(future.as_mut()),
         }
     }
