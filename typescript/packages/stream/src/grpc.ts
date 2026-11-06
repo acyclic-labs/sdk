@@ -6,7 +6,7 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
-import type { Http2Session, IncomingHttpHeaders } from "node:http2";
+import { constants, type ClientHttp2Stream, type Http2Session, type IncomingHttpHeaders } from "node:http2";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
@@ -92,6 +92,9 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
       // Retain this RPC's original connection, even if the shared manager has
       // already opened its successor. A peer status always remains terminal.
       let connection: Http2Session | undefined;
+      let rpc: ClientHttp2Stream | undefined;
+      let rpcCancelled = false;
+      let closed: Promise<void> | undefined;
       let statusReceived = false;
       const receiveStatus = (headers: IncomingHttpHeaders): void => {
         statusReceived ||= headers["grpc-status"] !== undefined;
@@ -101,6 +104,13 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
         async request(...args: Parameters<Http2SessionManager["request"]>) {
           const request = await manager.request(...args);
           connection = request.session;
+          rpc = request;
+          // Some runtimes end the reader before publishing the reset. Close
+          // completion belongs to this original RPC, never its successor.
+          closed = new Promise<void>(resolve => request.once("close", () => {
+            rpcCancelled = request.rstCode === constants.NGHTTP2_CANCEL;
+            resolve();
+          }));
           request.once("response", receiveStatus);
           request.once("trailers", receiveStatus);
           return request;
@@ -109,9 +119,16 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
       } });
       return {
         incoming: createClient(StreamSessionService, transport).session(input, { signal }),
-        fail(error: unknown): never {
-          const interrupted = !signal.aborted && !statusReceived && connection !== undefined
-            && (connection.closed || connection.destroyed);
+        async fail(error: unknown): Promise<never> {
+          if (!signal.aborted && !statusReceived && rpc !== undefined) {
+            // A failed bidi response needs no more writes. A local NO_ERROR
+            // close supplies completion without fabricating remote CANCEL.
+            rpc.close(constants.NGHTTP2_NO_ERROR);
+            await closed;
+          }
+          const interrupted = !signal.aborted && !statusReceived
+            && ((connection !== undefined && (connection.closed || connection.destroyed))
+              || rpcCancelled || rpc?.rstCode === constants.NGHTTP2_CANCEL);
           throw sessionTransportError(error, interrupted);
         },
       };
@@ -147,7 +164,7 @@ function streamGrpc(options: StreamGrpcOptions) {
       const session = transport.session(input, signal);
       const incoming = async function* () {
         try { for await (const frame of session.incoming) yield toBinary(SessionFrameSchema, frame); }
-        catch (error) { session.fail(error); }
+        catch (error) { await session.fail(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(fromBinary(SessionFrameSchema, frame), writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false, options.revisionScope);
