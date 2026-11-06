@@ -403,7 +403,8 @@ fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Er
         let line = lines
             .next()
             .ok_or("the owner exited before its view was live")??;
-        if let Some(pid) = line.strip_prefix("shared view owner: ready ") {
+        // The test host can prefix the first output line with its test name.
+        if let Some((_, pid)) = line.rsplit_once("shared view owner: ready ") {
             break pid.parse::<u32>()?;
         }
     };
@@ -427,7 +428,7 @@ fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Er
         .write_all(&[u8::from(early_cancel)])?;
     loop {
         let line = lines.next().ok_or("owner control was not acknowledged")??;
-        if line == "shared view owner: armed" {
+        if line.ends_with("shared view owner: armed") {
             break;
         }
     }
