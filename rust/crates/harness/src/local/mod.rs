@@ -11,6 +11,7 @@ use crate::{
     runtime::{AgentHarness, RuntimeScope, TaskRunLimits},
     tool::{Tool, ToolRegistry},
 };
+pub use acyclic_fs::native_host::read_regular_file;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 pub use acyclic_harness_client::{AgentDelivery, EventDrain, EventProjection};
 use acyclic_stream::LocalStream;
