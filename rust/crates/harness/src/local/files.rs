@@ -49,10 +49,13 @@ impl LocalHarness {
             .unwrap_or_else(|| workspace.view())
             .workspace();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let base = selected
+        // Branches retain the checkout's imported source, not a new import
+        // receipt. Selection changes only the current endpoint.
+        let original = workspace.view().workspace();
+        let base = original
             .operation_generation(
                 acyclic_fs::IdempotencyKey::from_bytes(
-                    super::checkout_tools::capture::baseline_operation(selected.id()).into_bytes(),
+                    super::checkout_tools::capture::baseline_operation(original.id()).into_bytes(),
                 ),
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
