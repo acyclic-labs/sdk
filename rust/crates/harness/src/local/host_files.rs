@@ -1069,6 +1069,8 @@ impl Served {
     }
 
     /// Publishes one dispatch's immutable reply unless it was withdrawn.
+    /// Dispatch owns effect durability; this disposable reply only needs
+    /// atomic visibility. Losing it cannot withdraw the original request.
     fn answer(
         &mut self,
         status: &acyclic_fs::HeldRoot,
@@ -1093,7 +1095,7 @@ impl Served {
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
-            acyclic_fs::NativeDurability::Durable,
+            acyclic_fs::NativeDurability::Visibility,
         ) {
             Ok(()) => {}
             // The immutable publisher observed different existing bytes.
