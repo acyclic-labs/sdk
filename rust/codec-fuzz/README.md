@@ -100,6 +100,15 @@ authority. Refresh only those additions with
 `cargo run --locked --example capture -- --only-stream-projection --extend-goldens`.
 The retained production mutation and scoped replay command are documented in
 [`projection-fuzz`](../proofs/projection-fuzz/README.md).
+The [whole-record](../proofs/projection-cost/README.md) and
+[partial-copy](../proofs/partial-projection-cost/README.md) controls challenge
+the same property through the current shared decoder. The kept
+`negative-controls/change_projection_authority.patch` changes the original
+entry predicate from every clause to any clause. Apply it and run the selected
+property command in `projection-fuzz`; the disjoint lower-prefix request and
+upper-suffix authority must refuse, since different entries cannot collectively
+satisfy their conjunction. Reverse the patch before the positive run. Compiler
+or patch-anchor failures are not successful negative controls.
 
 The existing `stream_persistence` target also checks typed refusal before a
 fixed header is complete. Its corpus contains actual retained-fact encoder
@@ -886,38 +895,3 @@ the reader's decoder bound; replaying the same captured input must then fail the
 fragmentation oracle. The retained codec controls additionally reject a dropped
 bound publication and an ignored notification hiding a buffered response.
 
-The existing `stream_persistence` target also checks typed change projection
-through `FollowFilter::project`, using the same oracle as the default
-`projection_reuses_validation_and_skips_unrestricted_decoding` property. The
-oracle checks complete, lower-prefix and upper-suffix selections, plus disjoint
-authority conjunctions, against the admitted entries, retaining context,
-operations, metadata, attributes and record
-identity. Its v1 input is the retained `stream.changes-v1` protocol golden; its
-v2 input and multi-entry corpus seeds come from `AppendRecord::changes`. These
-are SDK codec inputs, not recorded remote-service responses.
-
-`negative-controls/change_projection_leak.patch` bypasses the production entry
-selection for valid operations. Apply it, then run:
-
-```sh
-cargo test --locked -p acyclic-stream --features test-support --lib follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding -- --exact
-```
-
-The unchanged property must reject the leaked entry. Reverse the patch before
-the positive run. A compiler failure is not a successful negative control.
-
-`negative-controls/change_projection_authority.patch` changes the production
-entry predicate from every clause to any clause. The same property must reject
-the disjoint lower-prefix request and upper-suffix authority: different entries
-cannot collectively satisfy the conjunction. The oracle derives the empty
-intersection directly from the original sorted keys and does not call the
-production predicate to decide the expected subset.
-
-`negative-controls/change_projection_eager_decode.patch` restores the original
-restricted projection's eager decode. The same property now exercises a whole
-record admitted by intersected requested and authority ranges. Complete input
-validation must still reject malformed bodies and header indexes before any
-selection. A fully admitted record must transfer its original owners after one
-body parse, with no decoded allocations; the restored implementation must fail
-that unchanged allocation oracle. Mixed selections keep the existing decoder
-and encoder path, so their extra parses remain an open optimization.
