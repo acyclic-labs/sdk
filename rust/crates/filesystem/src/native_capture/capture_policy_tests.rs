@@ -20,6 +20,68 @@ pub(super) async fn native_checkout(
 }
 
 #[tokio::test]
+async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
+-> Result<(), Box<dyn std::error::Error>> {
+    let setup = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
+    let mut checkout = native_checkout(&setup).await?;
+    let source = tempfile::tempdir()?;
+    std::fs::write(source.path().join("file"), b"held native input")?;
+    let options = options(source.path(), 16)?;
+    let roots = [path("/")?];
+    let policy = CapturePolicy::default();
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        crate::performance::work_budget(1_000_000, 64_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let baseline = work.live_allocation_bytes();
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(83);
+    let mut capture = Box::pin(schedule.scope(capture_subtrees_with_native_work(
+        &mut checkout,
+        &roots,
+        &options,
+        &policy,
+        &cancellation,
+        None,
+        &work,
+    )));
+    let submitted = loop {
+        tokio::select! {
+            biased;
+            result = &mut capture => panic!("capture completed before its held producer: {result:?}"),
+            event = events.recv() => {
+                let event = event.ok_or("native submission event lost")?;
+                if event.name == "native:submitted" {
+                    break event;
+                }
+                event.release();
+            }
+        }
+    };
+    assert!(work.live_allocation_bytes() > baseline);
+    cancellation.cancel();
+    schedule.cancel();
+    // The accepted scan owns its inputs. Caller destruction must not wait for it.
+    drop(capture);
+    assert!(work.live_allocation_bytes() > baseline);
+    assert!(!checkout.has_pending_mutations());
+    submitted.release();
+    loop {
+        tokio::select! {
+            biased;
+            () = schedule.drained() => break,
+            event = events.recv() => event.ok_or("native completion event lost")?.release(),
+        }
+    }
+    work.receipt();
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    assert!(!checkout.has_pending_mutations());
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_watch_interval_replays_after_a_rejected_capture()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = NativeMaterializationWork::new(
