@@ -97,11 +97,12 @@ impl MemoryStream {
         self.state
             .read()
             .await
-            .find_commit(&commit_id, || {
+            .find_commit(&commit_id, |items| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = &self.work {
-                    work.record(work.meter.examine(1, 0))?;
+                    work.record(work.meter.examine(items, 0))?;
                 }
+                let _ = items;
                 Ok::<_, StreamError>(())
             })?
             .cloned()

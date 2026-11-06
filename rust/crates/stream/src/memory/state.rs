@@ -47,7 +47,7 @@ impl State {
         self.replay_count
     }
     fn commit(&self, id: &CommitId) -> Option<&CommittedEnvelope> {
-        match self.find_commit(id, || Ok::<_, std::convert::Infallible>(())) {
+        match self.find_commit(id, |_| Ok::<_, std::convert::Infallible>(())) {
             Ok(value) => value,
             Err(never) => match never {},
         }

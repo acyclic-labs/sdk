@@ -465,7 +465,7 @@ fn restore_retained(
     }
     retain(
         state,
-        &mut || {},
+        &mut |_| {},
         envelope,
         key,
         digest,

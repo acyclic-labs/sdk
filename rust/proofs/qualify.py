@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection', 'ready-source-index'])
+parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection', 'ready-source-index', 'retained-commit-index'])
 parser.add_argument("--instrumented", action="store_true",
                     help="challenge the actual projection fuzz target and explore 1000 inputs")
 arguments = parser.parse_args()
@@ -112,6 +112,12 @@ elif claim == "ready-source-race":
     test = "client_pool_loom::provider_source_publication_cannot_lose_its_wake"
     diagnostic = "provider source lost its publication wake"
     features = ["--no-default-features", "--features", "grpc,model-checking"]
+elif claim == "retained-commit-index":
+    source = "rust/crates/stream/src/memory/commit_index.rs"
+    crate = "acyclic-stream"
+    test = "memory::tests::commit_index::historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_history"
+    diagnostic = "retained commit lookup omitted original key examinations"
+    features = []
 elif claim == "children-selection":
     source = "rust/crates/stream/src/lib/head.rs"
     crate = "acyclic-stream"
@@ -179,6 +185,14 @@ def run(label):
         wrapper = "loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"
         environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts" / wrapper)
     command = COMMAND
+    if claim == "retained-commit-index" and label == "restored":
+        command = ["cargo", "test", "--locked", "-p", crate, "-p", "acyclic-collections",
+                   "--lib", "--", "--exact", "--nocapture", test,
+                   "memory::tests::commit_index::every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations",
+                   "memory::tests::commit_index::commit_index_work_is_admitted_before_append_or_coordinated_publication",
+                   "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+                   "tests::adversarial_branches_have_a_fixed_key_width_bound_and_cancel_safe_retirement",
+                   "tests::refused_admission_never_constructs_or_publishes_and_preserves_prior_funding"]
     directory = ROOT / "target" / claim
     directory.mkdir(parents=True, exist_ok=True)
     if arguments.instrumented:
@@ -239,7 +253,8 @@ def main():
     code, output = run("restored")
     completed = (code == 0 and "DONE" in output and "1000 runs" in output
                  and "cov:" in output if arguments.instrumented else
-                 code == 0 and "1 passed; 0 failed" in output)
+                 code == 0 and ("2 passed; 0 failed" in output and "4 passed; 0 failed" in output
+                                if claim == "retained-commit-index" else "1 passed; 0 failed" in output))
     require(completed,
             "restored original oracle completes")
 

@@ -110,7 +110,7 @@ impl MemoryStream {
                 state.last_committed_at_micros = time;
                 retain(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     Some(envelope),
                     Some(request.idempotency_key.clone()),
                     digest,

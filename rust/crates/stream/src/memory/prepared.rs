@@ -371,7 +371,7 @@ impl PreparedCommit {
         let (mut conflicts, output_claim) = self.conflicts;
         let result = async {
             if let Some(stored) = state.replay(self.key.as_bytes(), || {
-                self.provider.record_replay_probe(&mut self.probes);
+                self.provider.record_replay_probe(&mut self.probes, 1);
                 Ok::<_, StreamError>(())
             })? {
                 if stored.digest != digest {
@@ -461,7 +461,7 @@ impl PreparedCommit {
                     let retained = self.provider.install_retained(state, self.retained)?;
                     publication.publish(
                         state,
-                        &mut || self.provider.record_replay_probe(&mut self.probes),
+                        &mut |items| self.provider.record_replay_probe(&mut self.probes, items),
                         self.key,
                         digest,
                         time,

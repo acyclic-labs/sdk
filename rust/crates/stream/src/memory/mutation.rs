@@ -89,7 +89,7 @@ fn admit_replay(state: &State, limits: MemoryLimits) -> Result<(), StreamError> 
 /// Retains a mutation envelope and its replay result indefinitely.
 fn retain(
     state: &mut State,
-    probe: &mut impl FnMut(),
+    probe: &mut impl FnMut(u64),
     envelope: Option<CommittedEnvelope>,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
@@ -136,7 +136,8 @@ fn retain(
             state.insert_commit(index, probe);
         }
         if keyed {
-            state.replay_root = Some(state.insert_replay(state.replay_root, index, probe));
+            state.replay_root =
+                Some(state.insert_replay(state.replay_root, index, &mut || probe(1)));
             state.replay_count += 1;
         }
     }

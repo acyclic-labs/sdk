@@ -32,6 +32,12 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
             let elapsed = started.elapsed().as_nanos() / 100;
             let examined = COMMIT_VISITS.with(std::cell::Cell::get) / 100;
             maximum = maximum.max(examined);
+            if step == 1 {
+                assert_eq!(
+                    examined, 33,
+                    "retained commit lookup omitted original key examinations"
+                );
+            }
             eprintln!("historical commit step={step} examined={examined} elapsed_ns={elapsed}");
             for count in [1, 8, 64] {
                 let selected = crate::RetainedRecord {
@@ -62,7 +68,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                                 && record.value.as_ref() == b"value"
                         }))
                 );
-                assert!(examined <= 257 * count);
+                assert!(examined <= 289 * count);
                 eprintln!(
                     "retained selection history={step} count={count} examined={examined} elapsed_ns={}",
                     started.elapsed().as_nanos()
@@ -101,14 +107,14 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
     assert_eq!(restored.encode_state().await, snapshot);
     assert_eq!(restored.read_commit(oldest).await?.commit_id, oldest);
     assert!(
-        maximum <= 257,
+        maximum <= 289,
         "historical lookup scanned {maximum} retained entries"
     );
     assert!(
-        rebuild <= 257 * 1000,
+        rebuild <= 289 * 1000,
         "snapshot duplicate checks scanned {rebuild} retained entries"
     );
-    assert!(linear > 257, "linear negative control was not detected");
+    assert!(linear > 289, "linear negative control was not detected");
     Ok(())
 }
 
@@ -130,7 +136,7 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
         let mut probes = 0;
         retain(
             &mut state,
-            &mut || probes += 1,
+            &mut |items| probes += items,
             None,
             None,
             [0; 32],
@@ -144,25 +150,36 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
     for key in keys {
         let mut probes = 0;
         let found = state
-            .find_commit(&key, || {
-                probes += 1;
+            .find_commit(&key, |items| {
+                probes += items;
                 Ok::<_, StreamError>(())
             })?
             .ok_or(StreamError::NotFound)?;
         assert_eq!(found.commit_id, key);
         maximum = maximum.max(probes);
-        assert!(probes <= 257);
+        assert!(probes <= 289);
     }
+    assert!(
+        state
+            .find_commit(&CommitId::from_bytes([0; 32]), |items| {
+                if items == 32 {
+                    Err(StreamError::Capacity)
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err(),
+        "retained commit lookup bypassed original comparison refusal"
+    );
     assert_eq!(
-        maximum, 257,
-        "the adversarial keys did not span all 256 bits"
+        maximum, 289,
+        "the adversarial keys did not span all 256 bits and the complete comparison"
     );
     assert!(
         state
-            .find_commit(
-                &CommitId::from_bytes([255; 32]),
-                || Ok::<_, StreamError>(())
-            )?
+            .find_commit(&CommitId::from_bytes([255; 32]), |_| Ok::<_, StreamError>(
+                ()
+            ))?
             .is_none()
     );
     Ok(())

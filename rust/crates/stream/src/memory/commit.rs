@@ -70,7 +70,7 @@ impl CommitPublication {
     fn publish(
         self,
         state: &mut State,
-        probe: &mut impl FnMut(),
+        probe: &mut impl FnMut(u64),
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
@@ -521,7 +521,7 @@ impl MemoryStream {
                 admit_replay(state, self.limits)?;
                 retain(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     None,
                     Some(request.idempotency_key.clone()),
                     digest,
@@ -595,7 +595,7 @@ impl MemoryStream {
                 let retained = self.install_retained(state, retained)?;
                 let (outcome, allocation) = publication.publish(
                     state,
-                    &mut || self.record_replay_probe(&mut probes),
+                    &mut |items| self.record_replay_probe(&mut probes, items),
                     request.idempotency_key.clone(),
                     digest,
                     time,

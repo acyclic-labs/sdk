@@ -121,12 +121,12 @@ impl Drop for ReplayProbes {
 }
 
 impl MemoryStream {
-    fn record_replay_probe(&self, probes: &mut ReplayProbes) {
+    fn record_replay_probe(&self, probes: &mut ReplayProbes, items: u64) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            let _ = work.record(probes.record(1));
+            let _ = work.record(probes.record(items));
         }
-        let _ = probes;
+        let _ = (probes, items);
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn maximum_replay_height(&self) -> u64 {

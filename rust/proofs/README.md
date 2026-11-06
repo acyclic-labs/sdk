@@ -157,3 +157,9 @@ cases. Other values refuse with the selection and recovery instructions.
 Selection preserves the workload; qualification requires running that selected
 workload and recording its result. It does not establish restart, upgrade or
 cross-platform coverage.
+
+The [retained commit index control](retained-commit-index/README.md) binds
+Streams' original retained slots and the shared boxed index to one radix
+selection loop. It challenges original comparison admission and retains
+prepared completion after cancellation; variable-width replay and whole-request
+cost remain open.
