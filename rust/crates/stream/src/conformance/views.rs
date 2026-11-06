@@ -1,7 +1,7 @@
 use super::*;
 use crate::StreamProviderExt as _;
 
-pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     let paths = [path("coherent/a/state")?, path("coherent/b/state")?];
     let mut previous = None;
     let mut retained_previous = None;
@@ -22,7 +22,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             })
             .await?;
         let CommitOutcome::Committed(receipt) = outcome else {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         };
         let request = crate::HeadsRequest {
             retained: [
@@ -67,20 +67,20 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         let view = provider.heads(request.clone()).await?;
         view.validate_for(&request)?;
         if view.snapshot != receipt.revision || view.heads[2].is_some() {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         if view.retained[0].record != view.heads[0].as_ref().and_then(|head| head.last.clone())
             || view.retained[1].record != view.heads[1].as_ref().and_then(|head| head.last.clone())
             || view.retained[2].record.is_some()
             || view.retained[3].record.is_some()
         {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         // Original co-commit bytes and time remain exact after both roots advance.
         if let Some((old_request, old_records)) = retained_previous.take() {
             let original = provider.heads(old_request).await?;
             if original.snapshot != view.snapshot || original.retained != old_records {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             }
         } else {
             retained_previous = Some((request.clone(), view.retained.clone()));
@@ -88,31 +88,31 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         let mut too_small = request.clone();
         too_small.limit = 6;
         if provider.heads(too_small).await != Err(StreamError::InvalidArgument) {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         let mut wrong_position = view.clone();
         // Both records have identical publication/sequence and different bytes.
         // Swapping their observations must fail solely on destination binding.
         wrong_position.retained.swap(0, 1);
         if wrong_position.validate_for(&request) != Err(StreamError::InvalidResponse) {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         // Missing results retain the same destination binding.
         let mut wrong_absence = view.clone();
         wrong_absence.retained.swap(2, 3);
         if wrong_absence.validate_for(&request) != Err(StreamError::InvalidResponse) {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         for (index, head) in view.heads[..2].iter().enumerate() {
             let record = head
                 .as_ref()
                 .and_then(|head| head.last.as_ref())
-                .ok_or(StreamError::Unavailable)?;
+                .ok_or(violated!())?;
             if record.value.as_ref() != [generation, index as u8]
                 || record.commit_id != receipt.commit_id
                 || record.committed_at_micros != receipt.committed_at_micros
             {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             }
         }
         for (projection, through) in [
@@ -134,7 +134,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                         observed.clone(),
                     )?)
                 {
-                    return Err(StreamError::Unavailable);
+                    return Err(violated!());
                 }
             }
             if projected.snapshot != view.snapshot
@@ -157,14 +157,14 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                         _ => true,
                     })
             {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             }
             // A response for another projection cannot stand in for this request.
             if projected.validate_for(&request) != Err(StreamError::InvalidResponse) {
-                return Err(StreamError::Unavailable);
+                return Err(violated!());
             }
         }
-        let children = view.children.ok_or(StreamError::Unavailable)?;
+        let children = view.children.ok_or(violated!())?;
         if children.children.len() != 2
             || children.children.iter().any(|child| {
                 child
@@ -173,7 +173,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                     .is_none_or(|record| record.commit_id != receipt.commit_id)
             })
         {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         if generation == 0 {
             // Negative control: the next commit will advance both roots after
@@ -181,14 +181,14 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             previous = provider.head(paths[0].clone()).await?.last;
             continue;
         }
-        let old = previous.take().ok_or(StreamError::Unavailable)?;
+        let old = previous.take().ok_or(violated!())?;
         let current = provider
             .head(paths[1].clone())
             .await?
             .last
-            .ok_or(StreamError::Unavailable)?;
+            .ok_or(violated!())?;
         if old.value == current.value || old.commit_id == current.commit_id {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
     }
     Ok(())
@@ -196,7 +196,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
 
 pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
     provider: &P,
-) -> Result<(), StreamError> {
+) -> Result<(), Failure> {
     let source = path("selected-child-source")?;
     provider
         .append(AppendRequest {
@@ -245,7 +245,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         })
         .await?;
     let CommitOutcome::Committed(receipt) = outcome else {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     };
     let request = crate::HeadsRequest {
         retained: Default::default(),
@@ -264,7 +264,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
     };
     let view = provider.heads(request.clone()).await?;
     view.validate_for(&request)?;
-    let page = view.children.as_ref().ok_or(StreamError::Unavailable)?;
+    let page = view.children.as_ref().ok_or(violated!())?;
     if page.children.len() != names.len()
         || view.snapshot != receipt.revision
         || view.heads[0].is_some()
@@ -279,17 +279,17 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
                     || child.tail_record != head.as_ref().and_then(|head| head.last.clone())
             })
     {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     let wire = crate::wire_codec::heads_to_wire(view.clone())?;
     let json = crate::http_response::value("heads", &prost::Message::encode_to_vec(&wire))
-        .map_err(|_| StreamError::InvalidResponse)?
-        .ok_or(StreamError::InvalidResponse)?;
-    crate::http_validation::validate("heads", &json).map_err(|_| StreamError::InvalidResponse)?;
+        .map_err(|_| violated!())?
+        .ok_or(violated!())?;
+    crate::http_validation::validate("heads", &json).map_err(|_| violated!())?;
     if crate::wire_codec::requests::heads_len(&view) != prost::Message::encoded_len(&wire)
         || crate::wire_codec::heads_from_response(wire)? != view
     {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     // An omitted cursor cannot turn an authentic nonempty stream into absence;
     // a nonzero cursor cannot survive loss or replacement of its last record.
@@ -300,22 +300,18 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
         (Some(1), false),
     ] {
         let mut torn = view.clone();
-        let child = &mut torn
-            .children
-            .as_mut()
-            .ok_or(StreamError::Unavailable)?
-            .children[2];
+        let child = &mut torn.children.as_mut().ok_or(violated!())?.children[2];
         child.tail = tail;
         if remove_record {
             child.tail_record = None;
         }
         if torn.validate_for(&request) != Err(StreamError::InvalidResponse) {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
         let mut torn_json = json.clone();
         let child = torn_json["children"]["children"][2]
             .as_object_mut()
-            .ok_or(StreamError::InvalidResponse)?;
+            .ok_or(violated!())?;
         if let Some(tail) = tail {
             child.insert("tail".into(), serde_json::Value::String(tail.to_string()));
         } else {
@@ -325,7 +321,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
             child.remove("tailRecord");
         }
         if crate::http_validation::validate("heads", &torn_json).is_ok() {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
     }
     Ok(())
@@ -333,7 +329,7 @@ pub(super) async fn selected_child_tails<P: StreamProvider + ?Sized>(
 
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 #[tokio::test]
-async fn selected_child_tails_preserve_missing_empty_and_original_record_cut()
+pub(super) async fn selected_child_tails_preserve_missing_empty_and_original_record_cut()
 -> Result<(), Box<dyn std::error::Error>> {
     selected_child_tails(&crate::MemoryStream::default()).await?;
     #[cfg(feature = "local")]
