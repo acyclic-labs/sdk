@@ -1036,8 +1036,13 @@ impl Served {
                 return Ok(());
             }
             Tracked::Answered(cause) => {
-                let withdrawal =
-                    remove_held_projection(status, Path::new(&format!("{operation}.json")));
+                // This disposable reply has no durable state to retire.
+                let withdrawal = status
+                    .remove_file(
+                        Path::new(&format!("{operation}.json")),
+                        acyclic_fs::NativeDurability::Visibility,
+                    )
+                    .map_err(native_file_error);
                 match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
                     Err(error) => {
