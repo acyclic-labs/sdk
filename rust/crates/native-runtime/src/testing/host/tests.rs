@@ -157,13 +157,36 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
 #[test]
 fn parking_a_worker_does_not_invent_callback_readiness() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let host = Host::with_pool(Pool::new(1));
-    let startup = Arc::new(crate::NativeWake::default());
-    {
+    struct StartupWake {
+        host: std::sync::Weak<Host>,
+        running: AtomicBool,
+        notified: Arc<crate::NativeWake>,
+    }
+    impl Wake for StartupWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.running.store(
+                lock(&self.host.upgrade().unwrap().state).phase == Phase::Running,
+                Ordering::SeqCst,
+            );
+            self.notified.wake_by_ref();
+        }
+    }
+    let startup_for = |host: &Arc<Host>| {
+        let startup = Arc::new(StartupWake {
+            host: Arc::downgrade(host),
+            running: AtomicBool::new(false),
+            notified: Arc::new(crate::NativeWake::default()),
+        });
         let mut state = lock(&host.state);
         state.waiting_start = true;
         state.driver = Some(Waker::from(startup.clone()));
-    }
+        startup
+    };
+    let host = Host::with_pool(Pool::new(1));
+    let startup = startup_for(&host);
     let ready = Arc::new(AtomicBool::new(false));
     let work_ready = ready.clone();
     let worker = host.clone();
@@ -186,9 +209,7 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
             .unwrap_or_else(PoisonError::into_inner);
     }
     drop(state);
-    // Parking publishes phase before waking the driver outside the lock.
-    // Join that original event before inspecting callback readiness.
-    startup.wait(None);
+    startup.notified.wait(None);
     let (invented, waiting_start) = {
         let state = lock(&host.state);
         (state.ready, state.waiting_start)
@@ -205,6 +226,20 @@ fn parking_a_worker_does_not_invent_callback_readiness() {
     thread.join().unwrap();
     assert!(!invented, "parking invented callback readiness");
     assert!(!waiting_start, "parking retained its startup waiter");
+    let parked_running = startup.running.load(Ordering::SeqCst);
+    // The same producer ordering applies when the original callback completes
+    // without parking: no late startup wake may follow its terminal phase.
+    let host = Host::with_pool(Pool::new(1));
+    let startup = startup_for(&host);
+    let worker = host.clone();
+    std::thread::spawn(move || worker.run(|| ()))
+        .join()
+        .unwrap();
+    assert_eq!(
+        (parked_running, startup.running.load(Ordering::SeqCst)),
+        (true, true),
+        "startup wake followed the observable handoff"
+    );
 }
 
 #[test]
@@ -522,9 +557,7 @@ fn queued_workers_leave_the_executor_available_to_reply() {
 }
 
 fn exchanges(seed: u64) -> (Vec<u32>, Vec<(u64, &'static str)>) {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
+    let runtime = seeded_runtime(seed).unwrap();
     let (schedule, mut events) = Schedule::seeded(seed);
     let values = runtime.block_on(async {
         let mut root = Box::pin(schedule.scope(async {
@@ -547,6 +580,7 @@ fn exchanges(seed: u64) -> (Vec<u32>, Vec<(u64, &'static str)>) {
         }));
         let result = loop {
             tokio::select! {
+                biased;
                 result = &mut root => break result,
                 boundary = events.recv() => boundary.unwrap().release(),
             }
@@ -568,50 +602,6 @@ proptest::proptest! {
     }
 }
 
-/// The order in which tasks make progress, without repeated pending polls.
-///
-/// A real device completion can wake its task once more or once less before
-/// the seeded schedule releases it, so how many times a task is polled while
-/// pending is timing; which task is polled, in what order, and when each is
-/// ready is the replayed schedule.
-fn progress(polls: Vec<(u64, &'static str)>) -> Vec<(u64, &'static str)> {
-    let mut progress: Vec<(u64, &'static str)> = Vec::with_capacity(polls.len());
-    for poll in polls {
-        if poll.1 != "pending" || progress.last() != Some(&poll) {
-            progress.push(poll);
-        }
-    }
-    progress
-}
-
-#[test]
-fn progress_ignores_repeated_pending_polls_but_not_order_or_readiness() {
-    let run = vec![
-        (0, "pending"),
-        (2, "pending"),
-        (2, "ready"),
-        (1, "pending"),
-        (1, "ready"),
-        (0, "ready"),
-    ];
-    let mut again = run.clone();
-    again.insert(1, (2, "pending"));
-    assert_eq!(progress(run.clone()), progress(again));
-    // Controls: a reordered, a missing and an extra readiness all still differ.
-    let mut reordered = run.clone();
-    reordered.swap(2, 4);
-    assert_ne!(progress(run.clone()), progress(reordered));
-    let mut missing = run.clone();
-    missing.remove(2);
-    assert_ne!(progress(run.clone()), progress(missing));
-    let mut repeated = run.clone();
-    repeated.insert(3, (2, "ready"));
-    assert_ne!(progress(run.clone()), progress(repeated));
-    // A pending poll of a different task between two of one task's polls stays.
-    let interleaved = vec![(2, "pending"), (1, "pending"), (2, "pending"), (2, "ready")];
-    assert_eq!(progress(interleaved.clone()), interleaved);
-}
-
 fn native_callback(
     seed: u64,
     erase_scope: bool,
@@ -623,10 +613,7 @@ fn native_callback(
     let file = NativeFile::from_file(std::fs::File::open(path).unwrap(), None)
         .map_err(|(error, _)| error)
         .unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = seeded_runtime(seed).unwrap();
     let (schedule, mut events) = Schedule::seeded(seed);
     let bytes = runtime.block_on(async {
         tokio::time::pause();
@@ -652,6 +639,7 @@ fn native_callback(
         }));
         let bytes = loop {
             tokio::select! {
+                biased;
                 bytes = &mut root => break bytes,
                 event = events.recv() => event.unwrap().release(),
             }
@@ -660,7 +648,7 @@ fn native_callback(
         schedule.drained().await;
         bytes
     });
-    (bytes, schedule.trace(), progress(schedule.polls()))
+    (bytes, schedule.trace(), schedule.polls())
 }
 
 proptest::proptest! {
