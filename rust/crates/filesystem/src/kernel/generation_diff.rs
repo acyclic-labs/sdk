@@ -87,13 +87,39 @@ impl GenerationDiff {
     }
 }
 
+/// Diffs two generations' file tables. The persistent diff engine runs in a
+/// funded heap frame, so callers hold a pointer instead of its cursor stack.
 pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
     maximum_changes: u32,
     limits: DecodeLimits,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(GenerationDiff, KernelOwnedAllocation), FsError> {
+    crate::heap_future::in_borrowed_frame!(
+        accounting,
+        |accounting| diff_tables(
+            objects,
+            before,
+            after,
+            maximum_changes,
+            limits,
+            accounting,
+            cancellation
+        ),
+        erase_task
+    )
+}
+
+async fn diff_tables<O: AsyncObjectStore>(
+    objects: &O,
+    before: ObjectId,
+    after: ObjectId,
+    maximum_changes: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationDiff, KernelOwnedAllocation), FsError> {
     let (records, allocation) = crate::kernel::diff_file_records_with_accounting(
