@@ -249,7 +249,7 @@ qualify it. Restore with `git apply -R rust/codec-fuzz/mutations/PATCH`.
 | `agent-record-unknown-field.patch` | `agent record discarded an unknown payload field` |
 | `agent-spawn-history.patch` | `agent record lost the writer's input` |
 
-Replaying the retained `harness_codecs/agent-v13-spawn-history` input through
+Replaying the retained `harness_codecs/agent-v15-spawn-history` input through
 `harness_codecs` with `agent-spawn-history.patch` must instead fail at
 `spawn record lost the input's history selection`. This exercises the same
 arbitrary-input oracle without invoking the separate writer assertion or
@@ -264,10 +264,14 @@ old map-only pointer makes the existing writer property reject a valid
 positional spawn; the production reader still retains the selected history.
 
 The state mutation changes the production checkpoint decoder. Replaying the
-retained `harness_codecs/agent-v13-state-wait` input through `harness_codecs`
+retained `harness_codecs/agent-v15-state-wait` input through `harness_codecs`
 tests the arbitrary-input writer comparison without running the seed producer.
 The producer checks the same complete state separately; no simulated decoder
 or alternate field-loss implementation is used.
+Run `python3 rust/proofs/qualify.py agent-state` from the repository root to
+apply the retained checkpoint-state mutation, require the version 15 captured
+state input to reject it, restore the exact decoder bytes and replay that same
+input successfully through the shared qualifier.
 
 The checkpoint's shared wire oracle uses its original prost type and writer
 to derive malformed variants of each admitted input. Short or long child IDs,
@@ -276,7 +280,7 @@ incorrect archive/awaited bitmap widths and unmatched turn body/inbox fields
 must receive the original typed malformed-checkpoint refusal. No alternate
 protobuf parser or capture producer is needed. The following production
 guard mutations must fail when replaying the retained
-`harness_codecs/agent-v13-checkpoint-wait` input through `harness_codecs`:
+`harness_codecs/agent-v15-checkpoint-wait` input through `harness_codecs`:
 
 | PATCH | Required runtime assertion |
 | --- | --- |
@@ -300,7 +304,7 @@ also checks borrowed containment and identity beyond the former boundary.
 The embedded-field controls put one nonempty ownership field at a time back
 into the shared payload through the production writer. Each removes only
 that field's production guard. Use `agent-v13-checkpoint-archive` for the
-archive field, and `agent-v13-checkpoint-wait` for the other four fields.
+archive field, and `agent-v15-checkpoint-wait` for the other four fields.
 The original prost fields remain intact, so a second invalid field cannot
 mask an omitted guard.
 

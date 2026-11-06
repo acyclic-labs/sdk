@@ -14,10 +14,13 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "persisted-turn"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "persisted-turn", "agent-state"])
 claim = parser.parse_args().claim
 target = ["--lib"]
-if claim == "retained-credit":
+if claim == "agent-state":
+    source = "rust/crates/harness-core/src/agent/checkpoint.rs"
+    diagnostic = "checkpoint lost the writer's state"
+elif claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
     crate = "acyclic-fs"
     test = "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions"
@@ -85,8 +88,16 @@ else:
     diagnostic = "kernel charge allocated physical heap storage"
     features = []
 SOURCE = ROOT / source
-COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target, test,
-           "--", "--exact", "--nocapture"]
+if claim == "agent-state":
+    COMMAND = ["cargo", "run", "--locked", "--manifest-path", "rust/codec-fuzz/Cargo.toml",
+               "--example", "replay", "--", "harness_codecs/agent-v15-state-wait"]
+    MUTATED = (1, "panicked at")
+    RESTORED = "replayed 1 captured inputs"
+else:
+    COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target, test,
+               "--", "--exact", "--nocapture"]
+    MUTATED = (101, "0 passed; 1 failed")
+    RESTORED = "1 passed; 0 failed"
 RECOVERY = f"git diff -- {source}; inspect target/{claim}/*.log; correct source or command, then python3 rust/proofs/qualify.py {claim}"
 
 
@@ -114,20 +125,22 @@ def run(label):
 def main():
     original = SOURCE.read_bytes()
     mutation = ("work-arithmetic", "mixed-mutation.patch") if claim == "work-mixed" else (claim, "mutation.patch")
-    patch = str(ROOT / "rust/proofs" / mutation[0] / mutation[1])
+    patch = str(ROOT / ("rust/codec-fuzz/mutations/agent-checkpoint-state.patch"
+                       if claim == "agent-state" else
+                       Path("rust/proofs") / mutation[0] / mutation[1]))
     require(subprocess.run(["git", "apply", "--check", patch], cwd=ROOT).returncode == 0,
             "check mutation anchors")
     try:
         require(subprocess.run(["git", "apply", patch], cwd=ROOT).returncode == 0,
                 "apply production mutation")
         code, output = run("mutated")
-        require(code == 101 and diagnostic in output and "0 passed; 1 failed" in output,
+        require(code == MUTATED[0] and diagnostic in output and MUTATED[1] in output,
                 "unchanged oracle rejects production mutation")
     finally:
         SOURCE.write_bytes(original)
     require(SOURCE.read_bytes() == original, "restore exact original source")
     code, output = run("restored")
-    require(code == 0 and "1 passed; 0 failed" in output,
+    require(code == 0 and RESTORED in output,
             "restored original oracle completes")
 
 
