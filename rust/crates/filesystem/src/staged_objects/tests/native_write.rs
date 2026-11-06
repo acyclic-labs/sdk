@@ -60,9 +60,13 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
     assert!(store.index().objects.contains_key(&id));
     let collecting = store.collection.begin().await;
     let (sweep, _) = collecting.sweepable(Vec::new()).await;
-    for exit in 0..3 {
-        let caller = CancellationToken::new();
+    for exit in 0..4 {
         let original_token = CancellationToken::new();
+        let caller = if exit == 1 {
+            original_token.clone()
+        } else {
+            CancellationToken::new()
+        };
         let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
@@ -88,7 +92,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             panic!("publication leases blocked an independent resident read");
         };
         assert_eq!(result?.bytes, bytes);
-        if exit == 2 {
+        if exit == 3 {
             original_token.cancel();
         } else {
             caller.cancel();
@@ -97,7 +101,7 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
             panic!("cancelled publication waited for the held spill lease");
         };
-        if exit == 2 {
+        if exit == 3 {
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Native(
@@ -117,9 +121,10 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                1
+                // The original standalone retention ledger is promoted once.
+                2
             } else {
-                before.allocation_operations + 3
+                before.allocation_operations + 2 + u64::from(exit != 1)
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
