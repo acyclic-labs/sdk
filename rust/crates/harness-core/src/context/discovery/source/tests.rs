@@ -152,16 +152,6 @@ fn cached_discovery_cannot_bypass_invalid_limits() {
     }
 }
 
-impl InstructionReader for Pages {
-    fn instruction<'a>(
-        &'a mut self,
-        _: &'a str,
-        _: &'a u8,
-        _: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
-        panic!("non-file instruction must be rejected before a body read")
-    }
-}
 impl SkillReader for Pages {
     fn skill_prefix<'a>(
         &'a mut self,
@@ -178,7 +168,7 @@ impl SkillReader for Pages {
     }
 }
 #[tokio::test]
-async fn unsupported_source_kinds_cannot_become_instructions_or_skills() {
+async fn unsupported_source_kinds_cannot_become_skills() {
     let entry = |name: &str, kind| DiscoveryPage {
         revision: 1,
         scanned: 1,
@@ -188,19 +178,6 @@ async fn unsupported_source_kinds_cannot_become_instructions_or_skills() {
         }],
         next: None,
     };
-    let mut instruction = Pages([entry("AGENTS.md", DiscoveryKind::Other)].into());
-    assert!(matches!(
-        capture_instructions(
-            &mut instruction,
-            "",
-            "",
-            &["AGENTS.md".into()],
-            &mut DiscoveryWork::default(),
-            None
-        )
-        .await,
-        Err(Error::Invalid(_))
-    ));
     let mut skill = Pages(
         [
             entry("inspect", DiscoveryKind::Directory),

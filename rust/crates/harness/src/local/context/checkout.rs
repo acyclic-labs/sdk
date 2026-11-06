@@ -262,7 +262,8 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
         path: &'a str,
         cut: &'a Self::Revision,
         maximum: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
+    {
         Box::pin(async move {
             let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
             if archive_length > self.harness.limits.path_bytes {
@@ -274,11 +275,24 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 work: self.directory.work,
                 cancellation: self.directory.work.cancellation(),
             };
-            let (bytes, _allocation) = self
+            let (bytes, _allocation) = match self
                 .directory
                 .view
                 .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
-                .await?;
+                .await
+            {
+                Ok(file) => file,
+                Err(
+                    acyclic_fs::LazyWorkspaceError::NotFound
+                    | acyclic_fs::LazyWorkspaceError::Filesystem(acyclic_fs::FsError::NotFound),
+                ) => return Ok(None),
+                Err(acyclic_fs::LazyWorkspaceError::NotRegularFile) => {
+                    return Err(Error::Invalid(
+                        "instruction entry is not a regular file".into(),
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            };
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
@@ -303,13 +317,13 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 )?
                 .await?
                 .0;
-            Ok(crate::model::ProjectInstruction::Captured {
+            Ok(Some(crate::model::ProjectInstruction::Captured {
                 file,
                 source: crate::model::InstructionIdentity::new(
                     self.harness.project.clone(),
                     path.into(),
                 )?,
-            })
+            }))
         })
     }
 }
