@@ -654,7 +654,7 @@ struct Pause {
 }
 
 impl Shared {
-    fn over(inner: impl Medium, forgetful: bool) -> Self {
+    fn over(inner: impl Medium + 'static, forgetful: bool) -> Self {
         Self {
             inner: std::sync::Arc::new(inner),
             pause: Default::default(),
@@ -1403,7 +1403,7 @@ async fn a_delete_never_removes_a_writers_pending_reference()
 /// the same bytes is retained. Returns the stalled delete and whether the
 /// retained blob is still readable once it resumes.
 async fn stalled_delete_then_reput(
-    medium: impl Medium,
+    medium: impl Medium + 'static,
     forgetful: bool,
 ) -> Result<(Result<Delete, ErrorCode>, bool), Box<dyn std::error::Error>> {
     let medium = Shared::over(medium, forgetful);
