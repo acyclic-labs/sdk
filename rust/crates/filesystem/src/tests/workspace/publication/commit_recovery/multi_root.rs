@@ -3,8 +3,8 @@ use super::*;
 use crate::{
     LineageMultiRootPublicationAuthorizer, LocalCoreStateStore, LocalFs, MultiRootMergeCandidate,
     MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublicationCoordinator, Publication,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceGraph, WorkspaceMultiRootPublisher,
-    WorkspaceRootId,
+    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceGraph,
+    WorkspaceMultiRootPublisher, WorkspaceRootId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
