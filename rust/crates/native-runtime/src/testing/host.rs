@@ -131,13 +131,20 @@ impl Host {
             {
                 return output;
             }
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = lock(&self.state);
+            // A startup wake must precede the phase it announces. Otherwise
+            // the driver can observe Parked, advance, and receive a late wake
+            // from this same handoff as an extra simulated poll.
+            if let Some(driver) = state.take_start_waiter() {
+                drop(state);
+                driver.wake();
+                state = lock(&self.state);
+            }
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
             // Parking does not make the callback ready.
             // A driver that yielded before startup must now produce this
             // callback's reply. Wake it once at the original parking event.
-            let parked_driver = state.take_start_waiter();
             if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
@@ -147,9 +154,6 @@ impl Host {
             drop(state);
             if saturated {
                 self.pool.changed();
-            }
-            if let Some(driver) = parked_driver {
-                driver.wake();
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {
@@ -270,15 +274,15 @@ impl Wake for IoWake {
 struct Finished(Arc<Host>);
 impl Drop for Finished {
     fn drop(&mut self) {
-        let driver = {
-            let mut state = lock(&self.0.state);
-            state.phase = Phase::Finished;
-            state.take_start_waiter()
-        };
-        self.0.changed.notify_one();
-        if let Some(driver) = driver {
+        let mut state = lock(&self.0.state);
+        if let Some(driver) = state.take_start_waiter() {
+            drop(state);
             driver.wake();
+            state = lock(&self.0.state);
         }
+        state.phase = Phase::Finished;
+        drop(state);
+        self.0.changed.notify_one();
     }
 }
 
@@ -296,7 +300,12 @@ impl Wake for Host {
                 state.phase = Phase::Running;
                 self.changed.notify_one();
             }
-            state.driver.clone()
+            // Running work belongs to the current physical step. Its driver
+            // waits for Parked/Finished and consumes this latched readiness
+            // there; waking it as well can arrive after that step has ended.
+            (state.phase == Phase::Parked)
+                .then(|| state.driver.clone())
+                .flatten()
         };
         if let Some(driver) = driver {
             driver.wake();
