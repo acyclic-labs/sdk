@@ -21,11 +21,12 @@ pub(super) struct Registration {
 impl Registration {
     pub(super) fn retire(&self, volume: &Volume) {
         if let Some(entries) = self.entries.upgrade() {
-            entries
+            let retired = entries
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .live
-                .retire_if(self.key, |current| std::ptr::eq(current.as_ptr(), volume));
+                .extract_if(self.key, |current| std::ptr::eq(current.as_ptr(), volume));
+            drop(retired);
         }
     }
 }
@@ -61,6 +62,7 @@ impl Registry {
             .live
             .get(key, accounting)?
             .and_then(RetainedWeak::upgrade);
+        let mut retired_weak = None;
         let volume = match existing {
             Some(volume) => volume,
             None => {
@@ -71,7 +73,7 @@ impl Registry {
                 let slot = entries
                     .live
                     .get_or_try_insert_with(key, accounting, |_| Ok(RetainedWeak::default()))?;
-                *slot = volume.downgrade();
+                retired_weak = Some(std::mem::replace(slot, volume.downgrade()));
                 volume
                     .registration
                     .set(Registration {
@@ -90,6 +92,7 @@ impl Registry {
             as usize;
         let retired = entries.idle[bucket].replace(volume.clone());
         drop(entries);
+        drop(retired_weak);
         // The last reference unregisters itself. Never run that destructor
         // while holding the registry lock, including a cache hit/replacement.
         drop(retired);

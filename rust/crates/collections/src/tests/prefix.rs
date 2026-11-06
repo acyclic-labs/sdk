@@ -39,7 +39,20 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                     expected.entry(key).or_insert(value);
                     if !extract {
                         if value % 7 == 0 {
-                            let removed = index.remove_if(key, |_| !miss);
+                            let live = work.live.get();
+                            let claims = work.claims;
+                            let items = work.items;
+                            work.cancelled = true;
+                            work.maximum_items = Some(0);
+                            work.maximum_claims = Some(0);
+                            let extracted = index.extract_if(key, |_| !miss);
+                            prop_assert_eq!(work.live.get(), live, "exact extraction retired original backing");
+                            prop_assert_eq!(work.claims, claims);
+                            prop_assert_eq!(work.items, items);
+                            work.cancelled = false;
+                            work.maximum_items = None;
+                            work.maximum_claims = None;
+                            let removed = extracted.and_then(|owner| owner.into_entries(|_| {}).next());
                             if miss {
                                 prop_assert!(removed.is_none());
                             } else {

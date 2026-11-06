@@ -41,3 +41,16 @@ git apply -R rust/crates/collections/src/tests/late_remove_admission.patch
 Require `refused removal must preserve original owner`, then restore the exact
 source and require the property to pass. This mutates the shared production
 unlink path; a compiler failure or a changed test model is not detection.
+
+The prefix property also checks exact conditional extraction: the original leaf
+and redundant parent stay funded until the extracted owner is consumed, even
+after cancellation. It uses the same production unlink path as admitted removal.
+
+```sh
+git apply rust/crates/collections/src/tests/early_exact_retirement.patch
+cargo test --locked -p acyclic-collections --lib tests::prefix::prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work -- --exact
+git apply -R rust/crates/collections/src/tests/early_exact_retirement.patch
+```
+
+Require `exact extraction retired original backing`, then restore the source and
+require the property to pass. The mutation retires the actual parent allocation.
