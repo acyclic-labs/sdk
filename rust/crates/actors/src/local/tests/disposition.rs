@@ -205,7 +205,11 @@ async fn failed_input_contract<P: StreamProvider>(provider: P) -> TestResult {
     );
     assert_eq!(failed.source(), &source);
     assert_eq!(failed.subscription(), "inbox");
-    assert_eq!(failed.cause(), &cause);
+    assert_eq!(
+        failed.cause(),
+        &cause,
+        "failed-input codec lost original cause"
+    );
     // Every guest mutation route must preserve the original failure and its
     // terminal fence, including forks at either side of the reserved root.
     let failures = store.failures_path(&owner)?;
