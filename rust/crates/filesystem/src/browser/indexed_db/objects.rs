@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::allocation::fixed_index::FixedIndex;
 use crate::kernel::{Retained, RetainedAllocation};
 use crate::storage::ObjectWriteSource;
 
@@ -189,8 +190,6 @@ impl IndexedDbObjectStore {
             work::charge(
                 io,
                 WorkCounters {
-                    object_probes: 1,
-                    backend_read_operations: 1,
                     bytes_hashed: if authenticate { length } else { 0 },
                     ..Default::default()
                 },
@@ -211,10 +210,30 @@ impl IndexedDbObjectStore {
         self.admit_batch(writes, io)?;
         let mut observed = Retained::allocate(writes.len(), &mut io.accounting())
             .map_err(crate::async_storage::object_error)?;
+        let mut unique = FixedIndex::<(), { ObjectId::ENCODED_LEN }>::default();
         let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readonly)
             .map_err(|e| object_error(backend(e)))?;
         for write in writes {
             let (id, _, bytes) = write.parts();
+            let mut inserted = false;
+            unique
+                .get_or_try_insert_with(id.index_key(), &mut io.accounting(), |_| {
+                    inserted = true;
+                    Ok(())
+                })
+                .map_err(crate::async_storage::object_error)?;
+            if !inserted {
+                continue;
+            }
+            work::charge(
+                io,
+                WorkCounters {
+                    object_probes: 1,
+                    backend_read_operations: 1,
+                    ..Default::default()
+                },
+            )
+            .map_err(object_error)?;
             let key = RetainedAllocation::claim(object_key_bytes(id), 1, &mut io.accounting())
                 .map_err(crate::async_storage::object_error)?
                 .into_value(Self::key(id));
@@ -227,6 +246,7 @@ impl IndexedDbObjectStore {
             observed.value.push((id, stored, bytes));
         }
         drop(tx);
+        drop(unique);
         // Blob materialization may suspend beyond an IndexedDB transaction's
         // active turn. Complete every required check before submitting writes.
         for (_, stored, bytes) in &observed.value {
@@ -286,9 +306,9 @@ impl IndexedDbObjectStore {
                         let store = tx.object_store(OBJECTS).map_err(backend)?;
                         for record in &records.value {
                             let (key, blob) = &record.value;
-                            // Only authenticated immutable content is submitted. A
-                            // concurrent equal publication or duplicate batch member
-                            // writes the same value, without a second read round.
+                            // Only authenticated immutable content is submitted.
+                            // Concurrent equal publication writes the same value,
+                            // without a second read round.
                             store
                                 .put(JsValue::from(blob.clone()))
                                 .with_key(key.as_str())
