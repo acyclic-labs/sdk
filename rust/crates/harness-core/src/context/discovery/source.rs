@@ -56,12 +56,13 @@ pub trait DiscoverySource {
 
 #[doc(hidden)]
 pub trait InstructionReader: DiscoverySource {
+    /// Reads one regular file at the pinned revision; `None` means absent.
     fn instruction<'a>(
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>>;
+    ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>;
 }
 
 #[doc(hidden)]
@@ -246,25 +247,46 @@ pub async fn capture_instructions<S: InstructionReader>(
     }
     let mut directory = directory.to_owned();
     let mut segments = active_directory.split('/').filter(|s| !s.is_empty());
-    let mut pinned = revision.cloned();
+    // Native and admitted volume callers already own a cut. An unpinned
+    // immutable-volume caller selects its generation with one bounded page.
+    let pinned = match revision {
+        Some(revision) => revision.clone(),
+        None => {
+            let page = source.page(&directory, None, None, 1).await?;
+            if page.scanned > 1 || page.entries.len() > page.scanned as usize {
+                return Err(Error::Storage(
+                    "discovery page violated pinned range".into(),
+                ));
+            }
+            work.include(DiscoveryWork {
+                entries: page.scanned,
+                ..Default::default()
+            })?;
+            page.revision
+        }
+    };
     let mut result = Vec::new();
     loop {
-        let (r, entries) = work
-            .list_source(source, &directory, pinned.as_ref())
-            .await?;
+        work.include(DiscoveryWork {
+            directories: 1,
+            ..Default::default()
+        })?;
         for name in names {
-            if let Some(entry) = entries.iter().find(|e| &e.name == name) {
-                if entry.kind != DiscoveryKind::File {
-                    return Err(Error::Invalid("instruction entry is not a file".into()));
-                }
-                result.push(
-                    source
-                        .instruction(&child(&directory, name), &r, work.limits.instruction_bytes)
-                        .await?,
-                );
+            work.include(DiscoveryWork {
+                entries: 1,
+                ..Default::default()
+            })?;
+            if let Some(instruction) = source
+                .instruction(
+                    &child(&directory, name),
+                    &pinned,
+                    work.limits.instruction_bytes,
+                )
+                .await?
+            {
+                result.push(instruction);
             }
         }
-        pinned = Some(r);
         match segments.next() {
             Some(segment) => directory = child(&directory, segment),
             None => break,
@@ -525,20 +547,24 @@ impl InstructionReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+    ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>> {
         Box::pin(async move {
             let source = PinnedContextPath {
                 root: self.root.clone(),
                 generation: revision.clone(),
                 path: path.into(),
             };
-            let (file, bytes) = source.read(self.reader, maximum).await?;
+            let (file, bytes) = match source.read(self.reader, maximum).await {
+                Ok(file) => file,
+                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
             }
             .validate_instruction(&bytes)?;
-            Ok(file.into())
+            Ok(Some(file.into()))
         })
     }
 }

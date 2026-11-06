@@ -101,7 +101,7 @@ impl<
         self.retire_lookup(lookup, ctx)?;
         result
     }
-    /// Reads an immutable cut and reports actual source participation.
+    /// Reads a regular file at an immutable cut and reports source participation.
     pub async fn read_at_snapshot(
         &self,
         cut: LazySnapshotRef,
@@ -111,10 +111,15 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
         let (lookup, used, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
-        let lookup = lookup.ok_or(LazyWorkspaceError::NotFound)?;
+        let Some(lookup) = lookup else {
+            crate::kernel::retire_allocation(guard, 0, ctx)?;
+            return Err(LazyWorkspaceError::NotFound);
+        };
         let source = matches!(lookup, LazyLookup::Source { .. });
         let result = if source && cut.source != self.source.reference() {
             Err(LazyWorkspaceError::StaleSource)
+        } else if lookup.stat().kind != SourceNodeKind::RegularFile {
+            Err(LazyWorkspaceError::NotRegularFile)
         } else {
             self.read_resolved(&lookup, path, range, maximum, ctx)
                 .await
