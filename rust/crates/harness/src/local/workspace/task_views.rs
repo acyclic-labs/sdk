@@ -112,12 +112,8 @@ impl LocalWorkspace {
         .await?;
         workspace.state = StateArc::new(AsyncMutex::new(State {
             active,
-            initial_view,
-            workspace: None,
-            watcher: None,
-            allocated_mounts: Default::default(),
-            mounts: Arc::clone(&workspace.mounts),
             initialized: true,
+            ..State::new(initial_view, Arc::clone(&workspace.mounts))
         }));
         let workspace = Arc::new(workspace);
         Ok(workspace)

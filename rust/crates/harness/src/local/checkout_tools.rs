@@ -54,6 +54,9 @@ pub(in crate::local) struct State {
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
+    /// Calls of this process whose launch or tree cleanup did not complete:
+    /// their process may still run, so reconciliation leaves them unknown.
+    pub(in crate::local) unsettled: std::collections::BTreeSet<crate::OperationId>,
 }
 
 impl State {
@@ -69,6 +72,7 @@ impl State {
             watcher: None,
             mounts,
             initialized: false,
+            unsettled: Default::default(),
         }
     }
 }
@@ -249,7 +253,7 @@ impl CheckoutTools {
             let mounts = Arc::clone(&state.mounts);
             let (result, mut state, mut files) =
                 workspace::volumes::native_scope(&mounts, async |claims| {
-                    let (result, state, files, claims) = self
+                    let (result, mut state, files, claims) = self
                         .shell(
                             (input, invocation.operation_id, execution_grant),
                             maximum,
@@ -269,6 +273,7 @@ impl CheckoutTools {
                             })
                         })
                     {
+                        state.unsettled.insert(invocation.operation_id);
                         return Err(Error::Indeterminate(invocation.operation_id));
                     }
                     Ok(((result, state, files), claims))
@@ -461,8 +466,19 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            // A dispatched process must never be launched again after a lost ack.
-            Ok(None)
+            // A dispatched process is never launched again. A reopened owner
+            // fences every tree its dead predecessor left before admitting
+            // work, and a live command holds this guard until its tree is
+            // reaped. Once the guard is held, the call's process is gone
+            // unless this process failed to reap it, and its outcome was never
+            // recorded: it settles as interrupted.
+            let state = lock_owned(StateArc::clone(&self.state)).await;
+            if state.unsettled.contains(&invocation.operation_id) {
+                return Ok(None);
+            }
+            Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ))
         })
     }
 }
