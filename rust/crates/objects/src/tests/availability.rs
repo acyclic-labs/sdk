@@ -12,7 +12,7 @@ async fn payload(medium: &Shared, account: &[u8]) -> Result<String, Box<dyn std:
     Ok(keys[0].0.clone())
 }
 
-pub(crate) async fn verify(medium: impl Medium) -> TestResult {
+pub(crate) async fn verify(medium: impl Medium + 'static) -> TestResult {
     let medium = Shared::over(medium, false);
     let store = Store::new(medium.clone());
     let account = store.account(b"availability-repair")?;
