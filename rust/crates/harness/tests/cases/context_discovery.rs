@@ -18,6 +18,7 @@ use acyclic_harness::{
     model::{ModelContent, ModelEvent},
     resources::ProviderRef,
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
+    wire::ErrorCode,
 };
 use std::sync::{
     Arc,
@@ -595,10 +596,14 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
     declaration.policy.skill_name = None;
     declaration.limits.entries = 1;
-    assert!(matches!(
-        declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::Invalid
+    );
     declaration.limits.entries = 64;
     let scope = fixture
         .issuer
@@ -630,15 +635,23 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         .instruction_names
         .push("AGENTS.md".into());
     fixture.put("AGENTS.md", &[b'x'; 513], "oversized").await?;
-    assert!(matches!(
-        declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::Invalid
+    );
     fixture.put("AGENTS.md", b"bad\0text", "nul").await?;
-    assert!(matches!(
-        declaration.capture(fixture.reader.as_ref()).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::Invalid
+    );
     Ok(())
 }
 
@@ -794,7 +807,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
             .await
             .unwrap_err()
             .code(),
-        acyclic_harness::wire::ErrorCode::Invalid
+        ErrorCode::Invalid
     );
 
     let skills = Fixture::new().await?;
@@ -809,7 +822,7 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
             .await
             .unwrap_err()
             .code(),
-        acyclic_harness::wire::ErrorCode::Invalid
+        ErrorCode::Invalid
     );
     Ok(())
 }
@@ -929,10 +942,14 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     );
     source = first_skill(&captured)?.source.clone();
     source.path = "AGENTS.md".into();
-    assert!(matches!(
-        source.read(fixture.reader.as_ref(), 32_768).await,
-        Err(Error::Invalid(_))
-    ));
+    assert_eq!(
+        source
+            .read(fixture.reader.as_ref(), 32_768)
+            .await
+            .unwrap_err()
+            .code(),
+        ErrorCode::Invalid
+    );
     source.path = "skills/missing/SKILL.md".into();
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     Ok(())
