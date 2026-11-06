@@ -56,7 +56,6 @@ fn turns(
             .collect();
         let provider = Arc::new(ScriptedModelProvider::new(replies));
         let config = local_harness_config(directory.join("filesystem"), (model, provider))?
-            .without_user_settings()
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
@@ -94,17 +93,19 @@ fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
         .build()
         .map_err(storage)?;
     runtime.block_on(async {
-        tokio::time::pause();
         let directory = tempfile::tempdir().map_err(storage)?;
-        let mut driver = driver::Driver::new(71, None);
-        let driver::Outcome::Completed(cuts) = driver
-            .run(turns(driver.schedule.clone(), directory.path(), replies))
-            .await
-        else {
-            panic!("uncut reply publication crashed");
-        };
-        let cuts = cuts?;
-        let writes = driver.schedule.durable_writes();
+        let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+        let releaser = tokio::spawn(async move {
+            while let Some(boundary) = events.recv().await {
+                boundary.release();
+            }
+        });
+        let cuts = schedule
+            .scope(turns(schedule.clone(), directory.path(), replies))
+            .await?;
+        schedule.drained().await;
+        releaser.abort();
+        let writes = schedule.durable_writes();
         Ok(std::array::from_fn(|index| {
             flushes(&writes[cuts[index]..cuts[index + 1]])
         }))
