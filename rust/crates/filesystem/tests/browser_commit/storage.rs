@@ -215,13 +215,17 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let initial = [first.clone(), second.clone()]
+    let initial = [first.clone(), second.clone(), first.clone()]
         .map(|write| acyclic_fs::HashedObject::new(write.object_id.kind, write.bytes));
     store
         .put_many_hashed(&initial, &mut work)
         .await
         .map_err(js_error)?;
     assert_eq!(work.spent().bytes_hashed, 0);
+    assert_eq!(work.spent().object_probes, 2);
+    assert_eq!(work.spent().backend_read_operations, 2);
+    assert_eq!(work.spent().backend_write_operations, 2);
+    assert_eq!(work.spent().durability_operations, 1);
     assert_eq!(
         work.spent().object_bytes_written,
         (first.bytes.len() + second.bytes.len()) as u64
