@@ -41,6 +41,27 @@ const claims = {
     "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes",
     "account wait retained its lost global producer", ["--no-default-features"],
   ],
+  "auth-generation": [
+    "rust/crates/auth/src/trust/follower.rs", "acyclic-auth",
+    "trust::follower::tests::swap_precedes_wake_and_lost_follow_fences",
+    "generation exhaustion retained a live publication owner", ["--no-default-features"],
+  ],
+  "trust-catchup": [
+    "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
+    "trust_feed::tests::losing_one_account_follow_fences_everything",
+    "reconnect served trust before its original observed tail", ["--no-default-features"],
+  ],
+  "scalar-charge-cost": [
+    "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
+    "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost",
+    "scalar charge performed unrelated counter arithmetic", ["--no-default-features", "--features", "distributed"],
+  ],
+  "guest-refusal": [
+    "rust/crates/actors/src/guest/state.rs", "acyclic-actors",
+    "guest_loom::state::tests::lock_order_checker_rejects_same_and_different_state_nesting",
+    "nested mutation lost its typed refusal", ["--features", "model-checking"],
+    { target: ["--test", "main"], loom: true },
+  ],
   "work-arithmetic": [
     "rust/crates/filesystem/src/performance.rs", "acyclic-fs",
     "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals",
@@ -97,11 +118,12 @@ if (claim === "--help" && extra.length === 0) {
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const target = options.target ?? ["--lib"];
   const command = options.nextest
-    ? ["nextest", "run", "--locked", "-p", crate, ...features, "--lib", "-E", `test(=${test})`, ...options.nextest]
-    : ["test", "--locked", "-p", crate, ...features, "--lib", test, "--", "--exact", "--nocapture"];
+    ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
+    : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
   const positive = options.positive
-    ? ["nextest", "run", "--locked", "-p", crate, ...features, "--lib", "-E",
+    ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command;
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
@@ -120,7 +142,13 @@ if (claim === "--help" && extra.length === 0) {
       result = spawnSync(program, args, {
         cwd: root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
-        env: { ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697" },
+        env: {
+          ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.loom ? {
+            RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
+              `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
+          } : {}),
+        },
       });
     } finally {
       if (descriptor !== undefined) closeSync(descriptor);
