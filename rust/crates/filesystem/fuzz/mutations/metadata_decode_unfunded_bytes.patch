@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/kernel/serde_decode.rs b/rust/crates/filesystem/src/kernel/serde_decode.rs
+--- a/rust/crates/filesystem/src/kernel/serde_decode.rs
++++ b/rust/crates/filesystem/src/kernel/serde_decode.rs
+@@ -355,9 +355,7 @@
+                         .absorb(&mut decode.allocation.borrow_mut(), &mut entry)
+                         .map_err(|error| Self::Error::custom(decode.error(error)))?;
+                 }
+-                DecodeKind::Sequence | DecodeKind::ByteBuffer
+-                    if width != 0 && self.length == self.capacity =>
+-                {
++                DecodeKind::Sequence if width != 0 && self.length == self.capacity => {
+                     decode
+                         .grow_sequence(width, &mut self.capacity)
+                         .map_err(Self::Error::custom)?;

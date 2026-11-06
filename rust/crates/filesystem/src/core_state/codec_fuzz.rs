@@ -4,6 +4,7 @@ use super::*;
 fn check_type<T: DeserializeOwned + Serialize>(
     bytes: &[u8],
     work: &crate::NativeMaterializationWork,
+    minimum_retained: fn(&T) -> u64,
 ) -> bool {
     let baseline = work.live_allocation_bytes();
     let cancellation = crate::CancellationToken::new();
@@ -43,6 +44,22 @@ fn check_type<T: DeserializeOwned + Serialize>(
                 .zip(earlier.standalone_ledger())
                 .is_some_and(|(output, original)| std::sync::Arc::ptr_eq(output, original)),
             "metadata decoder replaced original accounting ledger; recovery: cargo run --example capture",
+        );
+        let minimum = minimum_retained(&ordinary);
+        let native_bytes = work.live_allocation_bytes() - baseline;
+        let original_bytes = original
+            .standalone_parts()
+            .expect("ordinary decode retains the original standalone ledger")
+            .0
+            .live_bytes()
+            - original_baseline;
+        assert!(
+            native_bytes >= minimum && original_bytes >= minimum,
+            "metadata decoder omitted owned byte payload funding; recovery: cargo run --example capture",
+        );
+        assert_eq!(
+            native_bytes, original_bytes,
+            "metadata adapters disagree on retained payload funding; recovery: cargo run --example capture",
         );
         // Keep the returned tuple intact: its value retires before allocation custody.
         let Ok(encoded) = serde_json::to_vec(&decoded.0) else {
@@ -119,7 +136,7 @@ pub fn check(bytes: &[u8]) -> bool {
     };
     macro_rules! check {
         ($($kind:ty),+ $(,)?) => { $(assert!(
-            check_type::<$kind>(bytes, &work),
+            check_type::<$kind>(bytes, &work, |_| 0),
             "funded JSON admission/custody for {}; recovery: cargo run --example capture",
             stringify!($kind),
         );)+ };
@@ -145,13 +162,17 @@ pub fn check(bytes: &[u8]) -> bool {
         Option<WorkspaceLineageRecord>,
         Option<LazyWorkspaceState>
     );
+    assert!(
+        check_type::<bytes::Bytes>(bytes, &work, |value| value.len() as u64),
+        "funded byte-buffer admission/custody; recovery: cargo run --example capture",
+    );
     let mut offset = 0;
     while offset < bytes.len() {
         let before = offset;
         let Ok(Some(frame)) = checked_log_frame(bytes, &mut offset, Some(&work)) else {
             break;
         };
-        if offset <= before || !check_type::<LogFrame<Change>>(frame, &work) {
+        if offset <= before || !check_type::<LogFrame<Change>>(frame, &work, |_| 0) {
             return false;
         }
     }
@@ -253,6 +274,20 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
     let mut encoded = Vec::new();
     write_buffered_json(&mut encoded, &git)?;
     seeds.push(("core-git-branches".into(), encoded));
+    let mut encoded = Vec::new();
+    write_buffered_json(
+        &mut encoded,
+        &Bytes::from_static(b"retained metadata bytes"),
+    )?;
+    seeds.push(("core-byte-buffer".into(), encoded));
+    for (name, text) in [
+        ("core-byte-text", "metadata-\u{e9}"),
+        ("core-byte-escaped-text", "metadata\nbytes"),
+    ] {
+        let mut encoded = Vec::new();
+        write_buffered_json(&mut encoded, &text)?;
+        seeds.push((name.into(), encoded));
+    }
     let change = Change::default();
     let frame = CoreLog::encode_frame(Uuid::from_bytes([1; 16]), 0, &change, None)?;
     seeds.push(("core-journal".into(), frame.bytes));
