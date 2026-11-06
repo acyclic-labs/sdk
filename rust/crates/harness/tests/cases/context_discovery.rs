@@ -963,6 +963,23 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         root: &source.root,
         io: None,
     };
+    let missing_skill_authority = acyclic_harness::context::discover_skills_from(
+        &mut unavailable_instructions,
+        &source.root.directory,
+        "SKILL.md",
+        &mut acyclic_harness::context::DiscoveryWork::default(),
+        Some(&first_skill(&captured)?.source.generation),
+        true,
+    )
+    .await;
+    assert!(
+        missing_skill_authority.is_err(),
+        "missing source authority must not omit the optional skill directory"
+    );
+    assert_eq!(
+        missing_skill_authority.unwrap_err().code(),
+        ErrorCode::NotFound
+    );
     let missing_authority = unavailable_instructions
         .instruction(
             &source.path,
