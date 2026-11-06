@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/store.rs b/rust/crates/objects/src/store.rs
+--- a/rust/crates/objects/src/store.rs
++++ b/rust/crates/objects/src/store.rs
+@@ -396,7 +396,7 @@ impl<M: Medium> Store<M> {
+                 .lock()
+                 .unwrap_or_else(PoisonError::into_inner)
+                 .entry(id)
+-                .or_insert_with(|| Arc::new(State::new(format!("{}/", id.to_hex())))),
++                .or_insert_with(|| Arc::new(State::new(format!("{}/", Digest::of(b"memory").to_hex())))),
+         );
+         Ok(Account {
+             medium: Arc::clone(&self.medium),

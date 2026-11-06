@@ -280,8 +280,8 @@ impl<M> Clone for Store<M> {
     }
 }
 
-#[derive(Default)]
 struct State {
+    prefix: String,
     gate: tokio::sync::RwLock<()>,
     availability: crate::AvailabilitySource,
     /// This account's revisions, opened from the medium on first use.
@@ -289,6 +289,18 @@ struct State {
     /// Over a volatile medium, the blob versions this process wrote and has
     /// not flushed.
     written: Mutex<HashMap<Digest, Vec<Written>>>,
+}
+
+impl State {
+    fn new(prefix: String) -> Self {
+        Self {
+            prefix,
+            gate: tokio::sync::RwLock::default(),
+            availability: crate::AvailabilitySource::default(),
+            revisions: tokio::sync::OnceCell::default(),
+            written: Mutex::default(),
+        }
+    }
 }
 
 /// One unflushed blob version, with what a flush of it covers.
@@ -385,11 +397,10 @@ impl<M: Medium> Store<M> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entry(id)
-                .or_default(),
+                .or_insert_with(|| Arc::new(State::new(format!("{}/", id.to_hex())))),
         );
         Ok(Account {
             medium: Arc::clone(&self.medium),
-            prefix: format!("{}/", id.to_hex()),
             state,
             scrub: Arc::clone(&self.scrub),
         })
@@ -404,7 +415,6 @@ impl<M: Medium> Store<M> {
 /// One account's blobs over a shared medium.
 pub struct Account<M> {
     medium: Arc<M>,
-    prefix: String,
     state: Arc<State>,
     scrub: Scrub,
 }
@@ -437,7 +447,6 @@ impl<M> Clone for Account<M> {
     fn clone(&self) -> Self {
         Self {
             medium: Arc::clone(&self.medium),
-            prefix: self.prefix.clone(),
             state: Arc::clone(&self.state),
             scrub: Arc::clone(&self.scrub),
         }
@@ -463,8 +472,7 @@ impl MemoryObjects {
     fn over_memory(medium: MemoryMedium) -> Self {
         Self {
             medium: Arc::new(medium),
-            prefix: format!("{}/", Digest::of(b"memory").to_hex()),
-            state: Arc::default(),
+            state: Arc::new(State::new(format!("{}/", Digest::of(b"memory").to_hex()))),
             scrub: Arc::default(),
         }
     }
@@ -540,7 +548,6 @@ impl<M> Account<M> {
     pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
         Account {
             medium,
-            prefix: self.prefix.clone(),
             state: Arc::clone(&self.state),
             scrub: Arc::clone(&self.scrub),
         }
@@ -552,7 +559,7 @@ impl<M: Medium> Account<M> {
         let hex = digest.to_hex();
         format!(
             "{}p/{}/{hex}.{}",
-            self.prefix,
+            self.state.prefix,
             &hex[..2],
             hex::encode(version)
         )
@@ -610,14 +617,13 @@ impl<M: Medium> Account<M> {
             };
             let account = Account {
                 medium: Arc::clone(&self.medium),
-                prefix: format!("{account}/"),
-                state: Arc::default(),
+                state: Arc::new(State::new(format!("{account}/"))),
                 scrub: Arc::clone(&self.scrub),
             };
             let repaired = account.repair().await?;
             self.medium.flush(&repaired).await.map_err(medium)?;
             // Past every key of this account.
-            after = Some(format!("{}{}", account.prefix, char::MAX));
+            after = Some(format!("{}{}", account.state.prefix, char::MAX));
         }
         self.medium.settle();
         Ok(())
@@ -628,7 +634,7 @@ impl<M: Medium> Account<M> {
         let mut repaired = Vec::new();
         let mut blobs = HashMap::new();
         let mut parents: HashMap<Digest, Vec<Digest>> = HashMap::new();
-        let mut pages = self.pages(format!("{}e/", self.prefix));
+        let mut pages = self.pages(format!("{}e/", self.state.prefix));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let digest = self.digest_from_key(&key)?;
@@ -687,7 +693,7 @@ impl<M: Medium> Account<M> {
         }
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
-        let mut pages = self.pages(format!("{}r/", self.prefix));
+        let mut pages = self.pages(format!("{}r/", self.state.prefix));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 if self.batch_survived(&key, &blobs).await? {
@@ -716,7 +722,7 @@ impl<M: Medium> Account<M> {
             Err(error) => return Err(error),
         };
         let (root, name) = key
-            .strip_prefix(&format!("{}r/", self.prefix))
+            .strip_prefix(&format!("{}r/", self.state.prefix))
             .and_then(|rest| rest.split_once('/'))
             .ok_or_else(corrupt)?;
         let tag = format!("r{root}.{name}");
@@ -736,14 +742,14 @@ impl<M: Medium> Account<M> {
     }
 
     fn incarnation_key(&self) -> String {
-        format!("{}incarnation", self.prefix)
+        format!("{}incarnation", self.state.prefix)
     }
 
     /// Reads back the incarnation this account was created with, creating it
     /// for a new or wiped account, and claims the next run.
     async fn open_revisions(&self) -> Result<Issued, Error> {
         let key = self.incarnation_key();
-        let account = AppliedRevisions::storage_scope("objects", self.prefix.as_bytes());
+        let account = AppliedRevisions::storage_scope("objects", self.state.prefix.as_bytes());
         let observed = self.medium.observe(key.clone()).await.map_err(medium)?;
         let (incarnation, run) = match observed
             .as_ref()
@@ -779,15 +785,19 @@ impl<M: Medium> Account<M> {
 
     fn envelope_key(&self, digest: &Digest) -> String {
         let hex = digest.to_hex();
-        format!("{}e/{}/{hex}", self.prefix, &hex[..2])
+        format!("{}e/{}/{hex}", self.state.prefix, &hex[..2])
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
-        format!("{}r/{}/", self.prefix, Digest::of(root.as_bytes()).to_hex())
+        format!(
+            "{}r/{}/",
+            self.state.prefix,
+            Digest::of(root.as_bytes()).to_hex()
+        )
     }
 
     fn index_prefix(&self, child: &Digest) -> String {
-        format!("{}i/{}/", self.prefix, child.to_hex())
+        format!("{}i/{}/", self.state.prefix, child.to_hex())
     }
 
     /// Whether any key exists under `prefix`.
@@ -904,7 +914,7 @@ impl<M: Medium> Account<M> {
     }
 
     fn epoch_key(&self) -> String {
-        format!("{}epoch", self.prefix)
+        format!("{}epoch", self.state.prefix)
     }
 
     /// Holds `envelope`'s version of `digest` in the unflushed set for one
@@ -1471,7 +1481,7 @@ impl<M: Medium> Account<M> {
         };
         let mut references = Vec::new();
         for (key, _) in self
-            .list_all(&format!("{}r/", self.prefix))
+            .list_all(&format!("{}r/", self.state.prefix))
             .await
             .map_err(suspended)?
         {
@@ -1765,7 +1775,11 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     let wanted = limit - digests.len();
                     let keys = self
                         .medium
-                        .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
+                        .list(
+                            &format!("{}e/", self.state.prefix),
+                            cursor.as_deref(),
+                            wanted,
+                        )
                         .await
                         .map_err(medium)?;
                     for (key, _) in &keys {
@@ -1955,7 +1969,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     epoch,
                     ..Collection::default()
                 };
-                let mut pages = self.pages(format!("{}e/", self.prefix));
+                let mut pages = self.pages(format!("{}e/", self.state.prefix));
                 while let Some(page) = pages.next().await? {
                     for (key, _) in page {
                         let digest = self.digest_from_key(&key)?;
@@ -1974,7 +1988,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     }
                 }
                 // Payloads of no envelope or of a removed version: none can return.
-                let mut pages = self.pages(format!("{}p/", self.prefix));
+                let mut pages = self.pages(format!("{}p/", self.state.prefix));
                 while let Some(page) = pages.next().await? {
                     for (key, size) in page {
                         let (digest, version) = self.payload_of(&key)?;
@@ -2084,7 +2098,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 loop {
                     let page = self
                         .medium
-                        .list(&format!("{}e/", self.prefix), after.as_deref(), PAGE)
+                        .list(&format!("{}e/", self.state.prefix), after.as_deref(), PAGE)
                         .await
                         .map_err(medium)?;
                     for (key, _) in &page {
