@@ -53,6 +53,7 @@ const HAS_CWD: u8 = 1;
 const HAS_UID: u8 = 2;
 const HAS_GID: u8 = 4;
 const HAS_BOUNDARY: u8 = 8;
+const ON_RELEASE: u8 = 16;
 
 /// Resource limits a request carries: every Linux limit, 0..`RLIM_NLIMITS`.
 const LIMITS: u32 = 16;
@@ -169,6 +170,7 @@ fn encode(
     body: &mut Vec<u8>,
     command: &ProcessCommand,
     environment: &BTreeMap<&OsStr, &OsStr>,
+    on_release: bool,
 ) -> io::Result<Option<RawFd>> {
     let identity = &command.unix;
     let flags = [
@@ -176,6 +178,7 @@ fn encode(
         (identity.uid.is_some(), HAS_UID),
         (identity.gid.is_some(), HAS_GID),
         (command.boundary.is_some(), HAS_BOUNDARY),
+        (on_release, ON_RELEASE),
     ]
     .iter()
     .filter(|(set, _)| *set)
@@ -220,6 +223,14 @@ fn encode(
 pub(super) fn start(
     command: &ProcessCommand,
     directory: &File,
+) -> io::Result<(Child, io::Result<()>)> {
+    start_with_release(command, directory, None)
+}
+
+pub(super) fn start_with_release(
+    command: &ProcessCommand,
+    directory: &File,
+    activity: Option<&File>,
 ) -> io::Result<(Child, io::Result<()>)> {
     let identity = &command.unix;
     // The tree always leads its own group, which the warden's PID names.
@@ -279,10 +290,16 @@ pub(super) fn start(
         &mut message,
     )?;
     let mut count = 3 + streams;
-    if let Some(boundary) = encode(&mut message, command, &environment)? {
+    if let Some(boundary) = encode(&mut message, command, &environment, activity.is_some())? {
         *descriptors
             .get_mut(count)
             .ok_or(io::ErrorKind::InvalidInput)? = boundary;
+        count += 1;
+    }
+    if let Some(activity) = activity {
+        *descriptors
+            .get_mut(count)
+            .ok_or(io::ErrorKind::InvalidInput)? = activity.as_raw_fd();
         count += 1;
     }
     let length = u64::try_from(message.len() - 8).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -290,6 +307,17 @@ pub(super) fn start(
         .get_mut(..8)
         .ok_or(io::ErrorKind::InvalidInput)?
         .copy_from_slice(&length.to_ne_bytes());
+    #[cfg(feature = "test-support")]
+    if activity.is_some()
+        && command.env.clear
+        && let Some(path) = std::env::var_os("ACYCLIC_RUNNER_REQUEST_CAPTURE")
+    {
+        // Capture the actual encoded request at its transport boundary. The
+        // fixture clears its environment; inherited host secrets are excluded.
+        let mut capture = vec![u8::try_from(count).map_err(|_| io::ErrorKind::InvalidData)?];
+        capture.extend_from_slice(&message[8..]);
+        std::fs::write(path, capture)?;
+    }
     // Retain the original runner, including its group anchor and control
     // socket, until the original exec acknowledgement closes this reply.
     let launch_owner = send(
@@ -309,7 +337,14 @@ pub(super) fn start(
     drop(reply_end);
     drop(here);
     let mut replied = Vec::new();
-    File::from(reply).read_to_end(&mut replied)?;
+    if activity.is_some() {
+        // The deferred command cannot exec before its owner releases it. Its
+        // admission frame is the acknowledgement, not its later exec event.
+        replied.resize(5, 0);
+        File::from(reply).read_exact(&mut replied)?;
+    } else {
+        File::from(reply).read_to_end(&mut replied)?;
+    }
     drop(launch_owner);
     let mut pid = None;
     let mut failure = None;
@@ -388,7 +423,7 @@ fn put_string(body: &mut Vec<u8>, parts: &[&[u8]]) -> io::Result<()> {
     Ok(())
 }
 
-fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+pub(super) fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut ends = [0; 2];
     // SAFETY: writable storage for two descriptors.
     if unsafe { libc::pipe2(ends.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {

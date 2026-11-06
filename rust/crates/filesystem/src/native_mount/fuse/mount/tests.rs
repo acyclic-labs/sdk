@@ -52,6 +52,7 @@ fn real_helper_spawn_never_forks_at_n_and_two_n_and_pre_exec_fails_that_bound() 
                     "unused",
                     child,
                     &diagnostic,
+                    File::open("/dev/null")?,
                 )?;
                 assert!(process.wait()?.success());
                 drop(receive);
@@ -99,6 +100,7 @@ proptest! {
             let mut expected_trace = vec![(0, 0)];
             let expected = match kernel {
                 None => Ok(()),
+                Some(nix::errno::Errno::EINVAL | nix::errno::Errno::ENOENT) => Ok(()),
                 Some(nix::errno::Errno::EPERM) => {
                     expected_trace.push((1, 0));
                     if helper_fails { Err(io::Error::from_raw_os_error(libc::EACCES)) } else { Ok(()) }
@@ -172,7 +174,7 @@ fn only_a_successful_helper_admits_waiting_for_device_acknowledgment() -> io::Re
             phase: MountPhase::Mounted,
             ..Mount::default()
         };
-        let result = mount.attempt_unmount(|_| Ok(false), |mount| mount.unmount_helper(c"/unused"));
+        let result = mount.attempt_unmount(|mount| mount.unmount_helper(c"/unused"));
         assert_eq!(result.is_ok(), succeeds);
         if let Err(error) = result {
             assert_eq!(error.kind(), io::ErrorKind::Other);
@@ -199,17 +201,14 @@ fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
     // Acceptance and device destruction are distinct events. Refusals permit
     // another attempt; acceptance admits only waiting for acknowledgment.
     for fails in failures.iter().copied().chain([false]) {
-        let result = mount.attempt_unmount(
-            |mount| mount.observe_detachment(|| Ok(false)),
-            |_| {
-                attempts += 1;
-                if fails {
-                    Err(io::Error::from_raw_os_error(libc::EIO))
-                } else {
-                    Ok(())
-                }
-            },
-        );
+        let result = mount.attempt_unmount(|_| {
+            attempts += 1;
+            if fails {
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            } else {
+                Ok(())
+            }
+        });
         let error = result
             .err()
             .map(|error| (error.kind(), error.raw_os_error(), error.to_string()));
@@ -227,11 +226,8 @@ fn retry_history(failures: &[bool], broken: bool) -> io::Result<bool> {
         actual.push((error, mount.pending(), attempts, detached));
         expected.push((expected_error, true, expected_attempts, false));
     }
-    mount.attempt_unmount(
-        |mount| mount.observe_detachment(|| Ok(true)),
-        |_| panic!("detached device was unmounted again"),
-    )?;
     assert!(mount.observe_detachment(|| Ok(true))?);
+    mount.attempt_unmount(|_| panic!("detached device was unmounted again"))?;
     assert!(!mount.pending());
     Ok(actual == expected && attempts == expected_attempts)
 }
