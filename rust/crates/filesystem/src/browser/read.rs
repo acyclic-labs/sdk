@@ -1,6 +1,9 @@
 //! Browser adapters share the original ledger and the Objects batch driver.
-use crate::async_storage::{admit_read_batch, authority_parts, object_error};
-use crate::kernel::allocation::{KernelAccounting, retained::RetainedAllocation};
+use crate::async_storage::{admit_read_batch, object_error};
+use crate::kernel::allocation::{
+    KernelAccounting,
+    retained::{Retained, RetainedAllocation},
+};
 use crate::{
     AuthorityAllocation, AuthorityWork, CancellationToken, ObjectRead, ObjectReadRequest,
     ObjectStoreError, WorkCounters,
@@ -43,7 +46,8 @@ pub async fn read_many(
     let cancellation = context.cancellation;
     let mut scope = context.scope()?;
     let count = admit_read_batch(requests.len(), &mut scope)?;
-    let mut values = scope.vec_owned(requests.len())?;
+    let mut values =
+        Retained::allocate(requests.len(), &mut scope.accounting()).map_err(object_error)?;
     {
         let accounting = RefCell::new(scope.accounting());
         let mut error = None;
@@ -73,7 +77,5 @@ pub async fn read_many(
             })
             .map_err(object_error)?;
     }
-    Ok(authority_parts(
-        scope.finish_owned(values).map_err(object_error)?,
-    ))
+    Ok((values.value, Some(values.allocation)))
 }
