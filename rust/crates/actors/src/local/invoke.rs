@@ -357,14 +357,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 };
                 match outcome {
                     Outcome::Error(failure) => {
-                        let source: GuestError = serde_json::from_str(&failure)
+                        let source = GuestError::decode(failure.as_bytes())
                             .map_err(|_| Error::Invalid("invalid invocation failure"))?;
-                        if serde_json::to_string(&source)
-                            .map_err(|_| Error::Invalid("invalid invocation failure"))?
-                            != failure
-                        {
-                            return Err(Error::Invalid("non-canonical invocation failure"));
-                        }
                         Err(Error::InvocationFailed {
                             source,
                             receipt: Box::new(receipt),
@@ -432,7 +426,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let outcome = match outcome.ok_or(Error::Invalid("invocation has no response"))? {
             Ok(response) => Outcome::Ok(response.clone().into()),
             Err(failure) => Outcome::Error(
-                serde_json::to_string(failure)
+                failure
+                    .encode()
                     .map_err(|_| Error::Invalid("invocation failure does not encode"))?,
             ),
         };

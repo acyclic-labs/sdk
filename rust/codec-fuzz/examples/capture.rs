@@ -972,7 +972,6 @@ fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
     let mut output = serde_json::to_vec_pretty(&vectors)?;
     output.push(b'\n');
     std::fs::write("corpus/resource-identity-v1.json", output)?;
-    std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
     Ok(())
 }
 
@@ -1054,6 +1053,7 @@ fn capture_actors(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     for (name, bytes, producer) in acyclic_codec_fuzz::actor_seeds()? {
         save("actor_codecs", name, &bytes, producer, manifest)?;
     }
+    std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
     Ok(())
 }
 
