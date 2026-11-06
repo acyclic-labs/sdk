@@ -2,6 +2,7 @@
 use super::super::checkout_tools::{State, reconciliation};
 use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
+use acyclic_stream::BoxProviderFuture;
 
 pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
@@ -57,66 +58,70 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
-    pub(in crate::local) async fn mount_task_view(
-        &self,
+    // Child admission and tools share this boundary over native mount setup.
+    pub(in crate::local) fn mount_task_view<'a>(
+        &'a self,
         view: workspace::View,
-        owner: &dyn super::owner::ViewOwner,
+        owner: &'a dyn super::owner::ViewOwner,
         mounts: Option<Arc<workspace::Mounts>>,
-        authority: &crate::filesystem::NativeMountAuthority,
-    ) -> Result<Arc<LocalWorkspace>> {
-        // Mount retirement may outlive the previous owner. Each
-        // live mount needs its own namespace so retiring it cannot
-        // detach a replacement owner's mount at the same path.
-        owner.verify().await?;
-        let mut workspace = LocalWorkspace {
-            #[cfg(all(test, not(loom)))]
-            selection_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(loom)))]
-            mount_advances: std::sync::atomic::AtomicUsize::new(0),
-            state: StateArc::new(AsyncMutex::new(State::new(
-                view.workspace().id(),
-                Arc::clone(&self.mounts),
-            ))),
-            mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
-            context_line: self.context_line().into(),
-            processes: self.processes.clone(),
-            path: self.path.clone(),
-            fresh: false,
-            import_source: false,
-            mount_directory: self.mount_directory.clone(),
-            task_view_admission: Arc::clone(&self.task_view_admission),
-            view,
-            mounted: None,
-            identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
-            filesystem: self.filesystem.clone(),
-            store: self.store.clone(),
-            mount_authority: Some(authority.clone()),
-        };
-        let (active, pending) = workspace.selected_view().await?;
-        let selected = active.as_ref().unwrap_or_else(|| workspace.view());
-        let initial_view = selected.workspace().id();
-        let mounted = workspace.mount_task_source(selected).await?;
-        workspace.path = mounted.path().to_path_buf();
-        workspace.identity = acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
-        workspace.mounted = Some(mounted);
-        workspace.mounts = workspace
-            .mounts_at_from(&workspace.path, Some(&self.mounts))
+        authority: &'a crate::filesystem::NativeMountAuthority,
+    ) -> BoxProviderFuture<'a, Result<Arc<LocalWorkspace>>> {
+        Box::pin(async move {
+            // Mount retirement may outlive the previous owner. Each
+            // live mount needs its own namespace so retiring it cannot
+            // detach a replacement owner's mount at the same path.
+            owner.verify().await?;
+            let mut workspace = LocalWorkspace {
+                #[cfg(all(test, not(loom)))]
+                selection_reads: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(all(test, not(loom)))]
+                mount_advances: std::sync::atomic::AtomicUsize::new(0),
+                state: StateArc::new(AsyncMutex::new(State::new(
+                    view.workspace().id(),
+                    Arc::clone(&self.mounts),
+                ))),
+                mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
+                context_line: self.context_line().into(),
+                processes: self.processes.clone(),
+                path: self.path.clone(),
+                fresh: false,
+                import_source: false,
+                mount_directory: self.mount_directory.clone(),
+                task_view_admission: Arc::clone(&self.task_view_admission),
+                view,
+                mounted: None,
+                identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
+                filesystem: self.filesystem.clone(),
+                store: self.store.clone(),
+                mount_authority: Some(authority.clone()),
+            };
+            let (active, pending) = workspace.selected_view().await?;
+            let selected = active.as_ref().unwrap_or_else(|| workspace.view());
+            let initial_view = selected.workspace().id();
+            let mounted = workspace.mount_task_source(selected).await?;
+            workspace.path = mounted.path().to_path_buf();
+            workspace.identity =
+                acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
+            workspace.mounted = Some(mounted);
+            workspace.mounts = workspace
+                .mounts_at_from(&workspace.path, Some(&self.mounts))
+                .await?;
+            workspace.context_line = workspace.mounts.context_line();
+            reconciliation::recover_pending(
+                &workspace,
+                active.as_ref().unwrap_or_else(|| workspace.view()),
+                pending,
+                &|| owner.verify(),
+            )
             .await?;
-        workspace.context_line = workspace.mounts.context_line();
-        reconciliation::recover_pending(
-            &workspace,
-            active.as_ref().unwrap_or_else(|| workspace.view()),
-            pending,
-            &|| owner.verify(),
-        )
-        .await?;
-        workspace.state = StateArc::new(AsyncMutex::new(State {
-            active,
-            initialized: true,
-            ..State::new(initial_view, Arc::clone(&workspace.mounts))
-        }));
-        let workspace = Arc::new(workspace);
-        Ok(workspace)
+            workspace.state = StateArc::new(AsyncMutex::new(State {
+                active,
+                initialized: true,
+                ..State::new(initial_view, Arc::clone(&workspace.mounts))
+            }));
+            let workspace = Arc::new(workspace);
+            Ok(workspace)
+        })
     }
     /// Returns the physical binding already admitted by checkout selection.
     /// Publication shares the state guard and cannot create another mount owner.

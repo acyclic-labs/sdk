@@ -87,59 +87,64 @@ async fn serialized<T, R>(
 }
 
 impl CheckoutTools {
-    pub(super) async fn new(
+    // Tool construction must not embed checkout recovery in every caller.
+    pub(super) fn new<'a>(
         workspace: Arc<LocalWorkspace>,
-        project: &VolumeRef,
+        project: &'a VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
-        signed: &Scope,
-        verifier: &AuthorityVerifier,
+        signed: &'a Scope,
+        verifier: &'a AuthorityVerifier,
         execution_grant: Option<acyclic_native_runtime::execution::ExecutionGrant>,
-    ) -> Result<Self> {
-        let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
-        let environment =
-            crate::native_environment::tool_environment().map_err(Error::process_io)?;
-        if workspace
-            .filesystem
-            .workspace_id(&project.storage_name(&mut None)?)
-            .map_err(acyclic_fs::WorkspaceError::from)?
-            != workspace.view().workspace().id()
-        {
-            return Err(Error::Unauthorized(
-                "workspace differs from the bound project volume".into(),
-            ));
-        }
-        let (capture_options, capture_policy) = capture::configuration(&workspace)?;
-        let shared = StateArc::clone(&workspace.state);
-        {
-            let mut state = lock_owned(StateArc::clone(&shared)).await;
-            if !state.initialized {
-                let (active, pending) = workspace.selected_view().await?;
-                state.active = active;
-                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                state.initial_view = view.workspace().id();
-                let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
-                reconciliation::recover_pending(&workspace, view, pending, &|| async { Ok(()) })
-                    .await?;
-                state.watcher = if workspace.fresh {
-                    Some(capture::Cursor::initial(&workspace, &capture_policy)?)
-                } else {
-                    None
-                };
-                state.initialized = true;
+    ) -> BoxProviderFuture<'a, Result<Self>> {
+        Box::pin(async move {
+            let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
+            let environment =
+                crate::native_environment::tool_environment().map_err(Error::process_io)?;
+            if workspace
+                .filesystem
+                .workspace_id(&project.storage_name(&mut None)?)
+                .map_err(acyclic_fs::WorkspaceError::from)?
+                != workspace.view().workspace().id()
+            {
+                return Err(Error::Unauthorized(
+                    "workspace differs from the bound project volume".into(),
+                ));
             }
-        }
-        Ok(Self {
-            signed: signed.clone(),
-            read_grant: project.capability(VolumeOperation::Read, &mut None)?,
-            write_grant: project.capability(VolumeOperation::Write, &mut None)?,
-            capture_options,
-            capture_policy,
-            workspace,
-            clock,
-            expiry_unix_ms,
-            environment,
-            execution_grant,
-            state: shared,
+            let (capture_options, capture_policy) = capture::configuration(&workspace)?;
+            let shared = StateArc::clone(&workspace.state);
+            {
+                let mut state = lock_owned(StateArc::clone(&shared)).await;
+                if !state.initialized {
+                    let (active, pending) = workspace.selected_view().await?;
+                    state.active = active;
+                    let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+                    state.initial_view = view.workspace().id();
+                    let view = state.active.as_ref().unwrap_or_else(|| workspace.view());
+                    reconciliation::recover_pending(&workspace, view, pending, &|| async {
+                        Ok(())
+                    })
+                    .await?;
+                    state.watcher = if workspace.fresh {
+                        Some(capture::Cursor::initial(&workspace, &capture_policy)?)
+                    } else {
+                        None
+                    };
+                    state.initialized = true;
+                }
+            }
+            Ok(Self {
+                signed: signed.clone(),
+                read_grant: project.capability(VolumeOperation::Read, &mut None)?,
+                write_grant: project.capability(VolumeOperation::Write, &mut None)?,
+                capture_options,
+                capture_policy,
+                workspace,
+                clock,
+                expiry_unix_ms,
+                environment,
+                execution_grant,
+                state: shared,
+            })
         })
     }
 }
