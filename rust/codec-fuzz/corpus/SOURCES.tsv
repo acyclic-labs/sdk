@@ -1898,6 +1898,10 @@ actor_codecs/guest-failure-checkpoint-min	49	749d072d53ac6b110454e4216b77025b694
 actor_codecs/guest-failure-checkpoint-max	68	de3c1649cab0af0b881403944aca06d6e227e4a75711ceea4abd68ca8c895be6	guest::GuestError::encode, shared invocation/failure record cause writer
 actor_codecs/guest-failure-deadline-min	55	5f6ad031e0e9760f81d3c66330833c15da5b392c3ea90d6ff1d97109043216a9	guest::GuestError::encode, shared invocation/failure record cause writer
 actor_codecs/guest-failure-deadline-max	74	feec5f4f816187cdeabeecb4cc13727371a5c8299ea221df39de30b0521f168f	guest::GuestError::encode, shared invocation/failure record cause writer
+actor_codecs/failed-input-purge-v1	603	4f5cfc8a7348eb63bd84e2feda1a12eef9bbb93162ed51f882d9acf8fa9e764f	Store::prepare_failed_input original committed status and wire_codec::record_wire
+actor_codecs/failed-input-purged-v1	256	8c8564151e74d650e6d9c13a101b81dd493e072bb3b19d95f6acb761a5d2e22f	Store::prepare_disposition original committed status and wire_codec::record_wire
+actor_codecs/failed-input-replay-v1	607	5e611059ae9b36c669ec6ab025952540b7e3e5c9bc1acdcd3983c2097d277548	Store::prepare_failed_input original committed status and wire_codec::record_wire
+actor_codecs/failed-input-replayed-v1	257	d67ce6791ceb3d6d4e537a0fcf8d179c5218ab2b4807fc8b221efaeca9686072	Store::prepare_disposition original committed status and wire_codec::record_wire
 actor_codecs/call-request-v2	92	e875a44a60106ab4a3978592b4dc0f372e274f11143b06315504f8a88b90a454	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-hold-v2	99	ac2a4221e976b4ed2a615b3999b645f2a45ec470886bccaa196ddb9253a47d2a	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-accepted-v2	96	a04474b603c92077342a2a256417f58e229ab9e1cd0f1a30694c7a238afe5504	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
