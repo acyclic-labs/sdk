@@ -100,6 +100,7 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
     ] {
         let parent = &workspaces[parent_index];
         let generation = parent.head(budget, &cancellation).await?.value;
+        let fork_generation = generation.id();
         let options = ForkOptions::from_generation(generation, IdempotencyKey::new());
         let options = if name == "grandchild" {
             options.inherit_paths(vec!["/source".to_owned()])
@@ -176,6 +177,151 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
         };
         assert!(authority.replay_custody.lock().unwrap().is_none());
         assert_eq!(child.name().as_str(), name);
+        if parent_index == 0 {
+            // Derive the minimal read count from the actual authenticated
+            // primitives, including the selected child's immutable ancestry.
+            let parent_proof = parent
+                .generation(fork_generation, budget, &cancellation)
+                .await?;
+            let initial = child.head(budget, &cancellation).await?;
+            let ancestry = initial.value.parents(budget, &cancellation).await?;
+            let exact = child
+                .generation(initial.value.id(), budget, &cancellation)
+                .await?;
+            for selected_exact in [false, true] {
+                if selected_exact {
+                    child.write_text("/later", "advanced").await?;
+                }
+                let selected_reads = if selected_exact {
+                    exact.work.backend_read_operations
+                } else {
+                    initial.work.backend_read_operations
+                };
+                let expected_reads = parent_proof.work.backend_read_operations
+                    + selected_reads
+                    + ancestry.work.backend_read_operations;
+                for native_registration in [false, true] {
+                    let registration =
+                        crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+                    let (record, spent) = if native_registration {
+                        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+                            .map_err(|(error, _)| error)?;
+                        if !selected_exact {
+                            *authority.replay_custody.lock().unwrap() =
+                                Some(ReplayCustody::Native(original.clone()));
+                        }
+                        let record = if selected_exact {
+                            registration
+                                .register_existing_child_at_generation(
+                                    parent,
+                                    &child,
+                                    fork_generation,
+                                    initial.value.id(),
+                                    &original,
+                                    &cancellation,
+                                )
+                                .await?
+                        } else {
+                            registration
+                                .register_existing_child(
+                                    parent,
+                                    &child,
+                                    fork_generation,
+                                    &original,
+                                    &cancellation,
+                                )
+                                .await?
+                        };
+                        (record, original.receipt())
+                    } else {
+                        let original = Arc::new(Prefunded {
+                            budget,
+                            held: Mutex::new(None),
+                        });
+                        if !selected_exact {
+                            *authority.replay_custody.lock().unwrap() =
+                                Some(ReplayCustody::Standalone(original.clone()));
+                        }
+                        let (result, spent, live, baseline) = if selected_exact {
+                            registration
+                                .register_existing_child_at_generation(
+                                    parent,
+                                    &child,
+                                    fork_generation,
+                                    initial.value.id(),
+                                    original.as_ref(),
+                                    &cancellation,
+                                )
+                                .await
+                        } else {
+                            registration
+                                .register_existing_child(
+                                    parent,
+                                    &child,
+                                    fork_generation,
+                                    original.as_ref(),
+                                    &cancellation,
+                                )
+                                .await
+                        };
+                        assert!(
+                            live >= baseline,
+                            "child registration retired original backing"
+                        );
+                        (result?, spent)
+                    };
+                    spent.verify(budget)?;
+                    assert!(authority.replay_custody.lock().unwrap().is_none());
+                    assert_eq!(
+                        spent.backend_read_operations, expected_reads,
+                        "child registration repeated or detached authenticated reads"
+                    );
+                    assert_eq!(record.parent_workspace_id, Some(parent.id()));
+                    assert_eq!(record.fork_generation, fork_generation);
+                    assert_eq!(record.initial_generation, initial.value.id());
+                }
+            }
+            for cancelled in [false, true] {
+                let cancellation = CancellationToken::new();
+                if cancelled {
+                    cancellation.cancel();
+                }
+                let constrained = WorkBudget {
+                    backend_read_operations: 0,
+                    ..budget
+                };
+                let failure = graph
+                    .register_existing_child_at_generation(
+                        parent,
+                        &child,
+                        fork_generation,
+                        initial.value.id(),
+                        constrained,
+                        &cancellation,
+                    )
+                    .await
+                    .err()
+                    .ok_or("child registration escaped its cancellation or read allowance")?;
+                if cancelled {
+                    assert!(matches!(
+                        failure.error,
+                        crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
+                    ));
+                    assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+                } else {
+                    assert!(matches!(
+                        failure.error,
+                        crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+                            crate::WorkError::BudgetExceeded {
+                                counter: "backend_read_operations",
+                                ..
+                            }
+                        ))
+                    ));
+                }
+                assert_eq!(failure.work.backend_read_operations, 0);
+            }
+        }
         let read = child.read("/source", 8, budget, &cancellation).await?;
         assert_eq!(read.value.as_ref(), b"original");
         workspaces.push(child);
