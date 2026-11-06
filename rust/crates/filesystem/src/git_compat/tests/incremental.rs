@@ -242,9 +242,14 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         .value
         .expect("filtered incremental proof");
     let lineage = graph
-        .resolve(captured.generation.workspace_id())
+        .resolve(
+            captured.generation.workspace_id(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
-        .expect("reopen incremental lineage");
+        .expect("reopen incremental lineage")
+        .value;
     assert_eq!(
         lineage.parent_workspace_id,
         Some(previous_capture.generation.workspace_id()),
