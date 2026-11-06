@@ -440,6 +440,7 @@ async fn drive(
     terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
+    let events = projection.is_some();
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && args.output_format != OutputFormat::Jsonl
@@ -532,5 +533,9 @@ async fn drive(
             }
         }
     }
-    result
+    let code = result?;
+    if events {
+        headless::completed(output, conversation.task(), &operation, code == 0).await?;
+    }
+    Ok(code)
 }
