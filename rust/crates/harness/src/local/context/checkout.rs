@@ -282,10 +282,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 .await
             {
                 Ok(file) => file,
-                Err(
-                    acyclic_fs::LazyWorkspaceError::NotFound
-                    | acyclic_fs::LazyWorkspaceError::Filesystem(acyclic_fs::FsError::NotFound),
-                ) => return Ok(None),
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => return Ok(None),
                 Err(acyclic_fs::LazyWorkspaceError::NotRegularFile) => {
                     return Err(Error::Invalid(
                         "instruction entry is not a regular file".into(),

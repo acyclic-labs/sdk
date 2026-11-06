@@ -326,13 +326,23 @@ impl PinnedContextPath {
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.read_if_present(reader, maximum_bytes)
+            .await?
+            .ok_or_else(|| Error::NotFound("selected context file does not exist".into()))
+    }
+
+    pub(super) async fn read_if_present(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<Option<(FileRef, acyclic_stream::OwnedBytes)>> {
         self.validate(&mut None)?;
         if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
             return Err(Error::Invalid(
                 "context byte bound exceeds protocol precision".into(),
             ));
         }
-        let (file, bytes, _hold) = reader
+        let Some((file, bytes, _hold)) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
@@ -341,7 +351,10 @@ impl PinnedContextPath {
                 maximum_bytes,
                 crate::conversation::ContentAccess::default(),
             )?
-            .await?;
+            .await?
+        else {
+            return Ok(None);
+        };
         if file.volume() != &self.root.volume
             || file.path() != self.path
             || bytes.len() as u64 > maximum_bytes
@@ -351,6 +364,6 @@ impl PinnedContextPath {
             ));
         }
         file.descriptor().verify(&bytes, &mut None)?;
-        Ok((file, bytes))
+        Ok(Some((file, bytes)))
     }
 }

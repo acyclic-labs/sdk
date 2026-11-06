@@ -404,7 +404,8 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             16,
             crate::conversation::ContentAccess::default(),
         )?
-        .await?;
+        .await?
+        .expect("the selected fixture file exists");
     assert_eq!(portable_ref, second);
     assert_eq!(portable_bytes.as_ref(), b"two");
     let (pinned, delegated_bytes) = delegated_reader
@@ -416,8 +417,9 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             u64::MAX,
             crate::conversation::ContentAccess::default(),
         )?
-        .await
-        .map(|(file, bytes, _)| (file, bytes))?;
+        .await?
+        .map(|(file, bytes, _)| (file, bytes))
+        .expect("the selected fixture file exists");
     assert_eq!(pinned, second);
     assert_eq!(delegated_bytes.as_ref(), b"two");
     host.put_content(
@@ -471,8 +473,9 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             u64::MAX,
             crate::conversation::ContentAccess::default(),
         )?
-        .await
-        .map(|(file, bytes, _)| (file, bytes))?;
+        .await?
+        .map(|(file, bytes, _)| (file, bytes))
+        .expect("the selected fixture file exists");
     assert_eq!(old_ref, second);
     assert_eq!(old_bytes.as_ref(), b"two");
     assert!(
@@ -542,7 +545,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             crate::conversation::ContentAccess::default(),
         )
         .await?;
-    assert_eq!(
+    assert!(
         delegated_reader
             .read_private_path(
                 &volume,
@@ -552,11 +555,9 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 u64::MAX,
                 crate::conversation::ContentAccess::default()
             )?
-            .await
-            .err()
-            .expect("a later file must be absent from the pinned generation")
-            .code(),
-        crate::wire::ErrorCode::NotFound
+            .await?
+            .is_none(),
+        "a later file must be absent from the pinned generation"
     );
     assert!(host.read_content(&empty, &read, 16, None).await?.is_empty());
     let wrong_digest = FileRef::new(

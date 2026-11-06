@@ -502,7 +502,11 @@ impl<
                 crate::conversation::ContentAccess::default(),
             )?
             .await
-            .map(|(file, bytes, _)| (file, bytes))
+            .and_then(|selected| {
+                selected
+                    .map(|(file, bytes, _)| (file, bytes))
+                    .ok_or_else(|| Error::NotFound("selected file does not exist".into()))
+            })
     }
 
     fn delegated_reader(&self, scope: &Scope) -> Result<Arc<FilesystemContentVerifier<A, O>>> {
