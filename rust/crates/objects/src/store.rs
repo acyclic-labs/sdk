@@ -60,8 +60,10 @@ use crate::{
 };
 use crate::{Observation, Observed};
 use acyclic_auth::refusal::Cause;
-use acyclic_stream::{AppliedRevisions, OwnedBytes, Revision};
+use acyclic_stream::{AppliedRevisions, OwnedBytes, ProviderPlatform, Revision};
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -403,6 +405,7 @@ impl<M: Medium> Store<M> {
             medium: Arc::clone(&self.medium),
             state,
             scrub: Arc::clone(&self.scrub),
+            _medium: PhantomData,
         })
     }
 
@@ -413,10 +416,12 @@ impl<M: Medium> Store<M> {
 }
 
 /// One account's blobs over a shared medium.
-pub struct Account<M> {
-    medium: Arc<M>,
+/// `P` owns or borrows that medium; the default retains its shared owner.
+pub struct Account<M, P = Arc<M>> {
+    medium: P,
     state: Arc<State>,
     scrub: Scrub,
+    _medium: PhantomData<fn() -> M>,
 }
 
 /// A prefix's listing, one page per call.
@@ -443,12 +448,13 @@ impl<M: Medium> Pages<'_, M> {
     }
 }
 
-impl<M> Clone for Account<M> {
+impl<M, P: Clone> Clone for Account<M, P> {
     fn clone(&self) -> Self {
         Self {
-            medium: Arc::clone(&self.medium),
+            medium: self.medium.clone(),
             state: Arc::clone(&self.state),
             scrub: Arc::clone(&self.scrub),
+            _medium: PhantomData,
         }
     }
 }
@@ -474,6 +480,7 @@ impl MemoryObjects {
             medium: Arc::new(medium),
             state: Arc::new(State::new(format!("{}/", Digest::of(b"memory").to_hex()))),
             scrub: Arc::default(),
+            _medium: PhantomData,
         }
     }
 }
@@ -524,7 +531,7 @@ fn canonical(mut references: Vec<Digest>) -> Vec<Digest> {
     references
 }
 
-impl<M> Account<M> {
+impl<M, P: Deref<Target = M>> Account<M, P> {
     /// The account's original physical availability producer. A repair service
     /// that writes bytes outside this engine must publish completion here,
     /// including same-reference repairs, and fail it on lost producer custody.
@@ -538,23 +545,26 @@ impl<M> Account<M> {
         &self.medium
     }
 
+    /// The same account, sharing its state, over `medium`.
+    pub(crate) fn over<N, Q: Deref<Target = N>>(&self, medium: Q) -> Account<N, Q> {
+        Account {
+            medium,
+            state: Arc::clone(&self.state),
+            scrub: Arc::clone(&self.scrub),
+            _medium: PhantomData,
+        }
+    }
+}
+
+impl<M> Account<M> {
     /// Transfers the original medium owner while retiring account-local state.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) fn into_medium(self) -> Arc<M> {
         self.medium
     }
-
-    /// The same account, sharing its state, over `medium`.
-    pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
-        Account {
-            medium,
-            state: Arc::clone(&self.state),
-            scrub: Arc::clone(&self.scrub),
-        }
-    }
 }
 
-impl<M: Medium> Account<M> {
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
         let hex = digest.to_hex();
         format!(
@@ -616,9 +626,10 @@ impl<M: Medium> Account<M> {
                 continue;
             };
             let account = Account {
-                medium: Arc::clone(&self.medium),
+                medium: &*self.medium,
                 state: Arc::new(State::new(format!("{account}/"))),
                 scrub: Arc::clone(&self.scrub),
+                _medium: PhantomData,
             };
             let repaired = account.repair().await?;
             self.medium.flush(&repaired).await.map_err(medium)?;
@@ -1623,7 +1634,7 @@ impl<M: Medium> Account<M> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl<M: Medium> crate::Blobs for Account<M> {
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Account<M, P> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         acyclic_observability::async_operation!(
             "acyclic.objects.availability",
