@@ -75,3 +75,11 @@ unchanged assertions. Exact-restored Linux source replayed 389 retained inputs
 All 388 prior input hashes remain unchanged; `action-36` is the original
 65,698-byte completion emitted by the existing production serializer oracle.
 The corpus manifest retains the precise source and component qualification.
+
+At source `db545f70a384`, the core-only composition detected all eight selected
+production mutations and exact-restored source replayed 390 nonempty inputs
+(117,221 bytes) in zero reported seconds. All 389 prior files retain their hashes,
+including the empty input. The existing production serializer emitted the two
+additional `ResourceProbe` captures, with absent and populated prior counters.
+This qualifies the shared input contracts and catalog oracle; binary dispatch
+and full consumer integration remain separate.

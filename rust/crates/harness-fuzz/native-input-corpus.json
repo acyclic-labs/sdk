@@ -1,5 +1,5 @@
 {
-  "provenance": "Seven caller byte inputs, 97 original SDK serializer captures (37 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes.",
+  "provenance": "Seven caller byte inputs, 97 original SDK serializer captures (37 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes. Two further ResourceProbe captures (action-37 and action-38) were emitted by the existing production serializer oracle at db545f70a38422ce59e6bed4a2dcb19a4bdcd3d2; all 389 prior file hashes are unchanged.",
   "qualification": {
     "source_commit": "ad8386bea8d18f062d4dab5d23e3db59630bc663",
     "source_tree": "6524f84769f5a00496bc78b3103e54b3a34fcc2a",
@@ -422,7 +422,9 @@
     "partial": "b0099d11d07ec318328beb00f4e5019ed830cff0c7f18960b05101745b769223",
     "task-invalid": "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824",
     "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
-    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0"
+    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
+    "action-37": "681a45d7b3edf485024c197c7b69bc8d35047d3a979a14e8b5d0012f4f037f6f",
+    "action-38": "c7a21a5a7467086cad68fbd6e3d367b48a8ac47e55ba8222416eeaf83bf36056"
   },
   "prior_qualifications": [
     {
@@ -617,5 +619,19 @@
     },
     "scope": "One production reader through original OS pipe EOF, bounded hook frames and unbounded request JSON. The real CLI retains original read failures for three entry points and admits the serialized workspace envelope to the original client refusal in an unowned workspace. Session settlement, complete source branch coverage and Windows/macOS remain unqualified.",
     "source_content_sha256": "c001c136805fcef29a0c3b865f9a3bee319b9b1287cb5a9cc6d275e4a8d82a68"
+  },
+  "core_composition_qualification": {
+    "source_commit": "db545f70a38422ce59e6bed4a2dcb19a4bdcd3d2",
+    "source_tree": "9191e709ddbed1de1d8623e87e1e1a1defc97d84",
+    "result": "pass",
+    "actual_source_mutations_detected": 8,
+    "retained_files": 391,
+    "retained_bytes": 117221,
+    "nonempty_replayed_inputs": 390,
+    "executed_units": 391,
+    "reported_replay_seconds": 0,
+    "instrumented_edges": 7498,
+    "features": 15674,
+    "scope": "Production input decoder and shared core contracts/catalog through the existing OS-pipe oracle. Full runtime, real binary dispatch and platform acceptance remain separate."
   }
 }
