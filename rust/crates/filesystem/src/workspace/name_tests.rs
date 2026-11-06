@@ -17,10 +17,32 @@ async fn creation_retains_complete_name_backing_on_original_accounting()
         crate::EmbeddedCapabilities::MEMORY,
     );
     let budget = crate::performance::BOUNDARY_BUDGET;
-    let header = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
-        String,
-        KernelOwnedAllocation,
-    )>())? as u64;
+    let header = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<String>())? as u64
+        + crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+            crate::kernel::RetainedAllocation,
+        >())? as u64;
+    // Exercise the public ordinary entry point: its caller frame is already
+    // gone when the name is returned. Every alias must keep the same backing.
+    let cancellation = CancellationToken::new();
+    let receipt = WorkspaceName::new("retained-name", &budget, &cancellation)?;
+    let name = receipt.value;
+    let live = name
+        .0
+        .standalone_live_bytes()
+        .ok_or("workspace name lost its original ordinary ledger")?;
+    assert_eq!(
+        live, receipt.work.peak_allocation_bytes,
+        "workspace name lost original backing credit"
+    );
+    let alias = name.clone();
+    drop(name);
+    assert_eq!(
+        alias.0.standalone_live_bytes(),
+        Some(live),
+        "workspace name alias lost original backing credit"
+    );
+    assert_eq!(alias.as_str(), "retained-name");
+    drop(alias);
     for (input, canonical) in [
         ("original-name", "original-name"),
         ("cafe\u{301}", "caf\u{e9}"),
@@ -342,11 +364,17 @@ proptest! {
 }
 
 fn control_bytes() -> u64 {
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let admission = crate::kernel::allocation::retained::RetainedArc::<String>::admit(
+        &mut KernelAccounting::native(&original, &cancellation),
+    )
+    .unwrap();
     let mut control = None;
-    let heap =
-        measure(|| control = Some(Arc::new((String::new(), KernelOwnedAllocation::Standalone))));
+    let heap = measure(|| control = Some(admission.into_value(String::new())));
     drop(control);
-    assert_eq!(heap.count_total, 1);
+    assert_eq!(heap.count_total, 2);
     heap.bytes_total
 }
 
@@ -372,9 +400,9 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
     drop(restore);
     let bytes = length as u64 + control;
     let expected = AllocationInfo {
-        count_total: 2,
-        count_current: 2,
-        count_max: 2,
+        count_total: 3,
+        count_current: 3,
+        count_max: 3,
         bytes_total: bytes,
         bytes_current: bytes as i64,
         bytes_max: bytes,
@@ -390,15 +418,23 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
             .checked_add(crate::WorkCounters {
                 items_examined: length as u64,
                 bytes_copied: length as u64,
-                allocation_operations: 2,
+                allocation_operations: 3,
                 peak_allocation_bytes: baseline + bytes,
                 ..crate::WorkCounters::UNCHARGED
             })
             .unwrap()
     );
-    let freed = measure(|| drop(value.take()));
+    let mut alias = None;
+    let before_clone = original.receipt();
+    let cloned = measure(|| alias = value.as_ref().cloned());
+    assert_eq!(cloned, AllocationInfo::default());
+    assert_eq!(original.receipt(), before_clone);
+    let first_drop = measure(|| drop(value.take()));
+    assert_eq!(first_drop, AllocationInfo::default());
+    assert_eq!(original.live_allocation_bytes(), baseline + bytes);
+    let freed = measure(|| drop(alias.take()));
     assert_eq!(freed.count_total, 0);
-    assert_eq!(freed.count_current, -2);
+    assert_eq!(freed.count_current, -3);
     assert_eq!(freed.bytes_current, -(bytes as i64));
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())

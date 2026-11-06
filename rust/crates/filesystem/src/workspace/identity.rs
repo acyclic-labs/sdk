@@ -1,8 +1,10 @@
 use super::*;
 
 /// Canonical immutable customer workspace name.
+/// Clones share the original backing and keep its admitted credit until the
+/// final alias is dropped, including after the creating operation returns.
 #[derive(Clone)]
-pub struct WorkspaceName(Arc<(String, KernelOwnedAllocation)>);
+pub struct WorkspaceName(crate::kernel::allocation::retained::RetainedArc<String>);
 
 impl WorkspaceName {
     /// Canonicalizes a name under the supplied work limits.
@@ -97,19 +99,11 @@ impl WorkspaceName {
         // keeps String's invariant without validating the copied bytes again.
         let mut name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
         append(canonical, &mut name, accounting, probe)?;
-        let control = const {
-            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
-                String,
-                KernelOwnedAllocation,
-            )>()) {
-                Ok(bytes) => bytes as u64,
-                Err(_) => panic!("workspace name Arc layout overflow"),
-            }
-        };
-        owned
-            .allocation
-            .absorb(&mut accounting.claim_owned(control, 1)?)?;
-        let output = Self(Arc::new((name, owned.allocation)));
+        let retained = crate::kernel::allocation::retained::RetainedArc::from_owned(
+            crate::kernel::Owned::new(name, owned.allocation, owned.bytes),
+            accounting,
+        )?;
+        let output = Self(retained);
         #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         name_tests::redundant_allocation();
         Ok(output)
@@ -117,7 +111,7 @@ impl WorkspaceName {
 
     /// Returns the canonical customer spelling.
     pub fn as_str(&self) -> &str {
-        &self.0.0
+        &self.0
     }
 }
 
