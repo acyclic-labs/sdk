@@ -1,0 +1,14 @@
+--- a/rust/vendor/rquickjs-core-0.14.0/src/runtime/raw.rs
++++ b/rust/vendor/rquickjs-core-0.14.0/src/runtime/raw.rs
+@@ -219,11 +219,10 @@
+ 
+         let rt = NonNull::new(rt).ok_or(Error::Allocation)?;
+         Self::add_dump_flags(rt);
+ 
+         if let Err(error) = opaque.initialize(rt.as_ptr()) {
+-            qjs::JS_FreeRuntime(rt.as_ptr());
+             return Err(error);
+         }
+ 
+         let opaque = Box::into_raw(Box::new(opaque));
+         unsafe { qjs::JS_SetRuntimeOpaque(rt.as_ptr(), opaque as *mut _) };
