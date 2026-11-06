@@ -79,9 +79,13 @@ async fn seed(root: &std::path::Path, kind: PublicationKind) -> TestResult {
     Ok(())
 }
 
-async fn assert_recovery(root: &std::path::Path, kind: PublicationKind) -> TestResult {
+async fn assert_recovery(
+    root: &std::path::Path,
+    kind: PublicationKind,
+    acknowledged: bool,
+) -> TestResult {
     if matches!(kind, PublicationKind::MultiRoot) {
-        return multi_root::assert_recovery(root).await;
+        return multi_root::assert_recovery(root, acknowledged).await;
     }
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let workspace = unbounded!(fs, open_workspace("repo"))?;
@@ -92,6 +96,9 @@ async fn assert_recovery(root: &std::path::Path, kind: PublicationKind) -> TestR
         "a recovered transaction exposed a partial publication"
     );
     assert!(matches!(first.as_ref(), b"old" | b"new"));
+    if acknowledged {
+        assert_eq!(first.as_ref(), b"new", "lost an acknowledged publication");
+    }
     let original = unbounded!(workspace, operation_generation(KEY))?;
     assert_eq!(original.is_some(), first.as_ref() == b"new");
     if let Some(original) = original {
@@ -135,7 +142,7 @@ async fn assert_publication_cuts(kind: PublicationKind) -> TestResult {
         count > 0,
         "the real transaction bypassed physical crash boundaries"
     );
-    assert_recovery(&baseline, kind).await?;
+    assert_recovery(&baseline, kind, true).await?;
     let jobs = (0..count)
         .flat_map(|ordinal| {
             ["before", "after", "torn"].map(|fault| {
@@ -148,7 +155,7 @@ async fn assert_publication_cuts(kind: PublicationKind) -> TestResult {
                         .block_on(async {
                             seed(&root, kind).await?;
                             run_child(&root, kind, Some((ordinal, fault)))?;
-                            assert_recovery(&root, kind).await
+                            assert_recovery(&root, kind, false).await
                         })
                         .unwrap();
                     ordinal

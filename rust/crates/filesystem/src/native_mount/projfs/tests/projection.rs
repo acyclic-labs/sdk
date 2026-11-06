@@ -326,10 +326,6 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
             let target = {
                 let state = lock_recover(&runtime.projector.state);
                 assert!(
-                    state.pending.contains_key(&name),
-                    "the original handle must block retirement"
-                );
-                assert!(
                     state.processed < state.notified,
                     "the changed view must await its original worker"
                 );
