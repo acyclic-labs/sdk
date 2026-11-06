@@ -6,7 +6,7 @@ pub(crate) struct NativeAllocationAccounting {
     pub(super) non_native: AtomicU64,
 }
 impl NativeAllocationAccounting {
-    pub(super) const ALLOCATION_BYTES: u64 = const {
+    pub(crate) const ALLOCATION_BYTES: u64 = const {
         match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>()) {
             Ok(bytes) => bytes as u64,
             Err(_) => panic!("shared native accounting Arc layout overflow"),
