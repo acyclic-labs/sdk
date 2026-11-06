@@ -1,0 +1,70 @@
+--- a/rust/crates/objects/src/native.rs
++++ b/rust/crates/objects/src/native.rs
+@@ -308,9 +308,7 @@
+     native_future(&meter, async move {
+         let _custody = custody;
+         let meter = &batch_meter;
+-        // Keep the physical vector before its credit on every exit, including
+-        // withdrawal while the driver still holds incomplete members.
+-        let mut results = results(requests.len(), meter)?;
++        let (mut values, allocation) = results(requests.len(), meter)?;
+         crate::batch::drive(
+             requests.into_iter(),
+             crate::BATCH_WINDOW,
+@@ -320,10 +318,10 @@
+                 let account = account.over(&medium);
+                 checked(&medium, account.get_inner(digest, range, maximum).await)
+             },
+-            |got| results.0.push(got),
++            |got| values.push(got),
+         )
+         .await?;
+-        ObjectsBatch::new(results.0, results.1)
++        ObjectsBatch::new(values, allocation)
+     })
+ }
+ 
+@@ -364,7 +362,7 @@
+     native_future(&meter, async move {
+         let _custody = custody;
+         let meter = &batch_meter;
+-        let mut results = results(requests.len(), meter)?;
++        let (mut values, allocation) = results(requests.len(), meter)?;
+         crate::batch::drive(
+             requests.into_iter(),
+             window,
+@@ -375,9 +373,9 @@
+                 checked(&medium, account.put_inner(body, references).await)
+                     .map(|put| ObjectsPutReceipt::new(put, None))
+             },
+-            |put| results.0.push(put),
++            |put| values.push(put),
+         )
+         .await?;
+-        ObjectsBatch::new(results.0, results.1)
+-    })
+-}
++        ObjectsBatch::new(values, allocation)
++    })
++}
+--- a/rust/crates/objects/src/batch.rs
++++ b/rust/crates/objects/src/batch.rs
+@@ -107,9 +107,6 @@
+     Fut: Future<Output = T>,
+ {
+     let window = window.clamp(1, requests.len().max(1));
+-    // Declared first so the slot vector and every pending member retire before
+-    // their funding, including when this future is withdrawn.
+-    let _grant;
+     let slots = Mutex::new(Vec::<Option<Slot>>::new());
+     let published = tokio::sync::Notify::new();
+     // A member starts only once the one `window` places earlier completed,
+@@ -151,7 +148,7 @@
+     };
+     let member_bytes =
+         returned(&member) + std::mem::size_of::<T>() + NODE + std::mem::size_of::<Option<Slot>>();
+-    _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
++    let _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
+     let mut started = 0;
+     let mut outcomes = stream::iter(requests)
+         .map(|request| {

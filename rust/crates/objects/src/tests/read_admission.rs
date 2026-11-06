@@ -1,6 +1,9 @@
 //! Real retained local bytes through an applied read-only medium.
 use super::*;
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::{
+    mem::size_of,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 struct Applied<'a> {
     inner: &'a crate::LocalMedium,
@@ -75,6 +78,121 @@ impl Medium for Applied<'_> {
     fn settle(&self) {
         self.inner.settle();
     }
+}
+
+#[tokio::test]
+async fn native_local_batch_retires_results_before_their_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let account_name = b"batch-result-custody";
+    let store = Store::new(medium.clone());
+    let blobs = store.account(account_name)?;
+    let length = 1931;
+    let mut digests = Vec::new();
+    for byte in [1, 2] {
+        digests.push(
+            blobs
+                .put(vec![byte; length].into(), Vec::new())
+                .await?
+                .verified()
+                .ok_or("original publication is known")?
+                .digest,
+        );
+    }
+    // Capture the last member's actual payload key from the original store.
+    let last = medium
+        .inner
+        .list(&format!("{}/p/", Digest::of(account_name)), None, 2)
+        .await?
+        .into_iter()
+        .find(|(key, _)| key.contains(&digests[1].to_hex()))
+        .ok_or("original last payload")?
+        .0;
+    let count = crate::BATCH_WINDOW + 1;
+    let result_bytes =
+        (count * size_of::<Result<crate::Object, crate::NativeObjectsError>>()) as u64;
+    assert_ne!(result_bytes, length as u64);
+    for (withdrawn, lost) in [(false, false), (false, true), (true, false)] {
+        let budget = Arc::new(Budget::new(u64::MAX));
+        *budget.retirement.lock().unwrap() = Some(super::budget::Retirement {
+            results: result_bytes,
+            payload: length as u64,
+            live_payloads: 0,
+            result_released: false,
+            early_result: false,
+        });
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let requests = (0..count)
+            .map(|index| {
+                (
+                    digests[usize::from(index == count - 1)],
+                    ByteRange::FULL,
+                    length as u64,
+                )
+            })
+            .collect();
+        let (mut reached, release) = medium.park("read", last.clone());
+        let mut read = Box::pin(blobs.get_batch_native(
+            crate::ObjectsNativeRequest::new(requests, (), &meter)?,
+            meter,
+        )?);
+        super::drive_to_park(read.as_mut(), &mut reached).await;
+        // The last request starts only after an earlier result was delivered
+        // into the original vector. Its physical read now owns the one wait.
+        assert!(
+            budget
+                .retirement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .live_payloads
+                > 0,
+            "original batch retained no completed payload"
+        );
+        if withdrawn {
+            drop(read);
+            drop(release);
+        } else {
+            if lost {
+                drop(release);
+            } else {
+                release
+                    .send(())
+                    .expect("original read producer remains alive");
+            }
+            let batch = read.await?;
+            assert_eq!(batch.len(), count);
+            assert!(batch.results()[..count - 1].iter().all(Result::is_ok));
+            match &batch.results()[count - 1] {
+                Ok(_) => assert!(!lost, "lost original producer returned success"),
+                Err(error) => {
+                    assert!(lost);
+                    assert!(
+                        matches!(&error.cause, crate::NativeObjectsCause::Service(error) if error.code == ErrorCode::Unavailable)
+                    );
+                }
+            }
+            drop(batch);
+        }
+        let trace = budget.retirement.lock().unwrap();
+        let trace = trace.as_ref().unwrap();
+        assert!(
+            trace.result_released,
+            "original result credit never retired"
+        );
+        assert!(
+            !trace.early_result,
+            "batch result credit retired before its payload owners: withdrawn={withdrawn}"
+        );
+        assert_eq!(trace.live_payloads, 0);
+        assert_eq!(budget.held.lock().unwrap().0, 0);
+    }
+    Ok(())
 }
 
 #[tokio::test]

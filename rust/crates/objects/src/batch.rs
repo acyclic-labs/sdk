@@ -107,6 +107,9 @@ where
     Fut: Future<Output = T>,
 {
     let window = window.clamp(1, requests.len().max(1));
+    // Declared first so the slot vector and every pending member retire before
+    // their funding, including when this future is withdrawn.
+    let _grant;
     let slots = Mutex::new(Vec::<Option<Slot>>::new());
     let published = tokio::sync::Notify::new();
     // A member starts only once the one `window` places earlier completed,
@@ -148,7 +151,7 @@ where
     };
     let member_bytes =
         returned(&member) + std::mem::size_of::<T>() + NODE + std::mem::size_of::<Option<Slot>>();
-    let _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
+    _grant = admit(window.checked_mul(member_bytes).unwrap_or(usize::MAX))?;
     let mut started = 0;
     let mut outcomes = stream::iter(requests)
         .map(|request| {
