@@ -964,6 +964,7 @@ original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` remov
 the reader's decoder bound; replaying the same captured input must then fail the
 fragmentation oracle. The retained codec controls additionally reject a dropped
 bound publication and an ignored notification hiding a buffered response.
+
 The native Stream boundary retains the same raw Auth refusal envelope. The
 existing `tests::tail::native_tail_preserves_the_complete_real_observation`
 control exercises the actual authenticated service, TCP client and native
