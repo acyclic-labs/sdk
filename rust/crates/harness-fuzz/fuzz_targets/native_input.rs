@@ -10,7 +10,10 @@ mod input;
 
 // Use the same OS pipe input as the native entry. Dropping the original
 // producer closes the write endpoint and completes read_to_end with EOF.
-fn read_pipe(bytes: &[u8], maximum: Option<u64>) -> input::Result<serde_json::Value> {
+fn read_pipe<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    maximum: Option<u64>,
+) -> input::Result<T> {
     use std::io::Write;
     std::thread::scope(|scope| {
         let (reader, mut writer) = std::io::pipe().expect("create native input pipe");
@@ -44,8 +47,8 @@ fn read_failure() {
     let original = (&file)
         .read(&mut [0_u8; 1])
         .expect_err("write-only input must refuse an OS read");
-    let error =
-        input::read_json(file, None).expect_err("native input read failure must be refused");
+    let error = input::read_json::<serde_json::Value>(file, None)
+        .expect_err("native input read failure must be refused");
     let actual = error
         .downcast_ref::<std::io::Error>()
         .expect("native input read failure must retain its OS error");
@@ -54,7 +57,7 @@ fn read_failure() {
 }
 
 fn check(bytes: &[u8]) {
-    let admitted = read_pipe(bytes, Some(65_536));
+    let admitted = read_pipe::<serde_json::Value>(bytes, Some(65_536));
     if bytes.len() > 65_536 {
         assert!(
             admitted.is_err(),
@@ -68,7 +71,7 @@ fn check(bytes: &[u8]) {
         }
     }
     match (
-        read_pipe(bytes, None),
+        read_pipe::<serde_json::Value>(bytes, None),
         serde_json::from_slice::<serde_json::Value>(bytes),
     ) {
         (Ok(actual), Ok(original)) => assert_eq!(actual, original),
@@ -107,6 +110,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     }))
     .unwrap();
     if encoded.len() <= 65_536 {
-        read_pipe(&encoded, Some(65_536)).expect("an in-bound JSON input must be admitted");
+        read_pipe::<serde_json::Value>(&encoded, Some(65_536))
+            .expect("an in-bound JSON input must be admitted");
     }
 });
