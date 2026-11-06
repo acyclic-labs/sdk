@@ -550,7 +550,8 @@ async fn names(
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     Ok(page
         .entries
         .iter()

@@ -123,7 +123,8 @@ async fn listing_case(rows: &[(bool, bool)], page_size: u32) -> Result<(), Box<d
                     ceiling: None,
                 },
             )
-            .await?;
+            .await?
+            .expect("fixture directory exists");
         if let Some(generation) = &generation {
             assert_eq!(&selected, generation);
         }

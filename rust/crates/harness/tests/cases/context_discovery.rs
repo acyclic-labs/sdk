@@ -941,6 +941,19 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         "missing generation must not omit the selected instruction"
     );
     assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            &source.root.directory,
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&source.generation),
+            true,
+        )
+        .await
+        .is_err(),
+        "missing generation must not omit the optional skill directory"
+    );
+    assert!(
         instructions
             .instruction(
                 "skills/missing/SKILL.md",

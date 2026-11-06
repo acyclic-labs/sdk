@@ -381,7 +381,11 @@ pub(super) async fn list<
                     &mut scope,
                     cancellation,
                 )
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    crate::FsError::NotFound => WorkspaceError::NotFound,
+                    error => error.into(),
+                })?;
             path.retire(&mut scope)?;
             checkout.retire(&mut scope)?;
             let allocation = workspace_allocation(allocation, &scope)?;

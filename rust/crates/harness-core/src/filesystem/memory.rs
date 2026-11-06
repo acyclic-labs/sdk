@@ -414,7 +414,8 @@ impl<
                     ceiling: None,
                 },
             )
-            .await
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
     /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
@@ -473,7 +474,8 @@ impl<
                     ceiling: None,
                 },
             )
-            .await
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
     /// Reads a named file from a delegated private directory and pins its observed version for later exact-reference use.

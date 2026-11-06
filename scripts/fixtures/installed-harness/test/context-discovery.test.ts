@@ -27,7 +27,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   const reader: ContextDiscoveryReader = {
     async list(query) {
       expect(query.maximum_entries).toBeGreaterThan(0);
-      const entries: Awaited<ReturnType<ContextDiscoveryReader["list"]>>["entries"] = query.path === "project"
+      const entries: NonNullable<Awaited<ReturnType<ContextDiscoveryReader["list"]>>>["entries"] = query.path === "project"
         ? [{ name: "AGENTS.md", kind: "file" }, { name: "sibling", kind: "directory" }, { name: "src", kind: "directory" }]
         : query.path === "project/src"
         ? [{ name: "CLAUDE.md", kind: "file" }, { name: "child", kind: "directory" }]
@@ -88,6 +88,7 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   await expect(captureDiscoveredContext(declaration, { ...reader,
     async list(query) {
       const page = await reader.list(query);
+      if (page === null) return null;
       return { ...page, entries: page.entries.map(entry => entry.name === "SKILL.md"
         ? { ...entry, kind: "directory" as const } : entry) };
     },

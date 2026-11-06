@@ -152,7 +152,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(page.entries.len(), 1);
     assert_eq!(
         host.read_private_path(
@@ -334,7 +335,8 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 ceiling: None,
             },
         )
-        .await?;
+        .await?
+        .expect("fixture directory exists");
     assert_eq!(relisted_generation, listed_generation);
     assert_eq!(relisted.entries, page.entries);
     assert_eq!(
