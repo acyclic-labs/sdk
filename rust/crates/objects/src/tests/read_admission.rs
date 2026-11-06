@@ -522,6 +522,137 @@ async fn native_local_decoded_metadata_keeps_its_original_credit()
 }
 
 #[tokio::test]
+async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"manifest-fragment-custody")?;
+    let mut leaves = Vec::new();
+    let mut expected = Vec::new();
+    for byte in 0..16 {
+        let bytes = vec![byte; 1931];
+        expected.extend_from_slice(&bytes);
+        let digest = blobs
+            .put(bytes.into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("original fragment publication is known")?
+            .digest;
+        leaves.push(crate::Part {
+            digest,
+            length: 1931,
+        });
+    }
+    let mut branches = Vec::new();
+    for parts in leaves.chunks(8) {
+        let verified = blobs
+            .put_manifest(crate::Manifest {
+                parts: parts.to_vec(),
+                edges: Vec::new(),
+            })
+            .await?
+            .verified()
+            .ok_or("original branch publication is known")?
+            .clone();
+        branches.push(crate::Part {
+            digest: verified.digest,
+            length: verified.length,
+        });
+    }
+    let digest = blobs
+        .put_manifest(crate::Manifest {
+            parts: branches,
+            edges: Vec::new(),
+        })
+        .await?
+        .verified()
+        .ok_or("original manifest publication is known")?
+        .digest;
+    let length = expected.len() as u64;
+    // One output plus transient fragments fits; retaining every fragment
+    // alongside that output exceeds this original allocation budget.
+    let budget = Arc::new(Budget::new(2 * length));
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+    let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+    let object = blobs
+        .get_native(request, Arc::clone(&meter))?
+        .await
+        .unwrap_or_else(|error| {
+            panic!("manifest retained copied fragments through final assembly: {error}")
+        });
+    assert_eq!(object.body().as_ref(), expected);
+    assert!(object.body().matches_meter(&meter));
+    assert!(budget.peak() <= 2 * length);
+    let body = object.into_body();
+    let alias = body.clone();
+    drop(body);
+    assert!(budget.held.lock().unwrap().0 >= length);
+    drop(alias);
+    assert_eq!(budget.held.lock().unwrap().0, 0);
+
+    let budget = Arc::new(Budget::new(length));
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+    let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+    assert!(matches!(
+        blobs.get_native(request, meter)?.await
+            .expect_err("manifest assembly bypassed original allocation admission").into_cause(),
+        crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::OutOfMemory
+    ));
+    assert_eq!(budget.held.lock().unwrap().0, 0);
+
+    // The third fragment is reached only after the join buffer exists.
+    // Its real physical completion is the sole producer of this wait.
+    for state in 0..4 {
+        let budget = Arc::new(Budget::new(2 * length));
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request =
+            crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+        let mut operation = Box::pin(blobs.get_native(request, meter)?);
+        let (mut reached, release) =
+            medium.park("read", format!("/{}.", leaves[2].digest.to_hex()));
+        super::drive_to_park(operation.as_mut(), &mut reached).await;
+        if state == 2 {
+            drop(operation);
+            drop(release);
+        } else {
+            if state == 1 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state == 3 {
+                drop(release);
+            } else {
+                release
+                    .send(())
+                    .map_err(|()| "original manifest read withdrew")?;
+            }
+            let result = operation.as_mut().await;
+            match state {
+                0 => assert_eq!(result?.body().as_ref(), expected),
+                1 => assert!(matches!(
+                    result.expect_err("cancelled manifest read succeeded").into_cause(),
+                    crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::Interrupted
+                )),
+                _ => assert!(matches!(
+                    result.expect_err("manifest read hid physical producer loss").into_cause(),
+                    crate::NativeObjectsCause::Service(error) if error.code == ErrorCode::Unavailable
+                )),
+            }
+            drop(operation);
+        }
+        assert_eq!(
+            budget.held.lock().unwrap().0,
+            0,
+            "manifest read custody retained"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_stream::RevisionCut;
