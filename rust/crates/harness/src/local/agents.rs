@@ -170,104 +170,107 @@ struct TurnBindings<'a> {
 impl LocalHarness {
     /// An agent's default files and commands select the same project. The
     /// root reuses its admitted binding; a child opens its retained fork.
-    async fn turn_bindings<'a>(
-        &self,
+    // Keep turn preparation independent of the child workspace's future layout.
+    fn turn_bindings<'a>(
+        &'a self,
         agent: &'a AgentState,
         authority: &'a TurnAuthority,
-    ) -> Result<TurnBindings<'a>> {
-        let project = agent
-            .volumes
-            .iter()
-            .find(|binding| binding.name == "project")
-            .map(|binding| &binding.volume)
-            .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
-        let scratch = agent
-            .volumes
-            .iter()
-            .find(|binding| binding.name == HOME_VOLUME)
-            .map(|binding| &binding.volume)
-            .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
-        let verifier = authority.issuer.verifier(&mut None)?;
-        #[cfg(any(test, feature = "native-execution"))]
-        let journal = agent
-            .volumes
-            .iter()
-            .find(|binding| binding.name == PRIVATE_VOLUME)
-            .map(|binding| &binding.volume)
-            .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
-        let context = super::context::Binding {
-            project,
-            scratch,
+    ) -> BoxProviderFuture<'a, Result<TurnBindings<'a>>> {
+        Box::pin(async move {
+            let project = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "project")
+                .map(|binding| &binding.volume)
+                .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
+            let scratch = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.name == HOME_VOLUME)
+                .map(|binding| &binding.volume)
+                .ok_or_else(|| Error::Invalid("agent has no home volume".into()))?;
+            let verifier = authority.issuer.verifier(&mut None)?;
             #[cfg(any(test, feature = "native-execution"))]
-            journal,
-            reader: authority.content.reader.as_ref(),
-            #[cfg(any(test, feature = "native-execution"))]
-            verifier: verifier.clone(),
-            #[cfg(any(test, feature = "native-execution"))]
-            scope: &authority.scope,
-            #[cfg(any(test, feature = "native-execution"))]
-            workspace: self.workspace.clone(),
-        };
-        if project == &self.project && scratch == &self.scratch {
-            return Ok(TurnBindings {
-                harness: Arc::clone(&self.harness),
-                context,
-            });
-        }
-        #[cfg(any(test, feature = "native-execution"))]
-        if let Some(workspace) = &self.workspace {
-            let view = workspace.spawned_project_view(project).await?;
-            let owner = super::workspace::owner::AgentOwner(agent.path.clone());
-            let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
-                verifier.clone(),
-                authority.scope.copy(&mut None)?,
-            );
-            let (workspace, _) = workspace
-                .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
-                .await?;
-            let (tools, writer) = workspace
-                .executor(
-                    (project, &self.files, self.limits.file_bytes),
-                    Arc::clone(&self.clock),
-                    &authority.scope,
-                    &verifier,
-                    None,
-                )
-                .await?;
+            let journal = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.name == PRIVATE_VOLUME)
+                .map(|binding| &binding.volume)
+                .ok_or_else(|| Error::Invalid("agent has no private volume".into()))?;
             let context = super::context::Binding {
-                workspace: Some(Arc::clone(&workspace)),
-                ..context
+                project,
+                scratch,
+                #[cfg(any(test, feature = "native-execution"))]
+                journal,
+                reader: authority.content.reader.as_ref(),
+                #[cfg(any(test, feature = "native-execution"))]
+                verifier: verifier.clone(),
+                #[cfg(any(test, feature = "native-execution"))]
+                scope: &authority.scope,
+                #[cfg(any(test, feature = "native-execution"))]
+                workspace: self.workspace.clone(),
             };
-            return Ok(TurnBindings {
+            if project == &self.project && scratch == &self.scratch {
+                return Ok(TurnBindings {
+                    harness: Arc::clone(&self.harness),
+                    context,
+                });
+            }
+            #[cfg(any(test, feature = "native-execution"))]
+            if let Some(workspace) = &self.workspace {
+                let view = workspace.spawned_project_view(project).await?;
+                let owner = super::workspace::owner::AgentOwner(agent.path.clone());
+                let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
+                    verifier.clone(),
+                    authority.scope.copy(&mut None)?,
+                );
+                let (workspace, _) = workspace
+                    .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
+                    .await?;
+                let (tools, writer) = workspace
+                    .executor(
+                        (project, &self.files, self.limits.file_bytes),
+                        Arc::clone(&self.clock),
+                        &authority.scope,
+                        &verifier,
+                        None,
+                    )
+                    .await?;
+                let context = super::context::Binding {
+                    workspace: Some(Arc::clone(&workspace)),
+                    ..context
+                };
+                return Ok(TurnBindings {
+                    context,
+                    harness: self.harness.with_workspace(
+                        Some(home(tools)?),
+                        crate::runtime::ContentBindings {
+                            volume: project.clone(),
+                            reader: Arc::clone(&authority.content.reader),
+                            writer: Some(writer),
+                        },
+                    )?,
+                });
+            }
+            let writer = crate::filesystem::FilesystemContentPublisher::new(
+                Arc::clone(&self.files),
+                project,
+                &verifier,
+                &authority.scope,
+                self.limits.file_bytes,
+                None,
+            )?;
+            Ok(TurnBindings {
                 context,
                 harness: self.harness.with_workspace(
-                    Some(home(tools)?),
+                    None,
                     crate::runtime::ContentBindings {
                         volume: project.clone(),
                         reader: Arc::clone(&authority.content.reader),
                         writer: Some(writer),
                     },
                 )?,
-            });
-        }
-        let writer = crate::filesystem::FilesystemContentPublisher::new(
-            Arc::clone(&self.files),
-            project,
-            &verifier,
-            &authority.scope,
-            self.limits.file_bytes,
-            None,
-        )?;
-        Ok(TurnBindings {
-            context,
-            harness: self.harness.with_workspace(
-                None,
-                crate::runtime::ContentBindings {
-                    volume: project.clone(),
-                    reader: Arc::clone(&authority.content.reader),
-                    writer: Some(writer),
-                },
-            )?,
+            })
         })
     }
 }
