@@ -31,6 +31,7 @@ pub(super) struct Mount {
     helper: Option<Child>,
     program: Option<&'static CStr>,
     phase: MountPhase,
+    exit_action: Option<acyclic_native_runtime::ProcessExitAction>,
     #[cfg(test)]
     detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
 }
@@ -42,7 +43,31 @@ impl Mount {
         writable: bool,
         program: impl FnOnce() -> Result<&'static CStr, super::NativeMountError>,
         device: &mut Option<OwnedFd>,
+        fence: &File,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), super::NativeMountError> {
+        let program = program()?;
+        self.program = Some(program);
+        let mut cleanup = acyclic_native_runtime::ProcessCommand::new(std::ffi::OsStr::from_bytes(
+            program.to_bytes(),
+        ));
+        cleanup
+            .env_clear()
+            .args(["-u", "-q", "-z", "--"])
+            .arg(path)
+            // Retain the original lock through cleanup's exec and exit. A
+            // successor cannot publish a mount that this action could detach.
+            .stdin(fence.try_clone()?)
+            .stdout(acyclic_native_runtime::ProcessStdio::null())
+            .stderr(acyclic_native_runtime::ProcessStdio::null());
+        self.exit_action = Some(acyclic_native_runtime::ProcessExitAction::spawn(
+            &cleanup,
+            &work.runtime_meter(),
+        )?);
+        // Ownership is armed before any mount effect, including the helper.
+        // An absent mount is an idempotent namespace retirement, not a reason
+        // to release this action while a producer could still mount it.
+        self.phase = MountPhase::Mounted;
         let mode = File::open(path)?.metadata()?.permissions().mode();
         let file = OpenOptions::new()
             .read(true)
@@ -80,8 +105,6 @@ impl Mount {
             }
         }
         drop(file);
-        let program = program()?;
-        self.program = Some(program);
         let (receive, child) = UnixStream::pair()?;
         let mut diagnostic = File::from(
             rustix::fs::memfd_create(c"acyclic-fusermount", rustix::fs::MemfdFlags::CLOEXEC)
@@ -98,9 +121,14 @@ impl Mount {
             options,
             child,
             &diagnostic,
+            self.exit_action
+                .as_ref()
+                .ok_or(io::ErrorKind::BrokenPipe)?
+                .activity()?,
         )?);
         let received = receive_device(&receive);
         drop(receive);
+        let received_device = received.is_ok();
         if let Ok(fd) = received {
             *device = Some(fd);
             self.phase = MountPhase::Mounted;
@@ -110,7 +138,7 @@ impl Mount {
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?
             .wait()?;
         self.helper.take();
-        if matches!(self.phase, MountPhase::Detached) {
+        if !received_device {
             diagnostic.seek(SeekFrom::Start(0))?;
             let mut text = Vec::new();
             diagnostic.read_to_end(&mut text)?;
@@ -125,7 +153,7 @@ impl Mount {
         Ok(())
     }
 
-    pub(super) fn stop(&mut self, path: &CStr, device: Option<BorrowedFd<'_>>) -> io::Result<()> {
+    pub(super) fn stop(&mut self, path: &CStr) -> io::Result<()> {
         if let Some(child) = self.helper.as_mut() {
             if child.try_wait()?.is_none() {
                 child.kill()?;
@@ -133,15 +161,40 @@ impl Mount {
             child.wait()?;
             self.helper.take();
         }
-        self.attempt_unmount(
-            |mount| device.map_or(Ok(false), |device| mount.device_detached(device)),
-            |mount| {
-                unmount_with(
-                    |flags| nix::mount::umount2(path, flags),
-                    || mount.unmount_helper(path),
-                )
-            },
-        )
+        self.attempt_unmount(|mount| {
+            // A closed connection does not mean its namespace is gone.
+            unmount_with(
+                |flags| nix::mount::umount2(path, flags),
+                || mount.unmount_helper(path),
+            )
+        })?;
+        self.cancel_exit_action()?;
+        Ok(())
+    }
+
+    pub(super) fn cancel_exit_action(&mut self) -> io::Result<()> {
+        if let Some(action) = self.exit_action.as_mut() {
+            action.cancel()?;
+        }
+        self.exit_action.take();
+        Ok(())
+    }
+
+    // Retain the original namespace lock until the admitted cleanup has
+    // physically exited, including when the ordinary unmount was refused.
+    pub(super) fn finish_exit_action(&mut self) -> io::Result<()> {
+        if let Some(action) = self.exit_action.as_mut() {
+            action.finish()?;
+        }
+        self.exit_action.take();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn exit_action_id(&self) -> Option<u32> {
+        self.exit_action
+            .as_ref()
+            .map(acyclic_native_runtime::ProcessExitAction::id)
     }
 
     fn unmount_helper(&mut self, path: &CStr) -> io::Result<()> {
@@ -168,13 +221,9 @@ impl Mount {
 
     fn attempt_unmount(
         &mut self,
-        detached: impl FnOnce(&mut Self) -> io::Result<bool>,
         unmount: impl FnOnce(&mut Self) -> io::Result<()>,
     ) -> io::Result<()> {
         if matches!(self.phase, MountPhase::Detached) {
-            return Ok(());
-        }
-        if detached(self)? {
             return Ok(());
         }
         if matches!(self.phase, MountPhase::Unmounting) {
@@ -191,10 +240,6 @@ impl Mount {
 
     // Only a device acknowledgment can finish an accepted unmount. A refused
     // request remains mounted and permits another explicitly admitted attempt.
-    pub(super) fn device_detached(&mut self, device: BorrowedFd<'_>) -> io::Result<bool> {
-        self.poll_detachment(device, 0, None)
-    }
-
     pub(super) fn wait_device_detached(
         &mut self,
         device: BorrowedFd<'_>,
@@ -267,11 +312,15 @@ impl Mount {
         Ok(detached)
     }
     pub(super) fn pending(&self) -> bool {
-        !matches!(self.phase, MountPhase::Detached) || self.helper.is_some()
+        !matches!(self.phase, MountPhase::Detached)
+            || self.helper.is_some()
+            || self.exit_action.is_some()
     }
 
     pub(super) fn needs_unmount(&self) -> bool {
-        self.helper.is_some() || matches!(self.phase, MountPhase::Mounted)
+        self.helper.is_some()
+            || self.exit_action.is_some()
+            || matches!(self.phase, MountPhase::Mounted)
     }
 
     #[cfg(test)]
@@ -283,7 +332,7 @@ impl Mount {
             detachment_poll: Some(Box::new(poll)),
             ..Self::default()
         };
-        mount.attempt_unmount(|_| Ok(false), |_| Ok(()))?;
+        mount.attempt_unmount(|_| Ok(()))?;
         Ok(mount)
     }
 }
@@ -303,6 +352,7 @@ fn unmount_with(
     };
     match kernel(flags) {
         Ok(()) => Ok(()),
+        Err(nix::errno::Errno::EINVAL | nix::errno::Errno::ENOENT) if !old => Ok(()),
         Err(error) if old || error == nix::errno::Errno::EPERM => helper(),
         Err(error) => Err(error.into()),
     }
@@ -323,6 +373,7 @@ fn spawn_mount_helper(
     options: &str,
     child: UnixStream,
     diagnostic: &File,
+    activity: File,
 ) -> io::Result<Child> {
     let mut command = helper_command(program);
     command
@@ -330,6 +381,7 @@ fn spawn_mount_helper(
         .arg(path)
         .env("_FUSE_COMMFD", "0")
         .stdin(Stdio::from(OwnedFd::from(child)))
+        .stdout(Stdio::from(activity))
         .stderr(Stdio::from(diagnostic.try_clone()?));
     #[cfg(test)]
     if tests::force_fork() {

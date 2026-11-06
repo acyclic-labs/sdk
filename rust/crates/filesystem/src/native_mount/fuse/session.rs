@@ -70,14 +70,11 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            match self.device.as_ref() {
-                Some(device) => {
-                    let result = device.with_device(|fd| self.mount.stop(path, fd));
-                    device.stop();
-                    result?;
-                }
-                None => self.mount.stop(path, None)?,
+            let result = self.mount.stop(path);
+            if let Some(device) = self.device.as_ref() {
+                device.stop();
             }
+            result?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
@@ -96,6 +93,7 @@ impl FuseSessionState {
             if (metadata.st_dev as u64, metadata.st_ino as u64) != before {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
+            self.mount.observe_closed()?;
         }
         self.device.take();
         self.before.take();
@@ -119,6 +117,32 @@ impl FuseSessionState {
             retirement.retire(None, join)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for FuseSessionState {
+    fn drop(&mut self) {
+        // Even a refused retirement cannot leave its accepted packet producer
+        // holding the connection after the last original state owner is gone.
+        if let Some(device) = self.device.as_ref() {
+            device.stop();
+        }
+        if let Some(worker) = self.worker.take() {
+            if let Err(error) = self.cleanup.started_io(ReadOperations.delta(1), None) {
+                tracing::warn!(%error, "FUSE packet producer retirement accounting failed");
+            }
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "FUSE packet producer failed during retirement")
+                }
+                Err(_) => tracing::warn!("FUSE packet producer panicked during retirement"),
+            }
+        }
+        // Finish before the original retirement packet can unlock its fence.
+        if let Err(error) = self.mount.finish_exit_action() {
+            tracing::warn!(%error, "FUSE owner-exit cleanup failed during retirement");
+        }
     }
 }
 
@@ -229,13 +253,24 @@ impl FuseSession {
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
             };
-            let FuseSessionState { mount, device, .. } = &mut *started;
+            let FuseSessionState {
+                mount,
+                device,
+                retirement,
+                ..
+            } = &mut *started;
             let mut received = None;
             let opened = mount.open_into(
                 &request.destination,
                 request.writable,
                 || super::lifecycle::fuse_recovery_helper(work),
                 &mut received,
+                retirement
+                    .as_ref()
+                    .and_then(|packet| packet.destination_guard.as_ref())
+                    .and_then(|guard| guard.file.as_ref())
+                    .ok_or(NativeMountError::ControlPending)?,
+                work,
             );
             *device = received
                 .map(|descriptor| {
@@ -495,16 +530,12 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
         // This physical worker executes the retirement pass once. Its cleanup
         // cause is distinct from the namespace worker's already-owned cause.
         retiring.failure.cleanup = Some(error);
+        if let Some(device) = retiring.device.as_ref() {
+            device.stop();
+        }
     }
-    drop(retiring);
-    // A refused cleanup keeps the original source, fence and join handles owned.
-    while !state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .is_retired()
-    {
-        std::thread::park_timeout(Duration::from_millis(100));
-    }
+    // The caller's original state retains a refused cleanup and its cause.
+    // There is no work left for this producer after its one retirement pass.
 }
 
 impl Drop for FuseSession {

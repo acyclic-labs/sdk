@@ -332,10 +332,8 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
 
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
+pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{BufRead as _, BufReader};
-
     // A live facade and its notification sinks must not retain a device after
     // the original packet server has stopped. Check physical ownership before
     // issuing a lookup, so the old-source negative cannot strand a kernel call.
@@ -382,49 +380,94 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
     assert!(live.stop()?);
     assert_eq!(mounts_at(server_root.path())?, 0);
 
+    for early_cancel in [false, true] {
+        owner_exit_namespace(early_cancel)?;
+    }
+    Ok(())
+}
+
+fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead as _, BufReader, Write as _};
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(
         "native_mount::fuse::tests::shared::shared_view_owner_until_killed",
         temporary.path(),
     )
+    .stdin(Stdio::piped())
     .stdout(Stdio::piped())
     .stderr(Stdio::inherit())
     .spawn()?;
     let mut lines = BufReader::new(owner.stdout.take().ok_or("child stdout")?).lines();
-    loop {
+    let cleanup_pid = loop {
         let line = lines
             .next()
             .ok_or("the owner exited before its view was live")??;
-        if line.contains("shared view owner: ready") {
+        if let Some(pid) = line.strip_prefix("shared view owner: ready ") {
+            break pid.parse::<u32>()?;
+        }
+    };
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    // The original owner still holds this PID; registration precedes its
+    // kill, so PID reuse cannot select another process's terminal event.
+    // SAFETY: pidfd_open takes the retained original PID and no pointers.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, cleanup_pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: pidfd_open returned this fresh owned descriptor.
+    let cleanup = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd)?) };
+    // Plant the missing owner-exit action by cancelling the real admitted
+    // action before the namespace's owner dies. Registration precedes this
+    // control too, so it waits on the very same original PID in both cases.
+    owner
+        .stdin
+        .take()
+        .ok_or("owner control")?
+        .write_all(&[u8::from(early_cancel)])?;
+    loop {
+        let line = lines.next().ok_or("owner control was not acknowledged")??;
+        if line == "shared view owner: armed" {
             break;
         }
     }
     owner.kill()?;
     owner.wait()?;
-    // The kill is the leak: a mount nobody serves, and its fence.
-    assert_eq!(
-        mounts_at(&root)?,
-        1,
-        "a killed owner leaves its root mounted"
-    );
+    let mut terminal = libc::pollfd {
+        fd: cleanup.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one initialized record, with its original pidfd retained.
+        if unsafe { libc::poll(&mut terminal, 1, -1) } >= 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+    let remaining = mounts_at(&root)?;
     let [fence, ..] = crate::native_mount_control_paths(&root)?;
-    assert!(fence.exists(), "and fenced");
-
-    // Negative control: without the reaper the root cannot be reused.
-    super::super::shared_instance::SKIP_REAP.with(|skip| skip.set(true));
-    let (refused_source, _) = shared_sources(posix_config())?;
-    let refused = view(refused_source, &root.join("refused"));
-    super::super::shared_instance::SKIP_REAP.with(|skip| skip.set(false));
-    assert!(
-        refused.is_err(),
-        "a crash-left root is unusable without the reaper"
+    assert!(fence.exists(), "the original fence remains recoverable");
+    println!(
+        "owner-exit action control: early_cancel={early_cancel}, remaining_mounts={remaining}"
     );
-    assert_eq!(mounts_at(&root)?, 1);
-
+    if remaining != 0 {
+        // The planted early-disarm control must not itself abandon a mount.
+        let (source, _) = shared_sources(posix_config())?;
+        let mut recovered = view(source, &root.join("negative-cleanup"))?;
+        assert!(recovered.stop()?);
+    }
+    assert_eq!(
+        remaining == 0,
+        !early_cancel,
+        "the killed owner's namespace outlived its cleanup action"
+    );
     let (source, _) = shared_sources(posix_config())?;
     let mut session = view(source, &root.join("after"))?;
-    assert_eq!(mounts_at(&root)?, 1, "the reaper replaced the dead mount");
+    assert_eq!(mounts_at(&root)?, 1, "the successor owns its new mount");
     assert_eq!(listing(&root)?, ["after"]);
     assert!(session.stop()?);
     assert_eq!(mounts_at(&root)?, 0);
@@ -432,7 +475,7 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
     Ok(())
 }
 
-/// Child half of `linux_a_crashed_owner_leaves_a_root_the_next_start_reaps`:
+/// Child half of the original connection and namespace retirement guard:
 /// holds a view until its parent kills it.
 #[test]
 #[ignore = "runs only as the child of its parent test"]
@@ -443,8 +486,36 @@ pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error:
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let (source, _) = shared_sources(posix_config())?;
-    let _session = view(source, &root.join("crashed"))?;
-    println!("shared view owner: ready");
+    let session = view(source, &root.join("crashed"))?;
+    let cleanup = session
+        .driver
+        .as_ref()
+        .ok_or("live driver")?
+        .state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .shared
+        .as_ref()
+        .and_then(|view| view.exit_action_id())
+        .ok_or("original owner-exit action")?;
+    println!("shared view owner: ready {cleanup}");
+    use std::io::Read as _;
+    let mut early_cancel = [0];
+    std::io::stdin().read_exact(&mut early_cancel)?;
+    if early_cancel[0] != 0 {
+        session
+            .driver
+            .as_ref()
+            .ok_or("live driver")?
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .shared
+            .as_ref()
+            .ok_or("original shared namespace")?
+            .cancel_exit_action()?;
+    }
+    println!("shared view owner: armed");
     loop {
         std::thread::park();
     }

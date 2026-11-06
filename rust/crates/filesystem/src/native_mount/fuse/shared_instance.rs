@@ -3,9 +3,9 @@
 //! The shared core's [`Instances`] registry starts it for a root's first
 //! view and drops it after the last; its drop unmounts the root, stops its
 //! threads and releases its fence. A failed start unwinds through the same
-//! teardown. A process that dies with live views leaves its root fenced by
-//! a lock nobody holds; the next start for that root detaches the dead
-//! owner's mount before mounting again.
+//! teardown. An admitted owner-exit action retains the original fence and
+//! detaches the root if its owner dies. The next start also recovers any
+//! retained fence from an earlier failed retirement.
 
 use super::shared::{SharedViewEntry, SharedViews, run_shared_invalidator};
 use super::*;
@@ -18,17 +18,13 @@ use std::path::PathBuf;
 
 static INSTANCES: Instances<SharedFuseInstance> = Instances::new();
 
-#[cfg(test)]
-thread_local! {
-    /// Negative control: starts without reaping a crash-left root.
-    pub(super) static SKIP_REAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 pub(in crate::native_mount) struct SharedFuseInstance {
     pub(super) views: Arc<SharedViews>,
     invalidator: Option<std::thread::JoinHandle<()>>,
     #[cfg(test)]
     worker_lifetime: std::sync::Weak<()>,
+    #[cfg(test)]
+    exit_action_id: Option<u32>,
 }
 
 /// The existing invalidator owns physical root cleanup after accepting startup.
@@ -59,10 +55,7 @@ impl InstanceState {
     fn detach(&mut self, path: &std::ffi::CStr, root: &Path) -> bool {
         let mut detached = !self.mount.needs_unmount();
         if !detached {
-            let result = match self.device.as_ref() {
-                Some(device) => device.with_device(|fd| self.mount.stop(path, fd)),
-                None => self.mount.stop(path, None),
-            };
+            let result = self.mount.stop(path);
             if let Some(device) = self.device.as_ref() {
                 device.stop();
             }
@@ -82,7 +75,9 @@ impl InstanceState {
             // Busy: detach the namespace. The physical owner still stops and
             // joins the transport, including while an old file remains open.
             match nix::mount::umount2(path, nix::mount::MntFlags::MNT_DETACH) {
-                Ok(()) => detached = true,
+                Ok(()) => {
+                    detached = self.mount.cancel_exit_action().is_ok();
+                }
                 Err(error) => {
                     tracing::warn!(%error, root = %root.display(), "shared FUSE detach failed");
                 }
@@ -124,11 +119,7 @@ impl SharedFuseInstance {
         // A fence whose lock is free belongs to a dead owner: detach its
         // mount first, so a crash never leaves a root mounted for good.
         let [fence, ..] = native_mount_control_paths(root)?;
-        #[cfg(test)]
-        let reap = !SKIP_REAP.with(std::cell::Cell::get);
-        #[cfg(not(test))]
-        let reap = true;
-        if reap && fence.try_exists()? {
+        if fence.try_exists()? {
             detach_native_mount_destination_after_crash(root)?;
         }
         let metadata = std::fs::metadata(root)?;
@@ -159,6 +150,12 @@ impl SharedFuseInstance {
             true,
             || super::lifecycle::fuse_recovery_helper(&work),
             &mut received,
+            state
+                .guard
+                .as_ref()
+                .and_then(|guard| guard.file.as_ref())
+                .ok_or(NativeMountError::ControlPending)?,
+            &work,
         );
         state.device = received
             .map(|descriptor| {
@@ -199,6 +196,8 @@ impl SharedFuseInstance {
         );
         #[cfg(test)]
         let worker_lifetime = state.worker_lifetime.clone();
+        #[cfg(test)]
+        let exit_action_id = state.mount.exit_action_id();
         let invalidator = std::thread::Builder::new()
             .name("acyclic-fuse-invalidator".to_owned())
             .spawn(move || {
@@ -212,6 +211,8 @@ impl SharedFuseInstance {
             invalidator: Some(invalidator),
             #[cfg(test)]
             worker_lifetime,
+            #[cfg(test)]
+            exit_action_id,
         })
     }
 
@@ -240,6 +241,11 @@ impl SharedFuseRoot {
         let detached = state.detach(&self.path, &self.root);
         state.join_worker();
         state.device.take();
+        // A failed ordinary detach must still finish the already admitted
+        // action before FileLock's explicit unlock can admit a successor.
+        if let Err(error) = state.mount.finish_exit_action() {
+            tracing::warn!(%error, "shared FUSE owner-exit cleanup failed");
+        }
         if let Some(mut guard) = state.guard.take() {
             if detached && let Err(error) = guard.release_cleanup(None) {
                 tracing::warn!(%error, "shared FUSE fence release failed");
@@ -269,6 +275,11 @@ impl Drop for SharedFuseInstance {
 }
 
 impl SharedFuseView {
+    #[cfg(test)]
+    pub(super) fn exit_action_id(&self) -> Option<u32> {
+        self._instance.exit_action_id
+    }
+
     /// Lists a view named after `destination`'s last component in the shared
     /// instance at its parent, starting the instance if none is live.
     pub(super) fn start(
