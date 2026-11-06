@@ -104,47 +104,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             object_bytes_written: total,
             ..WorkCounters::UNCHARGED
         })?;
-        let result = match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let results = self
-                    .provider
-                    .put_batch_native(packet(requests, original)?, original.runtime_meter())
-                    .map_err(|error| native_error(error, original))?
-                    .await
-                    .map_err(|error| native_error(error, original))?;
-                finish_writes(
-                    results.map(|value| {
-                        value
-                            .map(|receipt| receipt.put().clone())
-                            .map_err(|error| native_error(error, original))
-                    }),
-                    writes,
-                    work,
-                )
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    backend_write_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let results = self.provider.put_batch_sealed(requests.value).await;
-                release(work, requests.allocation, requests.bytes)?;
-                let bytes = (results.capacity() * size_of::<Result<Put, Error>>()) as u64;
-                let (controls, late) = work.record_actual_owned(bytes)?;
-                let result = finish_writes(
-                    results
-                        .into_iter()
-                        .map(|value| value.map_err(ObjectStoreError::LogicalObjects)),
-                    writes,
-                    work,
-                );
-                release(work, controls, bytes)?;
-                result.and(late)
-            }
-        };
-        result?;
+        invocation::put_batch(&*self.provider, requests, work, WriteBatch(writes)).await?;
         work.check()
     }
 }
@@ -194,28 +154,35 @@ fn settle(id: ObjectId, length: u64, put: Put) -> Result<u64, ObjectStoreError> 
     }
 }
 
-fn finish_writes<T: ObjectWriteSource>(
-    results: impl ExactSizeIterator<Item = Result<Put, ObjectStoreError>>,
-    writes: &[T],
-    work: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    if results.len() != writes.len() {
-        return Err(ObjectStoreError::Corrupt.into());
-    }
-    let mut failure = None;
-    for (write, result) in writes.iter().zip(results) {
-        let (id, body, _) = write.parts();
-        let length = body.len() as u64;
-        match result.and_then(|put| settle(id, length, put)) {
-            Ok(written) => record_write(work, written)?,
-            Err(error) => {
-                failure.get_or_insert(error);
+struct WriteBatch<'a, T>(&'a [T]);
+
+impl<T: ObjectWriteSource> invocation::BatchFinish<Put> for WriteBatch<'_, T> {
+    type Output = ();
+
+    fn finish(
+        self,
+        results: impl ExactSizeIterator<Item = Result<Put, ObjectStoreError>>,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        let writes = self.0;
+        if results.len() != writes.len() {
+            return Err(ObjectStoreError::Corrupt.into());
+        }
+        let mut failure = None;
+        for (write, result) in writes.iter().zip(results) {
+            let (id, body, _) = write.parts();
+            let length = body.len() as u64;
+            match result.and_then(|put| settle(id, length, put)) {
+                Ok(written) => record_write(work, written)?,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
             }
         }
-    }
-    match failure {
-        Some(error) => Err(error.into()),
-        None => Ok(()),
+        match failure {
+            Some(error) => Err(error.into()),
+            None => Ok(()),
+        }
     }
 }
 

@@ -67,6 +67,113 @@ pub(super) async fn put<P: Blobs + ?Sized>(
     }
 }
 
+/// Consumes a completed batch while its original result storage remains funded.
+pub(super) trait BatchFinish<T> {
+    type Output;
+    fn finish(
+        self,
+        results: impl ExactSizeIterator<Item = Result<T, ObjectStoreError>>,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<Self::Output, crate::FsError>;
+}
+
+pub(super) async fn get_batch<P: Blobs + ?Sized, F: BatchFinish<Object>>(
+    provider: &P,
+    request: crate::kernel::Owned<Vec<GetRequest>>,
+    work: &mut KernelAccounting<'_>,
+    finish: F,
+) -> Result<F::Output, crate::FsError> {
+    let count = request.value.len() as u64;
+    match work {
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { work: original, .. } => {
+            let original = *original;
+            let future = provider
+                .get_batch_native(packet(request, original)?, original.runtime_meter())
+                .map_err(|error| native_error(error, original))?;
+            work.charge(WorkCounters {
+                object_probes: count,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let results = future
+                .await
+                .map_err(|error| native_error(error, original))?;
+            finish.finish(
+                results.map(|value| value.map_err(|error| native_error(error, original))),
+                work,
+            )
+        }
+        _ => {
+            work.charge(WorkCounters {
+                object_probes: count,
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let results = provider.get_batch(request.value).await;
+            release(work, request.allocation, request.bytes)?;
+            let bytes = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
+            let (controls, late) = work.record_actual_owned(bytes)?;
+            let result = finish.finish(
+                results
+                    .into_iter()
+                    .map(|value| value.map_err(service_error)),
+                work,
+            );
+            release(work, controls, bytes)?;
+            let value = result?;
+            late?;
+            Ok(value)
+        }
+    }
+}
+
+pub(super) async fn put_batch<P: Blobs + ?Sized, F: BatchFinish<Put>>(
+    provider: &P,
+    request: crate::kernel::Owned<Vec<PutRequest>>,
+    work: &mut KernelAccounting<'_>,
+    finish: F,
+) -> Result<F::Output, crate::FsError> {
+    match work {
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { work: original, .. } => {
+            let original = *original;
+            let results = provider
+                .put_batch_native(packet(request, original)?, original.runtime_meter())
+                .map_err(|error| native_error(error, original))?
+                .await
+                .map_err(|error| native_error(error, original))?;
+            finish.finish(
+                results.map(|value| {
+                    value
+                        .map(|receipt| receipt.put().clone())
+                        .map_err(|error| native_error(error, original))
+                }),
+                work,
+            )
+        }
+        _ => {
+            work.charge(WorkCounters {
+                backend_write_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let results = provider.put_batch_sealed(request.value).await;
+            release(work, request.allocation, request.bytes)?;
+            let bytes = (results.capacity() * size_of::<Result<Put, Error>>()) as u64;
+            let (controls, late) = work.record_actual_owned(bytes)?;
+            let result = finish.finish(
+                results
+                    .into_iter()
+                    .map(|value| value.map_err(ObjectStoreError::LogicalObjects)),
+                work,
+            );
+            release(work, controls, bytes)?;
+            let value = result?;
+            late?;
+            Ok(value)
+        }
+    }
+}
+
 pub(super) async fn retain<P: Blobs + ?Sized>(
     provider: &P,
     request: RetentionRequest,
