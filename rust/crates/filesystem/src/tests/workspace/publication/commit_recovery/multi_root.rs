@@ -119,7 +119,7 @@ pub(super) async fn seed(root: &Path) -> TestResult {
     Ok(())
 }
 
-pub(super) async fn assert_recovery(root: &Path) -> TestResult {
+pub(super) async fn assert_recovery(root: &Path, acknowledged: bool) -> TestResult {
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let coordinator = coordinator(root, fs.clone())?;
     let mut candidate = candidate(root)?;
@@ -147,6 +147,13 @@ pub(super) async fn assert_recovery(root: &Path) -> TestResult {
         "recovery left a partial all-roots publication"
     );
     assert!(matches!(contents[0].as_ref(), b"old" | b"new"));
+    if acknowledged {
+        assert_eq!(
+            contents[0].as_ref(),
+            b"new",
+            "lost an acknowledged all-roots publication"
+        );
+    }
     // A fresh operation must acquire the same parent and both root reservations.
     candidate.plan.operation_id = crate::OperationId::from_bytes([0x78; 16]);
     assert!(matches!(
