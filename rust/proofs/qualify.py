@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy", "handler-policy", "guest-failure", "failed-input", "handler-frame", "publication-retirement"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy", "handler-policy", "guest-failure", "failed-input", "handler-frame", "publication-retirement", "clock-wait"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -113,6 +113,12 @@ elif claim == "handler-frame":
     crate = "acyclic-actors"
     test = "local::runtime::tests::checkpoint::handler_deadline_settles_original_invocation_and_reopens"
     diagnostic = "handler deadline adapter allocated a separate frame"
+    features = []
+elif claim == "clock-wait":
+    source = "rust/crates/actors/src/local/runtime/clock.rs"
+    crate = "acyclic-actors"
+    test = "local::runtime::tests::clock::controlled_clock_drives_original_alarms_and_reports_producer_loss"
+    diagnostic = "clock wait lost its original producer failure"
     features = []
 elif claim == "guest-failure":
     source = "rust/crates/actors/src/guest/authoring.rs"

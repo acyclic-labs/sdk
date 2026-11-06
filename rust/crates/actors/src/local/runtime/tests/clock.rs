@@ -235,7 +235,11 @@ async fn clock_schedule(
         "lost producer-close wake"
     );
     if let Some(pending) = pending {
-        assert_eq!(pending.await, Err(ClockError::ProducerDropped));
+        assert_eq!(
+            pending.await,
+            Err(ClockError::ProducerDropped),
+            "clock wait lost its original producer failure"
+        );
     }
     assert_eq!(retained.await, Err(ClockError::ProducerDropped));
     assert_eq!(
