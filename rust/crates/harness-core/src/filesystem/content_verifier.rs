@@ -440,11 +440,11 @@ where
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<crate::conversation::ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -467,9 +467,9 @@ where
             let grant_hold = io
                 .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
                 .transpose()?;
-            let (file, bytes) = self
+            let selected = self
                 .host
-                .read_private_path(
+                .read_private_path_indexed(
                     volume,
                     &grant,
                     path,
@@ -480,10 +480,13 @@ where
                 .await?;
             drop(grant);
             drop(grant_hold);
+            let Some((file, bytes, _)) = selected else {
+                return Ok(None);
+            };
             let hold = io
                 .map(|io| io.guard_owned(file.logical_owned_bytes()?))
                 .transpose()?;
-            Ok((file, bytes, hold))
+            Ok(Some((file, bytes, hold)))
         })
     }
 }

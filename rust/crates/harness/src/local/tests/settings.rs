@@ -76,7 +76,8 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
             u64::MAX,
             ContentAccess::default(),
         )
-        .await?;
+        .await?
+        .ok_or_else(|| Error::NotFound("settings admission record".into()))?;
     serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
 

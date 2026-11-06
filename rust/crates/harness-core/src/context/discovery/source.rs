@@ -554,10 +554,8 @@ impl InstructionReader for VolumeDiscovery<'_> {
                 generation: revision.clone(),
                 path: path.into(),
             };
-            let (file, bytes) = match source.read(self.reader, maximum).await {
-                Ok(file) => file,
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
-                Err(error) => return Err(error),
+            let Some((file, bytes)) = source.read_if_present(self.reader, maximum).await? else {
+                return Ok(None);
             };
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
