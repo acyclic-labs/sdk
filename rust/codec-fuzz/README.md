@@ -894,4 +894,3 @@ original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` remov
 the reader's decoder bound; replaying the same captured input must then fail the
 fragmentation oracle. The retained codec controls additionally reject a dropped
 bound publication and an ignored notification hiding a buffered response.
-
