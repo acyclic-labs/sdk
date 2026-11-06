@@ -468,7 +468,7 @@ impl ExecutionGrant {
             // An overlapping ancestor may require an unavailable subtree proof.
             let roots = self.policy.read_roots(&path.path, meter)?;
             if let Some(root) = roots.exact
-                && root.contains(path, meter)?
+                && root.entry.contains(path, meter)?
             {
                 continue;
             }
@@ -478,7 +478,7 @@ impl ExecutionGrant {
             // Keep the original shallowest component ancestor's object proof.
             // The same radix traversal already found it beside the exact key.
             let permitted = match roots.shortest {
-                Some(root) => root.contains(path, meter)?,
+                Some(root) => root.entry.contains(path, meter)?,
                 None => false,
             };
             if !permitted {

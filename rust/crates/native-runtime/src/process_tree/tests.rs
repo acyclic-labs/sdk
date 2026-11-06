@@ -294,19 +294,53 @@ fn wait_for_owner_stop() -> ! {
     }
 }
 
-/// Waits for a helper's readiness marker.
-pub(super) fn ready(root: &std::path::Path, name: &str, mut exited: impl FnMut() -> bool) {
-    while !root.join(name).exists() {
-        assert!(
-            !exited() || root.join(name).exists(),
-            "helper exited before it was ready"
-        );
-        thread::sleep(Duration::from_millis(5));
-    }
+/// Await the original diagnostic pipe without consuming its captured payload.
+/// EOF also completes the wait, letting capture report the lost producer.
+fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
+    let stderr = tree
+        .child
+        .as_ref()
+        .and_then(|child| child.stderr.as_ref())
+        .ok_or(io::ErrorKind::BrokenPipe)?;
+    #[cfg(unix)]
+    let source = {
+        use std::os::fd::AsFd as _;
+        super::events::Source::Readable(stderr.as_fd())
+    };
+    #[cfg(windows)]
+    let operation = super::events::PipeOperation::reader(stderr)?;
+    #[cfg(windows)]
+    let source = super::events::Source::Pipe(&operation);
+    super::events::arm(&[source], None)?.block().into_result()
 }
 
-fn tree_exited(tree: &mut ProcessTree) -> bool {
-    tree.try_wait(None).map_or(true, |status| status.is_some())
+/// The parent relays this byte only after its original grandchild holds its
+/// lifetime lock. Drain stdout too so the test runner's preamble cannot keep
+/// the native readiness event signalled while stderr is still quiescent.
+pub(super) fn tree_ready(tree: &mut ProcessTree) {
+    loop {
+        let stdout = tree.read_stdout(&mut [0; 1024]).expect("tree stdout");
+        let mut byte = [0];
+        match tree
+            .read_output_controlled(&mut byte, None, true)
+            .expect("original tree readiness pipe")
+        {
+            Some(1) => {
+                assert_eq!(&byte, b"R", "original tree readiness byte");
+                return;
+            }
+            Some(_) => panic!("original tree readiness producer ended"),
+            None => {}
+        }
+        if stdout.unwrap_or(0) == 0 {
+            tree.readiness()
+                .expect("arm original tree readiness")
+                .0
+                .block()
+                .into_result()
+                .expect("original tree readiness event");
+        }
+    }
 }
 
 /// The original grandchild owns this lock until process exit. Its kernel
@@ -352,24 +386,37 @@ fn process_tree_helper() {
                 crate::FileLockMode::Exclusive,
             )
             .expect("original descendant lifetime lock");
-            fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
+            std::io::stderr()
+                .write_all(b"R")
+                .expect("original descendant readiness write");
+            std::io::stderr()
+                .flush()
+                .expect("flush original descendant readiness");
             wait_for_owner_stop();
         }
         "child" | "child-cancel" | "exit-parent" => {
             let mut grandchild = command("grandchild", &root);
             grandchild
                 .stdout(ProcessStdio::inherit())
-                .stderr(ProcessStdio::inherit());
+                .stderr(ProcessStdio::piped());
             let mut grandchild = grandchild
                 .to_std()
                 .and_then(|mut grandchild| grandchild.spawn())
                 .expect("spawn grandchild");
-            ready(&root, "grandchild-ready", || {
-                grandchild
-                    .try_wait()
-                    .map_or(true, |status| status.is_some())
-            });
-            fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
+            let mut byte = [0];
+            grandchild
+                .stderr
+                .as_mut()
+                .expect("original descendant readiness pipe")
+                .read_exact(&mut byte)
+                .expect("original descendant readiness producer ended");
+            assert_eq!(&byte, b"R", "original descendant readiness byte");
+            std::io::stderr()
+                .write_all(&byte)
+                .expect("relay original tree readiness");
+            std::io::stderr()
+                .flush()
+                .expect("flush original tree readiness");
             if mode == "child-cancel" {
                 std::io::stdout()
                     .write_all(b"tree-cancel-ready")
@@ -398,7 +445,6 @@ fn process_tree_helper() {
                 .expect("partial stderr");
             std::io::stdout().flush().expect("flush partial stdout");
             std::io::stderr().flush().expect("flush partial stderr");
-            fs::write(root.join("partial-ready"), b"ready").expect("partial ready");
             wait_for_owner_stop();
         }
         "output" => {
@@ -496,7 +542,12 @@ fn stdin_helper(mode: &str, root: &std::path::Path) {
                 .write_all(b"stdin-stall-marker")
                 .expect("stall marker");
             std::io::stdout().flush().expect("flush stall marker");
-            fs::write(root.join("stdin-stall-ready"), b"ready").expect("stall ready");
+            std::io::stderr()
+                .write_all(b"R")
+                .expect("original stalled input readiness write");
+            std::io::stderr()
+                .flush()
+                .expect("flush original stalled input readiness");
             wait_for_owner_stop();
         }
         "stdin-handshake" => {
@@ -543,7 +594,7 @@ fn cleanup_is_idempotent_and_drop_contains_descendants() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut tree =
             ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
-        ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
+        tree_ready(&mut tree);
         assert_eq!(
             descendant_lifetime(temporary.path())
                 .expect("original descendant lifetime file")
@@ -651,7 +702,7 @@ fn graceful_cleanup_handles_an_exited_leader_and_its_descendants() {
         let mut tree =
             ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
         if mode != "exit-code" {
-            ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
+            tree_ready(&mut tree);
         }
         if mode != "child" {
             tree.wait_exit(None).expect("observe leader exit");
@@ -1213,9 +1264,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    ready(temporary.path(), "stdin-stall-ready", || {
-        tree_exited(&mut tree)
-    });
+    stderr_ready(&tree).expect("original stalled input readiness event");
     // The capture clock is frozen and only reaches the deadline inside the
     // second check, so expiry is ordered after two full capture iterations no
     // matter how late the scheduler runs this thread.
@@ -1243,9 +1292,17 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             None,
             None,
         )
-        .expect_err("deadline stops stalled input");
-    assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+        .expect_err("original stalled input deadline was lost");
+    assert_eq!(
+        failure.error.kind(),
+        std::io::ErrorKind::TimedOut,
+        "original stalled input deadline was lost"
+    );
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
+    assert_eq!(
+        failure.stderr, b"R",
+        "original stalled input readiness byte was lost"
+    );
     drop(clock);
     assert_eq!(
         checks, 2,
@@ -1260,7 +1317,7 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
         .expect("spawn partial output");
-    ready(temporary.path(), "partial-ready", || tree_exited(&mut tree));
+    stderr_ready(&tree).expect("original partial output readiness event");
     let failure = tree
         .wait_with_output(
             Duration::from_millis(20),
@@ -1304,7 +1361,7 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
         let mut tree =
             ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
         if mode == "child" {
-            ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
+            tree_ready(&mut tree);
             assert_eq!(
                 tree.wait(Duration::ZERO).expect_err("wait deadline").kind(),
                 std::io::ErrorKind::TimedOut
@@ -1356,7 +1413,7 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
         .map_err(|failure| failure.error)
         .expect("collect exited parent");
     assert!(output.status.success());
-    ready(temporary.path(), "tree-ready", || true);
+    assert_eq!(output.stderr, b"R", "original tree readiness byte");
     assert_descendant_retired(temporary.path());
 }
 

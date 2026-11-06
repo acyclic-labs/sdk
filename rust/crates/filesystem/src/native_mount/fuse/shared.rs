@@ -10,9 +10,9 @@
 //! invalidation for every view runs on one thread.
 
 use super::*;
+use crate::native_mount::shared::ready::ReadyViews;
 use crate::native_mount::shared::view_table::ViewLease;
 use crate::native_mount::shared::views::{NamedView, NamedViews};
-use std::collections::VecDeque;
 use std::sync::Condvar;
 use std::sync::atomic::AtomicBool;
 
@@ -38,11 +38,13 @@ pub(super) struct SharedViews {
     notifier: OnceLock<CacheNotifier>,
     pending: Mutex<PendingInvalidations>,
     invalidation: Condvar,
+    #[cfg(test)]
+    pub(super) retirement_thread: OnceLock<std::thread::ThreadId>,
 }
 
 #[derive(Default)]
 struct PendingInvalidations {
-    serials: VecDeque<u64>,
+    ready: ReadyViews<()>,
     stopping: bool,
 }
 
@@ -60,12 +62,29 @@ impl SharedWake {
         }
         if let Some(views) = self.views.upgrade() {
             let mut pending = views.pending.lock().unwrap_or_else(PoisonError::into_inner);
-            if !pending.stopping {
-                pending.serials.push_back(self.serial);
+            if !pending.stopping && pending.ready.schedule(self.serial) {
                 drop(pending);
                 views.invalidation.notify_one();
             }
         }
+    }
+
+    fn retire(&self) {
+        self.queued.store(true, Ordering::Release);
+        if let Some(views) = self.views.upgrade() {
+            views
+                .pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ready
+                .remove(self.serial);
+        }
+    }
+}
+
+impl Drop for SharedWake {
+    fn drop(&mut self) {
+        self.retire();
     }
 }
 
@@ -91,6 +110,9 @@ impl SharedViewEntry {
         let Some((name, _)) = self.view.retire_after(|| core.stop()) else {
             return false;
         };
+        if let Some(wake) = core.shared_wake.get() {
+            wake.retire();
+        }
         if let Some(notifier) = self.views.notifier.get() {
             // The kernel may still cache the name. A late lookup of it now
             // misses, and a late request on its inodes answers ESTALE.
@@ -131,6 +153,8 @@ impl SharedViews {
             notifier: OnceLock::new(),
             pending: Mutex::new(PendingInvalidations::default()),
             invalidation: Condvar::new(),
+            #[cfg(test)]
+            retirement_thread: OnceLock::new(),
         })
     }
 
@@ -154,11 +178,18 @@ impl SharedViews {
             if let Some(notifier) = self.notifier.get() {
                 let _ = core.notifier.set(notifier.clone());
             }
-            let _ = core.shared_wake.set(Arc::new(SharedWake {
-                views: Arc::downgrade(self),
-                serial,
-                queued: AtomicBool::new(false),
-            }));
+            self.pending
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ready
+                .insert(serial, ());
+            core.shared_wake
+                .set(Arc::new(SharedWake {
+                    views: Arc::downgrade(self),
+                    serial,
+                    queued: AtomicBool::new(false),
+                }))
+                .map_err(|_| NativeMountError::ControlPending)?;
             built = Some(Arc::clone(&core));
             Ok(FuseProjection { core })
         })?;
@@ -215,7 +246,7 @@ pub(super) fn run_shared_invalidator(views: &SharedViews, notifier: &CacheNotifi
                 if pending.stopping {
                     return;
                 }
-                if let Some(serial) = pending.serials.pop_front() {
+                if let Some((serial, _)) = pending.ready.pop() {
                     break serial;
                 }
                 pending = views

@@ -55,6 +55,12 @@ impl HostSession {
         CacheNotifier::new(self.io.clone())
     }
 
+    /// The physical owner stops this transport after closing view admission
+    /// and attempting namespace detach, then joins every packet worker.
+    pub(super) fn transport(&self) -> Arc<HostIo> {
+        Arc::clone(&self.io)
+    }
+
     pub(super) fn initialize(&self) -> Result<(), NativeMountError> {
         let _stop_on_failure = HandshakeStop(self);
         let mut buffers = self.buffers.take(0)?;
