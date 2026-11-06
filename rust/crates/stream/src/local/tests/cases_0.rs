@@ -709,7 +709,7 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     *obsolete.get_mut(22).ok_or(StreamError::InvalidArgument)? = b'4';
     for (header, unsupported) in [
         (obsolete, true),
-        (vec![0; HEADER_BYTES], false),
+        ([0; HEADER_BYTES], false),
         (encode_header(limits, 2)?, false),
     ] {
         std::fs::write(&journal_path, &header)?;

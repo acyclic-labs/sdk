@@ -45,11 +45,16 @@ fn encode_limits(limits: LocalStreamLimits) -> Result<[u8; LIMITS_BYTES], LocalS
     Ok(encoded)
 }
 
-fn encode_header(limits: LocalStreamLimits, epoch: u64) -> Result<Vec<u8>, LocalStreamError> {
-    let mut encoded = Vec::with_capacity(HEADER_BYTES);
-    encoded.extend_from_slice(HEADER_MAGIC);
-    encoded.extend_from_slice(&encode_limits(limits)?);
-    encoded.extend_from_slice(&epoch.to_le_bytes());
+fn encode_header(
+    limits: LocalStreamLimits,
+    epoch: u64,
+) -> Result<[u8; HEADER_BYTES], LocalStreamError> {
+    let mut encoded = [0; HEADER_BYTES];
+    let (magic, rest) = encoded.split_at_mut(HEADER_MAGIC.len());
+    let (capacities, generation) = rest.split_at_mut(LIMITS_BYTES);
+    magic.copy_from_slice(HEADER_MAGIC);
+    capacities.copy_from_slice(&encode_limits(limits)?);
+    generation.copy_from_slice(&epoch.to_le_bytes());
     Ok(encoded)
 }
 

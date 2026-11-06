@@ -155,7 +155,9 @@ pub(crate) fn repeated_command_frame(command: &WriteRequest) -> Result<Vec<u8>, 
 }
 
 pub(crate) fn header() -> Result<Vec<u8>, StreamError> {
-    encode_header(LocalStreamLimits::default(), 1).map_err(|_| StreamError::InvalidArgument)
+    encode_header(LocalStreamLimits::default(), 1)
+        .map(Vec::from)
+        .map_err(|_| StreamError::InvalidArgument)
 }
 
 pub(crate) fn snapshot(state: &[u8]) -> Result<Vec<u8>, StreamError> {
