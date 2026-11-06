@@ -495,6 +495,50 @@ async fn lineage_resolution_uses_original_name_validation_work()
             .collect::<Vec<_>>(),
         vec![child.id(), root.id()]
     );
+    assert!(
+        chain
+            .value
+            .allocation
+            .standalone_live_bytes()
+            .ok_or("missing original lineage collection ledger")?
+            >= (chain.value.capacity() * std::mem::size_of::<crate::WorkspaceLineageRecord>())
+                as u64,
+        "ordinary lineage ancestry collection lost original backing credit"
+    );
+    let native_chain = graph
+        .ancestors(grandchild.id(), 3, &native, &cancellation)
+        .await?;
+    assert_eq!(native_chain.len(), 2);
+    let collection_bytes =
+        (native_chain.capacity() * std::mem::size_of::<crate::WorkspaceLineageRecord>()) as u64;
+    assert!(
+        native.live_allocation_bytes() >= native_live + collection_bytes,
+        "lineage ancestry collection lost original backing credit"
+    );
+    drop(native_chain);
+    assert_eq!(
+        native.live_allocation_bytes(),
+        native_live,
+        "lineage ancestry collection did not retire original backing credit"
+    );
+    let constrained = WorkBudget {
+        allocation_operations: chain.work.allocation_operations - 1,
+        ..budget
+    };
+    let failure = graph
+        .ancestors(grandchild.id(), 3, constrained, &cancellation)
+        .await
+        .err()
+        .ok_or("lineage ancestry escaped original collection admission")?;
+    assert!(matches!(
+        failure.error,
+        crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+            crate::WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }
+        ))
+    ));
     graph
         .authorize_descendant(grandchild.id(), root.id(), budget, &cancellation)
         .await?;
