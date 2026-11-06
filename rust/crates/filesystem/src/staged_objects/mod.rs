@@ -35,6 +35,7 @@ use io::{
 };
 use read::resident_read;
 mod admission;
+mod batch;
 mod ordering;
 mod publication;
 mod read;

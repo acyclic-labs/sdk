@@ -36,10 +36,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        if self.unstaged(requests) {
-            return self.inner.read_many_stored(requests, work).await;
-        }
-        crate::async_storage::read_many_stored_sequential(self, requests, work).await
+        self.read_partitioned::<true>(requests, work).await
     }
 
     fn decoded_cache_lookup(
@@ -206,10 +203,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        if self.unstaged(requests) {
-            return self.inner.read_many(requests, work).await;
-        }
-        crate::async_storage::read_many_sequential(self, requests, work).await
+        self.read_partitioned::<false>(requests, work).await
     }
     async fn contains(
         &self,
