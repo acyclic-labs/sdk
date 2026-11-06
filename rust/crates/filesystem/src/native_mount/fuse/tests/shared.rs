@@ -2,6 +2,7 @@
 
 use super::*;
 use std::process::{Command, Stdio};
+use std::sync::PoisonError;
 
 const CHILD: &str = "ACYCLIC_FS_SHARED_FUSE_CHILD";
 /// Negative control for the cost test: one mount per view, as before.
