@@ -232,6 +232,17 @@ async fn checkpoint_policy_settles_original_invocation_and_reopens() -> TestResu
 /// cause, retaining the previous checkpoint and the same durable input cut.
 #[tokio::test(start_paused = true)]
 async fn handler_deadline_settles_original_invocation_and_reopens() -> TestResult {
+    // Construct the same deadline adapter used below without registering a
+    // platform timer. Its frame belongs to the original delivery future.
+    let mut deadline = None;
+    let allocation = acyclic_test_support::measure(|| {
+        deadline = Some(std::hint::black_box(super::super::clock::sleep(1)));
+    });
+    assert_eq!(
+        allocation.count_total, 0,
+        "handler deadline adapter allocated a separate frame"
+    );
+    drop(deadline);
     let directory = tempfile::tempdir()?;
     let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
     let store = Store::new(Arc::clone(&provider), root()?);
