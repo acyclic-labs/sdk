@@ -925,6 +925,30 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         None,
     )?
     .0;
+    use acyclic_harness::context::InstructionReader;
+    let mut instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: fixture.reader.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    assert!(
+        instructions
+            .instruction(&source.path, &source.generation, 32_768)
+            .await
+            .is_err(),
+        "missing generation must not omit the selected instruction"
+    );
+    assert!(
+        instructions
+            .instruction(
+                "skills/missing/SKILL.md",
+                &first_skill(&captured)?.source.generation,
+                32_768,
+            )
+            .await?
+            .is_none(),
+        "only an absent filename is optional"
+    );
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
