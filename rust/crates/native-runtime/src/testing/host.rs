@@ -110,7 +110,7 @@ impl Host {
     }
 
     pub(super) fn run<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(driver) = state.take_start_waiter() {
             // A saturated pool let the driver yield before this worker began.
             // Publish availability, then wait for that driver to own the first
