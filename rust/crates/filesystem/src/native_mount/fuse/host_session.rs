@@ -32,7 +32,7 @@ pub(super) struct HostSession {
 impl HostSession {
     pub(super) fn new(
         router: PacketRouter,
-        device: Arc<std::fs::File>,
+        io: Arc<HostIo>,
         connection: Option<Connection>,
         work: &NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
@@ -44,7 +44,6 @@ impl HostSession {
         let page_size = std::num::NonZeroU32::new(page_size).ok_or(libc::EIO)?;
         let maximum_write = maximum_write(work, workers, page_size)?;
         let buffers = PacketBufferPool::new(workers, maximum_write as usize + 4096, work)?;
-        let io = Arc::new(HostIo::new(device, work)?);
         let cancellation = super::packet_cancellation::register(work, &io)?;
         Ok(Self {
             protocol: PacketSession::new(router, maximum_write, page_size)?,
