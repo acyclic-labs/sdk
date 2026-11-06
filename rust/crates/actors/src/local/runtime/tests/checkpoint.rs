@@ -110,3 +110,119 @@ async fn logical_checkpoint_crosses_record_boundary_and_reopens() -> TestResult 
     assert_eq!(state.checkpoint(), Some(&checkpoint));
     Ok(())
 }
+
+/// Explicit policy boundaries use the original invocation's terminal event;
+/// accepted and refused candidates retain their exact state cuts on reopen.
+#[tokio::test]
+async fn checkpoint_policy_settles_original_invocation_and_reopens() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let candidate = Checkpoint {
+        codec: CodecIdentity {
+            name: "checkpoint-policy".into(),
+            version: "1".into(),
+        },
+        bytes: Bytes::from_static(b"updated"),
+    };
+    let previous = Checkpoint {
+        bytes: Bytes::from_static(b"old"),
+        ..candidate.clone()
+    };
+    let policies = std::iter::once(None).chain((1..=8).map(Some));
+    let mut restored = Vec::new();
+    for maximum in policies {
+        let name = format!("policy-{}", maximum.unwrap_or_default());
+        let address = actor(&name)?;
+        let mut create = PreparedPublish::foreign(key(&format!("{name}/create"))?);
+        for effect in store.create(
+            &address,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: StreamPath::new(format!("{name}/inbox"))?,
+                    cursor: 0,
+                },
+            )]),
+            Some(previous.clone()),
+        )? {
+            create.join(effect)?;
+        }
+        store.submit(create).await?;
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Persists {
+                manifest: Manifest {
+                    code: Package::new()?.manifest().code.clone(),
+                    codec: candidate.codec.clone(),
+                    subscriptions: vec!["inbox".into()],
+                    interrupts: Vec::new(),
+                    bindings: Vec::new(),
+                    limits: crate::domain::ActorLimits::new(None, None, maximum)?,
+                },
+                checkpoint: candidate.clone(),
+            }),
+            Arc::new(SystemClock),
+        );
+        runtime.track(address.clone())?;
+        let invocation = Invocation::new(
+            StreamPath::new("checkpoint-policy/caller")?,
+            address.clone(),
+            "inbox".into(),
+            Bytes::from_static(b"policy"),
+            Bytes::from_static(b"original response"),
+        )?;
+        let ticket = store.enqueue_invoke(&invocation).await?;
+        let drained = runtime.drain_actor(&address).await;
+        assert!(
+            drained.is_ok(),
+            "checkpoint policy lost original terminal: maximum={maximum:?}, {drained:?}"
+        );
+        let refused = maximum.is_some_and(|limit| limit < candidate.bytes.len() as u64);
+        let completion = store.wait_invocation(ticket.clone()).await;
+        let receipt = match completion {
+            Err(Error::InvocationFailed { source, receipt }) if refused => {
+                assert_eq!(
+                    source,
+                    crate::guest::GuestError::CheckpointLimit {
+                        maximum: maximum.ok_or("missing explicit checkpoint policy")?,
+                    }
+                );
+                match store.invoke(&invocation).await {
+                    Err(Error::InvocationFailed {
+                        source: repeated,
+                        receipt: original,
+                    }) => {
+                        assert_eq!(repeated, source);
+                        assert_eq!(original, receipt);
+                    }
+                    _ => return Err("policy failure lost its original replay".into()),
+                }
+                *receipt
+            }
+            Ok(completed) if !refused => {
+                assert_eq!(completed.response().as_ref(), invocation.request().as_ref());
+                completed.receipt().clone()
+            }
+            _ => return Err("checkpoint policy changed its original outcome".into()),
+        };
+        assert_eq!(receipt.ticket(), &ticket);
+        assert_eq!(receipt.state().commit_id, receipt.terminal().commit_id);
+        let state = State::decode(&receipt.state().value)?;
+        assert_eq!(state.cursor("inbox"), Some(1));
+        let expected = if refused { &previous } else { &candidate };
+        assert_eq!(state.checkpoint(), Some(expected));
+        restored.push((address, expected.clone()));
+    }
+    drop(store);
+    drop(provider);
+    let reopened = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let store = Store::new(reopened, root()?);
+    for (address, expected) in restored {
+        let snapshot = store.load(&address).await?;
+        let state = snapshot.state().ok_or("missing reopened policy state")?;
+        assert_eq!(state.cursor("inbox"), Some(1));
+        assert_eq!(state.checkpoint(), Some(&expected));
+    }
+    Ok(())
+}

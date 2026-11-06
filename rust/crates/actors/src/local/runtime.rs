@@ -935,22 +935,25 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let mut publication = match result {
-                Ok(transition) => {
-                    if limits.checkpoint_bytes().is_some_and(|limit| {
-                        transition.checkpoint.bytes.len() as u128 > u128::from(limit)
-                    }) {
-                        return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
-                    }
-                    self.store.prepare_publish(
-                        &snapshot,
-                        epoch,
-                        &trigger,
-                        record.as_ref(),
-                        transition,
-                        key(&snapshot, "publish")?,
-                    )?
+            // A deterministic policy refusal settles the original invocation
+            // through the same failed-input publication as a guest refusal.
+            let result = result.and_then(|transition| {
+                if let Some(maximum) = limits.checkpoint_bytes()
+                    && transition.checkpoint.bytes.len() as u128 > u128::from(maximum)
+                {
+                    return Err(crate::guest::GuestError::CheckpointLimit { maximum }.into());
                 }
+                Ok(transition)
+            });
+            let mut publication = match result {
+                Ok(transition) => self.store.prepare_publish(
+                    &snapshot,
+                    epoch,
+                    &trigger,
+                    record.as_ref(),
+                    transition,
+                    key(&snapshot, "publish")?,
+                )?,
                 Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
                     let Some(input) = record.as_ref() else {
                         return Err(Error::Handler(failure));
