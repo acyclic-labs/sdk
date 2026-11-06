@@ -165,6 +165,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
 #[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use crate::Blobs;
 
     #[tokio::test]
     async fn real_local_selection_starts_without_a_heap_frame()
