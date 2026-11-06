@@ -229,6 +229,9 @@ async fn run(
     {
         return Err("doctor checks local startup: incompatible host workspace or endpoint; recovery: remove --host-workspace and --endpoint when running doctor".into());
     }
+    args.prepare_outputs().map_err(|error| {
+        headless::PreparationFailure(Box::new(error) as Box<dyn std::error::Error>)
+    })?;
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
