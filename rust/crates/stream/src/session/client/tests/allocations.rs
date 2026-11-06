@@ -280,8 +280,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
 
 #[tokio::test]
 async fn follow_opening_allocations_grow_only_by_the_public_per_interest_cost() -> TestResult {
-    for follows in [8, 64, 512] {
-        paired_openings(follows, false).await?;
+    for follows in follow_counts([8, 64, 512])? {
+        paired_openings(u64::try_from(follows)?, false).await?;
     }
     Ok(())
 }

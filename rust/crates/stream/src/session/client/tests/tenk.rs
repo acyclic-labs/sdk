@@ -234,7 +234,7 @@ async fn agent_transactions_share_one_session_per_node_as_the_swarm_grows() -> T
     // Work and byte counts are the property; latencies are only reported. A
     // wall-clock bound would fail a correct run on a loaded host.
     async {
-        for count in [2 * NODES, 16 * NODES] {
+        for count in follow_counts([2 * NODES, 16 * NODES])? {
             let local = Arc::new(MemoryStream::default());
             run_swarm(local.as_ref(), Arc::clone(&local), "memory", count).await?;
             let memory = Arc::new(MemoryStream::default());

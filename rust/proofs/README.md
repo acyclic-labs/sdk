@@ -132,3 +132,28 @@ The [source index control](ready-source-index/README.md) binds the scheduler's
 original channel identities to the shared fixed-width collection. Actual
 record delivery traverses all 64 branch positions; a repeated production
 lookup must fail the original physical node/key examination bound.
+
+### Selectable large-follow workload
+
+The Session swarm and opening-allocation properties run quick growth cases by
+default. Set `ACYCLIC_STREAM_FOLLOW_SCALE=large` to select 10,000 live follows
+in each property, using the same drivers and assertions. The swarm retains its
+MemoryStream and eight-node gRPC paths, paired cross-stream transactions,
+per-node connection and byte counters, and event-driven retirement. The
+allocation property retains both public and reviewed opening paths with every
+interest alive. Neither path adds a latency deadline or changes its negative
+controls.
+
+From the repository root, select either existing property:
+
+```sh
+ACYCLIC_STREAM_FOLLOW_SCALE=large cargo test --locked -p acyclic-stream --lib session::client::tests::tenk::agent_transactions_share_one_session_per_node_as_the_swarm_grows -- --exact --nocapture
+ACYCLIC_STREAM_FOLLOW_SCALE=large cargo test --locked -p acyclic-stream --lib session::client::tests::allocations::follow_opening_allocations_grow_only_by_the_public_per_interest_cost -- --exact --nocapture
+```
+
+In PowerShell, set `$env:ACYCLIC_STREAM_FOLLOW_SCALE = 'large'` before the
+chosen `cargo test` command. Remove the variable afterward to restore quick
+cases. Other values refuse with the selection and recovery instructions.
+Selection preserves the workload; qualification requires running that selected
+workload and recording its result. It does not establish restart, upgrade or
+cross-platform coverage.
