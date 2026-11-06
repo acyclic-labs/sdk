@@ -671,5 +671,30 @@
       }
     },
     "scope": "The original generic production reader through OS pipe, compared with canonical HostAction deserialization of original bytes. Hook Value input remains dynamic. Existing native binary, package installation, full runtime and three-platform qualification remain separately source-bound."
+  },
+  "native_task_admission_qualification": {
+    "source_commit": "e853f32f32a34fa7621c5784bd1de80a059e01b0",
+    "source_tree": "13f61dc9ec4a17ddf0637622eee6090a55941c34",
+    "source_sha256": {
+      "plugin/src/input.rs": "efbba599f43b152960a0196552e367e6d5fbc578dbc01cc14eb7f2be85a6ee28",
+      "plugin/tests/support/native_os.rs": "a2d10ea66fbc035ba37134c8e5e1396d6d8b9cd823292d500ff32b12e217e696",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input.rs": "8a6e60aeb6ebf80452e58e06417cd9a54a1869bb25febd91b0c9abbb0389eb02",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "5c07571fa8c265e7089266343116e4a7e41dbd2ebd51d2b8ee84ef2d89cfb97c"
+    },
+    "platform": "Linux x86_64",
+    "result": "pass",
+    "negative_control": "Lossy native-string conversion planted in the actual production adapter fails the canonical typed encoding-refusal assertion before exact restoration.",
+    "control": 9,
+    "actual_source_mutations_detected": 1,
+    "retained_prior_files_unchanged": 393,
+    "retained_files": 393,
+    "retained_bytes": 117780,
+    "nonempty_inputs": 392,
+    "executed_units": 393,
+    "reported_replay_seconds": 1,
+    "edges": 7631,
+    "features": 16148,
+    "new_fuzzer_inputs": 0,
+    "scope": "Only new native_input control9 qualified at original e853f32f32. The planted production lossy conversion failed the typed encoding-refusal assertion; exact restoration passed the retained corpus. No full runtime, cli_args requalification, or three-platform acceptance."
   }
 }
