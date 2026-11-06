@@ -38,9 +38,9 @@ pub struct Collection {
 struct State {
     sweeps: u64,
     admitted: Option<HashSet<crate::Digest>>,
-    /// Retired gates not yet drained. A collection dropped mid-drain leaves
-    /// them here, and the next one drains them before it marks.
-    retiring: Vec<Arc<tokio::sync::RwLock<()>>>,
+    /// The retired generation survives a cancelled drain. Its successor
+    /// drains it before retiring another generation.
+    retiring: Option<Arc<tokio::sync::RwLock<()>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,12 +219,18 @@ impl Collection {
         self.begin_then(running, || {}).await
     }
 
-    /// Waits until no other collection runs. A collection owns the admitted
-    /// set and the epoch until it ends.
+    /// Waits until no other collection runs and finishes a cancelled drain
+    /// before another epoch can be read or persisted.
     pub(crate) async fn run(&self) -> Running {
-        Running {
+        let running = Running {
             _guard: Arc::clone(&self.running).lock_owned().await,
+        };
+        let pending = self.state().retiring.clone();
+        if let Some(retired) = pending {
+            self.drain(&retired).await;
+            self.state().retiring = None;
         }
+        running
     }
 
     /// Begins a collection. `opened` runs as the current generation retires:
@@ -235,6 +241,12 @@ impl Collection {
         running: Running,
         opened: impl FnOnce(),
     ) -> Collecting {
+        // Cancellation also retires the active admitted set, before another
+        // collection can acquire the original running turn.
+        let collecting = Collecting {
+            collection: Arc::clone(self),
+            _running: running,
+        };
         // Admissions of the next generation are recorded from its start.
         self.state().admitted = Some(HashSet::new());
         let retired = {
@@ -242,41 +254,36 @@ impl Collection {
             opened();
             std::mem::take(&mut *gate)
         };
-        let retiring = {
-            let mut state = self.state();
-            state.retiring.push(retired);
-            state.retiring.clone()
-        };
-        for retired in retiring {
-            let drain = retired.write();
-            #[cfg(test)]
-            let drained = {
-                // A cooperative-budget yield is not gate registration.
-                let mut drain = std::pin::pin!(tokio::task::unconstrained(drain));
-                let mut first = true;
-                std::future::poll_fn(|context| {
-                    let result = std::future::Future::poll(drain.as_mut(), context);
-                    // Observe the original gate's actual waiter registration,
-                    // after it has retained this task's waker.
-                    if first && result.is_pending() {
-                        self.draining.notify_one();
-                    }
-                    first = false;
-                    result
-                })
-                .await
-            };
-            #[cfg(not(test))]
-            let drained = drain.await;
-            drop(drained);
-        }
-        self.state().retiring.clear();
+        self.state().retiring = Some(Arc::clone(&retired));
+        self.drain(&retired).await;
+        self.state().retiring = None;
         // Before marking: a proof cached under an earlier epoch is never reused.
         self.epochs.begin();
-        Collecting {
-            collection: Arc::clone(self),
-            _running: running,
-        }
+        collecting
+    }
+
+    async fn drain(&self, retired: &tokio::sync::RwLock<()>) {
+        let drain = retired.write();
+        #[cfg(test)]
+        let drained = {
+            // A cooperative-budget yield is not gate registration.
+            let mut drain = std::pin::pin!(tokio::task::unconstrained(drain));
+            let mut first = true;
+            std::future::poll_fn(|context| {
+                let result = std::future::Future::poll(drain.as_mut(), context);
+                // Observe the original gate's actual waiter registration,
+                // after it has retained this task's waker.
+                if first && result.is_pending() {
+                    self.draining.notify_one();
+                }
+                first = false;
+                result
+            })
+            .await
+        };
+        #[cfg(not(test))]
+        let drained = drain.await;
+        drop(drained);
     }
 
     fn gate(&self) -> Arc<tokio::sync::RwLock<()>> {
