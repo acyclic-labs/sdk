@@ -278,7 +278,11 @@ fn swap_precedes_wake_and_lost_follow_fences() {
     trust.generation.store(u64::MAX, Ordering::Relaxed);
     let ended = trust.changed();
     trust.connect();
-    assert_eq!(ended.now_or_never(), Some(Err(SourceClosed)));
+    assert_eq!(
+        ended.now_or_never(),
+        Some(Err(SourceClosed)),
+        "generation exhaustion retained a live publication owner"
+    );
     assert_eq!(
         *trust.state().borrow(),
         FollowerState::Closed(FenceCause::GenerationExhausted)

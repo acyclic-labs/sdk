@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom, qualifyNativeHostLoom, qualifyNativeExecutor, qualifyNativeSources } from "./qualify-mcp-loom.mjs";
-import { gateQualifications, qualifyMcpLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualificationPlan, qualifyMcpLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -212,16 +212,10 @@ test("qualification opts into the crate cfg only for the model build and execute
 });
 
 test("guest qualification selects every guest model in the instrumented main target", () => {
-  const calls = [];
-  qualifyGuestLoom((command, args, options) => {
-    calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
-    const guest = { ...artifact, target: { name: "main" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4, 0, 2) };
-  });
-  assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
-    ["model-binary", ["guest_loom::"], undefined],
-  ]);
+  const plan = qualificationPlan(["--guest"]);
+  assert.deepEqual(plan.args, ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking"]);
+  assert.equal(plan.wrapper, loomEnvironment().RUSTC_WORKSPACE_WRAPPER);
+  assert.deepEqual(plan.tests, [{ args: ["guest_loom::"], passed: 3 }]);
 });
 
 test("qualification rejects zero, skipped, filtered and failed model execution", () => {

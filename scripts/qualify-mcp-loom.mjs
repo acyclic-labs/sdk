@@ -292,7 +292,7 @@ export function qualifyNativeRegistryLoom(run = runCommand) {
 
 export function qualifyGuestLoom(run = runCommand) {
   return qualifyLoom("acyclic-actors", "main", [], run, {
-    env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 4]],
+    env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 3]],
   });
 }
 

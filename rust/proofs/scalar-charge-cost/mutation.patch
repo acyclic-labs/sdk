@@ -1,0 +1,16 @@
+diff --git a/rust/crates/filesystem/src/performance.rs b/rust/crates/filesystem/src/performance.rs
+--- a/rust/crates/filesystem/src/performance.rs
++++ b/rust/crates/filesystem/src/performance.rs
+@@ -458,8 +458,5 @@
+-        #[cfg(test)]
+-        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+-        let prior = self.items_examined;
+-        self.items_examined = add(prior, count)?;
+-        self.verify_within(budget).inspect_err(|_| {
+-            self.items_examined = prior;
+-        })
++        self.charge(&Self {
++            items_examined: count,
++            ..Self::UNCHARGED
++        }, budget)
+     }
