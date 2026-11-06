@@ -118,23 +118,6 @@ impl Host {
     }
 
     fn block<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
-        // Enter only for the explicitly async callback. Synchronous work before
-        // and after it must remain outside Tokio so blocking locks stay valid.
-        // Handle::block_on also installs this runtime's next deterministic RNG
-        // seed; Handle::enter alone leaves select! using the worker's entropy.
-        let runtime = Context::simulation()
-            .filter(|context| context.schedule.is_seeded())
-            .and_then(|context| context.schedule.0.state().wall.runtime.clone());
-        let mut future = std::pin::pin!(future);
-        match runtime {
-            Some(runtime) => runtime.block_on(tokio::task::unconstrained(async {
-                self.block_future(future.as_mut())
-            })),
-            None => self.block_future(future.as_mut()),
-        }
-    }
-
-    fn block_future<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
         let waker = Waker::from(self.clone());
         let mut cx = PollContext::from_waker(&waker);
         let mut future = std::pin::pin!(future);
@@ -324,8 +307,27 @@ impl Wake for Host {
 /// Waits on the original channel/control future on its real blocking worker.
 /// A simulated worker yields its permit at Pending and resumes by seed order.
 pub fn blocking_on<F: Future>(future: F) -> F::Output {
-    match Context::simulation().and_then(|context| context.host) {
-        Some(host) => host.block(future),
+    let owner = Context::simulation().and_then(|context| {
+        context.host.map(|host| {
+            let runtime = context
+                .schedule
+                .is_seeded()
+                .then(|| context.schedule.0.state().wall.runtime.clone())
+                .flatten();
+            (host, runtime)
+        })
+    });
+    match owner {
+        Some((host, Some(runtime))) => {
+            // Only the explicit async callback enters Tokio. block_on installs
+            // its deterministic TLS seed; enter alone retains worker entropy.
+            // The native handoff owns Pending, including cooperative progress.
+            let mut future = std::pin::pin!(future);
+            runtime.block_on(tokio::task::unconstrained(async {
+                host.block(future.as_mut())
+            }))
+        }
+        Some((host, None)) => host.block(future),
         None => executor::complete_io(future),
     }
 }
