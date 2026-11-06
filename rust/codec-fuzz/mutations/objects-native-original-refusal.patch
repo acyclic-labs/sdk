@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/native.rs b/rust/crates/objects/src/native.rs
+--- a/rust/crates/objects/src/native.rs
++++ b/rust/crates/objects/src/native.rs
+@@ -266,7 +266,7 @@ fn checked<T, M>(
+ ) -> Result<T, NativeObjectsError> {
+     let medium = account.borrowed_medium();
+     medium.meter.check()?;
+-    value.map_err(|error| medium.cause(error))
++    value.map_err(|error| NativeObjectsError::from(NativeObjectsCause::Service(error)))
+ }
+ 
+ pub(crate) fn retain<'a, M: Medium>(

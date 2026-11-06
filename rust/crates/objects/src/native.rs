@@ -237,13 +237,9 @@ impl<M> Drop for Metered<'_, M> {
 }
 
 /// `account` over the caller's meter.
-fn metered<'a, M: Medium>(
-    account: &'a Account<M>,
-    meter: &Meter,
-) -> (Arc<Metered<'a, M>>, Account<Metered<'a, M>>) {
+fn metered<'a, M: Medium>(account: &'a Account<M>, meter: &Meter) -> Account<Metered<'a, M>> {
     let medium = Arc::new(Metered::new(account.borrowed_medium(), Arc::clone(meter)));
-    let metered = account.over(Arc::clone(&medium));
-    (medium, metered)
+    account.over(medium)
 }
 
 /// Reserves the exact result vector a genuine batch returns.
@@ -266,9 +262,10 @@ fn results<T>(
 }
 
 fn checked<T, M>(
-    medium: &Metered<'_, M>,
+    account: &Account<Metered<'_, M>>,
     value: Result<T, crate::Error>,
 ) -> Result<T, NativeObjectsError> {
+    let medium = account.borrowed_medium();
     medium.meter.check()?;
     value.map_err(|error| medium.cause(error))
 }
@@ -279,7 +276,7 @@ pub(crate) fn retain<'a, M: Medium>(
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, Retained>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
-    let (medium, account) = metered(account, &meter);
+    let account = metered(account, &meter);
     native_future(&meter, async move {
         // The account borrows the root. Keep it in the original request so
         // its backing retires before the request's funding on every exit.
@@ -287,7 +284,7 @@ pub(crate) fn retain<'a, M: Medium>(
         let result = account
             .retain(&request.data.0, std::mem::take(&mut request.data.1))
             .await;
-        checked(&medium, result)
+        checked(&account, result)
     })
 }
 
@@ -298,10 +295,10 @@ pub(crate) fn get<'a, M: Medium>(
 ) -> Result<ObjectsNativeFuture<'a, Object>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
     let ((digest, range, maximum), custody) = request.split();
-    let (medium, account) = metered(account, &meter);
+    let account = metered(account, &meter);
     native_future(&meter, async move {
         let _custody = custody;
-        checked(&medium, account.get_inner(digest, range, maximum).await)
+        checked(&account, account.get_inner(digest, range, maximum).await)
     })
 }
 
@@ -313,7 +310,7 @@ pub(crate) fn get_batch<'a, M: Medium>(
     native_input_meter(&meter, &requests)?;
     let (requests, custody) = requests.split();
     let future_meter = Arc::clone(&meter);
-    let (medium, account) = metered(account, &meter);
+    let account = metered(account, &meter);
     native_future(&meter, async move {
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
@@ -322,7 +319,7 @@ pub(crate) fn get_batch<'a, M: Medium>(
             crate::BATCH_WINDOW,
             |bytes| ReadAllocation::new(&future_meter, bytes),
             |(digest, range, maximum)| account.get_inner(digest, range, maximum),
-            |got| values.push(checked(&medium, got)),
+            |got| values.push(checked(&account, got)),
         )
         .await?;
         ObjectsBatch::new(values, allocation)
@@ -336,10 +333,10 @@ pub(crate) fn put<'a, M: Medium>(
 ) -> Result<ObjectsNativeFuture<'a, ObjectsPutReceipt>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
     let ((body, references), custody) = request.split();
-    let (medium, account) = metered(account, &meter);
+    let account = metered(account, &meter);
     native_future(&meter, async move {
         let _custody = custody;
-        checked(&medium, account.put_inner(body, references).await)
+        checked(&account, account.put_inner(body, references).await)
             .map(|put| ObjectsPutReceipt::new(put, None))
     })
 }
@@ -362,7 +359,7 @@ pub(crate) fn put_window<'a, M: Medium>(
     native_input_meter(&meter, &requests)?;
     let (requests, custody) = requests.split();
     let future_meter = Arc::clone(&meter);
-    let (medium, account) = metered(account, &meter);
+    let account = metered(account, &meter);
     native_future(&meter, async move {
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
@@ -371,7 +368,7 @@ pub(crate) fn put_window<'a, M: Medium>(
             window,
             |bytes| ReadAllocation::new(&future_meter, bytes),
             |(body, references)| account.put_inner(body, references),
-            |put| values.push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None))),
+            |put| values.push(checked(&account, put).map(|put| ObjectsPutReceipt::new(put, None))),
         )
         .await?;
         ObjectsBatch::new(values, allocation)
