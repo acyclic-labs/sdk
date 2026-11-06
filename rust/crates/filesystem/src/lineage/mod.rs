@@ -435,17 +435,47 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     }
 
     /// Returns the direct-parent chain, nearest parent first.
+    /// The result retains its collection backing on the original work source.
     pub async fn ancestors<W: crate::facade::FsWork>(
         &self,
         workspace: WorkspaceId,
         maximum: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<Vec<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+    ) -> W::Output<
+        crate::kernel::Retained<Vec<WorkspaceLineageRecord>>,
+        WorkspaceLineageError<S::Error>,
+    > {
         let mut accounting = work.accounting(cancellation);
-        let result = self
-            .ancestry_until(workspace, None, maximum, &mut accounting)
-            .await;
+        let result: Result<_, WorkspaceLineageError<S::Error>> = async {
+            let mut records: Option<crate::kernel::Retained<Vec<WorkspaceLineageRecord>>> = None;
+            self.ancestry_until(
+                workspace,
+                None,
+                maximum,
+                &mut accounting,
+                |record, accounting| {
+                    let records = match &mut records {
+                        Some(records) => records,
+                        empty @ None => empty.insert(
+                            crate::kernel::Retained::allocate(1, accounting)
+                                .map_err(WorkspaceError::from)?,
+                        ),
+                    };
+                    records.ensure_for_push(maximum as usize, accounting)?;
+                    records.value.push(record);
+                    Ok(())
+                },
+            )
+            .await?;
+            match records {
+                Some(records) => Ok(records),
+                None => crate::kernel::Retained::allocate(0, &mut accounting)
+                    .map_err(WorkspaceError::from)
+                    .map_err(WorkspaceLineageError::from),
+            }
+        }
+        .await;
         work.finish(result, &accounting)
     }
 
@@ -462,9 +492,14 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
     ) -> W::Output<(), WorkspaceLineageError<S::Error>> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .ancestry_until(workspace, Some(ancestor), u32::MAX, &mut accounting)
-            .await
-            .map(|_| ());
+            .ancestry_until(
+                workspace,
+                Some(ancestor),
+                u32::MAX,
+                &mut accounting,
+                |_, _| Ok(()),
+            )
+            .await;
         work.finish(result, &accounting)
     }
 
@@ -474,16 +509,20 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         ancestor: Option<WorkspaceId>,
         maximum: u32,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
-    ) -> Result<Vec<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+        mut visit: impl FnMut(
+            WorkspaceLineageRecord,
+            &mut crate::kernel::KernelAccounting<'_>,
+        ) -> Result<(), WorkspaceError>,
+    ) -> Result<(), WorkspaceLineageError<S::Error>> {
         let mut next = Some(workspace);
         let mut seen = crate::kernel::allocation::fixed_index::FixedIndex::<bool>::default();
-        let mut records = Vec::new();
+        let mut returned = 0_u32;
         while let Some(id) = next {
             accounting.check().map_err(WorkspaceError::from)?;
             if ancestor == Some(id) {
-                return Ok(records);
+                return Ok(());
             }
-            if ancestor.is_none() && records.len() >= maximum as usize {
+            if ancestor.is_none() && returned >= maximum {
                 return Err(WorkspaceLineageError::TraversalLimit);
             }
             let visited = seen
@@ -503,13 +542,14 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             };
             next = record.parent_workspace_id;
             if ancestor.is_none() && id != workspace {
-                records.push(record);
+                visit(record, accounting)?;
+                returned += 1;
             }
         }
         if ancestor.is_some() {
             Err(WorkspaceLineageError::UnauthorizedJoin)
         } else {
-            Ok(records)
+            Ok(())
         }
     }
 

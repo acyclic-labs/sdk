@@ -448,6 +448,26 @@ impl<T> Retained<Vec<T>> {
         let owned = crate::kernel::Owned::<Vec<T>>::allocate(capacity, accounting)?;
         Self::from_owned(owned, accounting)
     }
+
+    pub(crate) fn ensure_for_push(
+        &mut self,
+        maximum: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if self.value.len() < self.value.capacity() && self.value.len() < maximum {
+            return Ok(());
+        }
+        // The existing lease keeps the old capacity funded while the canonical
+        // grow leaf admits only its additional backing. Move Vec's header, not
+        // its elements, and join the new credit before restoring the value.
+        let allocation = accounting.claim_owned(0, 0)?;
+        let mut owned = crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, 0);
+        let result = owned.ensure_for_push(maximum, accounting);
+        let mut grown = Self::from_owned(owned, accounting)?;
+        self.allocation.absorb(&mut grown.allocation)?;
+        self.value = grown.value;
+        result
+    }
 }
 
 impl<T> Retained<T> {
