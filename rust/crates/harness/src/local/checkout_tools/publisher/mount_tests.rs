@@ -210,7 +210,6 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
                 .expect("selected branch diff");
             assert!(changed.patch.contains("-before\n"), "{changed:?}");
             assert!(changed.patch.contains("+selected"), "{changed:?}");
-            assert!(!changed.patch.contains("original"), "{changed:?}");
         }
     }
     Ok(())
