@@ -74,19 +74,21 @@ pub(crate) struct CaptureTransientCustody {
     retained: AtomicU64,
     #[cfg(any(test, feature = "native-watch"))]
     header: crate::NativeAllocation,
+    #[cfg(any(test, feature = "native-watch"))]
+    retirement: Arc<super::NativeAllocationAccounting>,
 }
 impl CaptureTransientCustody {
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
+        let retirement = work.state(|work| work.allocation_accounting())?;
+        let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>())
+            .map_err(|_| crate::NativeTreeMaterializationError::InvalidLayout)?;
         Ok(Arc::new(Self {
             retained: AtomicU64::new(0),
-            header: work.claim(
-                std::mem::size_of::<Self>() as u64,
-                1,
-                WorkCounters::UNCHARGED,
-            )?,
+            header: work.claim(bytes as u64, 1, WorkCounters::UNCHARGED)?,
+            retirement,
         }))
     }
     #[cfg(any(test, feature = "native-watch"))]
@@ -122,6 +124,15 @@ impl CaptureTransientCustody {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(bytes))
             });
+    }
+}
+
+#[cfg(any(test, feature = "native-watch"))]
+impl Drop for CaptureTransientCustody {
+    fn drop(&mut self) {
+        let bytes = self.take_retained_bytes();
+        self.header
+            .retire_captured_capacity(bytes, &self.retirement);
     }
 }
 

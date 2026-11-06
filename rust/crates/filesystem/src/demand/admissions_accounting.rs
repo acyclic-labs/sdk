@@ -1,15 +1,15 @@
 use super::{AtomicU64, Ordering, fence};
 
 #[derive(Debug, Default)]
-pub(crate) struct NativeProofAccounting {
+pub(crate) struct NativeAllocationAccounting {
     pub(super) retired: AtomicU64,
     pub(super) non_native: AtomicU64,
 }
-impl NativeProofAccounting {
+impl NativeAllocationAccounting {
     pub(super) const ALLOCATION_BYTES: u64 = const {
         match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>()) {
             Ok(bytes) => bytes as u64,
-            Err(_) => panic!("shared proof accounting Arc layout overflow"),
+            Err(_) => panic!("shared native accounting Arc layout overflow"),
         }
     };
 
