@@ -283,3 +283,46 @@ fn physical_occupants_outside_the_schedule_cannot_block_the_driver() {
         });
     }
 }
+
+#[test]
+fn physical_terminal_cannot_overtake_its_worker_step() {
+    loom::model(|| {
+        use crate::TaskTerminal;
+        let host = Host::new(1);
+        let terminal = Arc::new(crate::CompletionMutex::new(crate::CompletionState::<()> {
+            task_pending: true,
+            result: Some(Ok(())),
+            ..Default::default()
+        }));
+        let retired = Arc::new(AtomicBool::new(false));
+        let (published, publication) = loom::sync::mpsc::channel();
+        let (release, retirement) = loom::sync::mpsc::channel();
+        let worker = host.clone();
+        let completed = terminal.clone();
+        let physical_retired = retired.clone();
+        let thread = loom::thread::spawn(move || {
+            worker.run(|| {
+                // The actual terminal publisher precedes Host's Finished guard.
+                // Retain that publication window while its original observer runs.
+                drop(completed.publish(&tracing::Span::none()));
+                published.send(()).unwrap();
+                retirement.recv().unwrap();
+                physical_retired.store(true, Ordering::SeqCst);
+            });
+        });
+        publication.recv().unwrap();
+        let mut release = Some(release);
+        executor::complete_io(host.drive(std::future::poll_fn(|cx| {
+            if let Some(release) = release.take() {
+                release.send(()).unwrap();
+            }
+            terminal.test_poll_completion(cx.waker())
+        })));
+        assert!(
+            retired.load(Ordering::SeqCst),
+            "physical terminal overtook its worker step"
+        );
+        assert!(lock(&host.state).phase == Phase::Finished);
+        thread.join().unwrap();
+    });
+}
