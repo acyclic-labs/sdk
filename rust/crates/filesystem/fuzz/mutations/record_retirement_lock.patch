@@ -9,17 +9,6 @@
  
  /// Record carrying a monotonic optimistic-concurrency revision.
  pub(crate) trait Revisioned {
-@@ -45,8 +45,8 @@
- pub(crate) struct Poisoned;
- 
- /// Process-local revision-checked record map behind every memory adapter.
--/// Mutations hold one leaf lock with no await. Removed and rejected values
--/// retire after releasing the guard, before their allocation owners can lock.
-+/// Lock order: a leaf lock. No other record lock, callback, or await is held
-+/// inside `locked`; callers receive owned values after releasing the guard.
- pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, V>>);
- 
- impl<K, V> Default for MemoryRecords<K, V> {
 @@ -55,10 +55,12 @@
      }
  }

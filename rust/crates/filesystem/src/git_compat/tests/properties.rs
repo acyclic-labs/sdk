@@ -13,7 +13,7 @@ proptest! {
                 let store = MemoryGitCompatStore::default();
                 let mut initial = GitCompatState::new("main", workspace);
                 initial.revision = revision;
-                store.states.0.lock().unwrap().insert(workspace, initial);
+                prop_assert!(store.compare_and_swap(workspace, 0, initial).await.unwrap());
                 let repository = GitCompatRepository::new(workspace, store);
                 for name in ["first", "second"] {
                     let before = repository.load().await.unwrap();

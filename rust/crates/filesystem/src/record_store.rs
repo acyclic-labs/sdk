@@ -47,7 +47,8 @@ pub(crate) struct Poisoned;
 /// Process-local revision-checked record map behind every memory adapter.
 /// Mutations hold one leaf lock with no await. Removed and rejected values
 /// retire after releasing the guard, before their allocation owners can lock.
-pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, V>>);
+/// Private backing makes every adapter use the same revision transition.
+pub(crate) struct MemoryRecords<K, V>(Mutex<BTreeMap<K, V>>);
 
 impl<K, V> Default for MemoryRecords<K, V> {
     fn default() -> Self {
