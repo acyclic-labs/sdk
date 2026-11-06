@@ -160,7 +160,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         &self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let mut spill = self.spill_io.write().await;
+        let mut spill = work.acquire(self.spill_io.write()).await?;
         self.spill_locked(&mut spill, work).await?;
         let targets = {
             let index = self.index();

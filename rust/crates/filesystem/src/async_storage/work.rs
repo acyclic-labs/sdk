@@ -255,6 +255,52 @@ impl<'a> AuthorityWork<'a> {
         self.admit(WorkCounters::UNCHARGED)
     }
 
+    /// Acquires an event result, observing both original stop sources while queued.
+    /// An immediately available result needs no cancellation waiter allocation.
+    pub(crate) async fn acquire<F: std::future::Future>(
+        &mut self,
+        future: F,
+    ) -> Result<F::Output, AuthorityStoreError> {
+        use std::{future::Future, pin::pin, task::Poll};
+
+        self.check()?;
+        let mut future = pin!(future);
+        if let Poll::Ready(value) = futures::poll!(future.as_mut()) {
+            self.check()?;
+            return Ok(value);
+        }
+        let cancellation = self.cancellation;
+        let request = self
+            .accounting()
+            .cancellation_wait(cancellation)
+            .map_err(authority_error)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = self
+            .original
+            .filter(|work| !cancellation.same_state(work.cancellation()))
+            .map(crate::NativeMaterializationWork::cancellation_wait)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let original: Option<crate::Cancelled<'static>> = None;
+        let mut request = pin!(request);
+        let mut original = pin!(original);
+        std::future::poll_fn(|context| {
+            if request.as_mut().poll(context).is_ready()
+                || original
+                    .as_mut()
+                    .as_pin_mut()
+                    .is_some_and(|wait| wait.poll(context).is_ready())
+            {
+                return Poll::Ready(self.check().and(Err(AuthorityStoreError::Cancelled)));
+            }
+            match future.as_mut().poll(context) {
+                Poll::Ready(value) => Poll::Ready(self.check().map(|()| value)),
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await
+    }
+
     pub(crate) fn admit(&self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         if !self.is_native() {
             self.allocations.ensure_active().map_err(authority_error)?;

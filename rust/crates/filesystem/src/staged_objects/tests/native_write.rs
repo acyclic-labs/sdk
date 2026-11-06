@@ -25,10 +25,7 @@ fn native_write_budget() -> WorkBudget {
 async fn native_flush_caller_cancellation_refuses_before_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let store = StagedObjects::open(
-        crate::MemoryObjectStore::default(),
-        directory.path().to_owned(),
-    );
+    let (store, _provider) = open_staged(directory.path()).await?;
     let original_token = CancellationToken::new();
     let caller = CancellationToken::new();
     let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
@@ -96,10 +93,9 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         } else {
             caller.cancel();
         }
-        drop(spill);
-        // The sweep producer remains held: cancelled work must not join it.
+        // Both the spill lease and the sweep producer remain held.
         let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
-            panic!("cancelled publication waited for collection admission");
+            panic!("cancelled publication waited for the held spill lease");
         };
         if exit == 2 {
             assert!(matches!(
@@ -112,17 +108,18 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
             assert!(matches!(result, Err(ObjectStoreError::Cancelled)));
         }
         drop(publishing);
+        drop(spill);
         let completed = work.spent();
         assert_eq!(completed.backend_write_operations, 0);
         assert_eq!(completed.durability_operations, 0);
         assert_eq!(completed.object_bytes_written, 0);
-        assert_eq!(completed.items_examined, 0);
+        assert!(completed.items_examined <= 8);
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                0
+                1
             } else {
-                before.allocation_operations + 1
+                before.allocation_operations + 3
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);

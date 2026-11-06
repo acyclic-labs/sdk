@@ -7,10 +7,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         scope: PublicationScope<'_>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        let mut spill = self.spill_io.write().await;
-        work.accounting()
-            .check()
-            .map_err(crate::async_storage::object_error)?;
+        let mut spill = work.acquire(self.spill_io.write()).await?;
         let PublicationScope {
             objects, proven_at, ..
         } = scope;

@@ -117,9 +117,11 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         } else {
             caller.cancel();
         }
-        // The original lease producer releases this exact queued read.
+        let std::task::Poll::Ready(result) = futures::poll!(future.as_mut()) else {
+            panic!("cancelled spill read waited for the held publication lease");
+        };
+        drop(future);
         drop(spill_file);
-        let result = future.await;
         if exit == 2 {
             assert!(matches!(
                 result,
@@ -141,9 +143,9 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                0
+                1
             } else {
-                before.allocation_operations + 1
+                before.allocation_operations + 3
             }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
