@@ -367,6 +367,8 @@ fn bounded_registration_preserves_roots_and_reuses_vacant_slots()
 async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let proven_at = collection.sweeps();
     let collecting = collection.begin().await;
     let (gate, sweepable) = collecting
@@ -379,29 +381,49 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
     drop(gate);
     assert!(
         collection
-            .admit(&[object(1)], |_| false, proven_at)
+            .admit(&[object(1)], |_| false, proven_at, &mut accounting)
             .await
             .is_err()
     );
     // A staged copy is stored again by the publication's drain.
-    drop(collection.admit(&[object(1)], |_| true, proven_at).await?);
+    drop(
+        collection
+            .admit(&[object(1)], |_| true, proven_at, &mut accounting)
+            .await?,
+    );
     // A proof made after the sweep read the store as it is.
     drop(
         collection
-            .admit(&[object(1)], |_| false, collection.sweeps())
+            .admit(
+                &[object(1)],
+                |_| false,
+                collection.sweeps(),
+                &mut accounting,
+            )
             .await?,
     );
-    drop(collection.admit(&[object(3)], |_| false, proven_at).await?);
+    drop(
+        collection
+            .admit(&[object(3)], |_| false, proven_at, &mut accounting)
+            .await?,
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let collecting = collection.begin().await;
     drop(
         collection
-            .admit(&[object(1)], |_| false, collection.sweeps())
+            .admit(
+                &[object(1)],
+                |_| false,
+                collection.sweeps(),
+                &mut accounting,
+            )
             .await?,
     );
     let (_gate, sweepable) = collecting
@@ -415,7 +437,11 @@ async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std
 async fn a_collection_begins_after_every_admitted_record_is_written()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
-    let hold = collection.admit(&[object(1)], |_| false, 0).await?;
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let hold = collection
+        .admit(&[object(1)], |_| false, 0, &mut accounting)
+        .await?;
     let begun = collection.begin();
     let mut begun = core::pin::pin!(begun);
     // This poll reaches the original retired gate while its publication
@@ -433,6 +459,8 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
 async fn a_proof_older_than_every_remembered_collection_is_refused()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
     let proven_at = collection.sweeps();
     for round in 0..=REMEMBERED_COLLECTIONS {
         let collecting = collection.begin().await;
@@ -441,7 +469,7 @@ async fn a_proof_older_than_every_remembered_collection_is_refused()
     }
     assert!(
         collection
-            .admit(&[object(1)], |_| false, proven_at)
+            .admit(&[object(1)], |_| false, proven_at, &mut accounting)
             .await
             .is_err()
     );

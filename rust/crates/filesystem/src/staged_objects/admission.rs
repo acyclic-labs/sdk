@@ -16,7 +16,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if id.storage.is_none() {
             return self.put(id, bytes, work).await;
         }
-        let unswept = self.collection.unswept().await;
+        let unswept = self
+            .collection
+            .unswept(&mut work.accounting())
+            .await
+            .map_err(crate::async_storage::object_error)?;
         self.collection.writing(&unswept, [id]);
         self.inner.put_stored(id, bytes, work).await
     }
@@ -36,10 +40,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        if self.unstaged(requests) {
-            return self.inner.read_many_stored(requests, work).await;
-        }
-        crate::async_storage::read_many_stored_sequential(self, requests, work).await
+        self.read_batch::<crate::async_storage::Stored>(requests, work)
+            .await
     }
 
     fn decoded_cache_lookup(
@@ -97,7 +99,11 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         let native = work.original;
         if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
             return in_frame(native, async {
-                let unswept = self.collection.unswept().await;
+                let unswept = self
+                    .collection
+                    .unswept(&mut work.accounting())
+                    .await
+                    .map_err(crate::async_storage::object_error)?;
                 self.collection.writing(&unswept, [object.object_id()]);
                 self.inner.put_hashed(object, work).await
             })
@@ -206,10 +212,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         requests: &[ObjectReadRequest],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
-        if self.unstaged(requests) {
-            return self.inner.read_many(requests, work).await;
-        }
-        crate::async_storage::read_many_sequential(self, requests, work).await
+        self.read_batch::<crate::async_storage::Decoded>(requests, work)
+            .await
     }
     async fn contains(
         &self,

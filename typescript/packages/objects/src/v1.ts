@@ -7,22 +7,39 @@ export type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_was
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { snapshotBytes } from "@acyclic-labs/auth/owned-bytes";
 import { awaitSignal } from "@acyclic-labs/auth/credential";
+import type { Refusal } from "@acyclic-labs/auth/refusal";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 
 export class ObjectsV1Error extends Error {
   /** The original service detail, including its request identity and attribution. */
-  constructor(readonly code: wire.ErrorCode, readonly detail?: wire.ErrorDetail) {
+  constructor(readonly code: wire.ErrorCode, readonly detail?: wire.ErrorDetail, readonly refusal?: Refusal) {
     let attribution = detail?.component ?? "";
     if (detail?.reason) attribution += `${attribution ? ": " : ""}${detail.reason}`;
     if (detail?.requestId) attribution += `${attribution ? ", " : ""}request ${detail.requestId}`;
     super(`Objects operation failed (${wire.ErrorCode[code]})${attribution ? ` (${attribution})` : ""}`, detail === undefined ? undefined : { cause: detail });
     this.name = "ObjectsV1Error";
   }
+  /** The canonical detail for the original Rust decoder at a JavaScript port. */
+  get detailBytes(): Uint8Array | undefined {
+    return this.detail === undefined ? undefined : toBinary(wire.ErrorDetailSchema, this.detail);
+  }
 }
 export function objectsV1Error(value: unknown): ObjectsV1Error {
   if (value instanceof ObjectsV1Error) return value;
-  const code = typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-  return new ObjectsV1Error(typeof code === "number" && code in wire.ErrorCode && code !== wire.ErrorCode.UNSPECIFIED ? code : wire.ErrorCode.UNAVAILABLE);
+  let code: unknown;
+  let refusal: Refusal | undefined;
+  let detail: wire.ErrorDetail | undefined;
+  try {
+    if (typeof value === "object" && value !== null) {
+      code = "code" in value ? value.code : undefined;
+      const raw = "refusal" in value ? value.refusal : undefined;
+      if (typeof raw === "object" && raw !== null) {
+        refusal = raw as Refusal;
+        detail = fromBinary(wire.ErrorDetailSchema, snapshotBytes(refusal.details));
+      }
+    }
+  } catch { /* Preserve the raw envelope even when its detail is unknown or malformed. */ }
+  return new ObjectsV1Error(typeof code === "number" && code in wire.ErrorCode && code !== wire.ErrorCode.UNSPECIFIED ? code : wire.ErrorCode.UNAVAILABLE, detail, refusal);
 }
 
 /** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */

@@ -6,6 +6,7 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
+import type { Http2Session, IncomingHttpHeaders } from "node:http2";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
@@ -16,7 +17,7 @@ import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
-import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
+import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
@@ -83,7 +84,39 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     transportOptions.readMaxBytes = maximum;
     transportOptions.writeMaxBytes = maximum;
   }
-  return createGrpcTransport(transportOptions);
+  const manager = new Http2SessionManager(endpoint, undefined, transportOptions.nodeOptions);
+  transportOptions.sessionManager = manager;
+  return {
+    transport: createGrpcTransport(transportOptions),
+    session(input: AsyncIterable<SessionFrame>, signal: AbortSignal) {
+      // Retain this RPC's original connection, even if the shared manager has
+      // already opened its successor. A peer status always remains terminal.
+      let connection: Http2Session | undefined;
+      let statusReceived = false;
+      const receiveStatus = (headers: IncomingHttpHeaders): void => {
+        statusReceived ||= headers["grpc-status"] !== undefined;
+      };
+      const transport = createGrpcTransport({ ...transportOptions, sessionManager: {
+        authority: manager.authority,
+        async request(...args: Parameters<Http2SessionManager["request"]>) {
+          const request = await manager.request(...args);
+          connection = request.session;
+          request.once("response", receiveStatus);
+          request.once("trailers", receiveStatus);
+          return request;
+        },
+        notifyResponseByteRead(request) { manager.notifyResponseByteRead(request); },
+      } });
+      return {
+        incoming: createClient(StreamSessionService, transport).session(input, { signal }),
+        fail(error: unknown): never {
+          const interrupted = !signal.aborted && !statusReceived && connection !== undefined
+            && (connection.closed || connection.destroyed);
+          throw sessionTransportError(error, interrupted);
+        },
+      };
+    },
+  };
 }
 
 function streamGrpc(options: StreamGrpcOptions) {
@@ -101,7 +134,7 @@ function streamGrpc(options: StreamGrpcOptions) {
     };
     const home = createStreamGrpcTransport(transportOptions, credential);
     const transports = new Map([[new URL(endpoint).href, home]]);
-    const client = createClient(StreamService, home);
+    const client = createClient(StreamService, home.transport);
 
     const sessions = new StreamSessions(async (node, signal) => {
       const nodeEndpoint = new URL(node?.endpoint ?? endpoint).href;
@@ -111,10 +144,10 @@ function streamGrpc(options: StreamGrpcOptions) {
         transports.set(nodeEndpoint, transport);
       }
       const input = new SessionQueue<SessionFrame>(wire.StreamLimit.MAX_ITEMS);
-      const client = createClient(StreamSessionService, transport);
+      const session = transport.session(input, signal);
       const incoming = async function* () {
-        try { for await (const frame of client.session(input, { signal })) yield toBinary(SessionFrameSchema, frame); }
-        catch (error) { throw sessionTransportError(error); }
+        try { for await (const frame of session.incoming) yield toBinary(SessionFrameSchema, frame); }
+        catch (error) { session.fail(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(fromBinary(SessionFrameSchema, frame), writeSignal), close: () => input.end() };
     }, acknowledgeDeliveries !== false, options.revisionScope);
@@ -252,7 +285,9 @@ function providerError(error: unknown, operation: string): Error {
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
-function sessionTransportError(error: unknown): unknown {
+function sessionTransportError(error: unknown, transient: boolean): unknown {
   if (!(error instanceof ConnectError)) return error;
-  return Object.assign(new Error(error.rawMessage), { code: grpcErrorCode(error.code, error.rawMessage) });
+  return Object.assign(new Error(error.rawMessage, { cause: error }), {
+    code: grpcErrorCode(error.code, error.rawMessage), transient,
+  });
 }

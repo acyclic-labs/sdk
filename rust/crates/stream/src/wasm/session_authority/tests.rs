@@ -58,7 +58,7 @@ fn subscription(path: &str) -> wire::SessionSubscription {
 async fn local_session_requires_explicit_trust_and_rejects_forgery_expiry_and_widened_paths() {
     let mut stream = WasmStream::new();
     let request = subscription("events").encode_to_vec();
-    assert!(stream.open_data(&request).await.is_err());
+    assert!(stream.open_data(&request).is_err());
     let authority = WasmSessionAuthority::new(
         &public_trust(false),
         "workers:/test".into(),
@@ -69,7 +69,7 @@ async fn local_session_requires_explicit_trust_and_rejects_forgery_expiry_and_wi
     assert!(stream.bind_session(&authority).is_err());
     for invalid in [vec![1, 2, 3], credential(true)] {
         stream.register_credential(2, &invalid).expect("register");
-        match stream.open_data(&request).await {
+        match stream.open_data(&request) {
             Err(_) => {}
             Ok(follow) => {
                 assert!(follow.next().await.is_err());
@@ -80,10 +80,7 @@ async fn local_session_requires_explicit_trust_and_rejects_forgery_expiry_and_wi
     stream
         .register_credential(2, &credential(false))
         .expect("register");
-    match stream
-        .open_data(&subscription("neighbor").encode_to_vec())
-        .await
-    {
+    match stream.open_data(&subscription("neighbor").encode_to_vec()) {
         Err(_) => {}
         Ok(follow) => {
             assert!(follow.next().await.is_err());
@@ -117,7 +114,6 @@ async fn local_session_closes_an_idle_follow_on_revocation_and_rejects_trust_rol
         .expect("append");
     let follow = stream
         .open_data(&subscription("events").encode_to_vec())
-        .await
         .expect("open");
     let first = follow.next().await.expect("initial data");
     let frame = wire::SessionFrame::decode(Uint8Array::new(&first).to_vec().as_slice())
