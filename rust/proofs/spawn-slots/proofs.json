@@ -67,7 +67,7 @@
           "expected": "The unchanged native reopen oracle rejects loss of the paused turn; compilation failure does not qualify the control."
         }
       ],
-      "qualification": "Unqualified for the revised turn-loss control until the production mutation and original native reopen test run.",
+      "qualification": "Linux x86_64: python3 rust/proofs/qualify.py persisted-turn qualified source 55aca578d1d91e1ee662262d57650ff659773693. Clearing the reconstructed turn in the production checkpoint decoder failed the unchanged retained-checkpoint assertion (None instead of Some([7; 8])), 0/1 in 0.03 s. Exact source restoration passed the same native reopen integration target 1/1 in 0.09 s. Actual LocalStream and original AgentHost with a deterministic turn driver; no complete native executor/provider transport or other-platform qualification.",
       "historical_qualification": "Linux x86_64: the exact native reopen target passed 1/1 in 0.02 s at f9410d59b19fc0869d457c6ef3bd36fd642cb773. Clearing reserved_children in the production decoder failed the unchanged target at runtime (0 instead of 3), 0/1 in 0.04 s. Actual LocalStream, original AgentHost and committed writer/reader; controlled turn driver, not native executor/provider wire or complete shell refinement."
     }
   ],
