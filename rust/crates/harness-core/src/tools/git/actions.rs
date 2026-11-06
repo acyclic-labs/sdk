@@ -71,8 +71,15 @@ where
         }
         .map_err(Error::from)?;
         let proof = captured
-            .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
+            .authenticated_proof(
+                operation_id,
+                &WorkspaceGraph::new(self.store.clone()),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(S::capture_error)?;
         Ok(GitFilesystemResult::Captured {
             tree: GitTreeRef::exact(captured.generation.workspace_id(), captured.generation.id()),

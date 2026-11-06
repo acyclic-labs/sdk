@@ -4,9 +4,9 @@ use crate::kernel::allocation::retained::Retained;
 use crate::{AuthorityStoreError, AuthorityWork, Fs, WorkCounters};
 use std::sync::Mutex;
 
-pub(super) struct Prefunded {
-    pub(super) budget: WorkBudget,
-    pub(super) held: Mutex<Option<(Retained<Vec<u8>>, u64)>>,
+pub(crate) struct Prefunded {
+    pub(crate) budget: WorkBudget,
+    pub(crate) held: Mutex<Option<(Retained<Vec<u8>>, u64)>>,
 }
 
 impl FsWork for &Prefunded {
