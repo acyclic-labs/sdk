@@ -223,10 +223,7 @@ pub(super) async fn matches_content<
                         workspace.volume.fs.objects(),
                         record,
                         expected,
-                        (
-                            crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
-                            workspace.limits().maximum_read_bytes,
-                        ),
+                        crate::kernel::DecodeLimits::for_volume(workspace.volume_config()),
                         &mut scope,
                         cancellation,
                     )

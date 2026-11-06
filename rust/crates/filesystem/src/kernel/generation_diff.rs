@@ -98,6 +98,7 @@ pub(crate) async fn diff_generation_file_tables<O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationDiff, KernelOwnedAllocation), FsError> {
+    let maximum_changes = maximum_changes.into();
     crate::heap_future::in_borrowed_frame!(
         accounting,
         |accounting| diff_tables(
@@ -117,13 +118,11 @@ async fn diff_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,
     after: ObjectId,
-    maximum_changes: u32,
+    maximum_changes: Option<u32>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(GenerationDiff, KernelOwnedAllocation), FsError> {
-    let maximum_changes = maximum_changes.into();
-
     let (records, allocation) = crate::kernel::diff_file_records_with_accounting(
         objects,
         Some(before),
