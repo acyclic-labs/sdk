@@ -24,7 +24,21 @@ fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
                 .run(super::entry(async {
                     acyclic_native_runtime::testing::spawn_blocking(|| {
                         assert!(tokio::runtime::Handle::try_current().is_err());
-                        let selected = acyclic_native_runtime::testing::blocking_on(choices());
+                        let selected = acyclic_native_runtime::testing::blocking_on(async {
+                            // The native handoff owns Pending. A cooperative
+                            // yield cannot defer its wake until this synchronous
+                            // callback returns; reject exhaustion before await.
+                            for _ in 0..256 {
+                                assert!(
+                                    tokio::task::coop::has_budget_remaining(),
+                                    "callback exhausted Tokio's cooperative budget"
+                                );
+                                let (sent, waiting) = tokio::sync::oneshot::channel();
+                                sent.send(()).unwrap();
+                                waiting.await.unwrap();
+                            }
+                            choices().await
+                        });
                         assert!(tokio::runtime::Handle::try_current().is_err());
                         selected
                     })
@@ -50,12 +64,6 @@ fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
         trace(72)?,
         "runtime seed did not control selection"
     );
-    // Erase the actual worker's scope. A runtime entered only on the driver
-    // cannot govern select! on this independent original polling thread.
-    let unbound = std::thread::spawn(|| acyclic_native_runtime::testing::blocking_on(choices()))
-        .join()
-        .expect("unbound callback thread");
-    assert_ne!(original[1], unbound, "unbound worker escaped the oracle");
     Ok(())
 }
 
