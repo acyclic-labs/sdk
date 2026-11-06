@@ -116,7 +116,7 @@
           "operation": "00000000-0000-0000-0000-000000000001",
           "execution": {
             "position": {
-              "input": 1,
+              "input": 2,
               "after": 0
             }
           }
