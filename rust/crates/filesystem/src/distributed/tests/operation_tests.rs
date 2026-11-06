@@ -491,49 +491,79 @@ async fn a_missing_lease_cannot_cache_a_rejected_append_attempt() -> TestResult 
 
 #[tokio::test]
 async fn a_closed_lease_attempt_does_not_poison_a_new_lease_for_the_same_operation() -> TestResult {
-    let stream = Arc::new(MemoryStream::default());
-    let store = StreamAuthorityStore::new(stream.clone());
-    let token = CancellationToken::new();
-    let mut work = AuthorityWork::new(BUDGET, &token);
-    let workspace = crate::WorkspaceId::from_bytes([85; 16]);
-    let id = volume_authority_id(workspace.volume_id());
-    store
-        .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
-        .await?;
-    let first = lease(workspace, 86);
-    let path = open_lease(&stream, first, &mut work).await?;
-    let request = crate::GuardedAppend {
-        authority_id: id,
-        epoch: Epoch::GENESIS,
-        expected: store.head(id, &mut work).await?,
-        commit: proposed(87),
-        permit: first,
-    };
-    let mut spy = ReleaseSpy::new(stream.clone());
-    spy.before_lease_close = Some(path);
-    let racing = StreamAuthorityStore::new(Arc::new(spy));
-    assert!(matches!(
-        racing
-            .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
-            .await?,
-        FsAppendOutcome::Fenced { .. }
-    ));
-    assert_eq!(store.head(id, &mut work).await?, request.expected);
-    assert!(
+    for native in [false, true] {
+        let stream = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(stream.clone());
+        let token = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(BUDGET, &token)
+        };
+        let workspace = crate::WorkspaceId::from_bytes([85; 16]);
+        let id = volume_authority_id(workspace.volume_id());
         store
-            .find_operation(id, request.commit.operation_id, &mut work)
-            .await?
-            .is_none()
-    );
-    let mut retry = request;
-    retry.permit = lease(workspace, 88);
-    open_lease(&stream, retry.permit, &mut work).await?;
-    assert!(matches!(
-        store
-            .compare_and_append(retry, &mut work, None::<&mut ()>)
-            .await?,
-        FsAppendOutcome::Committed(_)
-    ));
+            .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+            .await?;
+        let first = lease(workspace, 86);
+        let path = open_lease(&stream, first, &mut work).await?;
+        let request = crate::GuardedAppend {
+            authority_id: id,
+            epoch: Epoch::GENESIS,
+            expected: store.head(id, &mut work).await?,
+            commit: proposed(87),
+            permit: first,
+        };
+        let mut spy = ReleaseSpy::new(stream.clone());
+        spy.before_lease_close = Some(path);
+        let racing = StreamAuthorityStore::new(Arc::new(spy));
+        assert!(matches!(
+            racing
+                .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Fenced { .. }
+        ));
+        assert_eq!(store.head(id, &mut work).await?, request.expected);
+        assert!(
+            store
+                .find_operation(id, request.commit.operation_id, &mut work)
+                .await?
+                .is_none()
+        );
+        let mut retry = request.clone();
+        retry.permit = lease(workspace, 88);
+        open_lease(&stream, retry.permit, &mut work).await?;
+        assert!(matches!(
+            store
+                .compare_and_append(retry, &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Committed(_)
+        ));
+        // Even a late writer that refreshes the head cannot reuse the closed
+        // grant for another operation after its live successor has committed.
+        let successor_head = store.head(id, &mut work).await?;
+        let late = crate::GuardedAppend {
+            expected: successor_head,
+            commit: proposed(89),
+            ..request
+        };
+        assert!(matches!(
+            store
+                .compare_and_append(late.clone(), &mut work, None::<&mut ()>)
+                .await?,
+            FsAppendOutcome::Fenced { .. }
+        ));
+        assert_eq!(store.head(id, &mut work).await?, successor_head);
+        assert!(
+            store
+                .find_operation(id, late.commit.operation_id, &mut work)
+                .await?
+                .is_none()
+        );
+        original.receipt().verify(BUDGET)?;
+    }
     Ok(())
 }
 
