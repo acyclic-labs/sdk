@@ -350,14 +350,25 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                     state.pending.contains_key(&pending),
                     "the worker must retain the held incarnation"
                 );
+                let releases = state.releases;
                 drop(state);
                 drop(held);
+                releases
             });
             drop(tree);
-            session.revalidate(&work).map_err(|error| {
-                format!("revalidate held entry, link={link}, {replacement:?}: {error}")
+            let settled = session.revalidate(&work);
+            let released_at = closer.join().map_err(|_| "closer panicked")?;
+            settled.map_err(|error| {
+                let state = lock_recover(&runtime.projector.state);
+                format!(
+                    "revalidate held entry, link={link}, {replacement:?}: {error}; original close completed after release {released_at}, observed releases={}, retry={}, processed={:?}, notified={:?}, pending={}",
+                    state.releases,
+                    state.retry,
+                    state.processed,
+                    state.notified,
+                    state.pending.len(),
+                )
             })?;
-            closer.join().map_err(|_| "closer panicked")?;
             match replacement {
                 Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
                 Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
