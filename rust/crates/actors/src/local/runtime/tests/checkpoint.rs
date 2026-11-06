@@ -186,7 +186,8 @@ async fn checkpoint_policy_settles_original_invocation_and_reopens() -> TestResu
                     source,
                     crate::guest::GuestError::CheckpointLimit {
                         maximum: maximum.ok_or("missing explicit checkpoint policy")?,
-                    }
+                    },
+                    "invocation failure codec lost original typed policy"
                 );
                 match store.invoke(&invocation).await {
                     Err(Error::InvocationFailed {

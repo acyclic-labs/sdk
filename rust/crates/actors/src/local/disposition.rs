@@ -200,14 +200,8 @@ impl FailureEntry {
                 if !input.value.is_empty() || input.headers != RecordHeaders::default() {
                     return Err(Error::Invalid("failed-input metadata embeds a body"));
                 }
-                let cause: GuestError = serde_json::from_slice(&failed.cause)
+                let cause = GuestError::decode(&failed.cause)
                     .map_err(|_| Error::Invalid("invalid failed-input cause"))?;
-                if serde_json::to_vec(&cause)
-                    .map_err(|_| Error::Invalid("invalid failed-input cause"))?
-                    != failed.cause
-                {
-                    return Err(Error::Invalid("non-canonical failed-input cause"));
-                }
                 Ok(Self::Failed(FailedDelivery {
                     path: path.clone(),
                     commit: record.commit_id,
@@ -300,8 +294,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     },
                     None,
                 )),
-                cause: serde_json::to_vec(cause)
-                    .map_err(|_| Error::Invalid("failed-input cause does not encode"))?,
+                cause: cause
+                    .encode()
+                    .map_err(|_| Error::Invalid("failed-input cause does not encode"))?
+                    .into_bytes(),
             }),
             resolution: 0,
         });
