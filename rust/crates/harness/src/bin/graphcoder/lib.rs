@@ -302,27 +302,19 @@ async fn run(
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
         return connected(&args, connection, output, event_output).await;
     }
+    let configured = args
+        .credentials
+        .as_deref()
+        .map(Credentials::from_file)
+        .transpose()?;
     let credentials = if args.default_config {
-        let configured = args
-            .credentials
-            .as_deref()
-            .map(|path| -> Result<Credentials, Box<dyn std::error::Error>> {
-                let bytes = std::fs::read(path)?;
-                serde_json::from_slice::<Credentials>(&bytes)
-                    .map_err(|_| "invalid provider credential file".into())
-            })
-            .transpose()?;
         Credentials::explicit(
             configured
                 .map(|credentials| credentials.api_keys)
                 .unwrap_or_default(),
         )
     } else {
-        args.credentials
-            .as_deref()
-            .map(Credentials::from_file)
-            .transpose()?
-            .unwrap_or_default()
+        configured.unwrap_or_default()
     };
     let config = configure(&args, credentials)?;
     if let Some(Command::Serve(serve)) = &args.command {
