@@ -428,12 +428,15 @@ mod tests {
             // Addressing borrows the canonical identity and root; owning either
             // again is the retained allocation negative control.
             let (_, status_work) = acyclic_test_support::differential(
-                || stream(&format!("{STATUSES}/{}", parsed.id())),
-                || parsed.status(),
+                || stream(&format!("{STATUSES}/{}", parsed.id())).expect("canonical status"),
+                || parsed.status().expect("canonical status"),
             );
             let (_, target_work) = acyclic_test_support::differential(
-                || stream(&format!("{}/{TARGETS}/pc", parsed.tree_root().text)),
-                || parsed.target("pc"),
+                || {
+                    stream(&format!("{}/{TARGETS}/pc", parsed.tree_root().text))
+                        .expect("canonical target")
+                },
+                || parsed.target("pc").expect("canonical target"),
             );
             for [former, current] in [status_work, target_work] {
                 assert_eq!(current.count_total + 1, former.count_total);
