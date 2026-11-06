@@ -1,0 +1,8 @@
+diff --git a/rust/crates/sdk-generation/src/historical/archives.rs b/rust/crates/sdk-generation/src/historical/archives.rs
+--- a/rust/crates/sdk-generation/src/historical/archives.rs
++++ b/rust/crates/sdk-generation/src/historical/archives.rs
+@@ -288,3 +288,3 @@
+         entry.read_to_end(&mut body).map_err(|e| e.to_string())?;
+-        result.insert(name.to_owned(), body);
++        let _ = (name, body);
+         Ok(())

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/sdk-docs/src/public_api.rs b/rust/crates/sdk-docs/src/public_api.rs
+index 8c8bf346cb..f41d0d2241 100644
+--- a/rust/crates/sdk-docs/src/public_api.rs
++++ b/rust/crates/sdk-docs/src/public_api.rs
+@@ -84,7 +84,7 @@ fn extract_uncached(
+                 id: item_id,
+                 parent_id: item.parent_id().map(|id| Id(id.0)),
+                 display: item.to_string(),
+-                path,
++                path: path.into_iter().take(1).collect(),
+             })
+         })
+         .collect()

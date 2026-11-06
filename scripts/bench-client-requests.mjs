@@ -3,13 +3,12 @@ import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const cargoArgs = [
-  "test", "--locked", "-p", "acyclic-actors", "-p", "acyclic-objects", "-p", "acyclic-stream",
+  "test", "--locked", "-p", "acyclic-objects", "-p", "acyclic-stream",
   "--lib", "--features", "acyclic-objects/http,acyclic-stream/http",
   "request_path_measure", "--", "--ignored", "--nocapture", "--test-threads=1",
 ];
 
 const probes = [
-  ["actors admitted request conversion", "consume"],
   ["objects frame conversion", "reuse"],
   ["stream append JSON", "direct"],
 ];

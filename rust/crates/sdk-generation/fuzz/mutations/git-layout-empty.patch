@@ -1,0 +1,7 @@
+--- a/rust/crates/sdk-generation/src/historical/probe.rs
++++ b/rust/crates/sdk-generation/src/historical/probe.rs
+@@ -8,3 +8,3 @@
+         .next()
+-        .filter(|path| !path.is_empty())
++
+         .ok_or("Git repository layout has no graft path")?;

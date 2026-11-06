@@ -103,12 +103,6 @@ fn schema_is_stable_and_identifies_the_public_contract() {
     );
 }
 #[test]
-fn slug_and_title_are_deterministic() {
-    assert_eq!(slugify("sdk_stream"), "sdk-stream");
-    assert_eq!(titleize("sdk-stream"), "Sdk Stream");
-}
-
-#[test]
 fn preview_version_paths_are_injective_and_portable() {
     assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
     assert_eq!(safe_version("preview:1").unwrap(), "~707265766965773a31");

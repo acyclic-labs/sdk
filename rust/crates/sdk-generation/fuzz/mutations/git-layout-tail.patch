@@ -1,0 +1,7 @@
+--- a/rust/crates/sdk-generation/src/historical/probe.rs
++++ b/rust/crates/sdk-generation/src/historical/probe.rs
+@@ -10,3 +10,3 @@
+         .ok_or("Git repository layout has no graft path")?;
+-    if lines.next().is_some() {
++    if false {
+         return Err("unexpected Git repository layout record".into());

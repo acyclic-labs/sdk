@@ -39,7 +39,7 @@ pub(super) fn frontier_revisions(
                 "info/grafts",
             ]),
     )?;
-    let graft = repository.join(super::probe::graft_path(&layout)?);
+    let graft = repository.join(super::graft_path(&layout)?);
     if graft.try_exists().map_err(|e| e.to_string())?
         || crate::command_var_os("GIT_GRAFT_FILE").is_some()
     {

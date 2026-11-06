@@ -287,12 +287,7 @@ fn path_error(
         return Error::NativeBoundary { code, reason };
     }
     let _ = work;
-    match code {
-        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        _ => Error::Unauthorized(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }
 
 /// Composes only policy- and capability-visible volumes. The caller supplies
