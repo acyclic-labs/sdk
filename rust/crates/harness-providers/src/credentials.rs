@@ -161,7 +161,7 @@ impl Credentials {
     /// Reads an explicitly selected JSON credential file; absence is an error.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_file(path: &std::path::Path) -> Result<Self> {
-        match std::fs::read(path) {
+        match acyclic_fs::native_host::read_regular_file(path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map_err(|_| super::invalid("invalid provider credential file")),
             Err(_) => Err(super::invalid("cannot read provider credential file")),
