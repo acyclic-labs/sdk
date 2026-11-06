@@ -12,6 +12,7 @@
         "output-destination-aliases",
         "output-destination-kind",
         "usage-publication-failure",
+        "nonregular-startup-input",
         "text-responses"
       ]
     },
