@@ -465,14 +465,20 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
             &mut accounting,
         )
         .await?;
-    let begun = collection.begin();
-    let mut begun = core::pin::pin!(begun);
+    let mut begun = Box::pin(collection.begin());
     // This poll reaches the original retired gate while its publication
     // hold is live; a collection that skips the gate is immediately Ready.
     assert!(
         futures::poll!(begun.as_mut()).is_pending(),
         "the collection waits for the record"
     );
+    drop(begun);
+    assert!(
+        collection.state().admitted.is_none(),
+        "cancelled collection retained an active admission registry"
+    );
+    let mut begun = Box::pin(collection.begin());
+    assert!(futures::poll!(begun.as_mut()).is_pending());
     drop(hold);
     drop(begun.await);
     Ok(())

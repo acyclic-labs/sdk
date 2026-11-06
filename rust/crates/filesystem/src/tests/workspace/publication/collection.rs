@@ -630,9 +630,9 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
     let in_flight = main.write_text("/in-flight.txt", "retained under epoch 0");
     let collector = async {
         epoch.hooks.retained.notified().await;
-        {
-            // The first collection switches the epoch, then is dropped while
-            // it waits on the paused publication.
+        for _ in 0..8 {
+            // Only the first attempt switches the epoch. Every cancelled
+            // successor resumes that same physical publication's drain.
             let first = fs.collect_local_pass(None, true, &cancellation);
             tokio::pin!(first);
             let finished = tokio::select! {
@@ -640,6 +640,11 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
                 () = collection.draining.notified() => false,
             };
             assert!(!finished, "a collection finished past a paused publication");
+            assert_eq!(
+                epoch.current(),
+                1,
+                "cancelled drain retired another publication generation"
+            );
         }
         let watch = async {
             // The next collection drains the publication before it releases
