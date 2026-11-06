@@ -4,6 +4,7 @@ import {test} from 'node:test';
 import {assertNativeCompletion} from './native-model.mjs';
 import {assertCodexPairTools} from './native-pairs.mjs';
 import {fuzz} from './native-completion.fuzz.mjs';
+import {assertNativeResume} from './native-session-proof.mjs';
 
 test('Codex pair admission requires original declarations rather than namespace prose',async()=> {
  const {tool}=JSON.parse(await readFile(new URL('./fixtures/native-codex-namespace.json',import.meta.url),'utf8'));
@@ -51,6 +52,28 @@ test('Claude failed tool results survive a later successful parent terminal', as
 
 // Real pinned-host output, with event deletion as the missing-terminal control.
 const {records}=JSON.parse(await readFile(new URL('./fixtures/native-completion.json',import.meta.url),'utf8'));
+test('native continuation binds the original thread and retains authoritative usage',()=> {
+ const record=records.find(record=>record.host==='codex');
+ const events=record.stdout.trim().split('\n').map(JSON.parse);
+ const thread=events.find(event=>event.type==='thread.started');
+ const terminal=events.findLast(event=>event.type==='turn.completed');
+ const original=assertNativeCompletion(record.host,record,record.answer);
+ assert.deepEqual(original.terminal,terminal);
+ const run=changed=>assertNativeCompletion(record.host,{...record,
+  stdout:changed.map(event=>JSON.stringify(event)).join('\n')},record.answer);
+ assertNativeResume({id:thread.thread_id},{id:original.session});
+ for(const id of [null,'',17])assert.throws(()=>run(events.map(event=>event===thread?{...thread,thread_id:id}:event)),
+  {code:'NATIVE_HOST_SESSION_MISMATCH'});
+ assert.throws(()=>run([thread,...events]),{code:'NATIVE_HOST_SESSION_MISMATCH'});
+ const omitted=run(events.filter(event=>event!==thread));
+ assert.throws(()=>assertNativeResume({id:original.session},{id:omitted.session}),/identifier is missing/);
+ const foreign=run(events.map(event=>event===thread?{...thread,thread_id:thread.thread_id+'0'}:event));
+ assert.throws(()=>assertNativeResume({id:original.session},{id:foreign.session}),/changed native session/);
+ // Omitted accounting remains unknown. A completed process or a resumed
+ // thread is never evidence of zero cache reads or a cache hit.
+ const unknown=run(events.map(event=>event===terminal?{...terminal,usage:undefined}:event));
+ assert.equal(unknown.terminal.usage,undefined);
+});
 for(const record of records)test(`${record.host} requires its original successful native terminal`,()=>{
  assertNativeCompletion(record.host,record,record.answer);
  const events=record.stdout.trim().split('\n').map(line=>({line,event:JSON.parse(line)}));
@@ -134,7 +157,7 @@ test('Claude native pair initialization fences model namespace and bare contamin
   }).join('\n')+'\n'});
   const record=withPlugins(plugins);
   const selection={model:'claude-haiku-5-5',installed:record.mode==='installed'};
-  assert.equal(assertNativeCompletion(record.host,record,record.answer,selection),plugins.length?3:0);
+  assert.equal(assertNativeCompletion(record.host,record,record.answer,selection).builtinPlugins,plugins.length?3:0);
   assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,model:'unapproved'}),/model differs/);
   assert.throws(()=>assertNativeCompletion(record.host,record,record.answer,{...selection,installed:!selection.installed}),/plugin set differs/);
   const lines=record.stdout.trim().split('\n');
