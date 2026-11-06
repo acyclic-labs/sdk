@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "view-demand", "checkpoint-policy", "handler-policy", "handler-frame", "guest-failure", "failed-input"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "view-demand", "checkpoint-policy", "handler-policy", "handler-frame", "guest-failure", "failed-input", "publication-retirement"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -101,6 +101,12 @@ elif claim == "failed-input":
     test = "local::tests::disposition::failed_input_disposition_is_atomic_and_preserves_original_identity"
     diagnostic = "failed-input codec lost original cause"
     features = []
+elif claim == "publication-retirement":
+    source = "rust/crates/filesystem/src/collection/mod.rs"
+    crate = "acyclic-fs"
+    test = "workspace::tests::publication::collection::a_collection_dropped_mid_drain_leaves_its_drain_to_the_next"
+    diagnostic = "cancelled drain retired another publication generation"
+    features = ["--no-default-features", "--features", "local,memory"]
 elif claim == "view-demand":
     source = "rust/crates/harness-client/src/demand.rs"
     crate = "acyclic-harness-client"
