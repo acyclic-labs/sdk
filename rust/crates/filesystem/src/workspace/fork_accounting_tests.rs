@@ -386,3 +386,171 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn lineage_resolution_uses_original_name_validation_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let fs = crate::Fs::memory();
+    let root = fs
+        .create_workspace("resolution-root", budget, &cancellation)
+        .await?
+        .value;
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+    graph.register_root(&root, budget, &cancellation).await?;
+    let child = graph
+        .fork(
+            &root,
+            "resolution-child",
+            IdempotencyKey::new(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let grandchild = graph
+        .fork(
+            &child,
+            "resolution-grandchild",
+            IdempotencyKey::new(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    // Derive validation work from the shipped canonical-name primitive.
+    let required = crate::WorkspaceName::new(grandchild.name().as_str(), &budget, &cancellation)?
+        .work
+        .items_examined
+        + crate::WorkspaceName::new(child.name().as_str(), &budget, &cancellation)?
+            .work
+            .items_examined;
+    let original = Prefunded {
+        budget,
+        held: Mutex::new(None),
+    };
+    let (record, spent, live, baseline) = graph
+        .resolve(grandchild.id(), &original, &cancellation)
+        .await;
+    assert_eq!(record?.parent_workspace_id, Some(child.id()));
+    assert_eq!(
+        spent.items_examined,
+        required + 1,
+        "lineage validation detached from original accounting"
+    );
+    assert!(
+        live >= baseline,
+        "lineage validation retired earlier original backing"
+    );
+    let native =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    graph
+        .authorize_join(grandchild.id(), child.id(), &native, &cancellation)
+        .await?;
+    assert_eq!(
+        native.receipt().items_examined,
+        required,
+        "native lineage validation detached from original accounting"
+    );
+    assert!(matches!(
+        graph
+            .authorize_join(grandchild.id(), root.id(), budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error),
+        Err(crate::WorkspaceLineageError::UnauthorizedJoin)
+    ));
+    let chain = graph
+        .ancestors(grandchild.id(), 3, budget, &cancellation)
+        .await?;
+    assert_eq!(
+        chain
+            .value
+            .iter()
+            .map(|record| record.workspace_id)
+            .collect::<Vec<_>>(),
+        vec![child.id(), root.id()]
+    );
+    graph
+        .authorize_descendant(grandchild.id(), root.id(), budget, &cancellation)
+        .await?;
+    // Every public query must expose cancellation and exhausted validation work.
+    for cancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        if cancelled {
+            cancellation.cancel();
+        }
+        let constrained = WorkBudget {
+            allocation_operations: 0,
+            ..budget
+        };
+        let failures = [
+            graph
+                .resolve(grandchild.id(), constrained, &cancellation)
+                .await
+                .err()
+                .ok_or("resolution escaped its original work")?,
+            graph
+                .authorize_join(grandchild.id(), child.id(), constrained, &cancellation)
+                .await
+                .err()
+                .ok_or("join authorization escaped its original work")?,
+        ];
+        let ancestry = graph
+            .ancestors(grandchild.id(), 3, constrained, &cancellation)
+            .await
+            .err()
+            .ok_or("ancestry escaped its original work")?;
+        let descendant = graph
+            .authorize_descendant(grandchild.id(), root.id(), constrained, &cancellation)
+            .await
+            .err()
+            .ok_or("descendant authorization escaped its original work")?;
+        for failure in failures.into_iter().chain([ancestry, descendant]) {
+            if cancelled {
+                assert!(matches!(
+                    failure.error,
+                    crate::WorkspaceLineageError::Workspace(WorkspaceError::Cancelled(_))
+                ));
+                assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
+            } else {
+                assert!(matches!(
+                    failure.error,
+                    crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+                        crate::WorkError::BudgetExceeded {
+                            counter: "allocation_operations",
+                            ..
+                        }
+                    ))
+                ));
+            }
+            assert_eq!(failure.work.backend_read_operations, 0);
+            assert_eq!(failure.work.allocation_operations, 0);
+        }
+    }
+    // Corrupt a real persisted edge: the fixed-width visited index must end
+    // the walk with the cycle error before spending the caller's whole budget.
+    let mut cycle = graph.resolve(root.id(), budget, &cancellation).await?.value;
+    cycle.revision += 1;
+    cycle.parent_workspace_id = Some(grandchild.id());
+    cycle.parent_workspace_name = Some(grandchild.name().as_str().to_owned());
+    assert!(
+        crate::WorkspaceLineageStore::compare_and_swap(graph.store(), root.id(), 1, cycle).await?
+    );
+    let failure = graph
+        .authorize_descendant(
+            grandchild.id(),
+            WorkspaceId::from_bytes([0; 16]),
+            budget,
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("cyclic lineage was authorized")?;
+    assert!(matches!(
+        failure.error,
+        crate::WorkspaceLineageError::TraversalLimit
+    ));
+    Ok(())
+}

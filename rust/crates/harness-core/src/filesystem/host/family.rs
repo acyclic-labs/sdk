@@ -169,8 +169,15 @@ async fn authorize<S: WorkspaceLineageStore>(
     owner: WorkspaceId,
 ) -> Result<()> {
     graph
-        .authorize_descendant(owner, root)
+        .authorize_descendant(
+            owner,
+            root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
         .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .map_err(|error| match error {
             acyclic_fs::WorkspaceLineageError::Store(error) => Error::Storage(error.to_string()),
             _ => Error::Unauthorized("generation has no valid project ancestry".into()),

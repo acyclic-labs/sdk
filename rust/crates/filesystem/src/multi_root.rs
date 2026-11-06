@@ -290,7 +290,16 @@ where
 {
     type Error = WorkspaceLineageError<S::Error>;
     async fn resolve(&self, workspace_id: WorkspaceId) -> Result<Workspace<A, O>, Self::Error> {
-        let record = self.1.resolve(workspace_id).await?;
+        let record = self
+            .1
+            .resolve(
+                workspace_id,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         let workspace = self
             .0
             .open_workspace(
@@ -554,7 +563,12 @@ where
                 return Ok(false);
             }
             if graph
-                .authorize_join(root.source_workspace_id, root.target_workspace_id)
+                .authorize_join(
+                    root.source_workspace_id,
+                    root.target_workspace_id,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
                 .await
                 .is_err()
             {
@@ -562,7 +576,12 @@ where
             }
             if let Some(filtered) = root.merge_workspace_id
                 && graph
-                    .authorize_join(filtered, root.source_workspace_id)
+                    .authorize_join(
+                        filtered,
+                        root.source_workspace_id,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
                     .await
                     .is_err()
             {
