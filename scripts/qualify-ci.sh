@@ -7,6 +7,9 @@ lane="${1:?qualification lane is required}"
 : "${TOOLS_DIR:?}"
 mkdir -p "$SDK_TEMP_DIR" "$SDK_ARTIFACT_DIR" "$TOOLS_DIR"
 export PATH="$TOOLS_DIR/cargo/bin:$PATH"
+
+# RUSTFLAGS replaces Cargo configuration, including the runtime RNG API.
+warning_rustflags="${RUSTFLAGS:+$RUSTFLAGS }--cfg tokio_unstable -Dwarnings"
 target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
 # Test timings and each top-level command's start time feed the job summary
 # (scripts/ci-summary.mjs, run by the qualification-lane action).
@@ -183,11 +186,11 @@ native_host_contracts() {
 web_warning_closures() {
   local features
   for features in browser wasm browser,test-support wasm,test-support; do
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
   done
-  RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+  RUSTFLAGS="$warning_rustflags" \
     cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
       --target wasm32-unknown-unknown --lib
 }
@@ -205,18 +208,18 @@ case "$lane" in
     node --test scripts/check-crate-tests.test.mjs
     node scripts/check-crate-tests.mjs 2
     node scripts/check-hermetic-clippy.mjs
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness-fuzz --bins
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem-local,model-checking --lib
     # Unit tests compile without optional native features, so a test seam
     # cannot cross a feature gate the all-features suites never close.
     cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking --test main mcp_loom::
-    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
@@ -463,24 +466,24 @@ case "$lane" in
     web_warning_closures
     for suite in filesystem::default_tools::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
-        RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+        RUSTFLAGS="$warning_rustflags" \
         harness_tests -p acyclic-harness-core --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
-      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main client_public_consumer::identical_public_harness_trace
     harness_tests -p acyclic-harness --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test main client_views_parity::
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    RUSTFLAGS="$warning_rustflags" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \
       --target wasm32-unknown-unknown --lib --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
-      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      RUSTFLAGS="$warning_rustflags" \
       harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main native_media_boundary::
     GECKODRIVER="$(command -v geckodriver)" \
