@@ -127,8 +127,8 @@ pub(crate) async fn select(
             io: access.io,
         },
     )?;
-    let (volume, selected) = match read.await {
-        Err(error) if error.code() == crate::wire::ErrorCode::NotFound => (
+    let (volume, selected) = match read.await? {
+        None => (
             seed,
             reader
                 .read_private_path(
@@ -142,9 +142,10 @@ pub(crate) async fn select(
                         io: access.io,
                     },
                 )?
-                .await?,
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("template {name} does not exist")))?,
         ),
-        result => (home, result?),
+        Some(selected) => (home, selected),
     };
     let (file, bytes, _hold) = selected;
     if file.path() != path || file.volume() != volume {

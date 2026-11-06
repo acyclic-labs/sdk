@@ -108,7 +108,8 @@ const READER: &'static str = r#"
 export interface ContextDiscoveryReader {
     list(query: ContextDirectoryQuery): Promise<PrivateDirectoryPage>;
     prefix(query: ContextReadQuery): Promise<Uint8Array>;
-    read(query: ContextReadQuery): Promise<ContextPathResult>;
+    /** Null means only that the authorized filename is absent. Other failures reject. */
+    read(query: ContextReadQuery): Promise<ContextPathResult | null>;
 }
 "#;
 
@@ -275,11 +276,11 @@ impl ContentResidencyVerifier for BrowserReader {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -305,6 +306,9 @@ impl ContentResidencyVerifier for BrowserReader {
                 maximum_bytes,
             };
             let result = self.invoke(&self.read, &query).await?;
+            if result.is_null() {
+                return Ok(None);
+            }
             let bytes = Self::bytes(
                 Reflect::get(&result, &JsValue::from_str("bytes")).map_err(platform_error)?,
                 maximum_bytes,
@@ -312,7 +316,7 @@ impl ContentResidencyVerifier for BrowserReader {
             let file =
                 from_js(Reflect::get(&result, &JsValue::from_str("file")).map_err(platform_error)?)
                     .map_err(platform_error)?;
-            Ok((file, bytes.into(), None))
+            Ok(Some((file, bytes.into(), None)))
         })
     }
 }
