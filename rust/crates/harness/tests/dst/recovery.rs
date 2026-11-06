@@ -42,10 +42,7 @@ fn local_turn<'a>(
 }
 
 fn crash_reopen(point: Cut) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
         let directory = tempfile::tempdir().map_err(storage)?;

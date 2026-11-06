@@ -218,10 +218,7 @@ fn canonical_trace_locates_divergence_and_is_the_digest_input() {
 #[test]
 fn cross_process_seeded_replay_digest() -> Result<()> {
     startup_value();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
         let first = replay(71, false).await?;
