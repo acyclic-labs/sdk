@@ -66,8 +66,7 @@ pub async fn blob_bytes(
         value,
         allocation: retained,
     }
-    .into_bytes((), &mut accounting.borrow_mut())
-    .map(OwnedBytes::from)
+    .into_owned_bytes((), &mut accounting.borrow_mut())
     .map_err(object_error)
 }
 

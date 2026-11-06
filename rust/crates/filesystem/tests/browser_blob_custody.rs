@@ -100,9 +100,21 @@ async fn physical_blob_custody_survives_withdrawal_and_final_alias() -> Result<(
                     .await
                     .expect("physical producer retired before settlement");
             assert_eq!(&*bytes, expected.as_slice());
+            assert_eq!(
+                bytes.retained_capacity(),
+                Some(length),
+                "Blob carrier erased original vector capacity"
+            );
+            assert!(
+                bytes.backing().is_some(),
+                "physical backing identity was erased"
+            );
             let alias = bytes.clone();
             let funded = live(&accounting);
-            assert!(funded >= length as u64);
+            assert!(
+                funded >= length as u64,
+                "returned Blob backing lost original allocation credit"
+            );
             drop(bytes);
             assert_eq!(live(&accounting), funded);
             drop(alias);

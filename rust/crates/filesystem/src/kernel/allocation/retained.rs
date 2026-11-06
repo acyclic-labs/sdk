@@ -431,35 +431,35 @@ pub struct Retained<T> {
     pub(crate) allocation: RetainedAllocation,
 }
 
-struct RetainedBytes<T> {
-    bytes: Vec<u8>,
-    _custody: T,
-    _allocation: RetainedAllocation,
-}
-
-impl<T> AsRef<[u8]> for RetainedBytes<T> {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
 impl Retained<Vec<u8>> {
+    /// Transfers original backing and credit into the shared immutable carrier.
+    /// Its known capacity and allocation identity survive clones and slices.
+    pub fn into_owned_bytes<T: Send + 'static>(
+        self,
+        custody: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, crate::FsError> {
+        acyclic_stream::OwnedBytes::from_vec_with_owner(
+            self.value,
+            (custody, self.allocation),
+            |(_, original), control| {
+                let mut allocation = RetainedAllocation::claim(control as u64, 1, accounting)?;
+                original.absorb(&mut allocation)
+            },
+        )
+    }
+
     /// Keeps physical backing and its original lease through the last alias.
     /// The shared owner header is admitted before `Bytes` allocates it.
     pub fn into_bytes<T: Send + 'static>(
-        mut self,
+        self,
         custody: T,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bytes::Bytes, crate::FsError> {
-        let control =
-            acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<T>>() as u64;
-        let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
-        self.allocation.absorb(&mut allocation)?;
-        Ok(bytes::Bytes::from_owner(RetainedBytes {
-            bytes: self.value,
-            _custody: custody,
-            _allocation: self.allocation,
-        }))
+        Ok(self
+            .into_owned_bytes(custody, accounting)?
+            .try_into_bytes()
+            .unwrap_or_else(|_| unreachable!("an ordinary owner transfers without admission")))
     }
 }
 
@@ -898,14 +898,20 @@ mod tests {
 
         let value = allocation.into_value(Vec::from([1, 2, 3, 4]));
         assert_eq!(value.as_slice(), [1, 2, 3, 4]);
-        let bytes = value.into_bytes((), &mut accounting)?;
+        let bytes = value.into_owned_bytes((), &mut accounting)?;
+        assert_eq!(
+            bytes.retained_capacity(),
+            Some(4),
+            "retained vector capacity was erased"
+        );
+        let backing = bytes.backing().expect("original vector backing");
         let funded = live();
+        let control =
+            acyclic_stream::OwnedBytes::vec_owner_allocation_bytes::<((), RetainedAllocation)>()
+                as u64;
         assert_eq!(
             funded,
-            baseline
-                + 4
-                + acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<()>>()
-                    as u64,
+            baseline + 4 + control,
             "returned Bytes lost original allocation credit"
         );
         assert_eq!(
@@ -914,6 +920,13 @@ mod tests {
         );
         let admitted = accounting.spent();
         let alias = bytes.slice(1..3);
+        assert_eq!(alias.retained_capacity(), Some(4));
+        assert_eq!(alias.backing(), Some(backing.clone()));
+        drop(backing);
+        let transport = alias
+            .clone()
+            .try_into_bytes()
+            .expect("the original owner transfers without allocation");
         assert_eq!(
             accounting.spent(),
             admitted,
@@ -937,6 +950,9 @@ mod tests {
         assert_eq!(alias.as_ref(), [2, 3]);
         assert_eq!(live(), funded, "last alias lost original allocation credit");
         drop(alias);
+        assert_eq!(transport.as_ref(), [2, 3]);
+        assert_eq!(live(), funded, "transport lost original allocation credit");
+        drop(transport);
         assert_eq!(
             live(),
             baseline,
