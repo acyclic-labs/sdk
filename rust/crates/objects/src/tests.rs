@@ -3399,7 +3399,12 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
-    for cancelled in [false, true] {
+    for (limit, cancelled, withdrawn) in [
+        (u64::MAX, false, false),
+        (u64::MAX, true, false),
+        (u64::MAX, false, true),
+        (0, false, false),
+    ] {
         let store = Store::new(MemoryMedium::default());
         let blobs = store.account(b"account")?;
         let digest = blobs
@@ -3408,26 +3413,51 @@ async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn st
             .verified()
             .ok_or("unknown")?
             .digest;
-        let budget = std::sync::Arc::new(Budget::new(u64::MAX));
+        let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
         let request = crate::ObjectsNativeRequest::new(
             (RootId::new(b"root".to_vec())?, vec![digest]),
             (),
             &meter,
         )?;
-        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter))?;
-        budget.cancelled.store(cancelled, Ordering::SeqCst);
-        let retained = future.await;
-        assert_eq!(retained.is_ok(), !cancelled);
-        if !cancelled {
-            // The batch body and its index key were charged while held.
-            assert!(budget.peak() >= (32 + std::mem::size_of::<String>()) as u64);
-        }
+        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter));
+        let completed = if limit == 0 {
+            let refusal = future.err().map(|error| error.into_cause());
+            assert!(
+                matches!(&refusal, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory),
+                "original frame refusal: {refusal:?}"
+            );
+            false
+        } else {
+            let future = future?;
+            assert!(
+                budget.held.lock().unwrap().0 > 0,
+                "original frame uncharged before dispatch"
+            );
+            if withdrawn {
+                drop(future);
+                false
+            } else {
+                budget.cancelled.store(cancelled, Ordering::SeqCst);
+                let retained = future.await;
+                assert_eq!(retained.is_ok(), !cancelled);
+                if !cancelled {
+                    // The batch body and its index key were charged while held.
+                    assert!(budget.peak() >= (32 + std::mem::size_of::<String>()) as u64);
+                }
+                retained.is_ok()
+            }
+        };
+        assert_eq!(
+            budget.held.lock().unwrap().0,
+            0,
+            "original frame still held"
+        );
         for _ in 0..3 {
             blobs.collect().await?;
         }
-        // Negative control: a retain its caller cancelled leaves no root.
-        assert_eq!(blobs.head(digest).await.is_ok(), !cancelled);
+        // Refusal, cancellation and withdrawal leave no root.
+        assert_eq!(blobs.head(digest).await.is_ok(), completed);
     }
     Ok(())
 }
