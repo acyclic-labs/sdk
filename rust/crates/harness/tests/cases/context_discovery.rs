@@ -964,6 +964,21 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
             .is_none(),
         "only an absent filename is optional"
     );
+    for (directory, active) in [("skills", "missing"), ("skills/missing", "")] {
+        assert!(
+            acyclic_harness::context::capture_instructions(
+                &mut instructions,
+                directory,
+                active,
+                &["SKILL.md".into()],
+                &mut acyclic_harness::context::DiscoveryWork::default(),
+                Some(&first_skill(&captured)?.source.generation),
+            )
+            .await
+            .is_err(),
+            "a missing declared instruction directory must not omit context: {directory}/{active}"
+        );
+    }
     assert!(
         acyclic_harness::context::discover_skills_from(
             &mut instructions,
