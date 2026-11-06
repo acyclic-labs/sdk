@@ -77,7 +77,6 @@ async fn cancelled_capture_leaves_retirement_with_the_accepted_native_producer()
             event = events.recv() => event.ok_or("native completion event lost")?.release(),
         }
     }
-    work.receipt();
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert_eq!(resource.remaining()?.peak_allocation_bytes, remaining);
     assert!(!checkout.has_pending_mutations());
