@@ -245,6 +245,7 @@ fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     issuer: AuthorityRoot,
+    scope: acyclic_harness::core::Scope,
     volume: VolumeRef,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -350,6 +351,7 @@ impl Fixture {
         Ok(Self {
             host,
             issuer,
+            scope,
             volume,
             writer,
             reader,
@@ -949,6 +951,30 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
             .is_none(),
         "only an absent filename is optional"
     );
+    let unavailable = FilesystemContentVerifier::new(
+        FilesystemHost::new(Fs::memory(), fixture.volume.provider(), None)?,
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        32_768,
+        None,
+    )?;
+    let mut unavailable_instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: unavailable.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    let missing_authority = unavailable_instructions
+        .instruction(
+            &source.path,
+            &first_skill(&captured)?.source.generation,
+            32_768,
+        )
+        .await;
+    assert!(
+        missing_authority.is_err(),
+        "missing source authority must not omit the selected instruction"
+    );
+    assert_eq!(missing_authority.unwrap_err().code(), ErrorCode::NotFound);
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
