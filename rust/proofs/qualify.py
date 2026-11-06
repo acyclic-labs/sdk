@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy", "handler-policy", "guest-failure"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "view-demand", "checkpoint-policy", "handler-policy", "guest-failure", "failed-input"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -113,6 +113,12 @@ elif claim == "guest-failure":
     crate = "acyclic-actors"
     test = "local::runtime::tests::checkpoint::checkpoint_policy_settles_original_invocation_and_reopens"
     diagnostic = "invocation failure codec lost original typed policy"
+    features = []
+elif claim == "failed-input":
+    source = "rust/crates/actors/src/local/disposition.rs"
+    crate = "acyclic-actors"
+    test = "local::tests::disposition::failed_input_disposition_is_atomic_and_preserves_original_identity"
+    diagnostic = "failed-input codec lost original cause"
     features = []
 elif claim == "view-demand":
     source = "rust/crates/harness-client/src/demand.rs"
