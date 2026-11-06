@@ -109,7 +109,12 @@ async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn 
             let payload_credit = ReadAllocation::new(&meter, payload.capacity())?;
             let body = crate::Sealed::new(
                 OwnedBytes::from_vec_with_guard(payload, payload_credit, Arc::clone(&meter))
-                    .map_err(|failure| failure.into_error())?,
+                    .map_err(|failure| match failure.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
+                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                            std::io::Error::from(std::io::ErrorKind::InvalidData)
+                        }
+                    })?,
             );
             let digest = Digest::from_bytes(*body.digest());
             let references = vec![child; 11];
