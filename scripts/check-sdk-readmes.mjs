@@ -28,7 +28,7 @@ export function checkCopies(guide, llms) {
   }
 }
 
-// The sources check reads only checked-in files, so it runs on any source tree (the merge gate's policy step).
+// The sources check reads only checked-in files, so it runs on any source tree.
 // Compiling the examples resolves package sources that import generated modules, so only a caller that has run
 // `bun run generate` asks for it (`check:docs`, which `check` runs after generating).
 function checkSources() {
@@ -73,7 +73,7 @@ function compileExamples(guide) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const mode = process.argv.slice(2);
-  if (mode.length > 1 || (mode.length === 1 && mode[0] !== "compile")) throw new Error("usage: check-sdk-readmes.mjs [compile]");
+  if (mode.length > 1 || (mode.length === 1 && mode[0] !== "compile")) throw new Error("STEP_FAILED README mode: expected no arguments or compile; recovery: node scripts/check-sdk-readmes.mjs");
   const guide = checkSources();
   if (mode[0] === "compile") compileExamples(guide);
   else console.log(`${services.length} README/llms.txt examples match their sources; compile with: node scripts/check-sdk-readmes.mjs compile`);
