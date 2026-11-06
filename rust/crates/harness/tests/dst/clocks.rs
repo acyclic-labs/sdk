@@ -1,4 +1,5 @@
 //! Mount callbacks must retain the creating seed after leaving its task/thread.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use acyclic_fs::native_mount::capture_mount_clock_callbacks;
 use acyclic_native_runtime::testing::Schedule;
 
@@ -35,6 +36,7 @@ fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn trace(
     seed: u64,
     host_millis: u64,
@@ -59,6 +61,7 @@ fn trace(
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn mount_callbacks_replay_identically_despite_host_clock_skew()
 -> Result<(), Box<dyn std::error::Error>> {
     let equal = |left: &[u8], right: &[u8]| -> Result<(), &'static str> {
