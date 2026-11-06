@@ -52,7 +52,9 @@ impl CapturedClock {
 pub(super) struct Wall {
     millis: u64,
     anchor: Option<tokio::time::Instant>,
-    runtime: Option<tokio::runtime::Handle>,
+    pub(super) runtime: Option<tokio::runtime::Handle>,
+    #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+    alarms: Option<Arc<crate::wall_alarm::Simulated>>,
 }
 
 impl Default for Wall {
@@ -61,6 +63,8 @@ impl Default for Wall {
             millis: 1_700_000_000_000,
             anchor: None,
             runtime: None,
+            #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+            alarms: None,
         }
     }
 }
@@ -91,6 +95,23 @@ pub fn unix_millis() -> Option<u64> {
         .map(|context| context.schedule.0.state().wall.now())
 }
 
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub(crate) fn wall_alarms() -> Option<Arc<crate::wall_alarm::Simulated>> {
+    let context = Context::simulation()?;
+    if !context.schedule.is_seeded() {
+        return None;
+    }
+    let alarms = context
+        .schedule
+        .0
+        .state()
+        .wall
+        .alarms
+        .get_or_insert_with(Default::default)
+        .clone();
+    Some(alarms)
+}
+
 impl Schedule {
     /// Only a seeded schedule has a simulated clock; an unseeded one keeps a
     /// wall that nothing reads.
@@ -98,12 +119,44 @@ impl Schedule {
         self.0.executor.is_some()
     }
 
-    /// Changes wall time without changing elapsed time or expiring a timer.
+    /// Changes wall time without changing elapsed time. Absolute wall alarms
+    /// observe the jump; monotonic timeouts retain their original deadlines.
     pub fn set_unix_millis(&self, millis: u64) {
-        let mut state = self.0.state();
-        let wall = &mut state.wall;
-        wall.millis = millis;
-        wall.anchor = Some(tokio::time::Instant::now());
+        {
+            let mut state = self.0.state();
+            let wall = &mut state.wall;
+            wall.millis = millis;
+            wall.anchor = Some(tokio::time::Instant::now());
+        }
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        let alarms = self.0.state().wall.alarms.clone();
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        if let Some(alarms) = alarms {
+            alarms.changed();
+        }
+    }
+
+    pub(super) fn poll_wall_alarms(&self, cx: &mut std::task::Context<'_>) {
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        {
+            let active = {
+                let mut state = self.0.state();
+                let alarms = state.wall.alarms.clone();
+                alarms.map(|alarms| (alarms, state.wall.now()))
+            };
+            if let Some((alarms, now)) = active {
+                alarms.poll(now, cx);
+            }
+        }
+    }
+
+    pub(super) fn close_wall_alarms(&self) {
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        let alarms = self.0.state().wall.alarms.clone();
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        if let Some(alarms) = alarms {
+            alarms.close();
+        }
     }
 
     /// Advances both simulated elapsed time and wall time. The driver must use
