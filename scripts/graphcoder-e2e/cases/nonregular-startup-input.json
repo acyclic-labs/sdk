@@ -1,0 +1,28 @@
+{
+  "id": "nonregular-startup-input",
+  "workspace": { "kind": "plain", "files": {} },
+  "model": {
+    "steps": [
+      { "when": {}, "text": ["ORIGINAL_CURSOR_ANSWER"] },
+      { "when": {}, "text": ["FRESH_INVOCATION_ANSWER"] }
+    ]
+  },
+  "inputs": [
+    {
+      "args": ["--default-config", "--output-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000001", "--event-cursor", "{{workspace}}/recorded.cursor.json", "exec", "record the original cursor"],
+      "stdout_contains": ["ORIGINAL_CURSOR_ANSWER", "\"kind\":\"completed\",\"success\":true"]
+    },
+    {
+      "file_source": "{{workspace}}/recorded.cursor.json",
+      "args": ["--default-config", "--output-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000001", "--event-cursor", "{{file_source}}", "exec", "record the original cursor"],
+      "exit": 1,
+      "stdout_contains": ["\"code\":\"execution_failed\""],
+      "stdout_absent": ["\"kind\":\"completed\",\"success\":true"]
+    },
+    {
+      "args": ["--default-config", "--output-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000002", "exec", "a fresh invocation still works"],
+      "stdout_contains": ["FRESH_INVOCATION_ANSWER", "\"kind\":\"completed\",\"success\":true"]
+    }
+  ],
+  "assert": { "requests": 2 }
+}
