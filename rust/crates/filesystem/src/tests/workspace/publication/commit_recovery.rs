@@ -1,6 +1,6 @@
 //! Cold-process cuts through the original local transaction and its publication.
 use super::*;
-use acyclic_native_runtime::testing::{DurableFault, Schedule};
+use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault, Schedule};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const CHILD: &str = "workspace::tests::publication::commit_recovery::commit_crash_child";
@@ -55,7 +55,11 @@ fn run_child(
         .map_err(|failure| failure.error)?;
     assert_eq!(
         output.status.code(),
-        Some(if cut.is_some() { 86 } else { 0 }),
+        Some(match cut {
+            Some((_, "io" | "full")) => 87,
+            Some(_) => 86,
+            None => 0,
+        }),
         "workspace cut {cut:?}: {output:?}"
     );
     Ok(std::fs::read_to_string(root.join("physical-count"))?.parse()?)
@@ -125,15 +129,23 @@ async fn assert_recovery(
 
 #[tokio::test]
 async fn every_local_commit_crash_reopens_atomically_and_allows_a_live_successor() -> TestResult {
-    assert_publication_cuts(PublicationKind::Transaction).await
+    assert_publication_cuts(PublicationKind::Transaction, &["before", "after", "torn"]).await
 }
 
 #[tokio::test]
 async fn every_multi_root_crash_resumes_and_releases_the_dead_owners_reservations() -> TestResult {
-    assert_publication_cuts(PublicationKind::MultiRoot).await
+    assert_publication_cuts(PublicationKind::MultiRoot, &["before", "after", "torn"]).await
 }
 
-async fn assert_publication_cuts(kind: PublicationKind) -> TestResult {
+#[tokio::test]
+async fn storage_failures_retain_the_original_cause_and_allow_recovery() -> TestResult {
+    for kind in [PublicationKind::Transaction, PublicationKind::MultiRoot] {
+        assert_publication_cuts(kind, &["io", "full"]).await?;
+    }
+    Ok(())
+}
+
+async fn assert_publication_cuts(kind: PublicationKind, faults: &[&str]) -> TestResult {
     let directory = tempfile::tempdir()?;
     let baseline = directory.path().join("baseline");
     seed(&baseline, kind).await?;
@@ -143,10 +155,11 @@ async fn assert_publication_cuts(kind: PublicationKind) -> TestResult {
         "the real transaction bypassed physical crash boundaries"
     );
     assert_recovery(&baseline, kind, true).await?;
+    let directory = directory.path();
     let jobs = (0..count)
         .flat_map(|ordinal| {
-            ["before", "after", "torn"].map(|fault| {
-                let root = directory.path().join(format!("{ordinal}-{fault}"));
+            faults.iter().copied().map(move |fault| {
+                let root = directory.join(format!("{ordinal}-{fault}"));
                 move || {
                     tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -164,9 +177,9 @@ async fn assert_publication_cuts(kind: PublicationKind) -> TestResult {
         })
         .collect();
     let completed = crate::test_support::finish_physical_cuts(jobs);
-    assert_eq!(completed.len(), count * 3);
+    assert_eq!(completed.len(), count * faults.len());
     eprintln!(
-        "WORKSPACE_CRASH_CUTS kind={kind:?} physical={count} cases={}",
+        "WORKSPACE_CRASH_CUTS kind={kind:?} faults={faults:?} physical={count} cases={}",
         completed.len()
     );
     Ok(())
@@ -196,20 +209,28 @@ fn commit_crash_child() -> TestResult {
             None
         };
         let (schedule, mut events) = Schedule::seeded(113);
+        let mut returned_fault = None;
         if let Ok(ordinal) = std::env::var("ACYCLIC_WORKSPACE_CRASH_ORDINAL") {
             let fault = match std::env::var("ACYCLIC_WORKSPACE_CRASH_FAULT")?.as_str() {
                 "before" => DurableFault::Before,
                 "after" => DurableFault::After,
                 "torn" => DurableFault::Torn(1),
+                "io" => DurableFault::Failed,
+                "full" => DurableFault::DiskFull,
                 _ => return Err("unknown workspace crash fault".into()),
             };
             schedule.cut_at(ordinal.parse()?, fault);
+            if matches!(fault, DurableFault::Failed | DurableFault::DiskFull) {
+                returned_fault = Some((ordinal.parse::<usize>()?, fault));
+            }
         }
         let observed = schedule.clone();
         let report = root.join("physical-count");
         let driver = tokio::spawn(async move {
             while let Some(boundary) = events.recv().await {
-                if let Some(fault) = observed.storage_fault() {
+                if returned_fault.is_none()
+                    && let Some(fault) = observed.storage_fault()
+                {
                     std::fs::write(&report, (fault.ordinal + 1).to_string()).unwrap();
                     // Exit at the original worker's completion event, before
                     // releasing its acknowledgement or unwinding store owners.
@@ -240,12 +261,40 @@ fn commit_crash_child() -> TestResult {
         schedule.drained().await;
         driver.abort();
         let _ = driver.await;
-        result?;
+        if let Some((ordinal, fault)) = returned_fault {
+            let error = result.expect_err("a refused physical operation cannot be acknowledged");
+            let mut cause: &(dyn Error + 'static) = error.as_ref();
+            let original = loop {
+                if let Some(io) = cause.downcast_ref::<std::io::Error>()
+                    && let Some(original) = io
+                        .get_ref()
+                        .and_then(|inner| inner.downcast_ref::<InjectedStorageFault>())
+                {
+                    assert_eq!(
+                        io.kind(),
+                        if fault == DurableFault::DiskFull {
+                            std::io::ErrorKind::StorageFull
+                        } else {
+                            std::io::ErrorKind::Other
+                        }
+                    );
+                    break original;
+                }
+                cause = cause.source().unwrap_or_else(|| {
+                    panic!("publication erased the original storage cause: {error:?}")
+                });
+            };
+            assert_eq!(original.ordinal, ordinal);
+            assert_eq!(original.fault, fault);
+            assert_eq!(schedule.storage_fault().as_ref(), Some(original));
+        } else {
+            result?;
+        }
         std::fs::write(
             root.join("physical-count"),
             schedule.durable_write_count().to_string(),
         )?;
         // The acknowledged case also leaves all live store owners in place.
-        std::process::exit(0);
+        std::process::exit(if returned_fault.is_some() { 87 } else { 0 });
     })
 }
