@@ -1,8 +1,10 @@
 use super::{
-    Context, ModelContentPart, quota_vector, retire_vector,
+    Context, ModelContentPart, quota_vector,
     selection::{compaction_error, compaction_step},
 };
 use crate::{Result, model::ModelRole};
+use acyclic_collections::{CompiledPrefixError, CompiledPrefixIndex, IndexReadWork};
+use std::cell::Cell;
 
 /// A message's dependency component. Only roots own the size and final endpoint.
 /// An endpoint at the source length marks an incomplete exchange.
@@ -20,14 +22,35 @@ pub(super) fn exchange_groups(
     context: &Context,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Vec<Group>> {
-    let parts = context
-        .messages
-        .iter()
-        .try_fold(0usize, |count, message| {
-            count.checked_add(message.content.parts().len())
-        })
-        .ok_or_else(|| compaction_error(quota.work(), "context part count overflows"))?;
-    let mut pending = quota_vector::<(&str, usize)>(parts, quota)?;
+    let calls = context.messages.iter().try_fold(0usize, |count, message| {
+        compaction_step(quota)?;
+        message
+            .content
+            .parts()
+            .iter()
+            .try_fold(count, |count, part| {
+                compaction_step(quota)?;
+                if matches!(part, ModelContentPart::ToolCall(_)) {
+                    count.checked_add(1).ok_or_else(|| {
+                        compaction_error(quota.work(), "context call count overflows")
+                    })
+                } else {
+                    Ok(count)
+                }
+            })
+    })?;
+    let mut pending = quota_vector::<(&str, Cell<Option<usize>>)>(calls, quota)?;
+    for message in &context.messages {
+        compaction_step(quota)?;
+        for part in message.content.parts() {
+            compaction_step(quota)?;
+            if let ModelContentPart::ToolCall(call) = part {
+                pending.push((&call.call_id, Cell::new(None)));
+            }
+        }
+    }
+    let pending_bytes =
+        (pending.capacity() * std::mem::size_of::<(&str, Cell<Option<usize>>)>()) as u64;
     let mut groups = quota_vector::<Group>(context.messages.len(), quota)?;
     for position in 0..context.messages.len() {
         compaction_step(quota)?;
@@ -37,25 +60,51 @@ pub(super) fn exchange_groups(
             size: 1,
         });
     }
+    let original = crate::wire_codec::BorrowedIndexWork::new(quota.work());
+    let mut work = &original;
+    let pending = match CompiledPrefixIndex::from_repeated_entries(
+        pending,
+        |entry| entry.0.as_bytes(),
+        &mut work,
+    ) {
+        Ok(index) => index,
+        Err(CompiledPrefixError::Work(error)) => return Err(error),
+        Err(CompiledPrefixError::Allocation(cause)) => {
+            return original.with(|work| {
+                Err(match work.as_deref_mut() {
+                    Some(io) => io.allocation_failure(cause),
+                    None => crate::Error::Invalid(cause.to_string()),
+                })
+            });
+        }
+        Err(CompiledPrefixError::Capacity | CompiledPrefixError::Order(_)) => {
+            return original.with(|work| {
+                Err(compaction_error(
+                    work,
+                    "tool dependency index cannot be represented",
+                ))
+            });
+        }
+    };
     let mut reasoning_start = None;
     for (position, message) in context.messages.iter().enumerate() {
-        compaction_step(quota)?;
+        work.examine(1)?;
         if message.role != ModelRole::Assistant {
             reasoning_start = None;
         }
         for part in message.content.parts() {
-            compaction_step(quota)?;
+            work.examine(1)?;
             if message.role == ModelRole::Assistant {
                 match part {
                     ModelContentPart::Reasoning { block } if !block.continuity.is_empty() => {
                         let first = *reasoning_start.get_or_insert(position);
-                        link(&mut groups, first, position, quota)?;
+                        link(&mut groups, first, position, &mut work)?;
                     }
                     ModelContentPart::Text {
                         native: Some(_), ..
                     } => {
                         let first = *reasoning_start.get_or_insert(position);
-                        link(&mut groups, first, position, quota)?;
+                        link(&mut groups, first, position, &mut work)?;
                     }
                     ModelContentPart::ToolCall(call) => {
                         let first = match call.native {
@@ -63,7 +112,7 @@ pub(super) fn exchange_groups(
                             None => reasoning_start,
                         };
                         if let Some(first) = first {
-                            link(&mut groups, first, position, quota)?;
+                            link(&mut groups, first, position, &mut work)?;
                         }
                     }
                     _ => {}
@@ -71,22 +120,37 @@ pub(super) fn exchange_groups(
             }
             match part {
                 ModelContentPart::ToolCall(call) => {
-                    if let Some(&(_, first)) = pending.iter().find(|(id, _)| *id == call.call_id) {
+                    let entry = pending
+                        .matches(call.call_id.as_bytes(), |_| false, &mut work)?
+                        .exact
+                        .map(|matched| matched.entry);
+                    let Some((_, slot)) = entry else {
+                        return original.with(|work| {
+                            Err(compaction_error(
+                                work,
+                                "tool call is absent from its dependency index",
+                            ))
+                        });
+                    };
+                    if let Some(first) = slot.get() {
                         // Reusing an outstanding id cannot make its earlier
                         // call independently evictable from the same result.
-                        link(&mut groups, first, position, quota)?;
+                        link(&mut groups, first, position, &mut work)?;
                     } else {
-                        pending.push((&call.call_id, position));
+                        slot.set(Some(position));
                     }
                 }
                 ModelContentPart::ToolResult { call_id, .. } => {
-                    match pending.iter().position(|(id, _)| *id == call_id) {
-                        Some(index) => {
-                            let first = pending.swap_remove(index).1;
-                            link(&mut groups, first, position, quota)?;
+                    match pending
+                        .matches(call_id.as_bytes(), |_| false, &mut work)?
+                        .exact
+                        .and_then(|matched| matched.entry.1.take())
+                    {
+                        Some(first) => {
+                            link(&mut groups, first, position, &mut work)?;
                         }
                         None => {
-                            let root = root(&mut groups, position, quota)?;
+                            let root = root(&mut groups, position, &mut work)?;
                             groups[root].end = context.messages.len();
                         }
                     }
@@ -95,32 +159,36 @@ pub(super) fn exchange_groups(
             }
         }
     }
-    for &(_, position) in &pending {
-        let root = root(&mut groups, position, quota)?;
+    for (_, slot) in pending.entries() {
+        work.examine(1)?;
+        let Some(position) = slot.get() else { continue };
+        let root = root(&mut groups, position, &mut work)?;
         // An unfinished exchange has no valid cut after its first message.
         groups[root].end = context.messages.len();
     }
     for position in 0..groups.len() {
-        root(&mut groups, position, quota)?;
+        root(&mut groups, position, &mut work)?;
     }
-    retire_vector(pending, quota)?;
+    drop(pending);
+    drop(original);
+    quota.relinquish(pending_bytes)?;
     Ok(groups)
 }
 
 fn root(
     groups: &mut [Group],
     position: usize,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    work: &mut impl IndexReadWork<Error = crate::Error>,
 ) -> Result<usize> {
-    compaction_step(quota)?;
+    work.examine(1)?;
     let mut root = position;
     while groups[root].root != root {
-        compaction_step(quota)?;
+        work.examine(1)?;
         root = groups[root].root;
     }
     let mut next = position;
     while groups[next].root != root {
-        compaction_step(quota)?;
+        work.examine(1)?;
         let parent = groups[next].root;
         groups[next].root = root;
         next = parent;
@@ -133,10 +201,10 @@ fn link(
     groups: &mut [Group],
     first: usize,
     last: usize,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    work: &mut impl IndexReadWork<Error = crate::Error>,
 ) -> Result<()> {
-    let a = root(groups, first, quota)?;
-    let b = root(groups, last, quota)?;
+    let a = root(groups, first, work)?;
+    let b = root(groups, last, work)?;
     if a != b {
         // Minimum roots let selection propagate dependencies in two linear passes.
         let (first, last) = (a.min(b), a.max(b));
