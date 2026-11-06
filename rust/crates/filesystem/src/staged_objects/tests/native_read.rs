@@ -730,9 +730,162 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             drop(spill_file);
         }
     }
+    // Interleaving resident members cannot split the original durable miss
+    // batch. Duplicate misses retain their positions and their original aliases.
+    let resident = blob(OwnedBytes::from_static(b"mixed resident member"));
+    store
+        .put(
+            resident.0,
+            resident.1.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    let mixed = [
+        durable[0].clone(),
+        resident.clone(),
+        durable[1].clone(),
+        durable[0].clone(),
+    ];
+    let mixed_requests = mixed.each_ref().map(|(id, bytes)| ObjectReadRequest {
+        object_id: *id,
+        maximum_bytes: bytes.len() as u64,
+    });
+    let mut batch_preserved = true;
+    let mut concurrent_admission = true;
+    for native in [false, true] {
+        for stored in [false, true] {
+            let original = NativeMaterializationWork::new(native_read_budget(), &token)
+                .map_err(|(cause, _)| cause)?;
+            let baseline = original.live_allocation_bytes();
+            let mut work = if native {
+                AuthorityWork::native(&original, &token)
+            } else {
+                AuthorityWork::new(native_read_budget(), &token)
+            };
+            let (values, allocation) = if native {
+                let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(50);
+                let mut read = Box::pin(schedule.scope(async {
+                    if stored {
+                        store.read_many_stored(&mixed_requests, &mut work).await
+                    } else {
+                        store.read_many(&mixed_requests, &mut work).await
+                    }
+                }));
+                let first_poll = futures::poll!(read.as_mut());
+                // All native submission barriers are still held. Counting
+                // accepted jobs here cannot mistake a later scalar for overlap.
+                let admitted = schedule.pending_native_work();
+                let driver = tokio::spawn(async move {
+                    while let Some(boundary) = events.recv().await {
+                        boundary.release();
+                    }
+                });
+                let result = match first_poll {
+                    std::task::Poll::Ready(result) => result,
+                    std::task::Poll::Pending => read.await,
+                };
+                schedule.drained().await;
+                driver.abort();
+                let _ = driver.await;
+                concurrent_admission &= admitted >= 2;
+                result?
+            } else if stored {
+                store.read_many_stored(&mixed_requests, &mut work).await?
+            } else {
+                store.read_many(&mixed_requests, &mut work).await?
+            };
+            assert_eq!(values.len(), mixed.len());
+            for (read, (_, expected)) in values.iter().zip(&mixed) {
+                assert_eq!(&read.bytes, expected, "mixed batch changed input order");
+            }
+            assert_eq!(work.spent().object_probes, 3);
+            if !native {
+                batch_preserved &= work.spent().backend_read_operations == 1;
+            }
+            let alias = values[2].bytes.clone();
+            drop(values);
+            drop(allocation);
+            if native {
+                assert!(original.live_allocation_bytes() > baseline);
+            }
+            drop(alias);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
+    assert_eq!(
+        (batch_preserved, concurrent_admission),
+        (true, true),
+        "mixed reads must preserve the provider batch and admit independent native misses before first release"
+    );
+    for native in [false, true] {
+        for cancelled in [false, true] {
+            let caller = CancellationToken::new();
+            let mut budget = native_read_budget();
+            if !cancelled {
+                budget.items_returned = 0;
+            }
+            let original =
+                NativeMaterializationWork::new(budget, &caller).map_err(|(cause, _)| cause)?;
+            let baseline = original.live_allocation_bytes();
+            let mut work = if native {
+                AuthorityWork::native(&original, &caller)
+            } else {
+                AuthorityWork::new(budget, &caller)
+            };
+            if cancelled {
+                caller.cancel();
+            }
+            let result = store.read_many(&mixed_requests, &mut work).await;
+            if cancelled {
+                assert!(matches!(
+                    result,
+                    Err(ObjectStoreError::Cancelled)
+                        | Err(ObjectStoreError::Native(
+                            NativeTreeMaterializationError::Cancelled
+                        ))
+                ));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                        counter: "items_returned",
+                        ..
+                    })) | Err(ObjectStoreError::Native(
+                        NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
+                            counter: "items_returned",
+                            ..
+                        })
+                    ))
+                ));
+            }
+            assert_eq!(work.spent().object_probes, 0);
+            assert_eq!(work.spent().backend_read_operations, 0);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        }
+    }
+    // No provider result owner exists for a wholly resident batch.
+    let original =
+        NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(cause, _)| cause)?;
+    let baseline = original.live_allocation_bytes();
+    let resident_request = ObjectReadRequest {
+        object_id: resident.0,
+        maximum_bytes: resident.1.len() as u64,
+    };
+    let (values, allocation) = store
+        .read_many(
+            &[resident_request, resident_request],
+            &mut AuthorityWork::native(&original, &token),
+        )
+        .await?;
+    assert!(values.iter().all(|read| read.bytes == resident.1));
+    drop(values);
+    drop(allocation);
+    assert_eq!(original.receipt().backend_read_operations, 0);
+    assert_eq!(original.live_allocation_bytes(), baseline);
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let requests = [
+        durable_requests[0],
         ObjectReadRequest {
             object_id: first,
             maximum_bytes: first_bytes.len() as u64,
@@ -741,19 +894,22 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             object_id: second,
             maximum_bytes: second_bytes.len() as u64,
         },
+        durable_requests[1],
     ];
     let batch = store
         .read_many(&requests, &mut crate::AuthorityWork::native(&work, &token))
         .await
         .map(|(values, allocation)| (values, allocation.expect("native batch allocation")))?;
-    assert_eq!(batch.0.len(), 2);
-    assert_eq!(batch.0[0].bytes, first_bytes);
-    assert_eq!(batch.0[1].bytes, second_bytes);
+    assert_eq!(batch.0.len(), 4);
+    assert_eq!(batch.0[0].bytes, durable[0].1);
+    assert_eq!(batch.0[1].bytes, first_bytes);
+    assert_eq!(batch.0[2].bytes, second_bytes);
+    assert_eq!(batch.0[3].bytes, durable[1].1);
     assert_eq!(
         work.receipt().object_bytes_read,
-        (first_bytes.len() + second_bytes.len()) as u64
+        (first_bytes.len() + second_bytes.len() + durable[0].1.len() + durable[1].1.len()) as u64
     );
-    let alias = batch.0[0].bytes.clone();
+    let alias = batch.0[1].bytes.clone();
     let (values, allocation) = batch;
     assert_eq!(
         allocation.bytes(),
