@@ -155,13 +155,15 @@ impl StockExecution<'_> {
         Ok(self.output_tokens())
     }
 
-    pub(super) async fn validate_summary_capacity(
+    /// A fresh summary dispatch consumes the same request that passed capacity
+    /// admission. A retained attempt instead checks its source during recovery.
+    pub(super) async fn prepare_summary_admission(
         &self,
         executor: &StockExecution<'_>,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-    ) -> Result<()> {
+    ) -> Result<Option<crate::model::PreparedModelRequest>> {
         let (_, records) = self
             .model_records(journal, input.operation_id, step, ModelPurpose::Summary)
             .await?;
@@ -169,7 +171,7 @@ impl StockExecution<'_> {
             .iter()
             .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
         {
-            return Ok(());
+            return Ok(None);
         }
         let capacity =
             stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io)?;
@@ -189,6 +191,6 @@ impl StockExecution<'_> {
                 "summary input exceeds selected model capacity",
             ));
         }
-        Ok(())
+        Ok(Some(prepared))
     }
 }

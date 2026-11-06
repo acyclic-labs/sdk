@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::compaction::CompactionSource;
 
 // Original preparation factories from 3d2f72e2a. Both sides use the current
 // persistence codec, while context transformation and admission stay independent.
@@ -234,7 +235,7 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        projection: ResponseProjection,
+        mut projection: ResponseProjection,
         accounting: Option<ContextAccounting>,
         prepared: crate::model::PreparedModelRequest,
         records: &[ExecutionRecord],
@@ -253,7 +254,13 @@ impl StockExecution<'_> {
                 let input_tokens =
                     with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
-                    .retained_compacted_response(journal, input, step, &projection, records)
+                    .retained_compacted_response(
+                        journal,
+                        input,
+                        step,
+                        (&mut projection, &prepared),
+                        records,
+                    )
                     .await?
                 {
                     return Ok(retained);
@@ -285,12 +292,19 @@ impl StockExecution<'_> {
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                let pre_stage = projection.canonical.is_some();
+                let source = if projection.canonical.is_some() {
+                    CompactionSource::Base {
+                        context: source,
+                        count: None,
+                    }
+                } else {
+                    CompactionSource::Projected
+                };
                 self.compact_response(
                     journal,
                     (input, step, 0),
                     (projection, accounting),
-                    (source, pre_stage),
+                    source,
                     policy,
                 )
                 .await
