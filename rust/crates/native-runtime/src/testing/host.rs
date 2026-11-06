@@ -118,6 +118,21 @@ impl Host {
     }
 
     fn block<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
+        // Enter only for the explicitly async callback. Synchronous work before
+        // and after it must remain outside Tokio so blocking locks stay valid.
+        // Handle::block_on also installs this runtime's next deterministic RNG
+        // seed; Handle::enter alone leaves select! using the worker's entropy.
+        let runtime = Context::simulation()
+            .filter(|context| context.schedule.is_seeded())
+            .and_then(|context| context.schedule.0.state().wall.runtime.clone());
+        let mut future = std::pin::pin!(future);
+        match runtime {
+            Some(runtime) => runtime.block_on(async { self.block_future(future.as_mut()) }),
+            None => self.block_future(future.as_mut()),
+        }
+    }
+
+    fn block_future<F: Future>(self: &Arc<Self>, future: F) -> F::Output {
         let waker = Waker::from(self.clone());
         let mut cx = PollContext::from_waker(&waker);
         let mut future = std::pin::pin!(future);
