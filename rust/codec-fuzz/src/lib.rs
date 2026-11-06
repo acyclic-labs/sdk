@@ -586,6 +586,9 @@ pub fn actor_seeds()
             "guest::GuestError::encode, shared invocation/failure record cause writer",
         ));
     }
+    seeds.extend(futures::executor::block_on(actor_failure_seeds(
+        Arc::clone(&clock),
+    ))?);
     for (name, bytes) in
         futures::executor::block_on(acyclic_actors::call::model::codec_seeds(clock))?
     {
@@ -720,6 +723,166 @@ pub fn actor_seeds()
     seeds.extend(actor_socket_seeds()?);
     seeds.extend(actor_socket_input_seeds()?);
     seeds.extend(actor_socket_ledger_seeds()?);
+    Ok(seeds)
+}
+
+async fn actor_failure_seeds(
+    clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
+) -> Result<Vec<(&'static str, Vec<u8>, &'static str)>, Box<dyn std::error::Error>> {
+    use acyclic_actors::{
+        guest::{GuestError, Trigger},
+        local::{
+            FailureDisposition, FailureEntry, FailureResolution, PreparedPublish, Store,
+            Subscription,
+        },
+    };
+    use acyclic_stream::{
+        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryLimits, MemoryStream,
+        ReadRequest, RevisionCut, StreamPath, StreamProvider as _, StreamProviderExt as _,
+    };
+    use futures::TryStreamExt as _;
+    use std::{collections::BTreeMap, sync::Arc};
+
+    async fn selected(
+        provider: &MemoryStream,
+        path: StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::Record, Box<dyn std::error::Error>> {
+        provider
+            .read(ReadRequest {
+                path,
+                key: None,
+                from,
+                limit: 1,
+                at_least: RevisionCut::default(),
+            })
+            .await?
+            .try_next()
+            .await?
+            .ok_or_else(|| "missing committed failure record".into())
+    }
+
+    let provider = Arc::new(MemoryStream::new_with_clock(MemoryLimits::default(), clock));
+    let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/failures")?);
+    let mut seeds = Vec::new();
+    for (name, resolution) in [
+        ("failed-input-purge-v1", FailureResolution::Purge),
+        ("failed-input-replay-v1", FailureResolution::Replay),
+    ] {
+        let actor = acyclic_actors::addressing::ActorReference::new(
+            b"account",
+            b"namespace",
+            name.as_bytes(),
+        )?;
+        let input_path = StreamPath::new(format!("codec/{name}/inbox"))?;
+        let mut create =
+            PreparedPublish::foreign(IdempotencyKey::new(format!("{name}/create").into_bytes())?);
+        for effect in store.create(
+            &actor,
+            BTreeMap::from([(
+                "inbox".into(),
+                Subscription {
+                    path: input_path.clone(),
+                    cursor: 0,
+                },
+            )]),
+            None,
+        )? {
+            create.join(effect)?;
+        }
+        store.submit(create).await?;
+        provider
+            .append(AppendRequest {
+                path: input_path.clone(),
+                records: vec![bytes::Bytes::from_static(b"original failed input").into()],
+                if_tail: None,
+                idempotency_key: IdempotencyKey::new(format!("{name}/input").into_bytes())?,
+            })
+            .await?;
+        let input = selected(&provider, input_path.clone(), 0).await?;
+        let created = store.load(&actor).await?;
+        let snapshot = store
+            .claim(
+                &created,
+                1,
+                IdempotencyKey::new(format!("{name}/claim").into_bytes())?,
+            )
+            .await?;
+        let cause = GuestError::Handler("original failed-input cause".into());
+        store
+            .submit(store.prepare_failed_input(
+                &snapshot,
+                1,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: input.sequence,
+                },
+                &input,
+                &cause,
+                IdempotencyKey::new(format!("{name}/failure").into_bytes())?,
+            )?)
+            .await?;
+        let page = provider
+            .children_page(ChildrenPageRequest {
+                parent: Some(store.failures_path(&actor)?),
+                after: None,
+                hierarchy_version: None,
+                tail_stream: Some(StreamPath::new("status")?),
+                limit: 1,
+            })
+            .await?;
+        let child = page
+            .children
+            .first()
+            .ok_or("missing original failure child")?;
+        let record = child
+            .tail_record
+            .as_ref()
+            .ok_or("missing original failure status")?;
+        let FailureEntry::Failed(failed) = FailureEntry::decode(&child.path, record)? else {
+            return Err("original failure writer lost its failed input".into());
+        };
+        assert_eq!(
+            failed.cause(),
+            &cause,
+            "failed-input codec lost original cause"
+        );
+        assert_eq!(failed.source(), &input_path);
+        assert_eq!(failed.subscription(), "inbox");
+        seeds.push((
+            name,
+            acyclic_stream::wire_codec::record_wire(record.clone(), None).encode_to_vec(),
+            "Store::prepare_failed_input original committed status and wire_codec::record_wire",
+        ));
+        let captured = selected(&provider, failed.input_path()?, 0).await?;
+        assert_eq!(failed.input(&captured)?, input);
+        let disposition = match resolution {
+            FailureResolution::Replay => FailureDisposition::Replay(&captured),
+            FailureResolution::Purge => FailureDisposition::Purge,
+        };
+        store
+            .submit(store.prepare_disposition(
+                &actor,
+                &failed,
+                disposition,
+                IdempotencyKey::new(format!("{name}/resolve").into_bytes())?,
+            )?)
+            .await?;
+        let terminal = selected(&provider, record.origin.clone(), 1).await?;
+        assert_eq!(
+            FailureEntry::decode(&child.path, &terminal)?,
+            FailureEntry::Resolved(resolution)
+        );
+        let name = match resolution {
+            FailureResolution::Replay => "failed-input-replayed-v1",
+            FailureResolution::Purge => "failed-input-purged-v1",
+        };
+        seeds.push((
+            name,
+            acyclic_stream::wire_codec::record_wire(terminal, None).encode_to_vec(),
+            "Store::prepare_disposition original committed status and wire_codec::record_wire",
+        ));
+    }
     Ok(seeds)
 }
 
@@ -1336,6 +1499,11 @@ pub fn actor_codecs(bytes: &[u8]) {
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
         && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
     {
+        if let Some(path) = record.origin.as_str().strip_suffix("/status")
+            && let Ok(path) = acyclic_stream::StreamPath::new(path.to_owned())
+        {
+            let _ = acyclic_actors::local::FailureEntry::decode(&path, &record);
+        }
         // Both readers consume this same committed Stream wire envelope.
         let _ = acyclic_actors::call::Entry::decode(&record);
         let _ = acyclic_actors::call::fence(&record);

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/actors/src/local/disposition.rs b/rust/crates/actors/src/local/disposition.rs
+--- a/rust/crates/actors/src/local/disposition.rs
++++ b/rust/crates/actors/src/local/disposition.rs
+@@ -210,7 +210,7 @@ impl FailureEntry {
+                     subscription: failed.subscription,
+                     source,
+                     input,
+-                    cause,
++                    cause: GuestError::Handler(format!("lost original {cause}")),
+                 }))
+             }
+             (None, 1, 1) => Ok(Self::Resolved(FailureResolution::Replay)),
