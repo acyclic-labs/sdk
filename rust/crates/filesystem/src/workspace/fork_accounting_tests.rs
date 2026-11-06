@@ -440,12 +440,29 @@ async fn lineage_resolution_uses_original_name_validation_work()
         required + 1,
         "lineage validation detached from original accounting"
     );
-    assert!(
-        live >= baseline,
-        "lineage validation retired earlier original backing"
+    assert_eq!(
+        live, baseline,
+        "lineage validation retained temporary names"
     );
+    assert_eq!(
+        spent.bytes_copied, 0,
+        "lineage validation copied temporary names"
+    );
+    let no_allocations = graph
+        .resolve(
+            grandchild.id(),
+            WorkBudget {
+                allocation_operations: 0,
+                ..budget
+            },
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(no_allocations.work.allocation_operations, 0);
     let native =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let native_before = native.receipt();
+    let native_live = native.live_allocation_bytes();
     graph
         .authorize_join(grandchild.id(), child.id(), &native, &cancellation)
         .await?;
@@ -454,6 +471,12 @@ async fn lineage_resolution_uses_original_name_validation_work()
         required,
         "native lineage validation detached from original accounting"
     );
+    assert_eq!(native.live_allocation_bytes(), native_live);
+    assert_eq!(
+        native.receipt().allocation_operations,
+        native_before.allocation_operations
+    );
+    assert_eq!(native.receipt().bytes_copied, native_before.bytes_copied);
     assert!(matches!(
         graph
             .authorize_join(grandchild.id(), root.id(), budget, &cancellation)
@@ -482,7 +505,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
             cancellation.cancel();
         }
         let constrained = WorkBudget {
-            allocation_operations: 0,
+            items_examined: 0,
             ..budget
         };
         let failures = [
@@ -519,7 +542,7 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     failure.error,
                     crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
                         crate::WorkError::BudgetExceeded {
-                            counter: "allocation_operations",
+                            counter: "items_examined",
                             ..
                         }
                     ))
