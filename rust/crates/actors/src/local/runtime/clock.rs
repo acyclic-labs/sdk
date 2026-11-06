@@ -41,7 +41,7 @@ impl Clock for SystemClock {
         deadline_unix_ms: u64,
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
         let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());
-        sleep(milliseconds)
+        Box::pin(sleep(milliseconds))
     }
 }
 
@@ -112,11 +112,9 @@ impl Clock for ControlledClock {
 }
 
 /// The original platform deadline, including registration and producer failure.
-pub(super) fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, Result<(), ClockError>> {
-    Box::pin(async move {
-        PlatformExecutor
-            .sleep(milliseconds)
-            .await
-            .map_err(ClockError::from)
-    })
+pub(super) async fn sleep(milliseconds: u64) -> Result<(), ClockError> {
+    PlatformExecutor
+        .sleep(milliseconds)
+        .await
+        .map_err(ClockError::from)
 }
