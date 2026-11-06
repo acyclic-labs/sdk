@@ -57,6 +57,122 @@ async fn check_trusted_view<P: StreamProvider>(provider: &P) -> Result<(), Strea
     request.limit = 1;
     view.retained.truncate(1);
     wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?)?.validate_for(&request)?;
+    check_child_selection(provider).await?;
+    Ok(())
+}
+
+async fn check_child_selection<P: StreamProvider>(provider: &P) -> Result<(), StreamError> {
+    let selected = ChildrenPageRequest {
+        parent: Some(StreamPath::new("membership")?),
+        after: None,
+        tail_stream: Some(StreamPath::new("events")?),
+        hierarchy_version: None,
+        limit: 2,
+    };
+    let empty_version = provider
+        .children_page(selected.clone())
+        .await?
+        .hierarchy_version;
+    for path in [
+        "membership/a/events",
+        "membership/b/events",
+        "membership/c/events",
+    ] {
+        seed(provider, &StreamPath::new(path)?).await?;
+    }
+    provider
+        .fork(ForkRequest {
+            source: StreamPath::new("membership/a")?,
+            destination: StreamPath::new("membership/d")?,
+            exclude: Vec::new(),
+            at_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let request = HeadsRequest {
+        retained: Default::default(),
+        durable_through: None,
+        projection: HeadProjection::Watermarks,
+        paths: Default::default(),
+        children: Some(selected.clone()),
+        limit: selected.limit,
+        at_least: Default::default(),
+    };
+    let view = provider.heads(request.clone()).await?;
+    view.validate_for(&request)?;
+    let view = wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?)?;
+    view.validate_for(&request)?;
+    let page = view.children.as_ref().ok_or(StreamError::InvalidResponse)?;
+    assert_eq!(page.children.len(), 2);
+    assert!(page.next_after.is_some());
+    assert_eq!(provider.children_page(selected.clone()).await?, *page);
+    let refuses = |candidate: &Heads, selection: &HeadsRequest| {
+        assert_eq!(
+            candidate.validate_for(selection),
+            Err(StreamError::InvalidResponse),
+            "child page escaped its original selection"
+        );
+    };
+    for change in 0..4 {
+        let mut changed = request.clone();
+        let selection = changed
+            .children
+            .as_mut()
+            .ok_or(StreamError::InvalidResponse)?;
+        match change {
+            0 => selection.parent = Some(page.children[0].path.clone()),
+            1 => selection.after = Some(page.children[0].path.clone()),
+            2 => selection.hierarchy_version = Some(empty_version),
+            _ => selection.tail_stream = None,
+        }
+        refuses(&view, &changed);
+    }
+    let mut pinned = request.clone();
+    pinned
+        .children
+        .as_mut()
+        .ok_or(StreamError::InvalidResponse)?
+        .hierarchy_version = Some(page.hierarchy_version);
+    view.validate_for(&pinned)?;
+    for change in 0..4 {
+        let mut changed = view.clone();
+        let changed_page = changed
+            .children
+            .as_mut()
+            .ok_or(StreamError::InvalidResponse)?;
+        match change {
+            0 => changed_page.children.reverse(),
+            1 => changed_page.children[1] = changed_page.children[0].clone(),
+            2 => changed_page.next_after = Some(page.children[0].path.clone()),
+            _ => changed_page.next_after = selected.parent.clone(),
+        }
+        refuses(&changed, &request);
+    }
+    // Authorization can hide every visible child while retaining the original
+    // provider continuation. It still progresses beyond the caller's cursor.
+    let mut hidden = view.clone();
+    hidden
+        .children
+        .as_mut()
+        .ok_or(StreamError::InvalidResponse)?
+        .children
+        .clear();
+    hidden.validate_for(&request)?;
+    let mut continued = request.clone();
+    continued
+        .children
+        .as_mut()
+        .ok_or(StreamError::InvalidResponse)?
+        .after = page.next_after.clone();
+    let next = provider.heads(continued.clone()).await?;
+    next.validate_for(&continued)?;
+    let mut stalled = next.clone();
+    stalled
+        .children
+        .as_mut()
+        .ok_or(StreamError::InvalidResponse)?
+        .next_after = page.next_after.clone();
+    refuses(&stalled, &continued);
     Ok(())
 }
 

@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=['claim', 'retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost'])
+parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection'])
 parser.add_argument("--instrumented", action="store_true",
                     help="challenge the actual projection fuzz target and explore 1000 inputs")
 arguments = parser.parse_args()
@@ -112,6 +112,12 @@ elif claim == "ready-source-race":
     test = "client_pool_loom::provider_source_publication_cannot_lose_its_wake"
     diagnostic = "provider source lost its publication wake"
     features = ["--no-default-features", "--features", "grpc,model-checking"]
+elif claim == "children-selection":
+    source = "rust/crates/stream/src/lib/head.rs"
+    crate = "acyclic-stream"
+    test = "head_tests::trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound"
+    diagnostic = "child page escaped its original selection"
+    features = ["--features", "local"]
 elif claim in ("ready-source-allocation", "ready-source-turn"):
     source = "rust/crates/stream/src/runtime/sources.rs"
     crate = "acyclic-stream"

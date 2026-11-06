@@ -457,6 +457,44 @@ pub struct ChildrenPage {
     pub next_after: Option<StreamPath>,
 }
 
+impl ChildrenPage {
+    /// Checks direct membership, ordering, continuation and projection against
+    /// the original selection. A continuation may name a child hidden by the
+    /// caller's authorization, including when the visible page is empty.
+    pub fn validate_for(&self, request: &ChildrenPageRequest) -> Result<(), StreamError> {
+        let direct = |path: &StreamPath| {
+            path.as_str().rsplit_once('/').map(|(parent, _)| parent)
+                == request.parent.as_ref().map(StreamPath::as_str)
+        };
+        if self.children.len() > request.limit as usize
+            || request
+                .hierarchy_version
+                .is_some_and(|version| version != self.hierarchy_version)
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        let mut previous = request.after.as_ref();
+        for child in &self.children {
+            child.validate_tail()?;
+            if !direct(&child.path)
+                || previous.is_some_and(|path| path >= &child.path)
+                || (request.tail_stream.is_none() && child.tail.is_some())
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+            previous = Some(&child.path);
+        }
+        if self.next_after.as_ref().is_some_and(|next| {
+            !direct(next)
+                || request.after.as_ref().is_some_and(|after| next <= after)
+                || previous.is_some_and(|last| next < last)
+        }) {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(())
+    }
+}
+
 /// Append fact retained in a committed envelope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommittedAppend {

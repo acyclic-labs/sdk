@@ -26,6 +26,11 @@ errors, complete receipts and actual arithmetic/allocation counts in the existin
 generated kernel property. A production mutation substitutes general charging
 and must fail the scalar arithmetic bound. Native ledger costs remain separate.
 
+The [child-selection control](children-selection/README.md) binds actual provider
+pages to the original parent, cursor, hierarchy fence and projection, including
+authorization-hidden children. Its production mutation restores tail-only
+validation; it does not establish flat supervisor/root ancestry.
+
 The [ready-source allocation control](ready-source-allocation/README.md) retains
 actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record
