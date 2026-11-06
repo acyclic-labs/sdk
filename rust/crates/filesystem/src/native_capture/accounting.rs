@@ -29,30 +29,11 @@ impl CaptureWorkScope {
     }
 
     pub(super) fn release(&mut self) -> Result<(), CaptureError> {
-        // Accepted workers and source packets keep the token until their payloads retire.
-        let Some(custody) = self.custody.take() else {
-            return Ok(());
-        };
-        while std::sync::Arc::strong_count(&custody) != 1 {
-            std::thread::yield_now();
-        }
-        let bytes = custody.take_retained_bytes();
-        drop(custody);
+        // The last physical owner publishes retirement, including after caller drop.
+        drop(self.custody.take());
         self.native
-            .with_original_leaf(|work| {
-                work.scope(
-                    |work| &mut work.capture_custody,
-                    None,
-                    |work| work.release(bytes),
-                )
-            })
-            .map_err(capture_demand_error)
-    }
-}
-
-impl Drop for CaptureWorkScope {
-    fn drop(&mut self) {
-        let _ = self.release();
+            .state(|work| work.reconcile_native_controls())
+            .map_err(CaptureError::from)
     }
 }
 
