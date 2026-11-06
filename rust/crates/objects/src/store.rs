@@ -544,9 +544,9 @@ impl<M> Account<M> {
         &self.state.availability
     }
 
-    /// This account's medium.
-    pub(crate) fn shared_medium(&self) -> Arc<M> {
-        Arc::clone(&self.medium)
+    /// Borrows the original medium for a call tied to this account.
+    pub(crate) fn borrowed_medium(&self) -> &M {
+        &self.medium
     }
 
     /// Transfers the original medium owner while retiring account-local state.

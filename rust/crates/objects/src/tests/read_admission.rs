@@ -2,12 +2,12 @@
 use super::*;
 use std::sync::{Arc, atomic::AtomicUsize};
 
-struct Applied {
-    inner: Arc<crate::LocalMedium>,
+struct Applied<'a> {
+    inner: &'a crate::LocalMedium,
     writes: AtomicUsize,
 }
 
-impl Applied {
+impl Applied<'_> {
     fn refuse<T>(&self) -> Result<T, MediumError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         Err(MediumError::Failed(
@@ -18,7 +18,7 @@ impl Applied {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl Medium for Applied {
+impl Medium for Applied<'_> {
     async fn create(&self, _: &str, _: OwnedBytes) -> Result<bool, MediumError> {
         self.refuse()
     }
@@ -94,7 +94,7 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     let retained = writer.retain(&root, vec![digest]).await?;
     let minimum = RevisionCut::of(retained.revision.ok_or("retain commits a revision")?);
     let selected = Store::new(Applied {
-        inner: Arc::clone(store.medium()),
+        inner: store.medium(),
         writes: AtomicUsize::new(0),
     });
     let reader = selected.account(b"original-account")?;

@@ -17,8 +17,8 @@ type Meter = Arc<dyn NativeReadMeter>;
 /// Temporary engine allocations remain charged for the call.
 /// Canonical payload bytes belong to the caller's logical-object accounting;
 /// medium envelopes, index keys and listings are neither source nor output bytes.
-pub(crate) struct Metered<M> {
-    inner: Arc<M>,
+pub(crate) struct Metered<'a, M> {
+    inner: &'a M,
     meter: Meter,
     held: Mutex<ReadAllocation>,
     refusal: Mutex<Option<std::io::Error>>,
@@ -26,8 +26,8 @@ pub(crate) struct Metered<M> {
     reserved: Mutex<u64>,
 }
 
-impl<M> Metered<M> {
-    fn new(inner: Arc<M>, meter: Meter) -> Self {
+impl<'a, M> Metered<'a, M> {
+    fn new(inner: &'a M, meter: Meter) -> Self {
         Self {
             held: Mutex::new(ReadAllocation::empty(&meter)),
             inner,
@@ -105,7 +105,7 @@ impl<M> Metered<M> {
 }
 
 #[async_trait::async_trait]
-impl<M: Medium> Medium for Metered<M> {
+impl<M: Medium> Medium for Metered<'_, M> {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.admit_write(false)?;
         self.inner.create(key, bytes).await
@@ -222,7 +222,7 @@ impl<M: Medium> Medium for Metered<M> {
     }
 }
 
-impl<M> Drop for Metered<M> {
+impl<M> Drop for Metered<'_, M> {
     /// Returns what the call's reservation did not spend.
     fn drop(&mut self) {
         let operations = *self
@@ -237,11 +237,11 @@ impl<M> Drop for Metered<M> {
 }
 
 /// `account` over the caller's meter.
-fn metered<M: Medium>(
-    account: &Account<M>,
+fn metered<'a, M: Medium>(
+    account: &'a Account<M>,
     meter: &Meter,
-) -> (Arc<Metered<M>>, Account<Metered<M>>) {
-    let medium = Arc::new(Metered::new(account.shared_medium(), Arc::clone(meter)));
+) -> (Arc<Metered<'a, M>>, Account<Metered<'a, M>>) {
+    let medium = Arc::new(Metered::new(account.borrowed_medium(), Arc::clone(meter)));
     let metered = account.over(Arc::clone(&medium));
     (medium, metered)
 }
@@ -266,7 +266,7 @@ fn results<T>(
 }
 
 fn checked<T, M>(
-    medium: &Metered<M>,
+    medium: &Metered<'_, M>,
     value: Result<T, crate::Error>,
 ) -> Result<T, NativeObjectsError> {
     medium.meter.check()?;

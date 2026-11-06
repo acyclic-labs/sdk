@@ -21,9 +21,10 @@ pub enum MediumError {
 /// implementation of blob semantics serves memory, local disk and S3 alike.
 /// Writes are atomic and immediately visible; [`Medium::flush`] makes them
 /// durable, so a caller pays for durability once, where it commits.
+/// A medium may borrow invocation-local state for the lifetime of its calls.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait Medium: acyclic_stream::ProviderPlatform + 'static {
+pub trait Medium: acyclic_stream::ProviderPlatform {
     /// Creates `key` with `bytes` unless it exists. `Ok(false)` leaves the existing
     /// value untouched. A visible key always holds complete bytes.
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError>;
