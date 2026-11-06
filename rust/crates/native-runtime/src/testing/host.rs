@@ -193,7 +193,7 @@ impl Host {
                     .as_mut()
                     .poll(&mut PollContext::from_waker(&io_waker))
                 {
-                    drop(self.notifications_finished());
+                    drop(self.step_finished());
                     return Poll::Ready(output);
                 }
                 let mut state = self.pool.start_or_saturation(&self.state);
@@ -243,9 +243,12 @@ impl Host {
         .await
     }
 
-    fn notifications_finished(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
+    fn step_finished(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        while state.notifying != 0 {
+        // A terminal may be published before the worker retires its current
+        // physical step. Finished/parked publication belongs to that same worker;
+        // observing the terminal alone cannot let the next simulated task race it.
+        while state.notifying != 0 || state.phase == Phase::Running {
             state = self
                 .changed
                 .wait(state)
@@ -286,7 +289,7 @@ impl Drop for Driver {
             return;
         }
         let driver = {
-            let mut state = self.0.notifications_finished();
+            let mut state = self.0.step_finished();
             state.detached = true;
             if state.phase == Phase::Waiting || (state.phase == Phase::Parked && state.ready) {
                 state.ready = false;
