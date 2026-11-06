@@ -182,11 +182,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 maximum_bytes,
                 crate::conversation::ContentAccess { ceiling, io },
             )
-            .await?;
+            .await?
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "selected file does not exist",
+                )
+            })?;
         Ok((file, bytes))
     }
 
     /// Resolve a file with its immutable publication identity under the caller ceiling.
+    /// Only absence of the selected path returns `None`; admission and backing
+    /// storage failures retain their original errors.
     pub async fn read_private_path_indexed(
         &self,
         volume: &VolumeRef,
@@ -195,11 +204,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         expected_generation: Option<&GenerationRef>,
         maximum_bytes: u64,
         access: crate::conversation::ContentAccess<'_, '_>,
-    ) -> Result<(
-        FileRef,
-        acyclic_stream::OwnedBytes,
-        Option<crate::OperationId>,
-    )> {
+    ) -> Result<
+        Option<(
+            FileRef,
+            acyclic_stream::OwnedBytes,
+            Option<crate::OperationId>,
+        )>,
+    > {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.require_private_directory(volume, grant, path, io)?;
@@ -277,41 +288,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
         let requested = (requested, requested_hold);
-        let bytes = read_generation(&generation, &requested.0, maximum_bytes, Some(io))
+        let bytes = read_generation_if_present(&generation, &requested.0, maximum_bytes, io)
             .await
             .map_err(path_read_refusal)?;
-        let bytes_hold = io.guard_bytes(&bytes)?;
-        let bytes = (bytes, bytes_hold);
-        let staged = read_content_metadata(&generation, path, io).await?;
-        let publication = staged
-            .as_ref()
-            .map(|file| file_publication(&file.0, Some(io)))
-            .transpose()?;
-        let reference = selected_reference(volume, path, generation.id(), &bytes.0, staged, io)?;
-        grant.require_file_read(&reference.0, Some(io))?;
-        if publication.is_some() {
-            Self::read_selected_range(
-                &generation.workspace(),
-                &generation,
-                &reference.0,
-                acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                },
-                io,
-            )
-            .await?;
-        }
+        let selected = if let Some(bytes) = bytes {
+            let bytes_hold = io.guard_bytes(&bytes)?;
+            let bytes = (bytes, bytes_hold);
+            let staged = read_content_metadata(&generation, path, io).await?;
+            let publication = staged
+                .as_ref()
+                .map(|file| file_publication(&file.0, Some(io)))
+                .transpose()?;
+            let reference =
+                selected_reference(volume, path, generation.id(), &bytes.0, staged, io)?;
+            grant.require_file_read(&reference.0, Some(io))?;
+            if publication.is_some() {
+                Self::read_selected_range(
+                    &generation.workspace(),
+                    &generation,
+                    &reference.0,
+                    acyclic_fs::ByteRange {
+                        offset: 0,
+                        length: 0,
+                    },
+                    io,
+                )
+                .await?;
+            }
+            Some((reference, bytes, publication))
+        } else {
+            None
+        };
         super::super::access::require_current(&workspace, &view.0, io).await?;
         if let Some((workspace, view)) = &data_access {
             super::super::access::require_current(workspace, &view.0, io).await?;
         }
         grant.recheck(Some(io))?;
-        reference.1.into_retained()?;
-        if let Some(hold) = bytes.1 {
-            hold.into_retained()?;
-        }
-        Ok((reference.0, bytes.0, publication))
+        selected
+            .map(|(reference, bytes, publication)| {
+                reference.1.into_retained()?;
+                if let Some(hold) = bytes.1 {
+                    hold.into_retained()?;
+                }
+                Ok((reference.0, bytes.0, publication))
+            })
+            .transpose()
     }
 
     /// Reads at most `maximum` bytes from `offset` of the private file at

@@ -165,7 +165,8 @@ mod tests {
                 4096,
                 ContentAccess::default(),
             )?
-            .await?;
+            .await?
+            .expect("the selected fixture file exists");
         assert_eq!(bytes.as_ref(), b"ou");
         let (_, remainder, _) = storage
             .content_reader()
@@ -180,7 +181,8 @@ mod tests {
                 2,
                 ContentAccess::default(),
             )?
-            .await?;
+            .await?
+            .expect("the selected fixture file exists");
         assert_eq!(remainder.as_ref(), b"t");
         first.append(&context, 2, true, b"err").await?;
         let terminal = ToolResult {
@@ -251,7 +253,8 @@ mod tests {
                 4096,
                 ContentAccess::default(),
             )?
-            .await?;
+            .await?
+            .expect("the selected fixture file exists");
         assert_eq!(visible.as_ref(), b"xx");
         assert!(
             Output::new(&context)

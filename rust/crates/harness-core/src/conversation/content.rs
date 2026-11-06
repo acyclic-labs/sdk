@@ -315,6 +315,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Resolves the named private file at the caller's pinned generation.
+    /// `None` means the authorized path is absent. Missing generations,
+    /// authority and backing content are errors, never optional absence.
     fn read_private_path<'a, 'io>(
         &'a self,
         _volume: &'a VolumeRef,
@@ -326,11 +328,11 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -871,11 +873,11 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where

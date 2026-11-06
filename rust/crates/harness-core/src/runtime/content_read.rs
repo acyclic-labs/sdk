@@ -290,7 +290,14 @@ impl TaskContext {
                     io,
                 },
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "selected file does not exist",
+                )
+            })?;
         crate::executor::with_history_io(io, |history| {
             scope.limits().validate_file(&file, history)?;
             if file.volume() != volume || file.path() != path {

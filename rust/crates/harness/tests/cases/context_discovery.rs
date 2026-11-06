@@ -83,11 +83,11 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
-            (
+            Option<(
                 acyclic_harness::conversation::FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where

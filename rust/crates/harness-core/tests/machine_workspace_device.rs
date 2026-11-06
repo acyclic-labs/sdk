@@ -1276,7 +1276,8 @@ async fn committed_handover(refused_close: bool) -> Result {
                                 2,
                                 acyclic_harness_core::conversation::ContentAccess::default(),
                             )?
-                            .await?;
+                            .await?
+                            .expect("the selected fixture file exists");
                         assert_eq!(bytes.as_ref(), piece);
                         restored.extend_from_slice(&bytes);
                     }

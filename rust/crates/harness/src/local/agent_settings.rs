@@ -49,7 +49,7 @@ impl Tree<'_> {
     }
 
     async fn home(&self, path: &str) -> Result<Option<(String, acyclic_stream::OwnedBytes)>> {
-        match self
+        Ok(self
             .volumes
             .files
             .read_private_path_indexed(
@@ -60,12 +60,8 @@ impl Tree<'_> {
                 self.volumes.maximum_bytes,
                 ContentAccess::default(),
             )
-            .await
-        {
-            Ok((file, bytes, _)) => Ok(Some((file.version().to_owned(), bytes))),
-            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+            .await?
+            .map(|(file, bytes, _)| (file.version().to_owned(), bytes)))
     }
 }
 
