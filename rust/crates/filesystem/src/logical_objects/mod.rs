@@ -313,7 +313,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         operate!(
             context,
             work,
-            invocation::contains(&*self.provider, blob(id), &mut work).await
+            invocation::Provider::contains(&*self.provider, blob(id), &mut work).await
         )
     }
 }

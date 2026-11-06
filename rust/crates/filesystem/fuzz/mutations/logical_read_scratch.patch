@@ -11,14 +11,10 @@
              read
          };
          #[cfg(not(target_arch = "wasm32"))]
-@@ -130,9 +128,7 @@
-             .fetch_batch::<STORED>(requests, &mut scope)
-             .await
-             .map_err(crate::async_storage::object_error)?;
+@@ -145,5 +143,3 @@
 -        scope
--            .keep_bytes(retained)
+-            .keep_bytes(reads.bytes)
 -            .map_err(crate::async_storage::object_error)?;
 +        scope.keep();
-         match allocation {
-             KernelOwnedAllocation::Standalone => Ok((reads, None)),
-             #[cfg(not(target_arch = "wasm32"))]
+         Ok(crate::async_storage::authority_parts(reads))
+     }

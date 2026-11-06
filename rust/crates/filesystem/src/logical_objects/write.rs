@@ -61,7 +61,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
         })?;
-        let put = invocation::put(
+        let put = invocation::Provider::put(
             &*self.provider,
             crate::kernel::Owned::new(
                 (body, references.value),
@@ -104,7 +104,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             object_bytes_written: total,
             ..WorkCounters::UNCHARGED
         })?;
-        invocation::put_batch(&*self.provider, requests, work, WriteBatch(writes)).await?;
+        invocation::Provider::put_batch(&*self.provider, requests, work, WriteBatch(writes))
+            .await?;
         work.check()
     }
 }
@@ -130,7 +131,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             ..WorkCounters::UNCHARGED
         })?;
         let request = retention(self.epoch.current(), scope.objects, work)?;
-        invocation::retain(&*self.provider, request, work).await?;
+        invocation::Provider::retain(&*self.provider, request, work).await?;
         #[cfg(all(test, not(target_arch = "wasm32")))]
         self.epoch.hooks.retained().await;
         work.check()
