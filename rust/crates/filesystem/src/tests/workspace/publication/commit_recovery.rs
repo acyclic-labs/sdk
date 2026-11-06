@@ -1,6 +1,6 @@
 //! Cold-process cuts through the original local transaction and its publication.
 use super::*;
-use acyclic_native_runtime::testing::{DurableFault, InjectedStorageFault, Schedule};
+use acyclic_native_runtime::testing::{DurableFault, Schedule};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const CHILD: &str = "workspace::tests::publication::commit_recovery::commit_crash_child";
@@ -138,7 +138,8 @@ async fn every_multi_root_crash_resumes_and_releases_the_dead_owners_reservation
 }
 
 #[tokio::test]
-async fn storage_failures_retain_the_original_cause_and_allow_recovery() -> TestResult {
+async fn storage_failures_do_not_acknowledge_partial_publications_or_fence_successors() -> TestResult
+{
     for kind in [PublicationKind::Transaction, PublicationKind::MultiRoot] {
         assert_publication_cuts(kind, &["io", "full"]).await?;
     }
@@ -262,31 +263,16 @@ fn commit_crash_child() -> TestResult {
         driver.abort();
         let _ = driver.await;
         if let Some((ordinal, fault)) = returned_fault {
-            let error = result.expect_err("a refused physical operation cannot be acknowledged");
-            let mut cause: &(dyn Error + 'static) = error.as_ref();
-            let original = loop {
-                if let Some(io) = cause.downcast_ref::<std::io::Error>()
-                    && let Some(original) = io
-                        .get_ref()
-                        .and_then(|inner| inner.downcast_ref::<InjectedStorageFault>())
-                {
-                    assert_eq!(
-                        io.kind(),
-                        if fault == DurableFault::DiskFull {
-                            std::io::ErrorKind::StorageFull
-                        } else {
-                            std::io::ErrorKind::Other
-                        }
-                    );
-                    break original;
-                }
-                cause = cause.source().unwrap_or_else(|| {
-                    panic!("publication erased the original storage cause: {error:?}")
-                });
-            };
-            assert_eq!(original.ordinal, ordinal);
-            assert_eq!(original.fault, fault);
-            assert_eq!(schedule.storage_fault().as_ref(), Some(original));
+            // Public provider failures are sanitized and may report an unknown
+            // outcome. The physical schedule, not a private error payload,
+            // identifies the failed operation; cold recovery resolves its effect.
+            result.expect_err("a refused physical operation cannot be acknowledged");
+            assert_eq!(
+                schedule
+                    .storage_fault()
+                    .map(|original| (original.ordinal, original.fault)),
+                Some((ordinal, fault))
+            );
         } else {
             result?;
         }
