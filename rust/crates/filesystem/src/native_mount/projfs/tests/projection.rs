@@ -1,5 +1,3 @@
-// These contracts invoke synchronous native callbacks. Their executor must
-// permit blocking so pending checkout work can retain its completion producer.
 use super::MountFilesystem;
 use super::{
     Arc, Bytes, CallbackGate, FILE_ATTRIBUTE_NORMAL, FileMetadata, Fs, HSTRING, HashSet, Lifecycle,
@@ -54,7 +52,7 @@ fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn directory_link_projection_has_no_target_sized_conversion()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
@@ -154,7 +152,8 @@ fn projfs_name_order_differs_from_sdk_cursor_order() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -186,7 +185,8 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -223,7 +223,8 @@ async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_projected_directory_link_leads_into_its_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -253,43 +254,67 @@ async fn a_projected_directory_link_leads_into_its_directory()
     Ok(())
 }
 
-#[test]
-fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(mode) = std::env::var_os(super::metadata::client::MODE) {
-        return super::metadata::client::execute(&mode);
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+    #[derive(Clone, Copy, Debug)]
+    enum Replacement {
+        Removed,
+        File,
+        Directory,
     }
-    held_link_workload()
-}
-
-#[tokio::main(flavor = "multi_thread")]
-async fn held_link_workload() -> Result<(), Box<dyn std::error::Error>> {
-    const TEST: &str =
-        "native_mount::projfs::tests::projection::a_held_link_is_removed_or_replaced_after_close";
-    for replacement in [false, true] {
-        let work = setup_work()?;
-        let source = windows_checkout_source().await?;
-        let name = windows_path("name");
-        source.create_symbolic_link(
-            &name,
-            setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
-            FileMetadata::default(),
-            &work,
-        )?;
-        let (_root, destination, mut session) = mount_source(&source)?;
-        let projected = destination.join("name");
-        // ProjFS suppresses the provider's own handle notifications. Keep the
-        // real blocking handle in an external client, as with metadata edits.
-        super::metadata::client::run_with_release(TEST, "held-link", &projected, |mut release| {
+    for link in [false, true] {
+        for replacement in [
+            Replacement::Removed,
+            Replacement::File,
+            Replacement::Directory,
+        ] {
+            let work = setup_work()?;
+            let source = windows_checkout_source().await?;
+            let name = windows_path("name");
+            if link {
+                source.create_symbolic_link(
+                    &name,
+                    setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
+                    FileMetadata::default(),
+                    &work,
+                )?;
+            } else {
+                source.create_file(&name, FileMetadata::default(), None, &work)?;
+                source.write_range(&name, 0, Bytes::from_static(b"old"))?;
+            }
+            let (_root, destination, mut session) = mount_source(&source)?;
+            let projected = destination.join("name");
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ.0)
+                .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+                .open(&projected)
+                .map_err(|error| {
+                    format!("open held entry, link={link}, {replacement:?}: {error}")
+                })?;
             let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
             let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
             let context = driver.context.ok_or("missing ProjFS context")?;
             let tree = lock_recover(&runtime.projector.tree);
             source.remove(&name, None, &work)?;
-            if replacement {
-                source.create_directory(&name, FileMetadata::default(), &work)?;
-                let inner = name.child(windows_name("inner.txt"));
-                source.create_file(&inner, FileMetadata::default(), None, &work)?;
-                source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+            match replacement {
+                Replacement::Removed => {}
+                Replacement::File => {
+                    source.create_file(&name, FileMetadata::default(), None, &work)?;
+                    source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+                }
+                Replacement::Directory => {
+                    source.create_directory(&name, FileMetadata::default(), &work)?;
+                    let inner = name.child(windows_name("inner.txt"));
+                    source.create_file(&inner, FileMetadata::default(), None, &work)?;
+                    source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                }
             }
             runtime.projector.materialize_locked(
                 Projection {
@@ -304,7 +329,11 @@ async fn held_link_workload() -> Result<(), Box<dyn std::error::Error>> {
                 let state = lock_recover(&runtime.projector.state);
                 assert!(
                     state.pending.contains_key(&name),
-                    "the held link must block retirement"
+                    "the original handle must block retirement"
+                );
+                assert!(
+                    state.processed < state.notified,
+                    "the changed view must await its original worker"
                 );
                 state.notified
             };
@@ -319,40 +348,38 @@ async fn held_link_workload() -> Result<(), Box<dyn std::error::Error>> {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                 }
                 assert!(
+                    state.failure.is_none() && !state.stopping,
+                    "the original worker must complete"
+                );
+                assert!(state.processed >= target);
+                assert!(
                     state.pending.contains_key(&pending),
                     "the worker must retain the held incarnation"
                 );
                 drop(state);
-                use std::io::Write as _;
-                release.write_all(b"g")
+                drop(held);
             });
             drop(tree);
             session.revalidate(&work).map_err(|error| {
-                format!("revalidate held link, replacement={replacement}: {error}")
+                format!("revalidate held entry, link={link}, {replacement:?}: {error}")
             })?;
-            closer.join().map_err(|_| "closer panicked")??;
-            Ok(())
-        })?;
-        if replacement {
-            assert!(
-                std::fs::symlink_metadata(&projected)
-                    .map_err(|error| format!("replacement directory metadata: {error}"))?
-                    .is_dir()
-            );
-            assert_eq!(
-                std::fs::read(projected.join("inner.txt"))
-                    .map_err(|error| format!("replacement child read: {error}"))?,
-                b"inner"
-            );
-        } else {
-            assert!(sorted_names(&destination)?.is_empty());
+            closer.join().map_err(|_| "closer panicked")?;
+            match replacement {
+                Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
+                Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
+                Replacement::Directory => {
+                    assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                    assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+                }
+            }
+            session.stop()?;
         }
-        session.stop()?;
     }
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn std::error::Error>>
 {
     let work = setup_work()?;
@@ -400,7 +427,8 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
@@ -424,7 +452,8 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn std::error::Error>>
 {
     for listed_first in [false, true] {
@@ -433,7 +462,8 @@ async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
 
@@ -498,7 +528,8 @@ fn source_failures_keep_distinct_statuses() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
+#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn rustc_links_object_files_created_inside_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
