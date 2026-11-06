@@ -91,9 +91,9 @@ impl CallSnapshot {
         }
     }
 
-    fn outcome(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
+    fn outcome(self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         match self.journal.outcome() {
-            Some(call::Outcome::Ok(_)) => self.completed.clone().ok_or_else(|| {
+            Some(call::Outcome::Ok(_)) => self.completed.ok_or_else(|| {
                 ProviderError::Rejected("Machine call terminal has no decoded completion".into())
             }),
             Some(call::Outcome::Cancelled(_)) => Err(ProviderError::Cancelled),
