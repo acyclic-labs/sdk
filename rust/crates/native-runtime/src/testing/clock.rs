@@ -52,7 +52,7 @@ impl CapturedClock {
 pub(super) struct Wall {
     millis: u64,
     anchor: Option<tokio::time::Instant>,
-    runtime: Option<tokio::runtime::Handle>,
+    pub(super) runtime: Option<tokio::runtime::Handle>,
 }
 
 impl Default for Wall {

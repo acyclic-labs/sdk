@@ -5,20 +5,37 @@ use acyclic_native_runtime::testing::Schedule;
 
 #[test]
 fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
-    fn trace(seed: u64) -> std::io::Result<[u8; 128]> {
-        Ok(
-            acyclic_native_runtime::testing::seeded_runtime(seed)?.block_on(async {
-                let mut trace = [0; 128];
-                for branch in &mut trace {
-                    *branch = tokio::select! {
-                        () = std::future::ready(()) => 0,
-                        () = std::future::ready(()) => 1,
-                        () = std::future::ready(()) => 2,
-                    };
-                }
-                trace
-            }),
-        )
+    async fn choices() -> [u8; 128] {
+        let mut trace = [0; 128];
+        for branch in &mut trace {
+            *branch = tokio::select! {
+                () = std::future::ready(()) => 0,
+                () = std::future::ready(()) => 1,
+                () = std::future::ready(()) => 2,
+            };
+        }
+        trace
+    }
+    fn trace(seed: u64) -> std::io::Result<[[u8; 128]; 2]> {
+        acyclic_native_runtime::testing::seeded_runtime(seed)?.block_on(async {
+            let driver = choices().await;
+            let mut controller = super::driver::Driver::new(seed, None);
+            let outcome = controller
+                .run(super::entry(async {
+                    acyclic_native_runtime::testing::spawn_blocking(|| {
+                        assert!(tokio::runtime::Handle::try_current().is_err());
+                        let selected = acyclic_native_runtime::testing::blocking_on(choices());
+                        assert!(tokio::runtime::Handle::try_current().is_err());
+                        selected
+                    })
+                    .await
+                }))
+                .await;
+            let super::driver::Outcome::Completed(worker) = outcome else {
+                panic!("uncut worker selection crashed");
+            };
+            Ok([driver, worker?])
+        })
     }
     let original = trace(71)?;
     assert_eq!(
@@ -33,6 +50,12 @@ fn runtime_seed_controls_original_select_order() -> std::io::Result<()> {
         trace(72)?,
         "runtime seed did not control selection"
     );
+    // Erase the actual worker's scope. A runtime entered only on the driver
+    // cannot govern select! on this independent original polling thread.
+    let unbound = std::thread::spawn(|| acyclic_native_runtime::testing::blocking_on(choices()))
+        .join()
+        .expect("unbound callback thread");
+    assert_ne!(original[1], unbound, "unbound worker escaped the oracle");
     Ok(())
 }
 
