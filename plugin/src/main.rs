@@ -5,7 +5,7 @@ mod install;
 mod tests;
 
 use acyclic_harness::local::{host_files, host_owner::HostAction};
-use input::{Result, parse_task, read_json};
+use input::{Result, parse_native_task, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
     env, io,
@@ -65,8 +65,8 @@ fn run(args: Vec<String>) -> Result<()> {
         if let Some(task) = selected {
             return parse_task(task);
         }
-        if let Ok(task) = env::var("ACYCLIC_TASK") {
-            return parse_task(&task);
+        if let Some(task) = env::var_os("ACYCLIC_TASK") {
+            return parse_native_task(&task);
         }
         let cwd = env::current_dir()?;
         let response = host_files::request(&cwd, HostAction::Locate { cwd: cwd.clone() })?;
@@ -251,7 +251,7 @@ fn hook(host: &str, event: &str, input: Value) -> Value {
 
 fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {
     if let Some(task) = task {
-        let task = parse_task(task.to_str().ok_or("native task identity is not UTF-8")?)?;
+        let task = parse_native_task(task)?;
         input
             .as_object_mut()
             .ok_or("native hook input must be an object")?

@@ -9,29 +9,9 @@ mod args;
 #[path = "../../../../plugin/src/ingress.rs"]
 mod ingress;
 
-fn native(bytes: &[u8]) -> OsString {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        return text.into();
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStringExt as _;
-        OsString::from_vec(bytes.to_vec())
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStringExt as _;
-        let units: Vec<_> = bytes
-            .chunks(2)
-            .map(|pair| u16::from_le_bytes([pair[0], *pair.get(1).unwrap_or(&0)]))
-            .collect();
-        OsString::from_wide(&units)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        String::from_utf8_lossy(bytes).into_owned().into()
-    }
-}
+#[path = "../../../../plugin/tests/support/native_os.rs"]
+mod native_os;
+use native_os::string as native;
 
 fn arguments(bytes: &[u8]) -> Vec<OsString> {
     #[cfg(windows)]

@@ -7,6 +7,8 @@ mod actions;
 mod commands;
 #[path = "../../../../plugin/src/input.rs"]
 mod input;
+#[path = "../../../../plugin/tests/support/native_os.rs"]
+mod native_os;
 
 // Use the same OS pipe input as the native entry. Dropping the original
 // producer closes the write endpoint and completes read_to_end with EOF.
@@ -78,10 +80,23 @@ fn check(bytes: &[u8]) {
         (Err(_), Err(_)) => {}
         _ => panic!("native request admission changed its original JSON"),
     }
-    if let Ok(text) = std::str::from_utf8(bytes)
-        && let Ok(task) = input::parse_task(text)
-    {
-        assert_eq!(task.as_str(), text, "selected task identity changed");
+    let native = native_os::string(bytes);
+    let selected = input::parse_native_task(&native);
+    if let Some(text) = native.to_str() {
+        match (selected, input::parse_task(text)) {
+            (Ok(actual), Ok(original)) => assert_eq!(actual, original),
+            (Err(_), Err(_)) => {}
+            _ => panic!("selected native task must retain canonical admission"),
+        }
+    } else {
+        let error = selected.expect_err("selected native task must refuse invalid encoding");
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::InvalidData),
+            "selected native task must retain its encoding refusal"
+        );
     }
 }
 
@@ -100,6 +115,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             check(&encoded);
         }
         check(b"not-json");
+        check(&[0xff, 0xdb]);
     });
     let agent = acyclic_harness_core::agent::AgentPath::root(
         &acyclic_harness_core::agent::AgentId::from_bytes([13; 16]),

@@ -92,6 +92,13 @@ additional_controls = {
             "null",
             b"workspace envelope must reach the original workspace client",
         ),
+        (
+            "plugin/src/main.rs",
+            b'if let Some(task) = env::var_os("ACYCLIC_TASK") {',
+            b'if let Some(task) = env::var("ACYCLIC_TASK").ok().map(std::ffi::OsString::from) {',
+            "null",
+            b"selected native task encoding must be refused before workspace resolution",
+        ),
     ],
     "cli_args": [
         (
@@ -239,6 +246,13 @@ additional_controls = {
             b"Ok(serde_json::from_value(serde_json::from_slice::<serde_json::Value>(&bytes)?)?)",
             "duplicate-field",
             b"typed native input must preserve original byte admission",
+        ),
+        (
+            "plugin/src/input.rs",
+            b"parse_task(value.to_str().ok_or_else(|| {",
+            b"parse_task(Some(value.to_string_lossy().as_ref()).ok_or_else(|| {",
+            "null",
+            b"selected native task must retain its encoding refusal",
         ),
     ],
     "command_result": [
@@ -391,7 +405,7 @@ def run(target, seed, witness, *, capture=False, runs=0):
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-plugin",
             "--test", "main", "--profile", "ci", "-E",
-            "test(native_input::native_stdin_failures_stop_before_workspace_effects)",
+            "test(native_input::native_input_failures_stop_before_workspace_effects)",
         ]
     else:
         command = [

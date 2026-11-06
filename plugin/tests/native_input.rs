@@ -1,13 +1,15 @@
 //! Native stdin failures must stop at the installed command boundary.
 #[path = "support/binary.rs"]
 mod binary;
+#[path = "support/native_os.rs"]
+mod native_os;
 use acyclic_native_runtime::{
     CaptureSchedule, ProcessCommand, ProcessInput, ProcessStdio, ProcessTree,
 };
 use std::io::Read;
 
 #[test]
-fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn std::error::Error>> {
+fn native_input_failures_stop_before_workspace_effects() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace)?;
@@ -25,7 +27,8 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
         .to_string();
     let executable = binary::acyclic();
     let capture = |args: &[&str],
-                   input: &std::fs::File|
+                   input: &std::fs::File,
+                   task: Option<&std::ffi::OsStr>|
      -> Result<std::process::Output, Box<dyn std::error::Error>> {
         let mut command = ProcessCommand::new(&executable);
         command
@@ -38,6 +41,9 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             .stdin(input.try_clone()?)
             .stdout(ProcessStdio::piped())
             .stderr(ProcessStdio::piped());
+        if let Some(task) = task {
+            command.env("ACYCLIC_TASK", task);
+        }
         #[cfg(windows)]
         if let Some(root) = std::env::var_os("SystemRoot") {
             command.env("SystemRoot", root);
@@ -55,7 +61,7 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
                 None,
             )
             .map_err(|failure| format!(
-                "step=capture native stdin refusal for {args:?}; cleanup_completed={}; error={}; recovery: cargo test --locked -p acyclic-plugin --test main native_input::native_stdin_failures_stop_before_workspace_effects -- --exact --nocapture",
+                "step=capture native stdin refusal for {args:?}; cleanup_completed={}; error={}; recovery: cargo test --locked -p acyclic-plugin --test main native_input::native_input_failures_stop_before_workspace_effects -- --exact --nocapture",
                 failure.cleanup_completed, failure.error
             ))?;
         assert!(
@@ -69,7 +75,7 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
         &["__install-package"][..],
         &["__hook", "codex", "Stop"][..],
     ] {
-        let output = capture(args, &input)?;
+        let output = capture(args, &input, None)?;
         if args[0] == "__hook" {
             assert!(output.status.success());
             assert!(output.stderr.is_empty());
@@ -136,7 +142,7 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
     let expected = refusal.original().unwrap().to_string();
     let path = directory.path().join("completion.json");
     std::fs::write(&path, bytes)?;
-    let output = capture(&["__workspace"], &std::fs::File::open(path)?)?;
+    let output = capture(&["__workspace"], &std::fs::File::open(path)?, None)?;
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(
@@ -144,6 +150,18 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             .trim_end()
             .ends_with(&expected),
         "workspace envelope must reach the original workspace client: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(std::fs::read_dir(&workspace)?.next().is_none());
+    let selected = native_os::string(&[0xff, 0xdb]);
+    assert!(selected.to_str().is_none());
+    let output = capture(&["agents"], &input, Some(&selected))?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        std::str::from_utf8(&output.stderr)?
+            .contains("step=admit selected native task: native task identity is not UTF-8"),
+        "selected native task encoding must be refused before workspace resolution: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(std::fs::read_dir(&workspace)?.next().is_none());

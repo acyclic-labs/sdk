@@ -10,6 +10,15 @@ pub(super) fn parse_task(value: &str) -> Result<AgentPath> {
     Ok(serde_json::from_value(json!(value))?)
 }
 
+pub(super) fn parse_native_task(value: &std::ffi::OsStr) -> Result<AgentPath> {
+    parse_task(value.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "step=admit selected native task: native task identity is not UTF-8; recovery: set ACYCLIC_TASK to a UTF-8 agent identity or unset it",
+        )
+    })?)
+}
+
 pub(super) fn read_json<T: DeserializeOwned>(
     input: impl io::Read,
     maximum: Option<u64>,
