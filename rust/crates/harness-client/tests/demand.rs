@@ -1,3 +1,4 @@
+//! Exhaustive admission over the public view constructor and distinct interest.
 use acyclic_harness_client::{DemandError, DemandPolicy, ViewDemand};
 use acyclic_stream::StreamPath;
 
