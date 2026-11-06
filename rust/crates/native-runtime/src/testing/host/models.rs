@@ -2,6 +2,67 @@ use super::*;
 use loom::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
+fn callback_readiness_cannot_overtake_its_driver_notification() {
+    loom::model(|| {
+        struct Publishing {
+            started: loom::sync::mpsc::Sender<()>,
+            published: Arc<AtomicBool>,
+        }
+        impl Wake for Publishing {
+            fn wake(self: Arc<Self>) {
+                self.started.send(()).unwrap();
+                loom::thread::yield_now();
+                self.published.store(true, Ordering::SeqCst);
+            }
+        }
+        let host = Host::new(1);
+        let ready = Arc::new(AtomicBool::new(false));
+        let callback_ready = ready.clone();
+        let worker = host.clone();
+        let thread = loom::thread::spawn(move || {
+            worker.run(|| {
+                worker.block(std::future::poll_fn(|_| {
+                    if callback_ready.load(Ordering::SeqCst) {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }));
+            });
+        });
+        let mut state = host.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while state.phase != Phase::Parked {
+            state = host
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        let published = Arc::new(AtomicBool::new(false));
+        let (started, notification) = loom::sync::mpsc::channel();
+        state.driver = Some(Waker::from(Arc::new(Publishing {
+            started,
+            published: published.clone(),
+        })));
+        drop(state);
+        let waking = host.clone();
+        let notify = loom::thread::spawn(move || {
+            ready.store(true, Ordering::SeqCst);
+            waking.wake();
+        });
+        notification.recv().unwrap();
+        executor::complete_io(host.drive(async {}));
+        assert!(
+            published.load(Ordering::SeqCst),
+            "callback readiness overtook its driver notification"
+        );
+        notify.join().unwrap();
+        thread.join().unwrap();
+        assert!(host.pool.park(), "callback returned its parked slot twice");
+        host.pool.resume();
+    });
+}
+
+#[test]
 fn abandoned_driver_and_original_wake_release_the_parked_slot() {
     loom::model(|| {
         let host = Host::new(1);
