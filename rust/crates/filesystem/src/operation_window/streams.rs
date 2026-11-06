@@ -119,7 +119,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
         if !replacement.is_valid_for(workspace_id)
-            || replacement.revision != expected_revision.saturating_add(1)
+            || expected_revision.checked_add(1) != Some(replacement.revision)
         {
             return Err(StreamOperationWindowStoreError::Corrupt(
                 "replacement identity or revision is invalid".to_owned(),

@@ -610,6 +610,9 @@ pub enum MultiRootPublicationError<
     P: std::error::Error + 'static,
     A: std::error::Error + 'static,
 > {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Durable state failed.
     #[error("multi-root publication store failed: {0}")]
     Store(S),

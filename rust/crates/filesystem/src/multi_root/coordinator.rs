@@ -706,7 +706,8 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         mut journal: MultiRootPublication,
     ) -> Result<MultiRootPublication, MultiRootPublicationError<S::Error, P::Error, A::Error>> {
-        let expected = next_revision(&mut journal.revision);
+        let expected = next_revision(&mut journal.revision)
+            .ok_or(MultiRootPublicationError::RevisionExhausted)?;
         if self
             .store
             .compare_and_swap(

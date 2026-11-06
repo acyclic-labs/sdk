@@ -3,6 +3,39 @@ use proptest::prelude::*;
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
+    // Exercise the shipped repository transition and memory adapter, including
+    // the final valid fence and repeated attempts after exhaustion.
+    #[test]
+    fn repository_writes_never_reuse_an_exhausted_revision(seed in any::<u64>()) {
+        futures::executor::block_on(async {
+            let workspace = WorkspaceId::from_bytes([1; 16]);
+            for revision in [seed, u64::MAX - 1, u64::MAX] {
+                let store = MemoryGitCompatStore::default();
+                let mut initial = GitCompatState::new("main", workspace);
+                initial.revision = revision;
+                store.states.0.lock().unwrap().insert(workspace, initial);
+                let repository = GitCompatRepository::new(workspace, store);
+                for name in ["first", "second"] {
+                    let before = repository.load().await.unwrap();
+                    let result = repository.register_branch_workspace(
+                        name, WorkspaceId::from_bytes([2; 16]), None, false,
+                    ).await;
+                    let after = repository.load().await.unwrap();
+                    if let Some(next) = before.revision.checked_add(1) {
+                        prop_assert!(result.is_ok());
+                        prop_assert_eq!(after.revision, next);
+                        prop_assert!(after.branches.contains_key(name));
+                    } else {
+                        prop_assert!(matches!(result, Err(GitCompatError::RevisionExhausted)),
+                            "exhausted revision reused its write fence");
+                        prop_assert_eq!(after, before);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+    }
+
     #[test]
     fn conflict_paths_belong_to_one_pending_transition(path in "[a-z]{1,16}", stale in any::<bool>()) {
         futures::executor::block_on(async {

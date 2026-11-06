@@ -34,10 +34,11 @@ pub(crate) fn stored_revision<K: Ord, V: Revisioned>(records: &BTreeMap<K, V>, k
 }
 
 /// Advances a record to its next revision, returning the expected one.
-pub(crate) fn next_revision(revision: &mut u64) -> u64 {
+/// Exhaustion leaves the revision unchanged and cannot reuse a write fence.
+pub(crate) fn next_revision(revision: &mut u64) -> Option<u64> {
     let expected = *revision;
-    *revision = expected.saturating_add(1);
-    expected
+    *revision = expected.checked_add(1)?;
+    Some(expected)
 }
 
 /// Process-local lock was poisoned by a panicking writer.
