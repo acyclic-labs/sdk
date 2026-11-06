@@ -93,9 +93,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
         )
         .await?;
-    for exit in 0..3 {
-        let caller = CancellationToken::new();
+    for exit in 0..4 {
         let original_token = CancellationToken::new();
+        let caller = if exit == 1 {
+            original_token.clone()
+        } else {
+            CancellationToken::new()
+        };
         let original = NativeMaterializationWork::new(native_read_budget(), &original_token)
             .map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
@@ -121,7 +125,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
             panic!("a spill lease blocked an independent resident read");
         };
         assert_eq!(result?.bytes, resident);
-        if exit == 2 {
+        if exit == 3 {
             original_token.cancel();
         } else {
             caller.cancel();
@@ -135,7 +139,7 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         };
         drop(future);
         drop(spill_file);
-        if exit == 2 {
+        if exit == 3 {
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Native(
@@ -156,13 +160,13 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         assert_eq!(
             completed.allocation_operations,
             if exit == 0 {
-                // The waiter and its original standalone ledger control.
+                // The first standalone waiter promotes the original ledger
+                // once, then allocates its node. Native custody already exists.
                 2
             } else {
-                // The suspended frame and both distinct cancellation sources.
-                before.allocation_operations + 3
-            },
-            "every pending lease waiter must be charged to its original work"
+                // One suspended frame, plus one node per distinct token.
+                before.allocation_operations + 2 + u64::from(exit != 1)
+            }
         );
         assert_eq!(original.live_allocation_bytes(), baseline);
         assert!(matches!(store.lookup(id), Lookup::Spilled { .. }));
