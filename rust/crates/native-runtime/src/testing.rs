@@ -10,6 +10,8 @@ use crate::sync::Mutex;
 mod entropy;
 pub use entropy::fill_seeded;
 mod clock;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub(crate) use clock::wall_alarms;
 pub use clock::{CapturedClock, unix_millis};
 mod executor;
 pub use executor::{AbortHandle, TaskHandle};
@@ -103,13 +105,14 @@ impl Clone for Schedule {
 
 // Accepted work retains its completion state, but does not own the controller
 // that drives it. Otherwise executor -> future -> Context -> Schedule cycles.
-struct Controller(Option<Arc<executor::Executor>>);
+struct Controller(Arc<Inner>);
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        if let Some(executor) = &self.0 {
+        if let Some(executor) = &self.0.executor {
             executor.shutdown();
         }
+        Schedule(self.0.clone(), None).close_wall_alarms();
     }
 }
 
@@ -160,21 +163,16 @@ impl Schedule {
     fn with_seed(seed: Option<u64>, entropy: bool) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
         let executor = seed.map(executor::Executor::new);
-        let controller = Arc::new(Controller(executor.clone()));
-        (
-            Self(
-                Arc::new(Inner {
-                    events,
-                    state: Mutex::new(State::default()),
-                    entropy: seed
-                        .filter(|_| entropy)
-                        .map(|seed| Arc::new(entropy::Source::new(seed))),
-                    executor,
-                }),
-                Some(controller),
-            ),
-            receiver,
-        )
+        let inner = Arc::new(Inner {
+            events,
+            state: Mutex::new(State::default()),
+            entropy: seed
+                .filter(|_| entropy)
+                .map(|seed| Arc::new(entropy::Source::new(seed))),
+            executor,
+        });
+        let controller = Arc::new(Controller(inner.clone()));
+        (Self(inner, Some(controller)), receiver)
     }
 
     /// Instruments only this explicitly scoped future and its owned descendants.
@@ -205,7 +203,15 @@ impl Schedule {
             future,
         );
         match &self.0.executor {
-            Some(executor) => executor.run(future).await,
+            Some(executor) => {
+                let mut running = std::pin::pin!(executor.run(future));
+                std::future::poll_fn(|cx| {
+                    let result = running.as_mut().poll(cx);
+                    self.poll_wall_alarms(cx);
+                    result
+                })
+                .await
+            }
             None => future.await,
         }
     }
@@ -223,6 +229,7 @@ impl Schedule {
             if let Some(executor) = &self.0.executor {
                 executor.poll_owned(cx);
             }
+            self.poll_wall_alarms(cx);
             let mut state = self.0.state();
             if state.active == 0 {
                 Poll::Ready(())

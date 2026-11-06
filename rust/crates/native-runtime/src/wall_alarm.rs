@@ -16,6 +16,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 mod wait;
 pub use wait::AlarmWait;
+#[cfg(feature = "test-support")]
+mod simulation;
+#[cfg(feature = "test-support")]
+pub(crate) use simulation::Simulated;
 
 /// Called once on expiry or loss of the original alarm producer. It must
 /// only signal its owner and return. Failure retains the original native cause.
@@ -25,19 +29,37 @@ pub type AlarmCallback = Arc<dyn Fn(Result<(), Arc<io::Error>>) + Send + Sync>;
 #[must_use = "dropping the registration cancels the alarm"]
 pub struct WallAlarm {
     key: (u64, u64),
+    index: Arc<Mutex<Index>>,
+    #[cfg(feature = "test-support")]
+    owner: Option<Arc<Simulated>>,
 }
 
 impl WallAlarm {
     /// Calls `fire` once the wall clock reaches `deadline_unix_ms`, at once if
     /// it already has.
+    /// Scoped simulation uses its original clock and fails pending alarms if
+    /// that clock's controller is dropped.
     pub fn register(deadline_unix_ms: u64, fire: AlarmCallback) -> io::Result<Self> {
+        #[cfg(feature = "test-support")]
+        if let Some(alarms) = crate::testing::wall_alarms() {
+            return alarms.register(deadline_unix_ms, fire);
+        }
         let alarms = alarms()?;
-        let key = locked(&alarms.index).insert(deadline_unix_ms, fire)?;
-        let registration = Self { key };
+        let registration = Self::insert(&alarms.index, deadline_unix_ms, fire)?;
         if let Err(error) = alarms.waiter.rearm() {
             return Err(retained_error(&fail(&alarms.index, error)));
         }
         Ok(registration)
+    }
+
+    fn insert(index: &Arc<Mutex<Index>>, deadline: u64, fire: AlarmCallback) -> io::Result<Self> {
+        let key = locked(index).insert(deadline, fire)?;
+        Ok(Self {
+            key,
+            index: Arc::clone(index),
+            #[cfg(feature = "test-support")]
+            owner: None,
+        })
     }
 }
 
@@ -45,8 +67,11 @@ impl Drop for WallAlarm {
     fn drop(&mut self) {
         // The thread may still wake for this deadline; it finds nothing due
         // and waits for the next one.
-        if let Ok(alarms) = alarms() {
-            locked(&alarms.index).entries.remove(&self.key);
+        let fire = locked(&self.index).entries.remove(&self.key);
+        drop(fire);
+        #[cfg(feature = "test-support")]
+        if let Some(owner) = &self.owner {
+            owner.changed();
         }
     }
 }
