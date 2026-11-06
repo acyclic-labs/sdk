@@ -40,6 +40,21 @@ pub(crate) struct RetainedWeak<T> {
 }
 
 impl<T> RetainedArc<T> {
+    pub(crate) fn from_owned(
+        owned: crate::kernel::Owned<T>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        let mut retained = Retained::from_owned(owned, accounting)?;
+        let mut admitted = Self::admit(accounting)?;
+        admitted.allocation.absorb(&mut retained.allocation)?;
+        Ok(admitted.into_value(retained.value))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn standalone_live_bytes(&self) -> Option<u64> {
+        self.allocation.0.as_deref()?.standalone_live_bytes()
+    }
+
     pub(crate) fn new(
         value: T,
         accounting: &mut KernelAccounting<'_>,

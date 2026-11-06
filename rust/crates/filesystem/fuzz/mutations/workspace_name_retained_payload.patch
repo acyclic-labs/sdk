@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/retained/shared.rs b/rust/crates/filesystem/src/kernel/allocation/retained/shared.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/retained/shared.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained/shared.rs
+@@ -46,7 +46,7 @@ impl<T> RetainedArc<T> {
+     ) -> Result<Self, crate::FsError> {
+         let mut retained = Retained::from_owned(owned, accounting)?;
+         let mut admitted = Self::admit(accounting)?;
+-        admitted.allocation.absorb(&mut retained.allocation)?;
++        drop(retained.allocation);
+         Ok(admitted.into_value(retained.value))
+     }
+ 
