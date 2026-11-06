@@ -169,7 +169,7 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = self.hold_continuation(&continuation)?;
             }
-            Either::Left(futures::stream::iter(continuation.into_iter().map(Ok)))
+            Either::Left(continuation.into_iter())
         } else {
             #[cfg(feature = "filesystem")]
             {
@@ -481,7 +481,7 @@ impl StockExecution<'_> {
         admission: &mut ModelEventAdmission,
         (stream, live): (
             Either<
-                impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
+                std::vec::IntoIter<ModelEvent>,
                 impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
             >,
             bool,
@@ -512,15 +512,18 @@ impl StockExecution<'_> {
             let mut stream = stream;
             loop {
                 // Stage the text so far whenever the provider pauses.
-                let next = match (stream.next().now_or_never(), text.as_mut()) {
-                    (Some(next), _) => next,
-                    (None, Some(text)) => {
-                        text.flush().await?;
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                    }
-                    (None, None) => {
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                    }
+                let next = match &mut stream {
+                    Either::Left(continuation) => continuation.next().map(Ok),
+                    Either::Right(stream) => match (stream.next().now_or_never(), text.as_mut()) {
+                        (Some(next), _) => next,
+                        (None, Some(text)) => {
+                            text.flush().await?;
+                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        }
+                        (None, None) => {
+                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        }
+                    },
                 };
                 let Some(event) = next else {
                     break;
@@ -544,6 +547,15 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
+                // Reconciliation owns a finite continuation. Reject a known
+                // successor before committing its terminal event; live streams
+                // settle at completion without waiting for transport closure.
+                if admission.completed
+                    && let Either::Left(continuation) = &mut stream
+                    && let Some(next) = continuation.next()
+                {
+                    admission.validate_next(&next, self.stock.limits, io)?;
+                }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
                 }

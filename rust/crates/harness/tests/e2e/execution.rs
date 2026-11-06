@@ -488,7 +488,7 @@ pub(super) async fn check_files<
                 )
                 .into());
             }
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (None, Err(error)) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => {}
             (expected, actual) => {
                 return Err(format!("file {path}: expected {expected:?}, got {actual:?}").into());
             }
