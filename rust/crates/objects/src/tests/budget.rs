@@ -13,6 +13,16 @@ pub(crate) struct Budget {
     /// Whether a reservation withholds its writes; a hollow one charges
     /// each reserved write as it happens, as if nothing was reserved.
     pub(super) withholds: bool,
+    pub(super) retirement: std::sync::Mutex<Option<Retirement>>,
+}
+
+/// Watches the original credits for a real read batch's vector and payloads.
+pub(super) struct Retirement {
+    pub(super) results: u64,
+    pub(super) payload: u64,
+    pub(super) live_payloads: u64,
+    pub(super) result_released: bool,
+    pub(super) early_result: bool,
 }
 
 impl Budget {
@@ -24,6 +34,7 @@ impl Budget {
             reads: std::sync::Mutex::new(None),
             writes: std::sync::Mutex::new(None),
             withholds: true,
+            retirement: std::sync::Mutex::new(None),
         }
     }
 
@@ -57,7 +68,16 @@ impl Budget {
         }
         held.0 += bytes;
         held.1 = held.1.max(held.0);
+        self.adopted(bytes);
         Ok(())
+    }
+
+    fn adopted(&self, bytes: u64) {
+        if let Some(trace) = &mut *self.retirement.lock().unwrap()
+            && bytes == trace.payload
+        {
+            trace.live_payloads += 1;
+        }
     }
 
     /// The peak live allocation since the last call.
@@ -151,6 +171,7 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         let mut held = self.held.lock().unwrap();
         held.0 += bytes;
         held.1 = held.1.max(held.0);
+        self.adopted(bytes);
         (bytes, Ok(()))
     }
     fn examine(&self, _: u64, _: u64) -> std::io::Result<()> {
@@ -164,6 +185,15 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
     }
     fn release(&self, bytes: u64) {
         self.held.lock().unwrap().0 -= bytes;
+        if let Some(trace) = &mut *self.retirement.lock().unwrap() {
+            if bytes == trace.payload {
+                trace.live_payloads -= 1;
+            }
+            if bytes == trace.results {
+                trace.result_released = true;
+                trace.early_result |= trace.live_payloads != 0;
+            }
+        }
     }
     fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
         Ok(())

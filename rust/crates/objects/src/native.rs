@@ -308,7 +308,9 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
     native_future(&meter, async move {
         let _custody = custody;
         let meter = &batch_meter;
-        let (mut values, allocation) = results(requests.len(), meter)?;
+        // Keep the physical vector before its credit on every exit, including
+        // withdrawal while the driver still holds incomplete members.
+        let mut results = results(requests.len(), meter)?;
         crate::batch::drive(
             requests.into_iter(),
             crate::BATCH_WINDOW,
@@ -318,10 +320,10 @@ pub(crate) fn get_batch<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(
                 let account = account.over(&medium);
                 checked(&medium, account.get_inner(digest, range, maximum).await)
             },
-            |got| values.push(got),
+            |got| results.0.push(got),
         )
         .await?;
-        ObjectsBatch::new(values, allocation)
+        ObjectsBatch::new(results.0, results.1)
     })
 }
 
@@ -362,7 +364,7 @@ pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>
     native_future(&meter, async move {
         let _custody = custody;
         let meter = &batch_meter;
-        let (mut values, allocation) = results(requests.len(), meter)?;
+        let mut results = results(requests.len(), meter)?;
         crate::batch::drive(
             requests.into_iter(),
             window,
@@ -373,9 +375,9 @@ pub(crate) fn put_window<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>
                 checked(&medium, account.put_inner(body, references).await)
                     .map(|put| ObjectsPutReceipt::new(put, None))
             },
-            |put| values.push(put),
+            |put| results.0.push(put),
         )
         .await?;
-        ObjectsBatch::new(values, allocation)
+        ObjectsBatch::new(results.0, results.1)
     })
 }
