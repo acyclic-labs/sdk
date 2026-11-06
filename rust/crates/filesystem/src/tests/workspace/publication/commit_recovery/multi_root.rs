@@ -140,7 +140,13 @@ pub(super) async fn assert_recovery(root: &Path, acknowledged: bool) -> TestResu
             .values_mut()
             .find(|root| root.target_workspace_id == workspace.id())
             .ok_or("missing target root")?;
-        pinned.target_generation = unbounded!(workspace, head())?.id();
+        let target_generation = unbounded!(workspace, head())?;
+        let source = unbounded!(fs, open_workspace(format!("{name}-child")))?;
+        let source_generation = unbounded!(source, generation(pinned.source_generation))?;
+        let join = source.join_into(&workspace);
+        let plan = unbounded!(join, plan_at(&source_generation, &target_generation))?;
+        pinned.target_generation = target_generation.id();
+        pinned.base_generation = plan.common_ancestor();
     }
     assert_eq!(
         contents[0], contents[1],
