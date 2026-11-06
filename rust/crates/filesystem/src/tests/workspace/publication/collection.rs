@@ -660,9 +660,13 @@ async fn a_collection_dropped_mid_drain_leaves_its_drain_to_the_next() -> Result
             drop(pause);
             drained
         };
-        tokio::join!(fs.collect_local_pass(None, true, &cancellation), watch)
+        Ok::<_, Box<dyn Error>>(tokio::join!(
+            fs.collect_local_pass(None, true, &cancellation),
+            watch
+        ))
     };
-    let (in_flight, (collected, drained)) = tokio::join!(in_flight, collector);
+    let (in_flight, collected) = tokio::join!(in_flight, collector);
+    let (collected, drained) = collected?;
     assert!(
         drained,
         "epoch 0 was released while its publication was in flight"

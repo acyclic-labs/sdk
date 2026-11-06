@@ -173,10 +173,7 @@ def run(label):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{label}.log").write_text(output, encoding="utf-8")
     print(f"step={label}; command={COMMAND!r}; exit={result.returncode}", flush=True)
-    for line in result.stdout.splitlines():
-        if line.startswith("test result:"):
-            print(line, flush=True)
-    print("\n".join(output.splitlines()[-35:]), flush=True)
+    print(output, flush=True)
     return result.returncode, output
 
 
