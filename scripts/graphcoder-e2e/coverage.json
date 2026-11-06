@@ -10,6 +10,7 @@
         "cli-invalid-option",
         "explicit-credential-source",
         "output-destination-aliases",
+        "output-destination-kind",
         "text-responses"
       ]
     },
