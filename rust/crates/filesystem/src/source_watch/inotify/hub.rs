@@ -178,6 +178,8 @@ impl Hub {
     /// Subscribes a new watch to queue overflow records.
     pub(super) fn subscribe(&'static self, watch: &Arc<Shared>) -> Result<(), DemandError> {
         self.start_threads()?;
+        #[cfg(test)]
+        super::admission_tests::before_subscribe_lock()?;
         let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
         // Loss is recorded before taking this lock: an earlier subscription
         // receives failure, and a later one cannot enter a producerless queue.
@@ -185,6 +187,8 @@ impl Hub {
         routes
             .subscribers
             .insert(watch.subscriber, Arc::downgrade(watch));
+        #[cfg(test)]
+        super::admission_tests::after_subscribe();
         Ok(())
     }
 

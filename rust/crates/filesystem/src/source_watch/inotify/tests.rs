@@ -45,6 +45,22 @@ fn watcher_with_sink(root: &Path, sink: Arc<dyn HostChangeSink>) -> io::Result<N
         .map_err(crate::native_host::ordinary_error)
 }
 
+std::thread_local! {
+    static BEFORE_SUBSCRIBE_LOCK: std::cell::RefCell<Option<Box<dyn FnOnce() -> io::Result<()>>>> =
+        const { std::cell::RefCell::new(None) };
+    static SUBSCRIBED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(super) fn before_subscribe_lock() -> io::Result<()> {
+    BEFORE_SUBSCRIBE_LOCK
+        .with(|hook| hook.borrow_mut().take())
+        .map_or(Ok(()), |hook| hook())
+}
+
+pub(super) fn after_subscribe() {
+    SUBSCRIBED.with(|subscribed| subscribed.set(true));
+}
+
 #[test]
 fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -94,13 +110,42 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
             .load(Ordering::Acquire),
     ];
 
-    // A real notification wakes the original collector; its exit guard must
-    // publish loss without another service pass acquiring either cursor.
-    hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
-    let late = match watcher(&root) {
-        Err(error) => error,
-        Ok(_) => panic!("collector loss admitted a subscription without a producer"),
-    };
+    let late = std::thread::scope(|scope| -> io::Result<io::Error> {
+        // Both channels belong to this scope: an early failure drops its
+        // sender before the scope joins, so the other wait returns an error.
+        let (waiting, entered) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let root = &root;
+        let subscribing = scope.spawn(move || {
+            BEFORE_SUBSCRIBE_LOCK.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    waiting.send(()).map_err(io::Error::other)?;
+                    resume.recv().map_err(io::Error::other)
+                }));
+            });
+            let result = watcher(root);
+            (result, SUBSCRIBED.with(std::cell::Cell::get))
+        });
+        entered.recv().map_err(io::Error::other)?;
+        // The subscription has started but has not acquired routes. A real
+        // notification wakes the original collector, whose exit guard must
+        // publish loss without either existing watch's read cursor.
+        hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
+        release.send(()).map_err(io::Error::other)?;
+        let (result, subscribed) = subscribing
+            .join()
+            .map_err(|_| io::Error::other("subscription control unwound"))?;
+        // A later startup read can also refuse, but it cannot excuse an
+        // insertion made after the collector detached its subscriber map.
+        assert!(
+            !subscribed,
+            "collector loss admitted a subscription without a producer"
+        );
+        match result {
+            Err(error) => Ok(error),
+            Ok(_) => panic!("collector loss admitted a subscription without a producer"),
+        }
+    })?;
     assert_eq!(late.kind(), io::ErrorKind::BrokenPipe);
     let cause = late
         .get_ref()
