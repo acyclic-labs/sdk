@@ -14,6 +14,7 @@
         "explicit-credential-source",
         "output-destination-aliases",
         "output-destination-kind",
+        "usage-publication-failure",
         "text-responses"
       ]
     },
