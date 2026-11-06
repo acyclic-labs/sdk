@@ -257,6 +257,34 @@ impl crate::context::DiscoverySource for CheckoutInstructions<'_> {
     }
 }
 impl crate::context::InstructionReader for CheckoutInstructions<'_> {
+    fn instruction_directory<'a>(
+        &'a mut self,
+        path: &'a str,
+        revision: Option<&'a Self::Revision>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
+        Box::pin(async move {
+            let cut = revision.copied().unwrap_or(self.directory.cut);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.directory.work,
+                cancellation: self.directory.work.cancellation(),
+            };
+            let Some(stat) = self
+                .directory
+                .view
+                .stat_at_snapshot(cut, &format!("/{path}"), &mut accounting)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if stat.kind != acyclic_fs::demand::SourceNodeKind::Directory {
+                return Err(Error::Invalid(
+                    "instruction entry is not a directory".into(),
+                ));
+            }
+            Ok(Some((cut, 0)))
+        })
+    }
+
     fn instruction<'a>(
         &'a mut self,
         path: &'a str,
