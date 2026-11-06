@@ -1545,6 +1545,78 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
         }
     }
 
+    pub(crate) async fn head_inner(&self, digest: Digest) -> Result<Head, Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.head",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let served = self.read_revision().await?;
+                let envelope = self
+                    .blob(&digest)
+                    .await?
+                    .ok_or(Error::from(ErrorCode::NotFound))?;
+                let mut head = Self::head_of(digest, envelope);
+                head.revision = served;
+                Ok(head)
+            }
+        )
+    }
+
+    pub(crate) async fn retain_inner(
+        &self,
+        root: &RootId,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.retain",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let references = canonical(references);
+                if references.is_empty() {
+                    return Err(invalid());
+                }
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                self.medium
+                    .allocate(references.len() as u64 * 32)
+                    .map_err(medium)?;
+                let batch = encode_batch(&references);
+                // Each retain owns its batch and keys, so a concurrent release of an
+                // equal batch never removes them.
+                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+                let tag = Self::batch_tag(root, &name);
+                // The index-key vector is charged before any key is written, so a
+                // refused charge leaves nothing to clean up. Every key has one
+                // length: a fixed-width prefix and this tag.
+                let key = self.index_key(&references[0], &tag).len();
+                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
+                self.medium.allocate(held).map_err(medium)?;
+                // Every write is withheld before the first key: n keys, then either
+                // their n removals or the batch and the one flush. A
+                // refused budget leaves nothing behind, and removing the keys of a
+                // retain that failed is never refused.
+                let n = references.len() as u64;
+                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
+                let key = format!("{}{name}", self.root_prefix(root));
+                match self.commit_batch(&references, &tag, &key, batch).await {
+                    Ok(()) => {}
+                    Err(Commit::Unknown(error)) => return Err(error),
+                    Err(Commit::Failed(error)) => {
+                        self.unreference(&references, &tag).await?;
+                        return Err(error);
+                    }
+                    Err(Commit::Unflushed(error)) => return Err(error),
+                }
+                Ok(Retained {
+                    references: references.len() as u64,
+                    revision: Some(issued.commit()),
+                })
+            }
+        )
+    }
+
     pub(crate) async fn get_inner(
         &self,
         digest: Digest,
@@ -1736,21 +1808,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.head",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let served = self.read_revision().await?;
-                let envelope = self
-                    .blob(&digest)
-                    .await?
-                    .ok_or(Error::from(ErrorCode::NotFound))?;
-                let mut head = Self::head_of(digest, envelope);
-                head.revision = served;
-                Ok(head)
-            }
-        )
+        self.head_inner(digest).await
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
@@ -1827,53 +1885,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.retain",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let references = canonical(references);
-                if references.is_empty() {
-                    return Err(invalid());
-                }
-                let issued = self.issued().await?;
-                let _gate = self.state.gate.read().await;
-                self.medium
-                    .allocate(references.len() as u64 * 32)
-                    .map_err(medium)?;
-                let batch = encode_batch(&references);
-                // Each retain owns its batch and keys, so a concurrent release of an
-                // equal batch never removes them.
-                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-                let tag = Self::batch_tag(root, &name);
-                // The index-key vector is charged before any key is written, so a
-                // refused charge leaves nothing to clean up. Every key has one
-                // length: a fixed-width prefix and this tag.
-                let key = self.index_key(&references[0], &tag).len();
-                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-                self.medium.allocate(held).map_err(medium)?;
-                // Every write is withheld before the first key: n keys, then either
-                // their n removals or the batch and the one flush. A
-                // refused budget leaves nothing behind, and removing the keys of a
-                // retain that failed is never refused.
-                let n = references.len() as u64;
-                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
-                let key = format!("{}{name}", self.root_prefix(root));
-                match self.commit_batch(&references, &tag, &key, batch).await {
-                    Ok(()) => {}
-                    Err(Commit::Unknown(error)) => return Err(error),
-                    Err(Commit::Failed(error)) => {
-                        self.unreference(&references, &tag).await?;
-                        return Err(error);
-                    }
-                    Err(Commit::Unflushed(error)) => return Err(error),
-                }
-                Ok(Retained {
-                    references: references.len() as u64,
-                    revision: Some(issued.commit()),
-                })
-            }
-        )
+        self.retain_inner(root, references).await
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {

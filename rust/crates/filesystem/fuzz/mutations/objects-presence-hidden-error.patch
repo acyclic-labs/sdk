@@ -1,7 +1,7 @@
 --- a/rust/crates/objects/src/native.rs
 +++ b/rust/crates/objects/src/native.rs
 @@ -295,5 +295,5 @@
-         let present = match account.head(request.data).await {
+         let present = match account.head_inner(request.data).await {
              Ok(_) => Ok(true),
              Err(error) if error.code == crate::wire::ErrorCode::NotFound => Ok(false),
 -            Err(error) => Err(error),
