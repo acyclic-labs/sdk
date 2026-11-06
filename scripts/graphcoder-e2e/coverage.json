@@ -8,6 +8,7 @@
       "cases": [
         "cli-help",
         "cli-invalid-option",
+        "output-destination-aliases",
         "text-responses"
       ]
     },

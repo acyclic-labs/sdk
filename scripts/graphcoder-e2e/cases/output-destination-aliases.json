@@ -1,0 +1,91 @@
+{
+  "id": "output-destination-aliases",
+  "workspace": {
+    "files": {
+      "result.json": "previous export\n",
+      "exports/.keep": ""
+    },
+    "kind": "plain"
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "done"
+        ],
+        "when": {}
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/result.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "must name distinct files"
+      }
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/result.json",
+        "--event-cursor",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "must name distinct files"
+      }
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--event-cursor",
+        "{{workspace}}/result.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "must name distinct files"
+      }
+    }
+  ],
+  "assert": {
+    "files": {
+      "result.json": "previous export\n"
+    },
+    "requests": 0
+  }
+}
