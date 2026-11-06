@@ -55,7 +55,7 @@ impl<K, V> Default for MemoryRecords<K, V> {
     }
 }
 
-impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
+impl<K: Ord, V: Revisioned> MemoryRecords<K, V> {
     fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, V>) -> T) -> Result<T, Poisoned> {
         self.0
             .lock()
@@ -63,12 +63,11 @@ impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
             .map_err(|_| Poisoned)
     }
 
-    pub(crate) fn load(&self, key: &K) -> Result<Option<V>, Poisoned> {
+    pub(crate) fn load(&self, key: &K) -> Result<Option<V>, Poisoned>
+    where
+        V: Clone,
+    {
         self.locked(|records| records.get(key).cloned())
-    }
-
-    pub(crate) fn keys(&self) -> Result<Vec<K>, Poisoned> {
-        self.locked(|records| records.keys().cloned().collect())
     }
 
     /// Replaces `key` only at `expected` (zero means absent).
