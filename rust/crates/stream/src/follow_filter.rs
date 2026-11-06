@@ -387,99 +387,19 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::changes::{take_marker_probes, take_parsed_bytes, validate};
 
-        // Original methods before carrying the admitted marker into matching.
-        fn matches(filter: &FollowFilter, headers: &RecordHeaders) -> bool {
-            match crate::changes::reader_format(headers) {
-                Err(_) => false,
-                Ok(Some(_)) => headers
-                    .keys()
-                    .iter()
-                    .any(|key| filter.matches_entry(key, headers)),
-                Ok(None) => filter
-                    .clauses()
-                    .iter()
-                    .all(|clause| clause.matches(headers)),
-            }
-        }
-        fn preserves(filter: &FollowFilter, record: &crate::Record) -> Result<bool, StreamError> {
-            validate(&record.value, &record.headers)?;
-            Ok(
-                if crate::changes::reader_format(&record.headers)?.is_some() {
-                    record
-                        .headers
-                        .keys()
-                        .iter()
-                        .all(|key| filter.matches_entry(key, &record.headers))
-                } else {
-                    matches(filter, &record.headers)
-                },
+        fn measure<T>(
+            run: impl FnOnce() -> T,
+        ) -> (T, acyclic_test_support::AllocationInfo, usize, usize) {
+            take_marker_probes();
+            take_parsed_bytes();
+            let mut result = None;
+            let allocations = acyclic_test_support::measure(|| result = Some(run()));
+            (
+                result.unwrap(),
+                allocations,
+                take_marker_probes(),
+                take_parsed_bytes(),
             )
-        }
-        fn project(
-            filter: &FollowFilter,
-            mut record: crate::Record,
-        ) -> Result<Option<crate::Record>, StreamError> {
-            validate(&record.value, &record.headers)?;
-            if !matches(filter, &record.headers) {
-                return Ok(None);
-            }
-            if crate::changes::reader_format(&record.headers)?.is_some() {
-                let headers = record.headers.clone();
-                let body = crate::AppendRecord {
-                    value: record.value,
-                    headers: record.headers,
-                }
-                .retain_changes(|key, _| filter.matches_entry(key, &headers))?
-                .ok_or(StreamError::InvalidArgument)?;
-                record.value = body.value;
-                record.headers = body.headers;
-            }
-            Ok(Some(record))
-        }
-        fn compare<T: PartialEq + std::fmt::Debug>(
-            baseline: impl FnOnce() -> T,
-            candidate: impl FnOnce() -> T,
-            saved: usize,
-            skipped_decode_bytes: Option<usize>,
-        ) -> (usize, usize) {
-            let before = std::cell::Cell::new((0, 0));
-            let after = std::cell::Cell::new((0, 0));
-            let (_, [old, new]) = acyclic_test_support::differential(
-                || {
-                    take_marker_probes();
-                    take_parsed_bytes();
-                    let result = baseline();
-                    before.set((take_marker_probes(), take_parsed_bytes()));
-                    result
-                },
-                || {
-                    take_marker_probes();
-                    take_parsed_bytes();
-                    let result = candidate();
-                    after.set((take_marker_probes(), take_parsed_bytes()));
-                    result
-                },
-            );
-            if let Some(bytes) = skipped_decode_bytes {
-                assert_eq!(new, acyclic_test_support::AllocationInfo::default());
-                assert!(
-                    old.count_total > 0,
-                    "decoded ownership is the negative control"
-                );
-                assert_eq!(after.get().1, bytes, "validate the original body once");
-                assert_eq!(before.get().1, 3 * bytes, "original decode reparses twice");
-            } else {
-                assert_eq!(old, new, "all allocation statistics must remain identical");
-                assert_eq!(before.get().1, after.get().1, "no extra body pass");
-            }
-            assert_eq!(before.get().0, after.get().0 + saved);
-            if saved != 0 {
-                assert!(
-                    before.get().0 > after.get().0,
-                    "repeated marker reads exceed the bound"
-                );
-            }
-            (before.get().0, after.get().0)
         }
 
         let followed = crate::StreamPath::new("followed")?;
@@ -555,53 +475,59 @@ mod tests {
                     let probes = take_marker_probes();
                     let valid = validate(&record.value, &record.headers).is_ok();
                     for (index, filter) in filters.iter().enumerate() {
-                        let matches = filter.matches(&record.headers);
-                        let preservation = compare(
-                            || preserves(filter, &record),
-                            || filter.preserves(&record),
-                            if valid {
-                                if format == Ok(None) {
-                                    2 * probes
-                                } else {
-                                    probes
-                                }
+                        let (matched, allocations, marker_probes, parsed_bytes) =
+                            measure(|| filter.matches(&record.headers));
+                        assert_eq!(allocations, acyclic_test_support::AllocationInfo::default());
+                        assert_eq!(marker_probes, probes, "classify the marker once");
+                        assert_eq!(parsed_bytes, 0, "header matching must not decode the body");
+                        let (preservation, allocations, marker_probes, parsed_bytes) =
+                            measure(|| filter.preserves(&record));
+                        assert_eq!(allocations, acyclic_test_support::AllocationInfo::default());
+                        assert_eq!(marker_probes, probes, "classify the marker once");
+                        let validation_bytes =
+                            if format.as_ref().is_ok_and(|format| format.is_some()) {
+                                record.value.len()
                             } else {
                                 0
-                            },
-                            None,
+                            };
+                        assert_eq!(
+                            parsed_bytes, validation_bytes,
+                            "validate the original body once"
                         );
-                        let unrestricted_changes = valid
-                            && format.as_ref().is_ok_and(|format| format.is_some())
-                            && index == 0;
-                        let projection = compare(
-                            || project(filter, record.clone()),
-                            || filter.project(record.clone()),
-                            if valid {
-                                if unrestricted_changes {
-                                    3 * probes
-                                } else if matches {
-                                    2 * probes
-                                } else {
-                                    probes
-                                }
-                            } else {
-                                0
-                            },
-                            unrestricted_changes.then_some(record.value.len()),
-                        );
-                        if fault == 0 && padding == 15 && prefix == "a" {
-                            eprintln!(
-                                "marker {marker:?}, filter {index}: preserves {preservation:?}, project {projection:?} probes"
-                            );
-                        }
+                        let (projected, allocations, marker_probes, parsed_bytes) =
+                            measure(|| filter.project(record.clone()));
                         if !valid {
+                            assert_eq!(preservation, Err(StreamError::InvalidArgument));
+                            assert_eq!(projected, Err(StreamError::InvalidArgument));
+                        } else {
+                            let projected = projected.as_ref().unwrap().as_ref();
+                            assert_eq!(matched, projected.is_some());
+                            assert_eq!(preservation, Ok(projected == Some(&record)));
+                            if let Some(projected) = projected {
+                                assert_eq!(filter.preserves(projected), Ok(true));
+                                assert_eq!(projected.sequence, record.sequence);
+                                assert_eq!(projected.commit_id, record.commit_id);
+                                assert_eq!(
+                                    projected.committed_at_micros,
+                                    record.committed_at_micros
+                                );
+                                assert_eq!(projected.origin, record.origin);
+                                assert_eq!(
+                                    projected.headers.attributes(),
+                                    record.headers.attributes()
+                                );
+                            }
+                        }
+                        if !valid || index == 0 || format == Ok(None) || !matched {
                             assert_eq!(
-                                filter.preserves(&record),
-                                Err(StreamError::InvalidArgument)
+                                allocations,
+                                acyclic_test_support::AllocationInfo::default(),
+                                "unrestricted projection must transfer the original owners"
                             );
+                            assert_eq!(marker_probes, probes, "classify the marker once");
                             assert_eq!(
-                                filter.project(record.clone()),
-                                Err(StreamError::InvalidArgument)
+                                parsed_bytes, validation_bytes,
+                                "validate the original body once"
                             );
                         }
                     }

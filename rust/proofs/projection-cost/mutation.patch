@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/follow_filter.rs b/rust/crates/stream/src/follow_filter.rs
+--- a/rust/crates/stream/src/follow_filter.rs
++++ b/rust/crates/stream/src/follow_filter.rs
+@@ -196,5 +196,2 @@
+         let format = crate::changes::validated_format(&record.value, &record.headers)?;
+-        if self.clauses().is_empty() {
+-            return Ok(Some(record));
+-        }
+         if !self.matches_format(&record.headers, format) {

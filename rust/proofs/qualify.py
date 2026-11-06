@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup", "projection-cost"])
 claim = parser.parse_args().claim
 target = ["--lib"]
 if claim == "retained-credit":
@@ -41,6 +41,12 @@ elif claim == "objects-empty-dispatch":
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
     features = ["--no-default-features", "--features", "local,test-support"]
+elif claim == "projection-cost":
+    source = "rust/crates/stream/src/follow_filter.rs"
+    crate = "acyclic-stream"
+    test = "follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding"
+    diagnostic = "unrestricted projection must transfer the original owners"
+    features = []
 elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"
     crate = "acyclic-auth"
