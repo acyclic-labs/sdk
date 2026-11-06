@@ -1,0 +1,11 @@
+--- a/rust/crates/actors/src/guest/authoring.rs
++++ b/rust/crates/actors/src/guest/authoring.rs
+@@ -92,7 +92,7 @@
+         if cause.encode()?.as_bytes() != bytes {
+             return Err(Self::Decode("non-canonical guest failure".into()));
+         }
+-        Ok(cause)
++        Ok(Self::Handler("lost original cause".into()))
+     }
+ }
+ 

@@ -519,6 +519,73 @@ pub fn actor_seeds()
         invocation_bytes,
         "Store::enqueue_invoke original InvocationTicket::record and wire_codec::record_wire",
     )];
+    for (name, cause) in [
+        (
+            "guest-failure-precondition",
+            guest::GuestError::PreconditionChanged,
+        ),
+        (
+            "guest-failure-abi-zero",
+            guest::GuestError::UnsupportedAbi(0),
+        ),
+        (
+            "guest-failure-abi-max",
+            guest::GuestError::UnsupportedAbi(u32::MAX),
+        ),
+        ("guest-failure-format", guest::GuestError::UnsupportedFormat),
+        ("guest-failure-mutation", guest::GuestError::NestedMutation),
+        ("guest-failure-identity", guest::GuestError::MissingIdentity),
+        ("guest-failure-codec", guest::GuestError::IncompatibleCodec),
+        (
+            "guest-failure-decode",
+            guest::GuestError::Decode("original decode cause".into()),
+        ),
+        (
+            "guest-failure-encode",
+            guest::GuestError::Encode("original encode cause".into()),
+        ),
+        (
+            "guest-failure-handler",
+            guest::GuestError::Handler("original \u{0} cause".into()),
+        ),
+        (
+            "guest-failure-checkpoint-min",
+            guest::GuestError::CheckpointLimit { maximum: 1 },
+        ),
+        (
+            "guest-failure-checkpoint-max",
+            guest::GuestError::CheckpointLimit { maximum: u64::MAX },
+        ),
+        (
+            "guest-failure-deadline-min",
+            guest::GuestError::HandlerTimeout { maximum_millis: 1 },
+        ),
+        (
+            "guest-failure-deadline-max",
+            guest::GuestError::HandlerTimeout {
+                maximum_millis: u64::MAX,
+            },
+        ),
+    ] {
+        let bytes = cause.encode()?.into_bytes();
+        assert_eq!(
+            guest::GuestError::decode(&bytes)?,
+            cause,
+            "guest failure retains its original typed cause"
+        );
+        let mut noncanonical = Vec::with_capacity(bytes.len() + 1);
+        noncanonical.push(b' ');
+        noncanonical.extend_from_slice(&bytes);
+        assert!(
+            guest::GuestError::decode(&noncanonical).is_err(),
+            "guest failure rejects non-canonical writer spelling"
+        );
+        seeds.push((
+            name,
+            bytes,
+            "guest::GuestError::encode, shared invocation/failure record cause writer",
+        ));
+    }
     for (name, bytes) in
         futures::executor::block_on(acyclic_actors::call::model::codec_seeds(clock))?
     {
@@ -1189,6 +1256,9 @@ pub fn actor_codecs(bytes: &[u8]) {
         actor_seeds().expect("Actors decoders must admit their production writers");
     });
     std::sync::LazyLock::force(&WRITERS);
+    if let Ok(cause) = acyclic_actors::guest::GuestError::decode(bytes) {
+        assert_eq!(cause.encode().unwrap().as_bytes(), bytes);
+    }
     use acyclic_actors::sockets::{SocketFrame, SocketOpen};
     if let Ok(open) = SocketOpen::decode(bytes) {
         assert_eq!(

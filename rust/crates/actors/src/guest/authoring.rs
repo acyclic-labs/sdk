@@ -79,6 +79,23 @@ pub enum GuestError {
     Handler(String),
 }
 
+impl GuestError {
+    /// The canonical typed cause carried by invocation replies and failure records.
+    pub fn encode(&self) -> Result<String, Self> {
+        serde_json::to_string(self).map_err(|error| Self::Encode(error.to_string()))
+    }
+
+    /// Admit only the exact canonical representation of a typed guest cause.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Self> {
+        let cause: Self =
+            serde_json::from_slice(bytes).map_err(|error| Self::Decode(error.to_string()))?;
+        if cause.encode()?.as_bytes() != bytes {
+            return Err(Self::Decode("non-canonical guest failure".into()));
+        }
+        Ok(cause)
+    }
+}
+
 /// Artifact codec hooks for exactly one checkpoint byte format.
 #[derive(TS)]
 #[ts(bound = "State: TS")]
