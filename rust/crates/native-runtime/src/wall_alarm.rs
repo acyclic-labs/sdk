@@ -61,7 +61,7 @@ impl WallAlarm {
     /// that clock's controller is dropped.
     pub fn register(deadline_unix_ms: u64, fire: AlarmCallback) -> io::Result<Self> {
         #[cfg(feature = "test-support")]
-        if let Some(alarms) = crate::testing::wall_alarms() {
+        if let Some(alarms) = crate::testing::wall_alarms()? {
             return alarms.register(deadline_unix_ms, fire);
         }
         let alarms = alarms()?;

@@ -17,6 +17,13 @@ pub(crate) struct Simulated {
 }
 
 impl Simulated {
+    pub(crate) fn producer_lost() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "step=wall-alarm-producer; recovery=retain the original clock controller until its alarms settle",
+        )
+    }
+
     pub(crate) fn register(
         self: &Arc<Self>,
         deadline: u64,
@@ -85,13 +92,7 @@ impl Simulated {
             std::mem::take(&mut *timer)
         };
         drop(timer);
-        fail(
-            &self.index,
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "step=wall-alarm-producer; recovery=retain the original clock controller until its alarms settle",
-            ),
-        );
+        fail(&self.index, Self::producer_lost());
     }
 }
 
@@ -124,6 +125,25 @@ mod tests {
     #[test]
     fn scoped_alarms_use_the_original_clock_and_retain_producer_loss() {
         let runtime = seeded_runtime(71).unwrap();
+        for initialized in [false, true] {
+            let (schedule, _) = Schedule::seeded(71);
+            let late = runtime.block_on(schedule.scope(async {
+                if initialized {
+                    let (alarm, _) = original_alarm(unix_millis().unwrap() + 100);
+                    drop(alarm);
+                }
+                crate::testing::inherit_host(|| {
+                    WallAlarm::register(unix_millis().unwrap() + 100, Arc::new(|_| {}))
+                })
+            }));
+            drop(schedule);
+            let error = match std::thread::spawn(late).join().unwrap() {
+                Ok(_) => panic!("late callback admitted an alarm after its clock producer closed"),
+                Err(error) => error,
+            };
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+            assert!(error.to_string().contains("step=wall-alarm-producer"));
+        }
         let (schedule, _) = Schedule::seeded(71);
         let (held, mut result) = runtime.block_on(async {
             tokio::time::pause();
