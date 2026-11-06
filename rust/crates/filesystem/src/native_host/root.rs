@@ -546,20 +546,45 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-    let directory = open_root_directory_handle(path, work)?;
+    let directory = open_root_directory_handle(path, DirectoryAccess::Read, work)?;
     let identity = directory_identity(&directory, work)?;
     Ok((directory, identity))
 }
 
+pub(crate) enum DirectoryAccess {
+    Read,
+    Search,
+}
+
+#[cfg(unix)]
+pub(crate) const fn search_flags() -> i32 {
+    #[cfg(target_os = "linux")]
+    let access = libc::O_PATH | libc::O_DIRECTORY;
+    #[cfg(target_os = "macos")]
+    let access = libc::O_SEARCH;
+    access | libc::O_NOFOLLOW | libc::O_CLOEXEC
+}
+
+#[cfg(windows)]
+pub(crate) const SEARCH_ACCESS: fs::FILE_ACCESS_RIGHTS =
+    fs::FILE_ACCESS_RIGHTS(fs::FILE_TRAVERSE.0 | fs::FILE_READ_ATTRIBUTES.0 | fs::SYNCHRONIZE.0);
+
 pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
     path: &Path,
+    access: DirectoryAccess,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
     #[cfg(unix)]
     let file = unix_name(path.as_os_str(), work, |name, work| {
-        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
-        #[cfg(target_os = "linux")]
-        let flags = flags | libc::O_NOATIME;
+        let flags = match access {
+            DirectoryAccess::Search => search_flags(),
+            DirectoryAccess::Read => {
+                let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+                #[cfg(target_os = "linux")]
+                let flags = flags | libc::O_NOATIME;
+                flags
+            }
+        };
         open_unix(libc::AT_FDCWD, name, flags, work)
     })?;
     #[cfg(windows)]
@@ -568,7 +593,11 @@ pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
             return Err(io::Error::from_raw_os_error(3).into());
         }
         with_root_name(path, work, |name, work| {
-            work.attempt_io(READ, || open_windows_root_name(name, fs::FILE_GENERIC_READ))
+            let access = match access {
+                DirectoryAccess::Read => fs::FILE_GENERIC_READ,
+                DirectoryAccess::Search => SEARCH_ACCESS,
+            };
+            work.attempt_io(READ, || open_windows_root_name(name, access))
         })?
     };
     Ok(Dir::from_std_file(file))
