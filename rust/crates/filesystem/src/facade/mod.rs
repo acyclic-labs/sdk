@@ -95,8 +95,6 @@ use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use acyclic_objects::Blobs as _;
 
-use bytes::Bytes;
-
 use futures::{StreamExt as _, stream};
 
 use serde::{Deserialize, Serialize};
