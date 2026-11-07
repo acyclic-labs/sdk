@@ -11,8 +11,10 @@ use std::time::Instant;
 mod native_access;
 
 #[tokio::test]
-#[ignore = "requires a writable ProjFS host; run alone for profiling"]
 async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT").is_some() {
+        return profile_external_client();
+    }
     if std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").is_some() {
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
@@ -91,9 +93,8 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
     let mut command = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
-            "--ignored",
             "--exact",
-            "projfs_profile::profile_external_client",
+            "projfs_profile::profile_enumeration_hydration_write_capture",
             "--nocapture",
         ])
         .env("ACYCLIC_PROJFS_PROFILE_ROOT", destination.join(prefix));
@@ -153,12 +154,9 @@ fn phase(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-#[test]
-#[ignore = "contained external client for the ProjFS workload"]
 fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") else {
-        return Ok(());
-    };
+    let root =
+        std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT").ok_or("ProjFS client root missing")?;
     let root = std::path::PathBuf::from(root);
     let (_, count) = profile_layout();
     phase("enumerate")?;
