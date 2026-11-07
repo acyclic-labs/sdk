@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 
 fn request(path: &StreamPath) -> Result<CommitRequest, StreamError> {
     Ok(CommitRequest {
@@ -40,7 +41,7 @@ async fn publish(
             .await
             .map(|output| output.map(drop).map_err(NativeGuardFailure::from)),
         _ => stream
-            .native_commit_guarded::<NativeGuardFailure, _, _>(
+            .native_commit_with_guard::<NativeGuardFailure, _, _>(
                 request(&path).map_err(std::io::Error::other)?,
                 None,
                 meter.original(),

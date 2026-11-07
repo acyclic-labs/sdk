@@ -285,6 +285,9 @@ missing_panics_doc = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
 undocumented_unsafe_blocks = "deny"
+# A future awaited or passed by value past `future-size-threshold` (clippy.toml)
+# nests a layer's state machine in its caller; erase it at the boundary.
+large_futures = "deny"
 
 # Unoptimized async state machines exceed default stacks in filesystem, harness,
 # Git and provider paths. Keep the established optimization for those consumers;

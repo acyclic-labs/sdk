@@ -1,3 +1,5 @@
+# large_futures ceiling: the same value and rationale as the workspace clippy.toml.
+future-size-threshold = 131072
 # Thresholds for the lints enabled in [workspace.lints.clippy] (Cargo.toml).
 too-many-lines-threshold = 100
 cognitive-complexity-threshold = 30

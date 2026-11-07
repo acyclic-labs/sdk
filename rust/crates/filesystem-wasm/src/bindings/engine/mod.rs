@@ -390,7 +390,7 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
     let object_cache = browser_object_cache_options(&options.object_cache);
     let (objects, immutable_objects) = match options.object_acceleration {
         Acceleration::Indexeddb => (
-            BrowserObjects::IndexedDb(
+            acyclic_fs::shared_objects(
                 IndexedDbObjectStore::open(&options.database_name, options.maximum_object_bytes)
                     .await
                     .map_err(JsValue::from)?,
@@ -398,7 +398,7 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
             "indexeddb",
         ),
         Acceleration::Opfs => (
-            BrowserObjects::Opfs(
+            acyclic_fs::shared_objects(
                 OpfsAcceleratedObjectStore::open(
                     &options.database_name,
                     options.maximum_object_bytes,
@@ -470,7 +470,7 @@ pub(in crate::bindings) fn memory_engine(
     Ok(Fs::new(
         StreamAuthorityStore::new(streams),
         CachedObjectStore::new(
-            BrowserObjects::Memory(
+            acyclic_fs::shared_objects(
                 LogicalObjectStore::new(Arc::new(objects))
                     .with_object_limit(Some(maximum_object_bytes))
                     .map_err(js_error)?,
