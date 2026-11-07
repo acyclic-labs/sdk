@@ -94,13 +94,13 @@ pub use identity::{IdempotencyKey, WorkspaceId, WorkspaceName};
 pub(crate) use join::JoinPreparation;
 pub use join::{JoinBuilder, JoinHistory, JoinPlan};
 pub use join_apply::DrivenJoinError;
-#[cfg(any(test, feature = "fuzzing"))]
-#[doc(hidden)]
-pub use join_directory::check_merge_directory_resolution;
 pub use join_directory::{
     MergeCleanFile, MergeConflictFile, MergeConflictFileKind, MergeDirectory, MergeDirectoryPlan,
     MergeDirectorySection,
 };
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub use join_directory::{check_captured_merge_resolution, check_merge_directory_resolution};
 use join_helpers::{
     binding_conflict_view, conflict_file_id, kernel_conflict, namespace_path_text,
     record_conflict_view, resolution_matches_conflict, side_resolution,
