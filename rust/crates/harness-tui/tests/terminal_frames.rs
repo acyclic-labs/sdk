@@ -448,8 +448,8 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
     }
 }
 
-/// Full-page repaint uses one native submission per frame. The old per-command
-/// path must fail the same oracle on both ordinary and larger terminal sizes.
+/// Full-page repaint and region scrolling share one native terminal owner.
+/// The old per-command path must fail the same submission oracle.
 #[test]
 fn real_terminal_frame_cost() -> io::Result<()> {
     use std::fmt::Write as _;
@@ -511,6 +511,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             .unwrap();
         }
     }
+    regions::native_region_cost(&mut output, &mut report)?;
     regions::publish_report(&report)
 }
 
