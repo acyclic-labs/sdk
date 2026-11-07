@@ -239,7 +239,15 @@ pub fn check(data: &[u8]) {
         &mut |_| Ok(()),
     );
     if let Ok(record) = parsed {
-        assert_envelope(&record);
+        // Reserved serde marker maps are refused before persistence. Their
+        // canonical key order can change serde's interpretation, so replay
+        // must prove rejection instead of roundtripping a non-recordable value.
+        if acyclic_harness::conversation::validate_portable_json(&record.invocation.arguments)
+            .is_ok()
+            && acyclic_harness::conversation::validate_portable_json(&record.metadata).is_ok()
+        {
+            assert_envelope(&record);
+        }
         assert_replay(
             record,
             Limits {
