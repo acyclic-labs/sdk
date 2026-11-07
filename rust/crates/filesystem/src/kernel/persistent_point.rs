@@ -10,6 +10,9 @@ use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 use std::collections::VecDeque;
 
+#[cfg(all(test, loom, not(target_arch = "wasm32")))]
+mod model_checking;
+
 pub(crate) type Failure = OperationFailure<Error>;
 
 /// A value with ownership charged to a kernel accounting context.
@@ -117,9 +120,7 @@ impl<T> Owned<Vec<T>> {
             bytes_copied: std::mem::size_of::<T>() as u64,
             ..crate::WorkCounters::UNCHARGED
         };
-        accounting.admit(copied)?;
-        self.value.push(value);
-        accounting.record_completed(copied)
+        accounting.perform(copied, || self.value.push(value))
     }
 
     pub(crate) fn allocate(
