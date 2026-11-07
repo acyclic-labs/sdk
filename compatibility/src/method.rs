@@ -1,6 +1,6 @@
 //! Generate runtime and TypeScript method admission from the same descriptors.
 use acyclic_auth_action::Action;
-use prost_reflect::{DescriptorPool, DynamicMessage};
+use prost_reflect::{DescriptorPool, DynamicMessage, ExtensionDescriptor, MethodDescriptor};
 use std::{collections::BTreeMap, fmt::Write as _, io};
 
 type Error = Box<dyn std::error::Error>;
@@ -121,6 +121,116 @@ struct Extractor {
     possible: Vec<Action>,
 }
 
+fn extractor_registry(pool: &DescriptorPool) -> Result<BTreeMap<String, Extractor>, Error> {
+    let registry = pool
+        .get_extension_by_name("acyclic.validation.v1.extractors")
+        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
+    let mut extractors = BTreeMap::new();
+    for file in pool.files() {
+        let options = file.options();
+        let value = options.get_extension(&registry);
+        for value in value.as_list().into_iter().flatten() {
+            let declaration = value
+                .as_message()
+                .ok_or_else(|| invalid("invalid extractor"))?;
+            let name = string(declaration, "name");
+            let resources_only = declaration
+                .get_field_by_name("resources_only")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_default();
+            let extractor = Extractor {
+                resources_only,
+                possible: actions(declaration, "possible_actions")?,
+            };
+            if name.is_empty()
+                || extractor.possible.is_empty()
+                || extractors.insert(name, extractor).is_some()
+            {
+                return Err(invalid("empty or duplicate authorization extractor").into());
+            }
+        }
+    }
+    Ok(extractors)
+}
+
+fn method_row(
+    method: &MethodDescriptor,
+    extension: &ExtensionDescriptor,
+    extractors: &BTreeMap<String, Extractor>,
+    method_type: &str,
+    product: Option<&str>,
+) -> Result<Option<String>, Error> {
+    let name = method.name();
+    let route = format!("/{}/{}", method.parent_service().full_name(), name);
+    let options = method.options();
+    let value = options.get_extension(extension);
+    let mut required = Vec::new();
+    let mut possible = Vec::new();
+    let mut rules = Vec::new();
+    for value in value.as_list().into_iter().flatten() {
+        let declaration = value
+            .as_message()
+            .ok_or_else(|| invalid("invalid authorization rule"))?;
+        let admitted = actions(declaration, "action")?;
+        let resource = string(declaration, "resource");
+        let extractor = string(declaration, "extractor");
+        let resources = match (resource.is_empty(), extractor.is_empty()) {
+            (false, true) if !admitted.is_empty() => {
+                format!("auth_action::method::Resources::Template({resource:?})")
+            }
+            (true, false) => {
+                let registered = extractors.get(&extractor).ok_or_else(|| {
+                    invalid(format!("unknown authorization extractor {extractor}"))
+                })?;
+                possible.extend_from_slice(&registered.possible);
+                if registered.resources_only == admitted.is_empty()
+                    || admitted
+                        .iter()
+                        .any(|action| !registered.possible.contains(action))
+                {
+                    return Err(invalid(format!(
+                        "{} disagrees with extractor {extractor}",
+                        method.full_name()
+                    ))
+                    .into());
+                }
+                format!(
+                    "auth_action::method::Resources::Extractor {{name:{extractor:?},possible_actions:{}}}",
+                    rust_actions(&registered.possible)
+                )
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "{} has no unique resource selector",
+                    method.full_name()
+                ))
+                .into());
+            }
+        };
+        for action in &admitted {
+            if !required.contains(action) {
+                required.push(*action);
+            }
+        }
+        possible.extend_from_slice(&admitted);
+        rules.push(format!(
+            "auth_action::method::Rule {{admitted:{},resources:{resources}}}",
+            rust_actions(&admitted)
+        ));
+    }
+    if rules.is_empty() {
+        return Err(invalid(format!("{} has no admission rule", method.full_name())).into());
+    }
+    if product.is_some_and(|product| !possible.iter().any(|action| action.product() == product)) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}",
+        rust_actions(&required),
+        rules.join(",")
+    )))
+}
+
 /// Generate a service's exhaustive method enum and admission table.
 /// Dynamic extractor vocabularies remain output ceilings;
 /// they are never promoted to unconditional required permissions.
@@ -156,107 +266,17 @@ pub fn product_authorization(
     let extension = pool
         .get_extension_by_name("acyclic.validation.v1.auth")
         .ok_or_else(|| invalid("method authorization extension is missing"))?;
-    let registry = pool
-        .get_extension_by_name("acyclic.validation.v1.extractors")
-        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
-    let mut extractors = BTreeMap::new();
-    for file in pool.files() {
-        let options = file.options();
-        let value = options.get_extension(&registry);
-        for value in value.as_list().into_iter().flatten() {
-            let declaration = value
-                .as_message()
-                .ok_or_else(|| invalid("invalid extractor"))?;
-            let name = string(declaration, "name");
-            let resources_only = declaration
-                .get_field_by_name("resources_only")
-                .and_then(|value| value.as_bool())
-                .unwrap_or_default();
-            let extractor = Extractor {
-                resources_only,
-                possible: actions(declaration, "possible_actions")?,
-            };
-            if name.is_empty()
-                || extractor.possible.is_empty()
-                || extractors.insert(name, extractor).is_some()
-            {
-                return Err(invalid("empty or duplicate authorization extractor").into());
-            }
-        }
-    }
+    let extractors = extractor_registry(&pool)?;
     let service = pool
         .get_service_by_name(service)
         .ok_or_else(|| invalid("authorization service is missing"))?;
     let mut variants = Vec::new();
     let mut rows = Vec::new();
     for method in service.methods() {
-        let name = method.name();
-        let route = format!("/{}/{}", service.full_name(), name);
-        let options = method.options();
-        let value = options.get_extension(&extension);
-        let mut required = Vec::new();
-        let mut possible = Vec::new();
-        let mut rules = Vec::new();
-        for value in value.as_list().into_iter().flatten() {
-            let declaration = value
-                .as_message()
-                .ok_or_else(|| invalid("invalid authorization rule"))?;
-            let admitted = actions(declaration, "action")?;
-            let resource = string(declaration, "resource");
-            let extractor = string(declaration, "extractor");
-            let resources = match (resource.is_empty(), extractor.is_empty()) {
-                (false, true) if !admitted.is_empty() => {
-                    format!("auth_action::method::Resources::Template({resource:?})")
-                }
-                (true, false) => {
-                    let registered = extractors.get(&extractor).ok_or_else(|| {
-                        invalid(format!("unknown authorization extractor {extractor}"))
-                    })?;
-                    possible.extend_from_slice(&registered.possible);
-                    if registered.resources_only == admitted.is_empty()
-                        || admitted
-                            .iter()
-                            .any(|action| !registered.possible.contains(action))
-                    {
-                        return Err(invalid(format!(
-                            "{} disagrees with extractor {extractor}",
-                            method.full_name()
-                        ))
-                        .into());
-                    }
-                    format!(
-                        "auth_action::method::Resources::Extractor {{name:{extractor:?},possible_actions:{}}}",
-                        rust_actions(&registered.possible)
-                    )
-                }
-                _ => {
-                    return Err(invalid(format!(
-                        "{} has no unique resource selector",
-                        method.full_name()
-                    ))
-                    .into());
-                }
-            };
-            for action in &admitted {
-                if !required.contains(action) {
-                    required.push(*action);
-                }
-            }
-            possible.extend_from_slice(&admitted);
-            rules.push(format!(
-                "auth_action::method::Rule {{admitted:{},resources:{resources}}}",
-                rust_actions(&admitted)
-            ));
+        if let Some(row) = method_row(&method, &extension, &extractors, method_type, product)? {
+            variants.push(method.name().to_owned());
+            rows.push(row);
         }
-        if rules.is_empty() {
-            return Err(invalid(format!("{} has no admission rule", method.full_name())).into());
-        }
-        if product.is_some_and(|product| !possible.iter().any(|action| action.product() == product))
-        {
-            continue;
-        }
-        variants.push(name.to_owned());
-        rows.push(format!("auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}", rust_actions(&required), rules.join(",")));
     }
     let mut rust = String::from("// Generated from the canonical service authorization options.\n");
     writeln!(
