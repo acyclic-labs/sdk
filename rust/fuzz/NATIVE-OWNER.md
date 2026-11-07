@@ -7,7 +7,7 @@ the original writer capture, inside the published native-runtime crate.
 Run the retained control in a disposable checkout:
 
 ```sh
-python3 rust/fuzz/native-codec-control.py owner-envelope /tmp/native-owner-control
+bun rust/fuzz/native-codec-control.mjs owner-envelope /tmp/native-owner-control
 ```
 
 The producer captures three deliberately nonsecret SDK writer outputs. No real

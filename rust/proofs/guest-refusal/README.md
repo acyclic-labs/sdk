@@ -1,6 +1,6 @@
 # Guest mutation preserves its refusal
 
-Run `python3 rust/proofs/qualify.py guest-refusal` from the repository root.
+Run `node rust/proofs/qualify.mjs guest-refusal` from the repository root.
 
 The existing Actors Loom entry point includes the shipped `guest/state.rs`
 module. The existing compiler wrapper selects Loom synchronization only for

@@ -7,7 +7,7 @@ Every delivery must preserve the original record, sequence and order while
 allocating zero heap objects. Provider reads and registration occur before
 measurement.
 
-Run `python3 rust/proofs/qualify.py ready-source-allocation` from the repository
+Run `node rust/proofs/qualify.mjs ready-source-allocation` from the repository
 root. The retained mutation inserts a physical allocation into the production
 ready-record return branch. The unchanged oracle must fail with `ready record
 scheduling allocated physical heap storage`. The shared qualifier restores exact

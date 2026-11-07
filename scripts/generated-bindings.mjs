@@ -70,7 +70,6 @@ export const compatibilityArtifacts = {
 export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   [compatibilityArtifacts.auth.conformanceDigest, "typescript/packages/auth/generated/conformance/secrets-v1.json"],
-  [compatibilityArtifacts.actors.descriptorDigest, "rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin"],
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant",

@@ -1,6 +1,3 @@
 #![no_main]
 
-#[path = "../../tests/support/syntax_data.rs"]
-mod input;
-
-libfuzzer_sys::fuzz_target!(|data: &[u8]| input::check(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| syntect::test_support::check_syntax_data(data));

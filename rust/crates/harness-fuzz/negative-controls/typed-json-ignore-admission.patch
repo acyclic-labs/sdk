@@ -1,0 +1,15 @@
+--- a/rust/crates/harness-core/src/executor/json/records.rs
++++ b/rust/crates/harness-core/src/executor/json/records.rs
+@@ -44,10 +44,10 @@
+             return Err(decode_error(syntax, code));
+         }
+     };
+-    charge(JsonCodecCharge::Admission {
++    let _ = charge(JsonCodecCharge::Admission {
+         maximum_owned_bytes: decoded_bytes::<S::Value>(layout)?,
+         value_shape,
+-    })?;
++    });
+     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+     #[cfg(all(
+         any(test, feature = "test-support"),

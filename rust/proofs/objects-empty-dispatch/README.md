@@ -7,7 +7,7 @@ reading valid, absent, invalid and removed empty ranges. It also checks original
 index-lock contention and the public HEAD path. Nonempty reads and HEAD retain
 their required native submissions; their observations check counter sensitivity.
 
-Run `python3 rust/proofs/qualify.py objects-empty-dispatch` from the repository
+Run `node rust/proofs/qualify.mjs objects-empty-dispatch` from the repository
 root. The kept mutation disables only the production empty-range fast path.
 The original worker still returns the requested empty bytes, but the unchanged
 oracle must reject its extra submission at `empty range dispatched a physical
