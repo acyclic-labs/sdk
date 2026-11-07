@@ -66,6 +66,7 @@ impl Visit for Fields {
 }
 
 struct SubscriberFailure {
+    panic: fn(&str) -> !,
     field: &'static str,
     worker: bool,
     occurrence: usize,
@@ -135,7 +136,7 @@ where
             && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
         {
             failure.panics.fetch_add(1, Ordering::SeqCst);
-            std::panic::panic_any(format!("original subscriber control: {}", failure.field));
+            (failure.panic)(failure.field);
         }
     }
     fn on_close(&self, id: tracing::Id, context: LayerContext<'_, S>) {
@@ -153,7 +154,7 @@ where
             && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
         {
             failure.panics.fetch_add(1, Ordering::SeqCst);
-            std::panic::panic_any(format!("original subscriber control: {}", failure.field));
+            (failure.panic)(failure.field);
         }
     }
 }
@@ -519,6 +520,7 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                 occurrence,
                 seen: AtomicUsize::new(0),
                 panics: AtomicUsize::new(0),
+                panic: |field| panic!("original subscriber control: {field}"),
             });
             let probe = Probe {
                 admission: Arc::clone(&workers.admission),

@@ -11,7 +11,9 @@ impl Drop for Released {
     }
 }
 
-async fn scoped_custody() -> Result<(), Box<dyn std::error::Error>> {
+async fn scoped_custody(
+    panicking: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     for explicit_abort in [false, true] {
         let (started, starting) = oneshot::channel();
         let (released, releasing) = oneshot::channel();
@@ -39,8 +41,8 @@ async fn scoped_custody() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(output.as_ptr() as usize, original);
     assert!(output.iter().all(|byte| *byte == 73));
 
-    // Inject the payload through the real scheduler's panic boundary.
-    let error = spawn_owned(async { std::panic::panic_any("private task payload") })
+    // The test supplies the original fault producer to the real scheduler.
+    let error = spawn_owned(panicking)
         .await
         .err()
         .ok_or("panicking original task completed")?;
@@ -73,7 +75,9 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
     super::super::coordination_runtime()
         .unwrap()
         .block_on(async {
-            scoped_custody().await.unwrap();
+            scoped_custody(async { panic!("private task payload") })
+                .await
+                .unwrap();
 
             let (started, starting) = oneshot::channel();
             let (release, held) = oneshot::channel::<()>();
@@ -127,7 +131,7 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
 fn seeded_executor_uses_the_same_scoped_custody_contract() {
     super::super::coordination_runtime().unwrap().block_on(async {
         let (schedule, mut events) = crate::testing::Schedule::seeded(83);
-        let work = schedule.scope(scoped_custody());
+        let work = schedule.scope(scoped_custody(async { panic!("private task payload") }));
         tokio::pin!(work);
         loop {
             tokio::select! {
