@@ -330,6 +330,8 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
 }
 
 fn grant_allows(g: &Grant, r: &Request<'_>, record_facts: bool) -> bool {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(GrantMatch);
     let Target::Resource { action, resource } = r.target else {
         return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
     };
@@ -654,3 +656,7 @@ fn permits_canonical<const CURRENT: bool>(
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct StructuralAdmission;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct GrantMatch;
