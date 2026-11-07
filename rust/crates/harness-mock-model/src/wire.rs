@@ -14,6 +14,8 @@ pub(crate) fn events(
     step: &Step,
     input_tokens: u64,
     completed_text: Option<&str>,
+    id: Option<&str>,
+    model: Option<&str>,
 ) -> Option<Vec<String>> {
     let mut output = Vec::new();
     let total_tokens = input_tokens.checked_add(2)?;
@@ -35,14 +37,14 @@ pub(crate) fn events(
     }
     match path {
         "responses" => {
-            responses(step, &usage, completed_text, &mut output);
+            responses(step, &usage, completed_text, id, model, &mut output);
         }
         "chat/completions" => {
             for text in &step.text {
-                output.push(sse(json!({"id":"mock-chat","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]})));
+                output.push(sse(json!({"id":id,"model":model,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]})));
             }
             for (index, tool) in step.tools.iter().enumerate() {
-                output.push(sse(json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":index,"id":tool.id,"type":"function","function":{"name":tool.name,"arguments":tool.arguments.to_string()}}]},"finish_reason":null}]})));
+                output.push(sse(json!({"id":id,"model":model,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":index,"id":tool.id,"type":"function","function":{"name":tool.name,"arguments":tool.arguments.to_string()}}]},"finish_reason":null}]})));
             }
             if !step.hold {
                 let reason = if step.tools.is_empty() {
@@ -50,12 +52,12 @@ pub(crate) fn events(
                 } else {
                     "tool_calls"
                 };
-                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2,"total_tokens":total_tokens}})));
+                output.push(sse(json!({"id":id,"model":model,"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2,"total_tokens":total_tokens}})));
                 output.push("data: [DONE]\n\n".into());
             }
         }
         "messages" => {
-            output.push(sse(json!({"type":"message_start","message":{"id":"mock-message","type":"message","role":"assistant","content":[],"usage":usage}})));
+            output.push(sse(json!({"type":"message_start","message":{"id":id,"model":model,"type":"message","role":"assistant","content":[],"usage":usage}})));
             if !step.text.is_empty() {
                 output.push(sse(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})));
                 for text in &step.text {
@@ -84,16 +86,23 @@ pub(crate) fn events(
                     .as_ref()
                     .map_or(0, |gemini| gemini.thought_tokens),
             )?;
-            gemini(&mut output, step, input_tokens, total_tokens);
+            gemini(&mut output, step, input_tokens, total_tokens, id, model);
         }
         _ => return None,
     }
     Some(output)
 }
 
-fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &mut Vec<String>) {
+fn responses(
+    step: &Step,
+    usage: &Value,
+    completed_text: Option<&str>,
+    id: Option<&str>,
+    model: Option<&str>,
+    output: &mut Vec<String>,
+) {
     output.push(sse(
-        json!({"type":"response.created","response":{"id":"mock-response","status":"in_progress"}}),
+        json!({"type":"response.created","response":{"id":id,"model":model,"status":"in_progress"}}),
     ));
     for text in &step.text {
         output.push(sse(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})));
@@ -101,7 +110,8 @@ fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &
     let mut items = Vec::new();
     if (!step.text.is_empty() || completed_text.is_some()) && !step.hold {
         let text = completed_text.map_or_else(|| step.text.concat(), str::to_owned);
-        let item = json!({"type":"message","id":"mock-message","role":"assistant",
+        let message_id = id.map(|id| format!("{id}-message"));
+        let item = json!({"type":"message","id":message_id,"role":"assistant",
             "content":[{"type":"output_text","text":text}]});
         output.push(sse(
             json!({"type":"response.output_item.done","output_index":0,"item":item}),
@@ -145,7 +155,7 @@ fn responses(step: &Step, usage: &Value, completed_text: Option<&str>, output: &
         items.push(item);
     }
     if !step.hold {
-        output.push(sse(json!({"type":"response.completed","response":{"id":"mock-response","status":"completed","usage":usage,"output":items}})));
+        output.push(sse(json!({"type":"response.completed","response":{"id":id,"model":model,"status":"completed","usage":usage,"output":items}})));
     }
 }
 
@@ -155,19 +165,26 @@ fn gemini_path(path: &str) -> bool {
         .is_some_and(|model| !model.is_empty() && !model.contains('/'))
 }
 
-fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens: u64) {
+fn gemini(
+    output: &mut Vec<String>,
+    step: &Step,
+    input_tokens: u64,
+    total_tokens: u64,
+    id: Option<&str>,
+    model: Option<&str>,
+) {
     for text in &step.text {
         output.push(sse(
-            json!({"candidates":[{"content":{"role":"model","parts":[{"text":text}]}}]}),
+            json!({"responseId":id,"modelVersion":model,"candidates":[{"content":{"role":"model","parts":[{"text":text}]}}]}),
         ));
     }
     for tool in &step.tools {
-        output.push(sse(json!({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":tool.id,"name":tool.name,"args":tool.arguments}}]}}]})));
+        output.push(sse(json!({"responseId":id,"modelVersion":model,"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":tool.id,"name":tool.name,"args":tool.arguments}}]}}]})));
     }
     if let Some(gemini) = &step.gemini {
         if !gemini.parts.is_empty() {
             output.push(sse(
-                json!({"candidates":[{"content":{"role":"model","parts":gemini.parts}}]}),
+                json!({"responseId":id,"modelVersion":model,"candidates":[{"content":{"role":"model","parts":gemini.parts}}]}),
             ));
         }
     }
@@ -178,7 +195,7 @@ fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens
             usage["thoughtsTokenCount"] = json!(gemini.thought_tokens);
         }
         output.push(sse(
-            json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":usage}),
+            json!({"responseId":id,"modelVersion":model,"candidates":[{"finishReason":"STOP"}],"usageMetadata":usage}),
         ));
     }
 }

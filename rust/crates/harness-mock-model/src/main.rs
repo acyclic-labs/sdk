@@ -1,7 +1,7 @@
 //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
 use axum::body::{Body, Bytes};
 use futures::{StreamExt as _, stream};
-use harness_mock_model::{Engine, bind_result, events_with_usage, load_script};
+use harness_mock_model::{Engine, bind_result, events_for_request, load_script};
 use http_body_util::BodyExt as _;
 use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -79,11 +79,9 @@ fn answer(
                 Body::from(json.to_string())
             };
             response(status, "json", body)
-        } else if let Some(events) = bound
-            .as_ref()
-            .ok()
-            .and_then(|bound| events_with_usage(endpoint, bound, tokens.unwrap_or(0)))
-        {
+        } else if let Some(events) = bound.as_ref().ok().and_then(|bound| {
+            events_for_request(endpoint, bound, tokens.unwrap_or(0), host.sequence, &body)
+        }) {
             let chunks = stream::iter(
                 events
                     .into_iter()
@@ -135,7 +133,6 @@ fn record(
     reply: Response<Body>,
 ) -> std::io::Result<RecordedReply> {
     let (namespace, endpoint) = route(path);
-    host.sequence += 1;
     let namespace = namespace.strip_prefix("native-").unwrap_or(namespace);
     let record = json!({"sequence":host.sequence,"case":namespace,"method":method,"path":endpoint,"body":body,"step":step,"status":reply.status().as_u16()});
     // Consumption and enqueue share one executor turn. The ordered writer
@@ -194,21 +191,29 @@ async fn serve(
         }
     }
     .await;
-    let result = match received {
-        Ok(body) => answer(&mut host.borrow_mut(), &method, &path, body),
-        Err(error) => record(
-            &mut host.borrow_mut(),
-            &method,
-            &path,
-            json!({"invalid_body":error.to_string()}),
-            None,
-            response(
-                400,
-                "json",
-                Body::from("{\"error\":\"invalid request body\"}"),
+    let result = (|| {
+        let mut host = host.borrow_mut();
+        // Reserve once before encoding or consuming a script. The same ordinal
+        // identifies the response and its flushed request record.
+        host.sequence = host.sequence.checked_add(1).ok_or_else(|| {
+            std::io::Error::other("step=reserve model request identity: sequence exhausted; recovery=restart harness-mock-model with fresh --script and --record paths")
+        })?;
+        match received {
+            Ok(body) => answer(&mut host, &method, &path, body),
+            Err(error) => record(
+                &mut host,
+                &method,
+                &path,
+                json!({"invalid_body":error.to_string()}),
+                None,
+                response(
+                    400,
+                    "json",
+                    Body::from("{\"error\":\"invalid request body\"}"),
+                ),
             ),
-        ),
-    };
+        }
+    })();
     let result = match result {
         Ok(recorded) => match recorded.committed.await {
             Ok(Ok(())) => Ok(recorded.reply),

@@ -1,0 +1,21 @@
+diff --git a/rust/crates/harness-mock-model/src/main.rs b/rust/crates/harness-mock-model/src/main.rs
+--- a/rust/crates/harness-mock-model/src/main.rs
++++ b/rust/crates/harness-mock-model/src/main.rs
+@@ -1,7 +1,7 @@
+ //! Real loopback HTTP server. Stdout is a flushed, line-oriented event stream.
+ use axum::body::{Body, Bytes};
+ use futures::{StreamExt as _, stream};
+-use harness_mock_model::{Engine, bind_result, events_for_request, load_script};
++use harness_mock_model::{Engine, bind_result, events_with_usage, load_script};
+ use http_body_util::BodyExt as _;
+ use hyper::{Request, Response, StatusCode, body::Incoming, service::service_fn};
+ use hyper_util::rt::TokioIo;
+@@ -80,7 +80,7 @@ fn answer(
+             };
+             response(status, "json", body)
+         } else if let Some(events) = bound.as_ref().ok().and_then(|bound| {
+-            events_for_request(endpoint, bound, tokens.unwrap_or(0), host.sequence, &body)
++            events_with_usage(endpoint, bound, tokens.unwrap_or(0))
+         }) {
+             let chunks = stream::iter(
+                 events

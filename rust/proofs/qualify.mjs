@@ -15,6 +15,20 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-call-identity": [
+    "rust/crates/harness-mock-model/src/main.rs", "harness-mock-model",
+    "http::real_server_records_all_protocols_and_isolates_parallel_cases",
+    "original requested model was not retained", [],
+    {
+      target: ["--test", "main"],
+      oracle: "rust/crates/harness-mock-model/tests/http.rs",
+      nextest: ["--no-tests=fail", "--retries", "0"],
+      mutations: [
+        { patch: "rust/proofs/native-call-identity/request-origin.patch", label: "request-origin-omitted", diagnostic: "original requested model was not retained" },
+        { patch: "rust/proofs/native-call-identity/identity-alias.patch", label: "identity-aliased", diagnostic: "distinct original requests reused response identity" },
+      ],
+    },
+  ],
   "native-tool-capture": [
     "rust/crates/harness/src/local/host_owner/events.rs", "acyclic-harness",
     "local::host_owner::tests::native_tool_boundary_rechecks_failed_capture",

@@ -336,13 +336,32 @@ impl Engine {
 
 /// Generate provider-native SSE chunks; no sleeps, clocks or randomized IDs.
 pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
-    wire::events(path, step, 64, None)
+    wire::events(path, step, 64, None, None, None)
 }
 
 /// Generate the same events with the request's deterministic counted usage.
-/// The HTTP host uses this for both fixed and byte-counted namespaces.
+/// Without an originating request, response identity and model remain null.
+/// The HTTP host supplies those through [`events_for_request`].
 pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
-    wire::events(path, step, input_tokens, None)
+    wire::events(path, step, input_tokens, None, None, None)
+}
+
+/// Generate the HTTP request's response using its original recorder sequence
+/// and requested model. All chunks of a call retain the same identity; separate
+/// requests in this server have different identities. Missing models stay null.
+pub fn events_for_request(
+    path: &str,
+    step: &Step,
+    input_tokens: u64,
+    sequence: u64,
+    request: &Value,
+) -> Option<Vec<String>> {
+    let id = format!("mock-{sequence}");
+    let model = path
+        .strip_prefix("models/")
+        .and_then(|model| model.strip_suffix(":streamGenerateContent"))
+        .or_else(|| request.get("model").and_then(Value::as_str));
+    wire::events(path, step, input_tokens, None, Some(&id), model)
 }
 
 /// Generate a Responses stream whose authoritative message differs from its
@@ -354,7 +373,14 @@ pub fn responses_with_completed_text(
     input_tokens: u64,
     completed_text: &str,
 ) -> Option<Vec<String>> {
-    wire::events("responses", step, input_tokens, Some(completed_text))
+    wire::events(
+        "responses",
+        step,
+        input_tokens,
+        Some(completed_text),
+        None,
+        None,
+    )
 }
 
 #[cfg(test)]

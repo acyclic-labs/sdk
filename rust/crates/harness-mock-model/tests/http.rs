@@ -1,4 +1,4 @@
-//! One shared real process, three concurrent HTTP adapter conversations.
+//! One shared real process, concurrent HTTP adapter conversations.
 use serde_json::{Value, json};
 use std::{
     io::{BufRead as _, BufReader},
@@ -129,7 +129,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     let script = directory.path().join("script.json");
     let record = directory.path().join("requests.jsonl");
     let mut cases = serde_json::Map::new();
-    for namespace in ["responses", "chat", "anthropic"] {
+    for namespace in ["responses", "chat", "anthropic", "gemini"] {
         cases.insert(namespace.into(),json!({"bytes_per_token":4,"steps":[
             {"when":{"user":"hello"},"text":["hé","\n**world**"],"tools":[{"id":"call_1","name":"read","arguments":{"path":"a.txt"}}]},
             {"when":{"tool_result":"tool-result"},"text":["done"]}
@@ -175,6 +175,49 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         let client = client.clone();
         let root = root.clone();
         async move {
+            let identity = |events: &[Value], expected_model: &str| {
+                let mut observations = events
+                    .iter()
+                    .filter_map(|event| match namespace {
+                        "responses"
+                            if matches!(
+                                event["type"].as_str(),
+                                Some("response.created" | "response.completed")
+                            ) =>
+                        {
+                            Some(&event["response"])
+                        }
+                        "anthropic" if event["type"] == "message_start" => Some(&event["message"]),
+                        "chat" | "gemini" => Some(event),
+                        _ => None,
+                    })
+                    .map(|envelope| {
+                        let id = envelope
+                            .get("id")
+                            .or_else(|| envelope.get("responseId"))
+                            .expect("original response identity missing");
+                        let model = envelope
+                            .get("model")
+                            .or_else(|| envelope.get("modelVersion"))
+                            .expect("original response model missing");
+                        (id, model)
+                    });
+                let (id, model) = observations
+                    .next()
+                    .expect("original response identity and model missing");
+                assert_eq!(
+                    model.as_str(),
+                    Some(expected_model),
+                    "original requested model was not retained"
+                );
+                assert!(
+                    observations.all(|observation| observation == (id, model)),
+                    "one response changed identity or model between chunks"
+                );
+                id.as_str()
+                    .expect("original response identity is not a string")
+                    .to_owned()
+            };
             let url = format!("{root}/{namespace}/v1/{path}");
             let wrong = client
                 .post(&url)
@@ -183,28 +226,22 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                 .await
                 .unwrap();
             assert_eq!(wrong.status(), 409);
-            let first = client
-                .post(&url)
-                .json(&json!({"messages":[{"role":"user","content":"hello"}]}))
-                .send()
-                .await
-                .unwrap();
+            let first_body =
+                json!({"model":"model-a","messages":[{"role":"user","content":"hello"}]});
+            let first = client.post(&url).json(&first_body).send().await.unwrap();
             assert!(first.status().is_success());
             assert_eq!(first.headers()["content-type"], "text/event-stream");
             let stream = first.text().await.unwrap();
             assert!(stream.contains("hé"));
             assert!(stream.contains("call_1"));
             assert!(stream.contains("a.txt"));
-            let expected = 64
-                + (json!({"messages":[{"role":"user","content":"hello"}]})
-                    .to_string()
-                    .len() as u64)
-                    .div_ceil(4);
+            let expected = 64 + (first_body.to_string().len() as u64).div_ceil(4);
             let events: Vec<Value> = stream
                 .lines()
                 .filter_map(|line| line.strip_prefix("data: "))
                 .filter_map(|line| serde_json::from_str(line).ok())
                 .collect();
+            let first_identity = identity(&events, "model-a");
             let usage = events
                 .iter()
                 .find_map(|event| {
@@ -212,12 +249,14 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                         .pointer("/response/usage")
                         .or_else(|| event.pointer("/message/usage"))
                         .or_else(|| event.get("usage"))
+                        .or_else(|| event.get("usageMetadata"))
                 })
                 .unwrap();
             assert_eq!(
                 usage
                     .get("input_tokens")
                     .or_else(|| usage.get("prompt_tokens"))
+                    .or_else(|| usage.get("promptTokenCount"))
                     .unwrap(),
                 expected
             );
@@ -231,13 +270,29 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                 .await
                 .unwrap();
             assert_eq!(count["input_tokens"], 65);
+            let next_url = if namespace == "gemini" {
+                format!("{root}/{namespace}/v1/models/model-b:streamGenerateContent")
+            } else {
+                url.clone()
+            };
             let next = client
-                .post(&url)
-                .json(&json!({"messages":[{"role":"tool","content":"tool-result"}]}))
+                .post(&next_url)
+                .json(&json!({"model":"model-b","messages":[{"role":"tool","content":"tool-result"}]}))
                 .send()
                 .await
                 .unwrap();
-            assert!(next.text().await.unwrap().contains("done"));
+            let next = next.text().await.unwrap();
+            assert!(next.contains("done"));
+            let next: Vec<Value> = next
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            let next_identity = identity(&next, "model-b");
+            assert_ne!(
+                first_identity, next_identity,
+                "distinct original requests reused response identity"
+            );
             assert_eq!(
                 client
                     .post(&url)
@@ -248,13 +303,16 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
                     .status(),
                 409
             );
+            [(first_identity, "model-a"), (next_identity, "model-b")]
         }
     };
-    tokio::join!(
+    let (responses, chat, anthropic, gemini) = tokio::join!(
         run("responses", "responses"),
         run("chat", "chat/completions"),
-        run("anthropic", "messages")
+        run("anthropic", "messages"),
+        run("gemini", "models/model-a:streamGenerateContent")
     );
+    let observations = [responses, chat, anthropic, gemini].concat();
     let url = format!("{root}/codex/v1/responses");
     let spawn = client
         .post(&url)
@@ -371,7 +429,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             .status(),
         500
     );
-    for _ in 0..24 {
+    for _ in 0..29 {
         assert!(
             lines
                 .next()
@@ -385,11 +443,23 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 24);
+    assert_eq!(records.len(), 29);
     for (index, record) in records.iter().enumerate() {
         assert_eq!(record["sequence"], index + 1);
     }
-    for namespace in ["responses", "chat", "anthropic"] {
+    for (id, model) in observations {
+        let sequence: u64 = id.strip_prefix("mock-").unwrap().parse().unwrap();
+        let record = &records[usize::try_from(sequence - 1).unwrap()];
+        assert_eq!(
+            record["sequence"], sequence,
+            "response identity lost its original recorder sequence"
+        );
+        assert_eq!(
+            record["body"]["model"], model,
+            "response model lost its original request"
+        );
+    }
+    for namespace in ["responses", "chat", "anthropic", "gemini"] {
         let records: Vec<_> = records
             .iter()
             .filter(|record| record["case"] == namespace)
