@@ -197,6 +197,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) cleanup_cancelled: Option<Box<dyn Fn() + Send + Sync>>,
     /// Observes a completed original-ledger refund, including unwind cuts.
     credit_returned: Option<Box<dyn Fn(reservations::Credit) + Send + Sync>>,
+    /// Observes original ledger-owner selection before allocation admission.
+    owner_selected: Option<Box<dyn Fn() + Send + Sync>>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -277,11 +279,20 @@ impl ReadBudgetMeter {
 }
 
 impl NativeReadMeter for ReadBudgetMeter {
-    #[cfg(windows)]
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
-        self.shared_owner
-            .upgrade()
-            .map(|owner| owner as Arc<dyn NativeReadMeter>)
+        if let Some(selected) = &self.owner_selected {
+            selected();
+        }
+        #[cfg(windows)]
+        {
+            self.shared_owner
+                .upgrade()
+                .map(|owner| owner as Arc<dyn NativeReadMeter>)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Acquire) {

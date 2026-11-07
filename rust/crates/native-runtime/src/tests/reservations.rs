@@ -152,6 +152,52 @@ fn allocation_preserves_original_unwind() -> io::Result<()> {
 }
 
 #[test]
+fn allocation_owner_precedes_original_credit_admission() -> io::Result<()> {
+    let mut violations = Vec::new();
+    for path in ["buffer", "adopt", "reserved"] {
+        let mut ledger = ReadBudgetMeter::new(8, 8);
+        ledger.owner_selected = Some(Box::new(|| {
+            std::panic::panic_any("original allocation owner selection");
+        }));
+        let observed = Arc::new(ledger);
+        let meter: Arc<dyn NativeReadMeter> = observed.clone();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+                match path {
+                    "buffer" => drop(crate::meter::ReadBuffer::<u8>::new(8, &meter)?),
+                    "adopt" => {
+                        let backing = vec![0_u8; 8];
+                        let allocation = ReadAllocation::adopt(&meter, backing.capacity());
+                        drop(backing);
+                        drop(allocation?);
+                    }
+                    _ => {
+                        let allocation = ReadAllocationReservation::new(&meter, 8)?.allocate()?;
+                        let backing = Vec::<u8>::with_capacity(8);
+                        drop(backing);
+                        drop(allocation);
+                    }
+                }
+                Ok(())
+            }));
+        assert_eq!(
+            result.err().and_then(|p| p.downcast::<&str>().ok()),
+            Some(Box::new("original allocation owner selection"))
+        );
+        let memory = observed.memory.load(Ordering::Acquire);
+        let allocations = observed.used_allocations.load(Ordering::Acquire);
+        if memory != 0 || allocations != 0 {
+            violations.push((path, memory, allocations));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "original allocation owner selection precedes credit admission: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn shrinking_allocation_commits_custody_before_refund_callback() -> io::Result<()> {
     type Shrink = fn(&mut ReadAllocation, usize) -> io::Result<()>;
     let shrink: [(&str, Shrink); 3] = [

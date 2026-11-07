@@ -21,11 +21,13 @@ impl ReadAllocationReservation {
     /// Records the accepted allocation and transfers its exact original custody.
     pub fn allocate(mut self) -> io::Result<ReadAllocation> {
         let bytes = self.bytes.ok_or(io::ErrorKind::InvalidInput)?;
+        let owner = ReadAllocation::owner(&self.meter);
         self.meter.record_reserved_allocation(bytes)?;
         self.bytes = None;
-        let mut allocation = ReadAllocation::empty(&self.meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(ReadAllocation {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Consumes only a reservation for this exact allocation footprint.
@@ -55,40 +57,49 @@ pub struct ReadAllocation<M: Deref<Target: NativeReadMeter> = Arc<dyn NativeRead
 }
 
 impl ReadAllocation {
+    // Resolve the original ledger owner before an admission can charge it.
+    fn owner(meter: &Arc<dyn NativeReadMeter>) -> Arc<dyn NativeReadMeter> {
+        meter
+            .allocation_owner()
+            .unwrap_or_else(|| Arc::clone(meter))
+    }
+
     /// Admits one genuine positive allocation attempt before its allocator call.
     pub fn new(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+        let owner = Self::owner(meter);
         let bytes = bytes as u64;
         if bytes == 0 {
             meter.check()?;
         } else {
             meter.allocate(bytes)?;
         }
-        let mut allocation = Self::empty(meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(Self {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Borrows the same original meter without an allocation or resource grant.
     pub fn empty(meter: &Arc<dyn NativeReadMeter>) -> Self {
         Self {
-            meter: meter
-                .allocation_owner()
-                .unwrap_or_else(|| Arc::clone(meter)),
+            meter: Self::owner(meter),
             bytes: 0,
         }
     }
 
     /// Admits retention of an existing transferred payload, with zero allocation operations.
     pub fn adopt(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+        let owner = Self::owner(meter);
         let bytes = bytes as u64;
         if bytes == 0 {
             meter.check()?;
         } else {
             meter.adopt(bytes)?;
         }
-        let mut allocation = Self::empty(meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(Self {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Admits another genuine positive allocation attempt before it occurs.

@@ -36,6 +36,7 @@ pub trait NativeReadMeter: Send + Sync {
     /// Borrowed Windows process capture requires this owner so accepted input
     /// remains funded through completion after caller cancellation. Retained
     /// `ProcessTreeIo` uses its supplied Arc directly, preserving accounting windows.
+    /// Allocation guards resolve this owner before charging or consuming credit.
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
         None
     }
