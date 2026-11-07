@@ -51,8 +51,7 @@
             "contains": [
               "MANUAL_E2E_FIRST",
               "○"
-            ],
-            "task_failure": "model HTTP status 409"
+            ]
           },
           "prompt": "/compact refuse unmatched summary"
         },
