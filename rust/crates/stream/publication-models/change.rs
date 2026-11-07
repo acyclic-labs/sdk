@@ -80,7 +80,7 @@ fn cancellation_race(broken: bool) {
         let removing = changed.clone();
         let cancel = loom::thread::spawn(move || {
             if broken {
-                let old = std::mem::take(&mut removing.state.lock().unwrap().waiters);
+                let old = std::mem::take(&mut removing.state.inner.lock().unwrap().waiters);
                 drop(old);
             }
             drop(cancelled);
@@ -96,7 +96,7 @@ fn cancellation_race(broken: bool) {
             kept.poll_changed(&mut Context::from_waker(&kept_wake)),
             Poll::Ready(Ok(()))
         );
-        assert!(changed.state.lock().unwrap().waiters.is_empty());
+        assert!(changed.state.inner.lock().unwrap().waiters.is_empty());
     });
 }
 #[test]
@@ -120,7 +120,7 @@ fn notification(broken: bool) {
                 .is_pending()
         );
         if broken {
-            let mut state = changed.state.lock().unwrap();
+            let mut state = changed.state.inner.lock().unwrap();
             state.revision = Some(1);
             // Catch inside the guard's scope so the deliberate assertion cannot
             // poison the mutex and abort later subscription cleanup.
@@ -158,7 +158,7 @@ proptest::proptest! {
     ) {
         loom::model(move || {
             let changed = Change::new();
-            { let mut state = changed.state.lock().unwrap(); state.revision = Some(revision); state.next_id = id; }
+            { let mut state = changed.state.inner.lock().unwrap(); state.revision = Some(revision); state.next_id = id; }
             let first = changed.subscribe();
             assert_eq!(first.is_ok(), id < u64::MAX);
             if let Ok(first) = first {
@@ -166,7 +166,7 @@ proptest::proptest! {
                 if let Ok(second) = changed.subscribe() { assert!(second.id > first.id); }
             }
             assert_eq!(changed.notify().is_ok(), revision < u64::MAX);
-            assert_eq!(changed.state.lock().unwrap().revision, revision.checked_add(1));
+            assert_eq!(changed.state.inner.lock().unwrap().revision, revision.checked_add(1));
         });
     }
 }
