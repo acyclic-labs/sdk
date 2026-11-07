@@ -10,7 +10,10 @@ test("headless selection owns no terminal dependency and PTY imports require it"
   const root = await mkdtemp(join(tmpdir(), "headless-dependencies-"));
   const processes = new Processes();
   try {
-    await Promise.all(["scripts/graphcoder-e2e", "scripts/graphcoder-pty", "typescript/packages/sdk/native", "plugin/tests/hosts"].map(path =>
+    await Promise.all([
+      "scripts/graphcoder-e2e", "scripts/graphcoder-pty", "scripts/file-digest.mjs",
+      "typescript/packages/sdk/native", "plugin/tests/hosts/native-host.mjs",
+    ].map(path =>
       cp(fileURLToPath(new URL(`../../${path}`, import.meta.url)), join(root, path), {
         recursive: true, filter: path => !["node_modules", "__pycache__"].includes(basename(path)),
       })));
