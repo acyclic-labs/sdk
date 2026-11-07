@@ -51,7 +51,7 @@ const claims = {
   "merge-directory-custody": [
     "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
     "workspace::tests::merge_drivers::merge_directory_pages_preserve_pins_and_non_text_conflicts",
-    "a one-row page expanded the whole merge", ["--no-default-features"],
+    "a one-row page expanded the whole merge", [],
     { mutations: [
       { patch: "rust/proofs/merge-directory-custody/foreign-generation.patch", label: "foreign-generation-admitted", diagnostic: "directory.resolution(&foreign, binary_key)" },
       { patch: "rust/proofs/merge-directory-custody/page-credit.patch", label: "page-credit-exceeded", diagnostic: "a one-row page expanded the whole merge" },
@@ -386,7 +386,12 @@ if (claim === "--help" && extra.length === 0) {
       require(result.output.includes("Starting 1 test across 1 binary"));
     }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
-    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
+    const lines = result.output.trimEnd().split(/\r?\n/);
+    const firstError = lines.findIndex(line => /^error(?:\[|:)/.test(line));
+    if (firstError >= 0 && firstError < lines.length - 35) {
+      console.log(lines.slice(firstError, firstError + 12).join("\n"));
+    }
+    console.log(lines.slice(-35).join("\n"));
     if (options.fuzz) {
       const coverage = result.output.match(/^#.*\bcov:.*$/gm)?.at(-1);
       if (coverage) console.log(coverage);
