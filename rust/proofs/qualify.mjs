@@ -206,6 +206,7 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/local-failure-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "failed journal left a conditional mutation parked" },
         { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked" },
+        { patch: "rust/proofs/local-failure-progress/revision.patch", source: "rust/crates/stream/src/local/local_inner.rs", label: "missing-revision-retirement", diagnostic: "failed journal left a future revision parked" },
       ],
     },
   ],
