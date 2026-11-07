@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/agent/targets.rs b/rust/crates/harness-core/src/agent/targets.rs
+--- a/rust/crates/harness-core/src/agent/targets.rs
++++ b/rust/crates/harness-core/src/agent/targets.rs
+@@ -184,5 +184,5 @@
+ pub struct Roster {
+-    home: Arc<str>,
+-    targets: Arc<[TargetRecord]>,
++    home: String,
++    targets: Vec<TargetRecord>,
+     #[serde(skip)]
+     home_position: usize,
