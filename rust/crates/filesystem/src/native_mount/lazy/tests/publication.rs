@@ -14,6 +14,7 @@ async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks(
         let second = mounted(&["second"]);
         let file = view
             .create_file(&first, FileMetadata::default(), None, &work)?
+            .lookup
             .node
             .file_id;
         view.create_file(&second, FileMetadata::default(), None, &work)?;
@@ -436,7 +437,9 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     assert_eq!(view.lookup(&b)?, None);
 
     // A create through the view replaces the remembered absence.
-    let created = view.create_file(&b, FileMetadata::default(), None, &work)?;
+    let created = view
+        .create_file(&b, FileMetadata::default(), None, &work)?
+        .lookup;
     assert_eq!(
         view.lookup(&b)?.map(|lookup| lookup.node.file_id),
         Some(created.node.file_id)
@@ -464,7 +467,9 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     assert_eq!(view.lookup(&fresh)?, None);
     view.create_directory(&fresh, FileMetadata::default(), &work)?;
     assert_eq!(view.lookup(&inner)?, None);
-    let created = view.create_file(&inner, FileMetadata::default(), None, &work)?;
+    let created = view
+        .create_file(&inner, FileMetadata::default(), None, &work)?
+        .lookup;
     assert_eq!(
         view.lookup(&inner)?.map(|lookup| lookup.node.file_id),
         Some(created.node.file_id)

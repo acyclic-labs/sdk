@@ -21,16 +21,42 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         }
     }
 
-    for (directory, projected_creation) in
-        [(false, false), (true, false), (false, true), (true, true)]
-    {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum Creation {
+        ExistingFile,
+        ExistingDirectory,
+        File,
+        Directory,
+        SymbolicLink,
+        Fifo,
+        HardLink,
+    }
+    for creation in [
+        Creation::ExistingFile,
+        Creation::ExistingDirectory,
+        Creation::File,
+        Creation::Directory,
+        Creation::SymbolicLink,
+        Creation::Fifo,
+        Creation::HardLink,
+    ] {
         let (source, around) = shared_sources(posix_config())?;
         let path = name("held");
-        if !projected_creation {
+        let directory = matches!(creation, Creation::ExistingDirectory | Creation::Directory);
+        let existing = matches!(
+            creation,
+            Creation::ExistingFile | Creation::ExistingDirectory
+        );
+        if existing || creation == Creation::HardLink {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
                 if directory {
                     around.create_directory(&path, FileMetadata::default(), work)
                 } else {
+                    let path = if creation == Creation::HardLink {
+                        name("original")
+                    } else {
+                        path.clone()
+                    };
                     around.create_file(&path, FileMetadata::default(), None, work)
                 }
             })?;
@@ -46,14 +72,47 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
         let entry = core
             .request(|work| {
-                if !projected_creation {
+                if existing {
                     projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)
-                } else if directory {
+                } else if creation == Creation::HardLink {
+                    let original = projection.lookup_entry(
+                        ROOT_INODE,
+                        std::ffi::OsStr::new("original"),
+                        work,
+                    )?;
+                    projection.link_name(
+                        original.attr.ino.0,
+                        ROOT_INODE,
+                        std::ffi::OsStr::new("held"),
+                        work,
+                    )
+                } else if creation != Creation::File {
                     projection.create_node(
                         ROOT_INODE,
                         std::ffi::OsStr::new("held"),
                         |path, work| {
-                            Ok(source.create_directory(path, FileMetadata::default(), work)?)
+                            Ok(match creation {
+                                Creation::Directory => {
+                                    source.create_directory(path, FileMetadata::default(), work)?
+                                }
+                                Creation::SymbolicLink => source.create_symbolic_link(
+                                    path,
+                                    crate::kernel::OwnedSourceChunk::intrinsic(
+                                        acyclic_stream::OwnedBytes::from_static(b"target"),
+                                        0,
+                                    ),
+                                    FileMetadata::default(),
+                                    work,
+                                )?,
+                                Creation::Fifo => source.create_special(
+                                    path,
+                                    MountNodeKind::Fifo,
+                                    None,
+                                    FileMetadata::default(),
+                                    work,
+                                )?,
+                                _ => unreachable!(),
+                            })
                         },
                         work,
                     )
@@ -80,6 +139,18 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                     work,
                 )
             })?;
+        } else if matches!(creation, Creation::SymbolicLink | Creation::Fifo) {
+            crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                around.set_attributes(
+                    &path,
+                    FileMetadata {
+                        modified_ns: MetadataField::Value(1),
+                        ..FileMetadata::default()
+                    },
+                    None,
+                    work,
+                )
+            })?;
         } else {
             around.write_range(&path, 0, Bytes::from_static(b"changed"))?;
         }
@@ -95,7 +166,7 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         assert!(notifications.inodes.borrow().contains(&entry.attr.ino.0));
         assert!(
             notifications.entries.borrow().is_empty(),
-            "a node change must not detach its unchanged name: directory={directory}, projected_creation={projected_creation}"
+            "a node change must not detach its unchanged name: {creation:?}"
         );
 
         crate::native_mount::adapter::boundary(around.cancellation(), |work| {
@@ -500,9 +571,10 @@ pub(super) fn a_confirmation_at_a_position_lapses_when_its_name_changes()
     let (source, _) = shared_sources(posix_config())?;
     let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&name("a"), FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.hard_link(&name("a"), &name("b"), work)
+        source.hard_link(&name("a"), &name("b"), None, false, work)
     })?;
     let file_id = file.node.file_id;
     let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
@@ -593,10 +665,12 @@ pub(super) fn node_facts_follow_the_node_and_directory_facts_its_listing()
     let (source, _) = shared_sources(posix_config())?;
     let file = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&name("file"), FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     let directory = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_directory(&name("directory"), FileMetadata::default(), work)
-    })?;
+    })?
+    .lookup;
     let stamp = source.view_stamp().ok_or("a checkout carries stamps")?;
     let mut file_entry = InodeEntry::new(
         crate::native_mount::fuse::FuseOwned::empty(name("file")),
@@ -620,7 +694,7 @@ pub(super) fn node_facts_follow_the_node_and_directory_facts_its_listing()
         source.create_file(&name("sibling"), FileMetadata::default(), None, work)
     })?;
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
-        source.hard_link(&name("sibling"), &name("alias"), work)
+        source.hard_link(&name("sibling"), &name("alias"), None, false, work)
     })?;
     assert_eq!(file_entry.current_facts(&source, &work)?, Some(stamp));
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {

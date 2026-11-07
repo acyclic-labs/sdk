@@ -66,7 +66,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
         )?;
         let opened = context.open_created(
             &path,
-            &created,
+            &created.lookup,
             context.completed.load(Ordering::Acquire),
             work,
         )?;

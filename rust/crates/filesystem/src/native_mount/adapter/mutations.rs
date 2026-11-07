@@ -4,21 +4,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         mut candidate: CheckoutCandidate<'_, A, O>,
         change: AuthoredMutation,
         effect: ViewChange<'_>,
+        facts: Option<FileId>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+    ) -> Result<MountMutationResult, MountSourceError> {
         candidate.deadline = self.mutation_deadline()?;
         apply_authored(&mut candidate.checkout, &change, work).await?;
         self.checkout
             .install_change(
                 candidate,
                 effect,
-                None,
+                facts,
                 work,
                 &self.cancellation,
                 self.native_callback_guard.clone(),
             )
             .await
-            .map(drop)
     }
 }
 

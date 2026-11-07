@@ -81,7 +81,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     ffi(address, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         context.mutate(
-            || context.source.hard_link(&source, &destination, work),
+            || {
+                context
+                    .source
+                    .hard_link(&source, &destination, None, false, work)
+            },
             work,
         )?;
         Ok(0)

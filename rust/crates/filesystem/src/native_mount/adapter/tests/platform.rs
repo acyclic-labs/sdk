@@ -483,7 +483,9 @@ fn native_name_encoding_and_capture_cases() -> Result<(), Box<dyn std::error::Er
         Err(MountSourceError::AccessDenied)
     ));
     let path = MountPath::root().child(name.clone());
-    let created = source.create_file(&path, exact_metadata, None, &work)?;
+    let created = source
+        .create_file(&path, exact_metadata, None, &work)?
+        .lookup;
     assert_eq!(source.lookup(&path)?, Some(created));
     source.flush(&work)?;
     let page = source.read_directory(&MountPath::root(), None, 8)?;
@@ -547,7 +549,7 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
     })?;
     let link = native_test_path("link.bin");
     boundary(source.cancellation(), |work| {
-        source.hard_link(&renamed, &link, work)
+        source.hard_link(&renamed, &link, None, false, work)
     })?;
     let renamed_id = source
         .lookup(&renamed)?

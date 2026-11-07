@@ -254,7 +254,7 @@ fn fixture(expires: Option<u64>) -> Result<Fixture, Box<dyn std::error::Error>> 
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path("file");
-    let file = source.create_file(&path, metadata(), None, &work)?;
+    let file = source.create_file(&path, metadata(), None, &work)?.lookup;
     source
         .open_created(&path, &file)?
         .write_range(0, Bytes::from(vec![7; PAYLOAD_BYTES]))?;
