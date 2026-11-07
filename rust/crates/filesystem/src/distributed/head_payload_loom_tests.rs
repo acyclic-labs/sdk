@@ -78,17 +78,17 @@ impl ModelStream {
         }
     }
 
-    async fn call<T>(&self, future: impl Future<Output = T>) -> T {
+    async fn call<T>(&self, future: impl Future<Output = T>) -> Box<T> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let writer = (self.cut == Some(call)).then(|| {
             let inner = self.inner.clone();
             let request = self.change_request.clone().unwrap();
-            loom::thread::spawn(move || ready(inner.commit(request)))
+            loom::thread::spawn(move || ready(|| inner.commit(request)))
         });
-        let result = future.await;
+        let result = Box::new(future.await);
         if let Some(writer) = writer {
             assert!(matches!(
-                writer.join().unwrap().unwrap(),
+                (*writer.join().unwrap()).unwrap(),
                 CommitOutcome::Committed(_)
             ));
             self.completed.store(true, Ordering::SeqCst);
@@ -97,8 +97,14 @@ impl ModelStream {
     }
 }
 
-fn ready<F: Future>(future: F) -> F::Output {
-    loom::future::block_on(Box::pin(future))
+#[inline(never)]
+fn ready<F: Future>(create: impl FnOnce() -> F) -> Box<F::Output> {
+    let future = crate::heap_future::in_heap(create);
+    // Keep the returned provider/error value out of every enclosing poll and
+    // thread-return frame as well as keeping the future itself on the heap.
+    loom::future::block_on(crate::heap_future::in_heap(|| async {
+        Box::new(future.await)
+    }))
 }
 
 #[async_trait::async_trait]
@@ -118,11 +124,14 @@ impl StreamProvider for ModelStream {
                     .iter()
                     .any(|path| path.as_str().ends_with("/records")),
         );
-        self.call(self.inner.heads(request)).await
+        // Construct the nested provider phase outside this coroutine's poll
+        // frame. Its result is already boxed by call; only the final public
+        // response moves back through this adapter.
+        *crate::heap_future::in_heap(|| self.call(self.inner.heads(request))).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.observe_records(request.path.as_str().ends_with("/records"));
-        self.call(self.inner.read(request)).await
+        *crate::heap_future::in_heap(|| self.call(self.inner.read(request))).await
     }
     fn write(
         &self,
@@ -312,10 +321,15 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         )),
         Change::Cancel => None,
     };
+    // The scheduler retains the fixture across permutations; its immutable
+    // request bodies need not occupy each coroutine's call frame.
+    let initial = Box::new(initial);
+    let first = Box::new(first);
+    let second = Box::new(second);
     loom::model(move || {
         let inner = MemoryStream::default();
         assert!(matches!(
-            ready(inner.commit(initial.clone())).unwrap(),
+            (*ready(|| inner.commit((*initial).clone()))).unwrap(),
             CommitOutcome::Committed(_)
         ));
         let cancellation = CancellationToken::new();
@@ -332,7 +346,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
         });
         if cut == Some(0) {
             assert!(matches!(
-                ready(provider.commit(change_request.clone().unwrap())).unwrap(),
+                (*ready(|| provider.commit(change_request.clone().unwrap()))).unwrap(),
                 CommitOutcome::Committed(_)
             ));
         }
@@ -359,16 +373,12 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             } else {
                 &reader_cancel
             };
-            let mut work = AuthorityWork::new(BUDGET, token);
+            let mut work = Box::new(AuthorityWork::new(BUDGET, token));
             let result = if !broken || !matches!(change, Change::Retire) {
-                ready(crate::heap_future::in_heap(|| {
-                    store.head_payload(ID, 32, &mut work)
-                }))
+                ready(|| store.head_payload(ID, 32, &mut work))
             } else {
                 // Deliberate broken variant of the same production function.
-                ready(crate::heap_future::in_heap(|| {
-                    store.head_payload_checked::<false>(ID, 32, &mut work)
-                }))
+                ready(|| store.head_payload_checked::<false>(ID, 32, &mut work))
             };
             work.spent().verify(BUDGET).unwrap();
             (result, completed_at_entry)
@@ -381,7 +391,7 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
             reader.join().unwrap()
         };
         calls.fetch_max(provider.calls.load(Ordering::Relaxed), Ordering::Relaxed);
-        match result {
+        match *result {
             Ok(((head, Some(payload)), allocation)) => {
                 assert!(
                     !provider.retired_at_record_read.load(Ordering::Relaxed),
@@ -392,9 +402,9 @@ fn check(change: Change, broken: bool, cut: Option<usize>, calls: Arc<CallCount>
                     "cancelled payload escaped admission"
                 );
                 let expected = if head.sequence == first.sequence {
-                    &first
+                    &*first
                 } else {
-                    &second
+                    &*second
                 };
                 assert_eq!(head.sequence, expected.sequence);
                 assert_eq!(head.digest, expected.digest);

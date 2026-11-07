@@ -1,8 +1,5 @@
 //! Filesystem storage bindings over the canonical public service providers.
 
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::NativeStreamProvider as _;
-
 use crate::async_storage::authority_error;
 use crate::cancellation::CancellationToken;
 #[cfg(test)]

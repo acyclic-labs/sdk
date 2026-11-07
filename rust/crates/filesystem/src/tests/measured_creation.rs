@@ -284,10 +284,7 @@ mod source_bound_lost_ack {
         EmbeddedCapabilities, LazyWorkspace, LazyWorkspaceStore, LogicalObjectStore,
         MemoryLazyWorkspaceStore, StreamAuthorityStore,
     };
-    use acyclic_stream::{
-        AppendRequest, CommitRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
-        StreamProvider,
-    };
+    use acyclic_stream::{MemoryStream, ReadRequest, StreamError, StreamProvider};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

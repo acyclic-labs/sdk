@@ -81,7 +81,11 @@ impl VhostSession {
     }
 
     pub(super) fn run(self) -> VhostRetired {
-        let result = packet_workers::run(&self, NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32));
+        let result = packet_workers::run(
+            &self,
+            NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32),
+            |_| Ok(()),
+        );
         // Only the owner reaches this point, after the actual control and data
         // workers have ALL joined. A socket errno cannot replace the original
         // callback/admission/publication failure retained before shutdown.

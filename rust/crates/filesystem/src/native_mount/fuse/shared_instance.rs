@@ -53,8 +53,6 @@ struct InstanceState {
     worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
     transport: Option<Arc<super::host_io::HostIo>>,
     guard: Option<MountDestinationGuard>,
-    #[cfg(test)]
-    worker_lifetime: std::sync::Weak<()>,
 }
 
 impl InstanceState {
@@ -175,23 +173,9 @@ impl SharedFuseInstance {
         state.transport = Some(session.transport());
         views.set_notifier(notifier.clone());
         #[cfg(test)]
-        let lifetime = Arc::new(());
-        #[cfg(test)]
-        {
-            state.worker_lifetime = Arc::downgrade(&lifetime);
-        }
-        state.worker = Some(
-            std::thread::Builder::new()
-                .name("acyclic-fuse".to_owned())
-                .spawn(move || {
-                    let result = session.run();
-                    #[cfg(test)]
-                    drop(lifetime);
-                    result
-                })?,
-        );
-        #[cfg(test)]
-        let worker_lifetime = state.worker_lifetime.clone();
+        let worker_lifetime = session.worker_lifetime();
+        state.worker =
+            Some(session.start(std::thread::Builder::new().name("acyclic-fuse".to_owned()))?);
         // The router answers the root itself, from no view's state, so this
         // one query cannot wait on any view's owner.
         let device = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(root)?);

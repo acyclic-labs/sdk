@@ -106,6 +106,10 @@ impl PacketSession {
         self.phase.load(Ordering::Acquire) == READY
     }
 
+    pub(super) fn closed(&self) -> bool {
+        self.phase.load(Ordering::Acquire) == CLOSED
+    }
+
     pub(super) fn packet_capacity(&self) -> usize {
         self.maximum_write as usize + 4096
     }

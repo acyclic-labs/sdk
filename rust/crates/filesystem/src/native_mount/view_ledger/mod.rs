@@ -562,5 +562,5 @@ fn admitted_names<T>(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests;

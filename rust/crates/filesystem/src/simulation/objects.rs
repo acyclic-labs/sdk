@@ -186,7 +186,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         if !matches!(fault, Some(SimulationFault::DelayObjectVisibility)) {
             return self.inner.put(object_id, bytes, work).await;
         }
-        let hashed = (bytes.len() as u64);
+        let hashed = bytes.len() as u64;
         work.accounting()
             .charge(WorkCounters {
                 bytes_hashed: hashed,
