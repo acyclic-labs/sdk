@@ -402,7 +402,10 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
 /// Session that carries the local commands and follows, retaining queued input.
 #[tokio::test]
 async fn lost_model_producer_closes_local_session_without_settling_input() -> Result<()> {
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
     use tokio::sync::oneshot;
 
     let directory = tempfile::tempdir().map_err(agent)?;
@@ -410,20 +413,27 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let (entered, entering) = oneshot::channel();
     let (producer, result) = oneshot::channel::<()>();
     let gate = Mutex::new(Some((entered, result)));
-    let provider = ScriptedModelProvider::new([super::ScriptedTurn::Events(Vec::new())])
-        .with_context_capacity(super::capacity())
-        .with_dispatch_observer(move |_| {
-            let gate = gate.lock().unwrap().take();
-            Box::pin(async move {
-                let (entered, result) =
-                    gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
-                let _ = entered.send(());
-                result
-                    .await
-                    .map_err(|_| Error::Storage("model producer closed".into()))?;
-                Err(Error::Invalid("model gate unexpectedly released".into()))
-            })
-        });
+    let warming = AtomicBool::new(true);
+    let provider = ScriptedModelProvider::new([
+        super::ScriptedTurn::Text("ready".into()),
+        super::ScriptedTurn::Events(Vec::new()),
+    ])
+    .with_context_capacity(super::capacity())
+    .with_dispatch_observer(move |_| {
+        let warming = warming.swap(false, Ordering::SeqCst);
+        let gate = (!warming).then(|| gate.lock().unwrap().take()).flatten();
+        Box::pin(async move {
+            if warming {
+                return Ok(());
+            }
+            let (entered, result) = gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+            let _ = entered.send(());
+            result
+                .await
+                .map_err(|_| Error::Storage("model producer closed".into()))?;
+            Err(Error::Invalid("model gate unexpectedly released".into()))
+        })
+    });
     let harness = Arc::new(
         LocalHarness::open(
             volume_config(directory.path(), project, Arc::new(provider))?
@@ -433,6 +443,14 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     );
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone());
+    // Create the conversation through its actual first turn before testing
+    // out-of-range follows: an absent stream intentionally waits for creation.
+    let mut warmup_events = client.observe(None).await?;
+    let warmup = client.send("warmup", "hello").await?;
+    assert!(matches!(
+        client.settle("warmup", warmup, &mut warmup_events).await?,
+        crate::local::agent_conversation::Settlement::Reply(crate::agent::Reply::Answered { .. })
+    ));
     let mut events = client.observe(Some(0)).await?;
     let inbox = client.send("lost-producer", "hello").await?;
     entering.await.map_err(agent)?;
@@ -449,6 +467,39 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
         );
     }
+    // A multiplexed observer may consume one source's refusal while retaining
+    // its other follows. Those remaining sources cannot settle for the lost one.
+    // Exercise both required sources through the public persisted-cursor API.
+    for (source, role) in events.sources()[..2].iter().zip(["status", "conversation"]) {
+        let mut projection = acyclic_harness_client::EventProjection::new("retired-source".into());
+        projection.accepted(
+            source,
+            Some(acyclic_harness_client::EventCursor {
+                next: u64::MAX,
+                opaque: String::new(),
+            }),
+        );
+        let mut retired = client.replay(&projection)?;
+        loop {
+            let (event, delivery) = retired.next_projected().await?;
+            if &delivery.resource == source
+                && let Some(acyclic_stream::wire::session_frame::Body::Closed(closed)) =
+                    &delivery.frame.body
+            {
+                assert_eq!(closed.code, "out_of_range");
+                assert!(event.is_err(), "a refused source became an ordinary event");
+                break;
+            }
+            event?;
+        }
+        let invalid = client.settle("lost-producer", inbox, &mut retired);
+        tokio::pin!(invalid);
+        let observed = futures::poll!(&mut invalid);
+        assert!(
+            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(_)))),
+            "settlement retained a retired {role} source or performed I/O before refusal: {observed:?}"
+        );
+    }
     let root = connection.root().clone();
     let settling = settled(&harness, &root);
     tokio::pin!(settling);
@@ -460,8 +511,8 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     while !usage.synchronized() {
         usage.advance().await?;
     }
-    assert_eq!(usage.totals().calls, 1);
-    assert_eq!(usage.totals().completed, 0);
+    assert_eq!(usage.totals().calls, 2);
+    assert_eq!(usage.totals().completed, 1);
     let before = usage.totals().clone();
     let waiting = client.settle("lost-producer", inbox, &mut events);
     tokio::pin!(waiting);
@@ -524,13 +575,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         crate::agent::Reply::Pending,
         "failed input stays recoverable"
     );
-    assert!(
+    assert_eq!(
         records(
             &**hosted.agents().provider(),
             hosted.root().conversation().map_err(agent)?
         )
         .await?
-        .is_empty()
+        .len(),
+        1,
+        "failed input appended another conversation entry"
     );
     assert!(
         matches!(harness.connect().await, Err(Error::Storage(_))),

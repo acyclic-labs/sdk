@@ -542,7 +542,8 @@ impl Conversation {
     /// event.
     ///
     /// # Errors
-    /// An observer from another connection or selection is refused before I/O.
+    /// An observer from another connection or a retired conversation/status
+    /// selection is refused before I/O.
     /// Otherwise, session, host or decoding failures.
     pub async fn settle(
         &self,
@@ -552,7 +553,7 @@ impl Conversation {
     ) -> Result<Settlement> {
         if !events.belongs_to(&self.connection) {
             return Err(Error::Invalid(
-                "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+                "settlement requires an observer from the original connection with live conversation and status follows; recovery: observe this conversation again".into(),
             ));
         }
         let mut status: Option<StatusRecord> = None;
