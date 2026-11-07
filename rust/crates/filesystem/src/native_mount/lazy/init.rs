@@ -271,14 +271,18 @@ where
         wait: Option<&CancellationToken>,
         join: crate::native_mount::retirement::SourceRetirementWait,
     ) -> Result<MountSourceRetirement, MountSourceError> {
-        // A completed source owns no remaining wait for a later caller to revoke.
-        if self.physically_retired()? {
-            return Ok(MountSourceRetirement {
+        // A completed source has no wait to revoke, but can still own a saved
+        // callback failure. Observe that outcome through the same stop path.
+        let completed = self.physically_retired()?;
+        let wait = if completed { None } else { wait };
+        let retired = if completed {
+            MountSourceRetirement {
                 changed: false,
                 failure: None,
-            });
-        }
-        let retired = self.authored.cancel_cleanup_with_join(wait, join)?;
+            }
+        } else {
+            self.authored.cancel_cleanup_with_join(wait, join)?
+        };
         if let Some(wait) = wait {
             if wait.check().is_err() {
                 return Err(retirement_failure(
@@ -287,7 +291,9 @@ where
                 ));
             }
         }
-        self.cursors.clear();
+        if !completed {
+            self.cursors.clear();
+        }
         let failure = match &self.source_watch {
             Some(watch) => match watch.stop_with_cleanup(wait) {
                 Ok(_) => retired.failure.map(MountSourceError::NativeWork),
@@ -302,7 +308,7 @@ where
             None => retired.failure.map(MountSourceError::NativeWork),
         };
         Ok(MountSourceRetirement {
-            changed: true,
+            changed: !completed,
             failure,
         })
     }

@@ -50,6 +50,20 @@ impl NativeSourceWatch {
         check_wait(wait)
     }
 
+    /// Observes the production driver's terminal publication.
+    #[cfg(all(test, target_os = "linux", feature = "native-mount"))]
+    pub(crate) fn observe_retirement(&self, complete: std::sync::mpsc::Sender<()>) {
+        let previous = self
+            .delivery()
+            .after_retirement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Box::new(move || {
+                let _ = complete.send(());
+            }));
+        assert!(previous.is_none(), "retirement observer already registered");
+    }
+
     /// Observes destruction of the original data, after its payload and keepers.
     #[cfg(test)]
     pub(super) fn observe_data_drop(

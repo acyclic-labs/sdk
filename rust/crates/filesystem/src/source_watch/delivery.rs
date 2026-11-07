@@ -138,8 +138,7 @@ impl Delivery {
     }
 
     pub(super) fn report_failure(&self, error: &DemandError) {
-        // The cause remains owned here until it is installed in the failure
-        // slot. Invoke outside that slot's lock so observers can retire or
+        // Invoke outside the failure slot's lock so observers can retire or
         // inspect their original source without waiting on this callback.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.callback(|| self.sink.delivery_failed(error));
@@ -152,6 +151,12 @@ impl Delivery {
         work: &mut W,
     ) {
         self.report_failure(&error);
+        self.retain_failure(error, work);
+        self.notify_lost();
+    }
+
+    /// Saves terminal data without invoking an observer under a driver lock.
+    pub(super) fn retain_failure<W: SourceDemandReadWork>(&self, error: DemandError, work: &mut W) {
         let prior = if work.is_native_original() {
             None
         } else {
@@ -164,8 +169,6 @@ impl Delivery {
         if failed.is_none() {
             *failed = Some((error, prior));
         }
-        drop(failed);
-        self.notify_lost();
     }
 
     pub(super) fn take_failure<W: SourceDemandReadWork>(

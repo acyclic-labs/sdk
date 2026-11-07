@@ -577,20 +577,32 @@ impl Hub {
         });
         let subscribers = {
             let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-            std::mem::take(&mut routes.subscribers)
+            // Withdrawal uses this same lock. Save every original outcome
+            // before a controller can unsubscribe and finish retirement.
+            // Retain strong custody until unlocking: the last Shared owner
+            // withdraws from these same routes when it drops.
+            let mut subscribers = Vec::with_capacity(routes.subscribers.len());
+            for watch in std::mem::take(&mut routes.subscribers)
+                .into_values()
+                .filter_map(|watch| watch.upgrade())
+            {
+                let mut work = watch.delivery.callback_work();
+                watch.delivery.retain_failure(
+                    io::Error::new(cause.kind(), Arc::clone(cause)).into(),
+                    &mut work,
+                );
+                subscribers.push(watch);
+            }
+            subscribers
         };
         // No route lock or service admission is held through notification.
         // Loss settles delivery, while the existing owner retains all native
         // registrations and cleanup credits until physical withdrawal.
-        for watch in subscribers
-            .into_values()
-            .filter_map(|watch| watch.upgrade())
-        {
-            let mut work = watch.delivery.callback_work();
-            watch.delivery.failed_with_work(
-                io::Error::new(cause.kind(), Arc::clone(cause)).into(),
-                &mut work,
-            );
+        for watch in subscribers {
+            watch
+                .delivery
+                .report_failure(&io::Error::new(cause.kind(), Arc::clone(cause)).into());
+            watch.delivery.notify_lost();
         }
     }
 

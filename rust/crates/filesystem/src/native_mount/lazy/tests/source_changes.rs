@@ -1,4 +1,84 @@
 use super::*;
+
+#[cfg(all(target_os = "linux", feature = "native-watch"))]
+#[test]
+fn cleanup_retry_observes_the_retired_source_watch_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    std::fs::create_dir_all(source.path().join("child/grandchild"))?;
+    let reported = source.path().join("child/grandchild/reported");
+    std::fs::write(&reported, b"before")?;
+    let runtime = shared_runtime()?;
+    let demand = Arc::new(runtime.block_on(native_source(
+        source.path(),
+        crate::model::FilesystemProfile::Portable,
+    ))?);
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let view = runtime.block_on(mounted_view_of_with_authored_work(
+        Arc::clone(&demand),
+        "cleanup-retry",
+        crate::MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        Some(&original),
+    ))?;
+    assert!(
+        view.lookup(&mounted(&["child", "grandchild", "reported"]))?
+            .is_some()
+    );
+    let watch = demand
+        .physical_watch_for_test()
+        .ok_or("production lazy source has no native watch")?;
+    let (retired, observed) = std::sync::mpsc::channel();
+    watch.observe_retirement(retired);
+    let reading = watch.paused();
+    let wait = CancellationToken::new();
+    let cancel = wait.clone();
+    crate::cancellation::custody::BEFORE_WAIT.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || cancel.cancel()));
+    });
+    let first = view.cancel_cleanup_with_join(
+        Some(&wait),
+        crate::native_mount::retirement::SourceRetirementWait::Caller,
+    );
+    assert!(
+        wait.is_cancelled(),
+        "cleanup did not reach native read custody"
+    );
+    assert!(matches!(first, Err(MountSourceError::Cancelled)));
+    assert!(view.authored.capture_retired());
+    assert!(!watch.is_stopped());
+    drop(reading);
+    // This is the original subscription and recorder. Its actual callback
+    // refuses because authored cleanup already revoked capture admission.
+    std::fs::write(reported, b"changed")?;
+    observed.recv()?;
+    assert!(view.physically_retired()?);
+    let before = original.receipt();
+    let retired = view.cancel_cleanup_with_join(
+        Some(&wait),
+        crate::native_mount::retirement::SourceRetirementWait::Caller,
+    )?;
+    assert!(!retired.changed);
+    assert!(
+        matches!(retired.failure, Some(MountSourceError::Cancelled)),
+        "cleanup retry erased the retired watch's callback failure"
+    );
+    assert_eq!(
+        original.receipt(),
+        before,
+        "retry repeated physical cleanup"
+    );
+    let again = view.cancel_cleanup_with_join(
+        Some(&wait),
+        crate::native_mount::retirement::SourceRetirementWait::Caller,
+    )?;
+    assert!(!again.changed);
+    assert!(again.failure.is_none());
+    Ok(())
+}
+
 #[test]
 fn lookups_follow_changes_made_to_the_source_outside_the_view()
 -> Result<(), Box<dyn std::error::Error>> {

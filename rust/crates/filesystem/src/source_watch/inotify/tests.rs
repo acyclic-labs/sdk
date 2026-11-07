@@ -115,6 +115,36 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         // sender before the scope joins, so the other wait returns an error.
         let (waiting, entered) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
+        struct StopDuringReport {
+            entered: std::sync::mpsc::Sender<bool>,
+            resume: Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl HostChangeSink for StopDuringReport {
+            fn logical_owned_bytes(&self) -> u64 {
+                0
+            }
+            fn host_changed(
+                &self,
+                _: &[HostChange],
+                work: &mut DemandWork,
+            ) -> Result<(), DemandError> {
+                work.check()
+            }
+            fn delivery_failed(&self, _: &DemandError) {
+                let _ = self.entered.send(true);
+                let _ = self.resume.lock().unwrap().recv();
+            }
+        }
+        let (reporting, reported) = std::sync::mpsc::channel();
+        let ended = reporting.clone();
+        let (release_report, resume_report) = std::sync::mpsc::channel();
+        let racing = watcher_with_sink(
+            &root,
+            Arc::new(StopDuringReport {
+                entered: reporting,
+                resume: Mutex::new(resume_report),
+            }),
+        )?;
         let root = &root;
         let subscribing = scope.spawn(move || {
             BEFORE_SUBSCRIBE_LOCK.with(|hook| {
@@ -130,7 +160,31 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         // The subscription has started but has not acquired routes. A real
         // notification wakes the original collector, whose exit guard must
         // publish loss without either existing watch's read cursor.
-        hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
+        let ending = scope.spawn(move || {
+            let result = hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""));
+            let _ = ended.send(false);
+            result
+        });
+        assert!(
+            reported.recv().map_err(io::Error::other)?,
+            "collector ended without publishing loss"
+        );
+        // The original collector is inside the sink's failure report, outside
+        // all native locks. A simultaneous stop must already own its cause.
+        let stopped = racing.stop_with_work(&mut crate::native_host::ordinary_work());
+        assert!(
+            matches!(stopped, Err(DemandError::Io(ref error))
+                if error.kind() == io::ErrorKind::BrokenPipe),
+            "cleanup erased collector loss during notification: {stopped:?}"
+        );
+        assert!(racing.is_stopped());
+        release_report.send(()).map_err(io::Error::other)?;
+        ending
+            .join()
+            .map_err(|_| io::Error::other("collector controller unwound"))??;
+        racing
+            .stop_with_work(&mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         release.send(()).map_err(io::Error::other)?;
         let (result, subscribed) = subscribing
             .join()
