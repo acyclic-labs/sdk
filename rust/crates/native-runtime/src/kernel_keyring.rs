@@ -1,4 +1,4 @@
-//! Linux kernel-keyring custody for one signing seed: the store used when no
+//! Linux kernel-keyring custody for the signing root: the store used when no
 //! Secret Service is reachable, which is every headless host.
 //!
 //! The key lives in the user keyring, and also in the user's persistent keyring
@@ -13,7 +13,7 @@ use linux_keyutils::{
     Key, KeyError, KeyPermissionsBuilder, KeyRing, KeyRingIdentifier, Permission,
 };
 
-/// One seed entry in the kernel keyrings.
+/// The signing-root entry in the kernel keyrings.
 #[derive(Debug)]
 pub(crate) struct KernelKey {
     description: String,

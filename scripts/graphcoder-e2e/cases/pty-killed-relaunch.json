@@ -1,0 +1,84 @@
+{
+  "id": "pty-killed-relaunch",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "first prompt"
+        },
+        "text": [
+          "NEVER_SHOWN"
+        ],
+        "hold": true
+      },
+      {
+        "when": {
+          "user": "second prompt"
+        },
+        "text": [
+          "SECOND_REPLY"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "killed": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "first prompt"
+        },
+        {
+          "after_request": {
+            "step": 0
+          },
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ]
+          },
+          "kill": true
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "task_failure": "model provider unavailable",
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "second prompt"
+        },
+        {
+          "when": {
+            "contains": [
+              "SECOND_REPLY",
+              "\u25cb"
+            ],
+            "task_failure": "model provider unavailable"
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2
+  }
+}

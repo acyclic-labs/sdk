@@ -2,7 +2,7 @@
 // Explicit submission identity survives SIGKILL and resumes the retained turn.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { fixture } from "./graphcoder-fixture.mjs";
 import { Processes, OutputWatch } from "./graphcoder-e2e/process.mjs";
 import { withOwnedCase } from "./graphcoder-e2e/suite.mjs";
@@ -18,10 +18,7 @@ const submission = randomUUID();
 const processes = new Processes();
 const start = async (first, resume = true) => {
   const launchArgs = [...args, ...(resume ? ["--operation", submission] : [])];
-  const env = { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
-    USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
-    APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
-    OPENAI_API_KEY: "", GRAPHCODER_MODEL: "", TERM: "xterm-256color" };
+  const { env } = host;
   const running = interactive ? await processes.startTerminal(binary, launchArgs, { env }) : processes.start(binary, launchArgs, { env });
   if (!interactive) return { running, exit: running.closed };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });

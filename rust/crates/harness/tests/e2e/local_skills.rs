@@ -1,7 +1,7 @@
 use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
-    agent::{AgentOutcome, Phase},
+    agent::{AgentOutcome, Phase, TurnOutcome},
     context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
     local::{
         Event,
@@ -71,11 +71,12 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
                 }
                 _ => {}
             },
+            // A refused turn settles failed; the agent stays open.
             Ok(Event::Turn(entry)) if entry.inbox == inbox => {
-                return if settles {
+                return if settles != matches!(entry.outcome, TurnOutcome::Failed { .. }) {
                     Ok(())
                 } else {
-                    Err("a refused turn settled".into())
+                    Err(format!("turn settled {:?}", entry.outcome).into())
                 };
             }
             Ok(Event::Turn(_) | Event::Output) => {}

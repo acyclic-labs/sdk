@@ -157,7 +157,7 @@ async fn incompatible_explicit_compaction_fails_before_owner_creation() -> Resul
     let project = volume(directory.path()).await?;
     let provider = text();
     let mut config = volume_config(directory.path(), project, provider.clone())?;
-    let owner_path = config.resolved_state_directory()?.join("owner.json");
+    let owner_path = config.resolved_state_directory()?.join("owner.v2");
     config = config.compaction(acyclic_harness::context::CompactionPolicy::default());
     assert!(matches!(
         LocalHarness::open(config).await,

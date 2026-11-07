@@ -28,14 +28,6 @@
           "ok": true
         },
         "hold": true
-      },
-      {
-        "when": {
-          "user": "ORPHAN_RECOVER"
-        },
-        "text": [
-          "ORPHAN_RECOVERED"
-        ]
       }
     ]
   },
@@ -50,8 +42,7 @@
     },
     {
       "mode": "headless",
-      "operation": "00000000-0000-0000-0000-000000000002",
-      "text": "ORPHAN_RECOVER",
+      "text": "ORPHAN_START",
       "exit": 1,
       "outcome": {
         "completion": "failed",
@@ -61,7 +52,6 @@
   ],
   "assert": {
     "requests": 1,
-    "steps": [0, 1],
     "dead_tree": "orphan-ready"
   }
 }

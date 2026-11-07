@@ -502,7 +502,8 @@ fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the
 /// operation replays it. An approval request is answered on stdin (`y`
-/// approves); the exit code is 0 only for a completed turn.
+/// approves); the exit code is 0 only for a completed turn, and a failed
+/// turn's error is written to stderr.
 pub(super) async fn prompt(
     conversation: &Arc<Conversation>,
     operation: &str,
@@ -518,7 +519,11 @@ pub(super) async fn prompt(
     loop {
         let reason = match conversation.settle(operation, inbox, &mut events).await? {
             Settlement::Reply(Reply::Answered { entry, .. }) => {
-                return print(conversation, &entry, output).await;
+                let code = print(conversation, &entry, output).await?;
+                let TurnOutcome::Failed { message } = &entry.outcome else {
+                    return Ok(code);
+                };
+                message.clone()
             }
             Settlement::Reply(_) => conversation.dropped().await?,
             Settlement::Ended(reason) => reason,
@@ -619,9 +624,10 @@ async fn settled(
     Ok(match reply {
         Reply::Answered { entry, origin, .. } => {
             let inbox = origin.as_ref().map_or(entry.inbox, |origin| origin.inbox);
-            // Only a completed turn is an answer. A cancelled turn's partial
-            // output is never a result, so it cannot replace a final artifact.
-            match entry.outcome {
+            // Only a completed turn is an answer. A cancelled or failed turn's
+            // partial output is never a result, so it cannot replace a final
+            // artifact.
+            match &entry.outcome {
                 TurnOutcome::Completed => Some(answer(conversation, id, &entry, inbox).await?),
                 TurnOutcome::Cancelled => {
                     Some(json!({"id": id, "inbox": inbox, "error": "turn cancelled"}))
@@ -629,6 +635,9 @@ async fn settled(
                 TurnOutcome::RestoreConflict => {
                     let text = conversation.output_text(&entry).await?;
                     Some(json!({"id": id, "inbox": inbox, "error": text}))
+                }
+                TurnOutcome::Failed { message } => {
+                    Some(json!({"id": id, "inbox": inbox, "error": message}))
                 }
             }
         }

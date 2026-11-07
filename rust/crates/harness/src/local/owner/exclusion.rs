@@ -1,6 +1,7 @@
 //! Git metadata is captured once, then every publication uses held directories.
 use super::*;
 use acyclic_fs::{DemandError, HeldRoot, SearchRoot};
+use std::io::Read as _;
 
 pub(in crate::local) struct Exclusion {
     common: HeldRoot,

@@ -259,7 +259,7 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
 pub const COMPACT_INSTRUCTION: &str = "Summarize this conversation for continued work. Preserve facts, decisions, constraints, unresolved work and references; the summary replaces the conversation in later context. Answer with the summary alone.";
 
 /// How a turn settled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum TurnOutcome {
@@ -272,6 +272,13 @@ pub enum TurnOutcome {
     /// A history selection's expected project heads no longer held. The
     /// output explains the refusal; files and selected context did not change.
     RestoreConflict,
+    /// The model, a tool or request preparation failed definitively; its
+    /// output holds the answer streamed so far. The agent stays open: its
+    /// next input starts a new turn, and a parent decides what follows.
+    Failed {
+        /// The failure, at most [`super::MAX_MESSAGE_BYTES`].
+        message: String,
+    },
 }
 
 impl TurnOutcome {
@@ -347,12 +354,23 @@ impl ConversationEntry {
                 Some(ContextAction::Restore { mode, .. }) if !mode.context() => None,
                 action => action,
             },
-            TurnOutcome::Cancelled | TurnOutcome::RestoreConflict => None,
+            TurnOutcome::Cancelled | TurnOutcome::RestoreConflict | TurnOutcome::Failed { .. } => {
+                None
+            }
         }
     }
 }
 
-impl AgentRecord for ConversationEntry {}
+impl AgentRecord for ConversationEntry {
+    fn check(&self) -> Result<(), Error> {
+        match &self.outcome {
+            TurnOutcome::Failed { message } if message.len() > super::MAX_MESSAGE_BYTES => {
+                Err(Error::Record("failure message exceeds MAX_MESSAGE_BYTES"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
 
 /// [`TurnDriver`] running each turn as one executor operation.
 pub struct ExecutorDriver<H> {
@@ -691,6 +709,75 @@ fn announced(open: &OpenTurn) -> Option<FileRef> {
     open.roster.as_ref().map(|(file, _)| file.clone())
 }
 
+/// A turn stopped before its executor finished, settled as `outcome`: its
+/// prompt, the answer it streamed so far and the steering its requests
+/// admitted.
+async fn interrupted(
+    agent: &AgentState,
+    open: &OpenTurn,
+    turn: OperationId,
+    inbox: u64,
+    input: TurnInput,
+    notices: Option<super::NoticeSelection>,
+    outcome: TurnOutcome,
+) -> Result<ConversationEntry, Error> {
+    let partial = open.outputs.partial(turn).await.map_err(host_error)?;
+    Ok(ConversationEntry {
+        inbox,
+        goal: super::goal::continuing(&agent.path, &input),
+        input,
+        output: stage_text(&*open.outputs, turn, partial).await?,
+        outcome,
+        targets: announced(open),
+        tool_results: open.outputs.tool_results(turn),
+        steering: match open.journal.model_boundary() {
+            Some(boundary) => {
+                let snapshot = open
+                    .journal
+                    .steering_snapshot(turn)
+                    .await
+                    .map_err(host_error)?;
+                boundary
+                    .restore_snapshot(turn, snapshot)
+                    .map_err(host_error)?;
+                boundary.transcript(turn).await.map_err(host_error)?
+            }
+            None => None,
+        },
+        notices,
+    })
+}
+
+/// A definitive model, executor, tool or preparation failure settles the
+/// turn, never the agent: its entry records the failure, truncated to
+/// [`super::MAX_MESSAGE_BYTES`], with its recorded effects, and the agent
+/// waits for its next input.
+async fn failed(
+    agent: &AgentState,
+    open: &OpenTurn,
+    turn: OperationId,
+    inbox: u64,
+    input: TurnInput,
+    notices: Option<super::NoticeSelection>,
+    mut message: String,
+) -> Result<TurnStep, Error> {
+    let mut end = message.len().min(super::MAX_MESSAGE_BYTES);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    let outcome = TurnOutcome::Failed { message };
+    let entry = interrupted(agent, open, turn, inbox, input, notices, outcome).await?;
+    let step = TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: settled(&entry, open.roster.as_ref())?,
+        wait: Wait::Input,
+        drops: None,
+    };
+    settle_effects(agent, open, step).await
+}
+
 /// Every settled turn commits its already-recorded actions, including a turn
 /// whose later model call fails. Pending or uncertain turns retain their journal.
 async fn settle_effects(
@@ -781,32 +868,16 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // A cancel or archive stops this turn: it settles durably as
                 // a cancelled entry holding its prompt and the answer it
                 // streamed so far, with no further model request.
-                let partial = open.outputs.partial(turn).await.map_err(host_error)?;
-                let goal = super::goal::continuing(&agent.path, &input);
-                let entry = ConversationEntry {
+                let entry = interrupted(
+                    agent,
+                    &open,
+                    turn,
                     inbox,
                     input,
-                    output: stage_text(&*open.outputs, turn, partial).await?,
-                    outcome: TurnOutcome::Cancelled,
-                    goal,
-                    targets: announced(&open),
-                    tool_results: open.outputs.tool_results(turn),
-                    steering: match open.journal.model_boundary() {
-                        Some(boundary) => {
-                            let snapshot = open
-                                .journal
-                                .steering_snapshot(turn)
-                                .await
-                                .map_err(host_error)?;
-                            boundary
-                                .restore_snapshot(turn, snapshot)
-                                .map_err(host_error)?;
-                            boundary.transcript(turn).await.map_err(host_error)?
-                        }
-                        None => None,
-                    },
-                    notices: notices.clone(),
-                };
+                    notices,
+                    TurnOutcome::Cancelled,
+                )
+                .await?;
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
@@ -815,22 +886,16 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     drops: None,
                 });
             }
-            let failed = |message: &str| TurnStep {
-                reserved_children: 0,
-                checkpoint: None,
-                outs: Vec::new(),
-                wait: Wait::Done(AgentOutcome::Failed {
-                    message: message.to_owned(),
-                }),
-                drops: None,
-            };
             let progress = match progress {
                 Ok(progress) => progress,
                 // A provider owns bounded retry/recovery and returns these typed
-                // outcomes only when it is finished. Settle through the normal
-                // agent commit so status followers and parents observe failure.
-                Err(error) if error.is_model_failure() => {
-                    return settle_effects(agent, &open, failed(&error.to_string())).await;
+                // outcomes only when it is finished; any other definitive
+                // executor failure is as final. The failed turn settles through
+                // the normal agent commit; parents observe it by `wait`. Only an
+                // undecided failure retries the step.
+                Err(error) if error.is_model_failure() || !error.uncertain() => {
+                    return failed(agent, &open, turn, inbox, input, notices, error.to_string())
+                        .await;
                 }
                 Err(error) => return Err(host_error(error)),
             };
@@ -1022,8 +1087,22 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         drops: None,
                     });
                 }
-                ExecutionProgress::Failed(kind) => failed(kind.message()),
-                ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
+                ExecutionProgress::Failed(kind) => {
+                    return failed(
+                        agent,
+                        &open,
+                        turn,
+                        inbox,
+                        input,
+                        notices,
+                        kind.message().into(),
+                    )
+                    .await;
+                }
+                ExecutionProgress::PreDispatchFailed(failure) => {
+                    let message = failure.message().to_owned();
+                    return failed(agent, &open, turn, inbox, input, notices, message).await;
+                }
             };
             settle_effects(agent, &open, step).await
         })
