@@ -46,14 +46,14 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
-        let cancellation = journal.model_cancellation();
-        let request::ModelStepRequest {
-            history: mut prior_messages,
-            prepared,
-        } = request;
         completion
             .run(async {
                 // Construct and retire provider custody inside the completion body.
+                let cancellation = journal.model_cancellation();
+                let request::ModelStepRequest {
+                    history: mut prior_messages,
+                    prepared,
+                } = request;
                 let execution = async {
                     let scope = ModelStepScope {
                         purpose,
