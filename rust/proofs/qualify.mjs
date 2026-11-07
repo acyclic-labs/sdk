@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "runtime-completion-custody": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion parked without an original dispatcher producer", [],
+  ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
     "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions",

@@ -15,12 +15,27 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         });
         let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
             .with_limits(RuntimeLimits::new(1, 1)?);
-        let mut completed = Box::pin(runtime.complete());
+        let before = provider.requests();
+        let mut unstarted = Box::pin(runtime.complete());
         assert!(
-            futures::poll!(completed.as_mut()).is_pending(),
-            "completion escaped before its dispatcher"
+            matches!(
+                futures::poll!(unstarted.as_mut()),
+                Poll::Ready(Err(Error::CompletionStopped))
+            ),
+            "completion parked without an original dispatcher producer"
         );
+        let calls = provider.requests().since(before);
+        assert_eq!(calls.control(), 0);
+        assert_eq!(calls.data(), 0);
         let mut serving = Box::pin(runtime.run(|_, error| panic!("unexpected delivery: {error}")));
+        let mut duplicate = Box::pin(runtime.run(|_, _| panic!("duplicate dispatcher delivered")));
+        assert!(matches!(
+            futures::poll!(duplicate.as_mut()),
+            Poll::Ready(Err(Error::CompletionStopped))
+        ));
+        drop(duplicate);
+        let mut completed = Box::pin(runtime.complete());
+        assert!(futures::poll!(completed.as_mut()).is_pending());
         if stop_before_poll {
             drop(serving);
             assert!(
