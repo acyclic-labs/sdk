@@ -3,7 +3,9 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkDescriptors, generate } from "./check-baselines.mjs";
+import { checkDescriptors } from "./check-baselines.mjs";
+import { createNativeProducer } from "./build-native-family.mjs";
+import { nativeFamily } from "./native-family.mjs";
 
 test("all complete regenerated descriptor closures preserve their pinned identities", () => {
   checkDescriptors();
@@ -31,10 +33,24 @@ test("descriptor checking rejects breaking changes to a secondary root and an im
   }
 });
 
-test("both native admission baselines equal the actual Rust generator", () => {
-  for (const family of ["actors", "stream"]) {
-    const actual = JSON.parse(generate(["native-family", process.cwd(), family]));
-    const baseline = JSON.parse(readFileSync(`compatibility/native-families/${family}.json`, "utf8"));
-    assert.deepEqual(actual, baseline);
+test("both native admission baselines equal the actual Rust generator and refuse a missing producer", () => {
+  const binary = process.env.SDK_PROTO_CODEGEN;
+  const empty = mkdtempSync(join(tmpdir(), "sdk-protocol-producer-"));
+  try {
+    for (const family of ["actors", "stream"]) {
+      const producer = createNativeProducer(nativeFamily(family));
+      producer.assertCurrentNativeFamily();
+      process.env.SDK_PROTO_CODEGEN = join(empty, "missing");
+      try {
+        assert.throws(() => producer.assertCurrentNativeFamily(), error =>
+          error.code === "PROTO_CODEGEN_FAILED" && error.cause?.code === "ENOENT"
+          && error.message.includes("step native-family failed; recovery:"));
+      } finally {
+        if (binary === undefined) delete process.env.SDK_PROTO_CODEGEN;
+        else process.env.SDK_PROTO_CODEGEN = binary;
+      }
+    }
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
   }
 });
