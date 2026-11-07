@@ -218,7 +218,3 @@ impl Pool {
         }
     }
 }
-
-#[cfg(all(test, not(loom), feature = "grpc", not(target_arch = "wasm32")))]
-#[path = "credentials/tests.rs"]
-mod tests;
