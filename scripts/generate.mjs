@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { generateProto } from "./generate-proto.mjs";
 import { packageClosure } from "./package-closure.mjs";
 import { checkGeneratedDirectory } from "./generated-bindings.mjs";
+import { generateNativeFamilies } from "./native-family.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const check = process.argv[2] === "check";
@@ -31,6 +32,7 @@ function directoryOutput(destination, generate) {
 
 if (packages.has("auth")) directoryOutput(root, output => run("cargo", ["run", "--locked", "--quiet", "-p", "acyclic-auth", "--example", "generate", "--", output]));
 generateProto(packages, check);
+generateNativeFamilies(packages, check);
 if (packages.has("actors")) {
   const { write } = await import("./generate-actors.mjs");
   await write(check);
