@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "browser-revision-progress": [
+    "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
+    "browser::tests::database_loss_ends_parked_revision_observers",
+    "revision wait retained failed IndexedDB producer",
+    ["--no-default-features", "--features", "wasm", "--target", "wasm32-unknown-unknown"],
+  ],
   "postgres-refresh-progress": [
     "rust/crates/stream/src/postgres.rs", "acyclic-stream",
     "postgres::capability::refresh_producer_retirement_ends_public_waits",

@@ -97,16 +97,14 @@ fn wake(
                 Ok(Some(force)) => force,
                 Ok(None) => break,
                 Err(_) => {
+                    inner.revisions.close();
                     let _ = inner.publications.interests.notify_all();
                     inner.publications.invalidate_follows();
                     break;
                 }
             };
             let provider = BrowserStream { inner };
-            if provider.refresh_publication(force).await.is_err() {
-                let _ = provider.inner.publications.interests.notify_all();
-                provider.inner.publications.invalidate_follows();
-            }
+            let _ = provider.refresh_publication(force).await;
         }
     });
     Ok(())
