@@ -9,6 +9,9 @@ import sys
 import unittest
 
 SOURCE = Path(__file__).with_name("loom-rustc.py")
+WRAPPER = ([str(SOURCE.with_suffix(".sh"))] if os.name == "posix"
+           else [sys.executable, str(SOURCE)])
+CARGO_BINARY = "CARGO_BIN_EXE_acyclic-virtiofsd"
 
 
 class CompilerHandoffTests(unittest.TestCase):
@@ -31,9 +34,10 @@ class CompilerHandoffTests(unittest.TestCase):
                     os.set_handle_inheritable(inherited, True)
                 try:
                     child = subprocess.Popen(
-                        [sys.executable, str(SOURCE), sys.executable, str(Path(__file__).resolve()),
+                        [*WRAPPER, sys.executable, str(Path(__file__).resolve()),
                          "--compiler", str(inherited), str(code), *arguments],
                         **({"pass_fds": (reader,)} if os.name == "posix" else {"close_fds": False}),
+                        env={**os.environ, CARGO_BINARY: "present"},
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True)
                     output, error = child.communicate()
@@ -44,11 +48,12 @@ class CompilerHandoffTests(unittest.TestCase):
                 if os.name == "posix":
                     self.assertEqual(observed["pid"], child.pid)
                 self.assertEqual(observed["credit"], "compiler-credit")
+                self.assertEqual(observed["cargo_binary"], "present")
                 expected = [*arguments, "--cfg", "loom"] if "--cfg" in arguments else arguments
                 self.assertEqual(observed["arguments"], expected)
 
     def test_launch_failure_names_the_recovery(self):
-        result = subprocess.run([sys.executable, str(SOURCE), str(SOURCE / "missing-rustc")],
+        result = subprocess.run([*WRAPPER, str(SOURCE / "missing-rustc")],
                                 capture_output=True, text=True, check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("STEP_FAILED loom-rustc:", result.stderr)
@@ -64,6 +69,7 @@ if __name__ == "__main__":
             reader = msvcrt.open_osfhandle(reader, os.O_RDONLY)
         print(json.dumps({"pid": os.getpid(),
                           "credit": os.read(reader, 32).decode(),
+                          "cargo_binary": os.environ.get(CARGO_BINARY),
                           "arguments": sys.argv[4:]}), flush=True)
         code = int(sys.argv[3])
         if code < 0:
