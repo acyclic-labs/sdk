@@ -30,6 +30,8 @@ pub enum AppendGroupOutcome {
 
 contract! {
 /// Nonblocking authority-store contract.
+/// Each operation borrows its inputs for one task. The funded work context's
+/// lifetime remains independent of that temporary borrow.
 pub trait AsyncAuthorityStore: ProviderPlatform {
     /// Transfers a group to its actual owner. An absent task means its terminal
     /// reply has already been delivered, including unsupported dispatch.
@@ -47,10 +49,10 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         PolicyOwner::Unsupported
     }
     /// Captures a cut which this backend checks atomically at publication.
-    fn policy_cut(
-        &self,
+    fn policy_cut<'task>(
+        &'task self,
         _authority: AuthorityId,
-        _work: &mut AuthorityWork<'_>,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<PolicyCut, crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
             "authority backend does not support atomic policy cuts",
@@ -61,9 +63,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         false
     }
     /// Seals all authority writes accepted by this store before the call.
-    fn durability_barrier(
-        &self,
-        _work: &mut AuthorityWork<'_>,
+    fn durability_barrier<'task>(
+        &'task self,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))
     }
@@ -84,34 +86,34 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
 
     /// Whether durable published lineage already retains this exact generation.
     /// Unsupported backends conservatively require an independent retention pin.
-    fn retains_generation(
-        &self,
+    fn retains_generation<'task>(
+        &'task self,
         _authority: AuthorityId,
         _generation: GenerationId,
-        _work: &mut AuthorityWork<'_>,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<bool, crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Ok(false))
     }
 
     /// Creates an authority, sealing publication and recovery.
-    fn create_authority<G: AuthorityGuard>(
-        &self,
+    fn create_authority<'task, G: AuthorityGuard>(
+        &'task self,
         _authority: AuthorityId,
         _epoch: Epoch,
-        _work: &mut AuthorityWork<'_>,
-        _guard: Option<&mut G>,
+        _work: &'task mut AuthorityWork<'_>,
+        _guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired.into()))
     }
 
     /// Creates an authority rooted at one source generation.
-    fn fork_authority<G: AuthorityGuard>(
-        &self,
+    fn fork_authority<'task, G: AuthorityGuard>(
+        &'task self,
         source: GenerationForkSource,
         destination: AuthorityId,
         operation: OperationId,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
+        work: &'task mut AuthorityWork<'_>,
+        guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>> + ProviderTask
     {
         async move {
@@ -134,12 +136,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Creates or authenticates an authority's exact first record.
-    fn create_first_record<G: AuthorityGuard>(
-        &self,
+    fn create_first_record<'task, G: AuthorityGuard>(
+        &'task self,
         authority: AuthorityId,
         commit: ProposedCommit,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
+        work: &'task mut AuthorityWork<'_>,
+        guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<bool, AuthorityError<G::Error>>> + ProviderTask {
         async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -151,12 +153,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Publishes retention before a forked workspace's creation.
-    fn fork_workspace<G: AuthorityGuard>(
-        &self,
+    fn fork_workspace<'task, G: AuthorityGuard>(
+        &'task self,
         fork: WorkspaceForkCommit,
         permit: PublicationPermit,
-        work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
+        work: &'task mut AuthorityWork<'_>,
+        guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<WorkspaceForkOutcome, AuthorityError<G::Error>>> + ProviderTask
     {
         async move {
@@ -169,30 +171,30 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Retires authority metadata after workspace deletion is durable.
-    fn retire_authority(
-        &self,
+    fn retire_authority<'task>(
+        &'task self,
         authority: AuthorityId,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask {
         let _ = (authority, work);
         std::future::ready(Ok(()))
     }
 
     /// Reads the linearizable authority head.
-    fn head(
-        &self,
+    fn head<'task>(
+        &'task self,
         authority: AuthorityId,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Head, crate::AuthorityStoreError>> + ProviderTask;
 
     /// Reads the head and its bounded, authenticated last payload together.
     /// Genesis has no durable record. Backends may reuse the head's exact read.
     /// Keep the returned allocation alive until the payload is destroyed.
-    fn head_payload(
-        &self,
+    fn head_payload<'task>(
+        &'task self,
         authority: AuthorityId,
         maximum_payload_bytes: u64,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<((Head, Option<bytes::Bytes>), crate::AuthorityAllocation), crate::AuthorityStoreError>>
     + ProviderTask {
         async move {
@@ -212,11 +214,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Compares and appends under the caller's publication permit and guard.
-    fn compare_and_append<G: AuthorityGuard>(
-        &self,
+    fn compare_and_append<'task, G: AuthorityGuard>(
+        &'task self,
         _request: GuardedAppend,
-        _work: &mut AuthorityWork<'_>,
-        _guard: Option<&mut G>,
+        _work: &'task mut AuthorityWork<'_>,
+        _guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<AppendOutcome, AuthorityError<G::Error>>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired.into()))
     }
@@ -228,20 +230,19 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
 
     /// Quotes this proposal using the canonical append builder, without publication.
     /// The cost includes the caller's maximum payload growth during composition.
-    fn quote_group_append(&self, _request: &GuardedAppend, _payload_growth: usize, _work: &mut AuthorityWork<'_>)
-        -> impl Future<Output = Result<Option<AuthorityGroupCost>, crate::AuthorityStoreError>> + ProviderTask {
+    fn quote_group_append<'task>(&'task self, _request: &'task GuardedAppend, _payload_growth: usize, _work: &'task mut AuthorityWork<'_>) -> impl Future<Output = Result<Option<AuthorityGroupCost>, crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Ok(None))
     }
 
     /// Submits a precomposed serial authority history as one atomic transaction.
     /// Unsupported adapters fail closed; they must never emulate atomicity by
     /// appending a prefix and then discovering that a later member conflicts.
-    fn compare_and_append_group<G: AuthorityGuard>(
-        &self,
-        _requests: &[GuardedAppend],
-        _cuts: &[crate::PolicyCut],
-        _work: &mut AuthorityWork<'_>,
-        _guard: Option<&mut G>,
+    fn compare_and_append_group<'task, G: AuthorityGuard>(
+        &'task self,
+        _requests: &'task [GuardedAppend],
+        _cuts: &'task [crate::PolicyCut],
+        _work: &'task mut AuthorityWork<'_>,
+        _guard: Option<&'task mut G>,
     ) -> impl Future<Output = Result<AppendGroupOutcome, AuthorityError<G::Error>>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
             "authority adapter does not support atomic groups",
@@ -249,11 +250,11 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Reads an existing reservation for the exact operation identity.
-    fn publication_reservation(
-        &self,
+    fn publication_reservation<'task>(
+        &'task self,
         authority: AuthorityId,
         operation: OperationId,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Option<PublicationReservation>, crate::AuthorityStoreError>>
     + ProviderTask {
         async move {
@@ -276,12 +277,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Acquires the exclusive publication gate at an exact head.
-    fn reserve_publication(
-        &self,
+    fn reserve_publication<'task>(
+        &'task self,
         authority: AuthorityId,
         expected: Head,
         operation: OperationId,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<ReservationOutcome, crate::AuthorityStoreError>> + ProviderTask
     {
         async move {
@@ -298,10 +299,10 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Releases the exact publication reservation.
-    fn release_publication(
-        &self,
+    fn release_publication<'task>(
+        &'task self,
         reservation: PublicationReservation,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), crate::AuthorityStoreError>> + ProviderTask {
         async move {
             #[cfg(not(target_arch = "wasm32"))]
@@ -320,12 +321,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     /// observed prefix. A backend must authenticate the original record and
     /// establish the prefix before returning absence. Unsupported backends
     /// refuse; they must not emulate this lookup by replaying history.
-    fn first_generation(
-        &self,
+    fn first_generation<'task>(
+        &'task self,
         _authority: AuthorityId,
         _generation: GenerationId,
         _through: Sequence,
-        _work: &mut AuthorityWork<'_>,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Option<Sequence>, crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::RejectedStatic(
             "authority backend does not support indexed generation lookup",
@@ -333,12 +334,12 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     }
 
     /// Replays one bounded page while retaining its native storage.
-    fn replay(
-        &self,
+    fn replay<'task>(
+        &'task self,
         authority: AuthorityId,
         after: Sequence,
         limit: ReplayLimit,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<
         Output = Result<
             (Vec<crate::DurableCommit>, AuthorityAllocation),
@@ -347,21 +348,21 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
     > + ProviderTask;
 
     /// Advances a writer fence.
-    fn fence(
-        &self,
+    fn fence<'task>(
+        &'task self,
         _authority: AuthorityId,
         _expected: Head,
-        _work: &mut AuthorityWork<'_>,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<FenceOutcome, crate::AuthorityStoreError>> + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))
     }
 
     /// Resolves an idempotent operation.
-    fn find_operation(
-        &self,
+    fn find_operation<'task>(
+        &'task self,
         _authority: AuthorityId,
         _operation: OperationId,
-        _work: &mut AuthorityWork<'_>,
+        _work: &'task mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Option<crate::DurableCommit>, crate::AuthorityStoreError>>
     + ProviderTask {
         std::future::ready(Err(crate::AuthorityStoreError::Retired))

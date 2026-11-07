@@ -23,6 +23,20 @@ macro_rules! contract {
         ] $($rest)*);
     };
     (@parse [$trait:ident] [$($delegate:ident)?] [$($methods:tt)*]
+        $(#[$doc:meta])* fn $name:ident<$life:lifetime $(, $g:ident: $bound:path)?>
+        (&$borrow:lifetime $receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty; $($rest:tt)*) => {
+        contract!(@parse [$trait] [$($delegate)?] [$($methods)*
+            ($name [<$life $(, $g: $bound)?>] [&$borrow] $receiver [$($arg: $ty),*] [$out] [$out])
+        ] $($rest)*);
+    };
+    (@parse [$trait:ident] [$($delegate:ident)?] [$($methods:tt)*]
+        $(#[$doc:meta])* fn $name:ident<$life:lifetime $(, $g:ident: $bound:path)?>
+        (&$borrow:lifetime $receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty $body:block $($rest:tt)*) => {
+        contract!(@parse [$trait] [$($delegate)?] [$($methods)*
+            ($name [<$life $(, $g: $bound)?>] [&$borrow] $receiver [$($arg: $ty),*] [$out] [$out])
+        ] $($rest)*);
+    };
+    (@parse [$trait:ident] [$($delegate:ident)?] [$($methods:tt)*]
         $(#[$doc:meta])* fn $name:ident $(<$g:ident: $bound:path>)?
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty; $($rest:tt)*) => {
         contract!(@parse [$trait] [$($delegate)?] [$($methods)*
