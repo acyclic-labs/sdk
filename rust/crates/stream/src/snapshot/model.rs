@@ -45,8 +45,11 @@ pub(crate) fn capture(discard_on_drop: bool) {
 }
 
 struct ConsumerWake {
-    retired: std::sync::Arc<loom::sync::atomic::AtomicUsize>,
-    under_lock: std::sync::Arc<loom::sync::atomic::AtomicBool>,
+    // Trace observations never route execution. Recording a destructor must
+    // not add a scheduler yield inside the production cancellation stack.
+    // The production locks and the worker's wake flag remain Loom operations.
+    retired: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    under_lock: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl ConsumerWake {
     fn observe(&self) {
@@ -147,8 +150,8 @@ pub(crate) fn depart<H>(
             .is_pending()
     );
     let mut worker = take();
-    let retired = std::sync::Arc::new(loom::sync::atomic::AtomicUsize::new(0));
-    let under_lock = std::sync::Arc::new(loom::sync::atomic::AtomicBool::new(false));
+    let retired = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let under_lock = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Replace the actual receiver's last Waker owner, then leave the next one
     // stored through publication or cancellation. Both destructors may re-enter.
     for _ in 0..2 {
