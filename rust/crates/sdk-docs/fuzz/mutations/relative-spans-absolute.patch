@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-docs/src/relative_spans.rs
++++ b/rust/crates/sdk-docs/src/relative_spans.rs
+@@ -10,7 +10,7 @@
+         .filter(|item| item.crate_id == 0)
+         .filter_map(|item| item.span.as_ref())
+         .map(|span| span.filename.as_path())
+-        .filter(|path| !path.is_absolute())
++        .filter(|_| true)
+         .collect()
+ }
+ 

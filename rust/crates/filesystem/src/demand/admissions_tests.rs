@@ -53,7 +53,7 @@ fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
         let shared = if headers == 0 {
             0
         } else {
-            NativeProofAccounting::ALLOCATION_BYTES
+            NativeAllocationAccounting::ALLOCATION_BYTES
         };
         assert_eq!(
             original.live_allocation_bytes(),
@@ -112,7 +112,7 @@ async fn read_then_bind_native_original_reconciles_without_another_payload_chang
     assert!(retained > 0);
     let original = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
-    let shared = original.state.lock().proof_accounting()?;
+    let shared = original.state.lock().allocation_accounting()?;
     let baseline = original.live_allocation_bytes();
     assert!(custody.bind_native_original(&original.state, &shared));
     assert_eq!(shared.non_native.load(Ordering::Acquire), retained);
@@ -148,7 +148,7 @@ fn native_observer_transition_requires_an_initial_snapshot()
         .state
         .lock()
         .roots
-        .proof_accounting
+        .allocation_accounting
         .as_ref()
         .ok_or("missing proof accounting")?
         .clone();
@@ -190,7 +190,7 @@ fn shared_accounting_charges_once_per_operation_for_any_owner_count() -> TestRes
             .state
             .lock()
             .roots
-            .proof_accounting
+            .allocation_accounting
             .as_ref()
             .ok_or("missing totals")?
             .clone();
@@ -209,7 +209,7 @@ fn shared_accounting_charges_once_per_operation_for_any_owner_count() -> TestRes
             crate::NativeMaterializationWork::accounting_state_bytes()
         );
         assert_eq!(original.receipt(), expected);
-        assert!(original.state.lock().roots.proof_accounting.is_none());
+        assert!(original.state.lock().roots.allocation_accounting.is_none());
     }
     Ok(())
 }
@@ -239,7 +239,7 @@ fn native_payload_outlives_checkout_and_retires_resource_exactly_once() -> TestR
     assert_eq!(
         original.live_allocation_bytes(),
         baseline
-            - NativeProofAccounting::ALLOCATION_BYTES
+            - NativeAllocationAccounting::ALLOCATION_BYTES
             - std::mem::size_of::<ProofDataCustody>() as u64
     );
     assert_eq!(original.receipt(), receipt);
@@ -277,7 +277,7 @@ fn prebound_ordinary_payload_keeps_custody_and_original_until_final_retirement()
         .map_err(|(error, _)| error)?;
     let custody = Arc::new(ProofDataCustody::default());
     let claim = crate::kernel::ProofDataClaim::new(Some(&custody), 16);
-    let shared = original.state.lock().proof_accounting()?;
+    let shared = original.state.lock().allocation_accounting()?;
     assert!(custody.bind_native_original(&original.state, &shared));
     drop(shared);
     original.charge(WorkCounters::UNCHARGED)?;
@@ -311,7 +311,7 @@ fn wrong_original_and_cancelled_invocation_reject_registration_before_allocation
     assert_eq!(second.receipt(), receipt);
     assert_eq!(second.live_allocation_bytes(), retained);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
-    assert!(second.state.lock().roots.proof_accounting.is_none());
+    assert!(second.state.lock().roots.allocation_accounting.is_none());
     let custody = Arc::new(ProofDataCustody::default());
     let (invocation, cancel) = second.invocation_view()?;
     cancel.cancel();
@@ -324,7 +324,7 @@ fn wrong_original_and_cancelled_invocation_reject_registration_before_allocation
     assert_eq!(second.receipt(), receipt);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
     assert!(!custody.is_native_original(&second.state));
-    assert!(second.state.lock().roots.proof_accounting.is_none());
+    assert!(second.state.lock().roots.allocation_accounting.is_none());
     Ok(())
 }
 
@@ -381,7 +381,7 @@ fn failed_shared_metadata_admission_keeps_header_and_owner_retryable() -> TestRe
     assert_eq!(denied.live_allocation_bytes(), baseline);
     assert_eq!(header.bytes(), custody.logical_owned_bytes());
     assert!(!custody.is_native_original(&denied.state));
-    assert!(denied.state.lock().roots.proof_accounting.is_none());
+    assert!(denied.state.lock().roots.allocation_accounting.is_none());
     drop(header);
     let allowed = crate::NativeMaterializationWork::new(BOUNDARY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;

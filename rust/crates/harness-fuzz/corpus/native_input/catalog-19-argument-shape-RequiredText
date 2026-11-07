@@ -1,0 +1,1 @@
+[{"name":"stopall","aliases":["sa"],"description":"Pause all conversation trees","arguments":"required_text","action":{"kind":"request","request":{"kind":"pause","scope":"all"},"confirmation":false}}]

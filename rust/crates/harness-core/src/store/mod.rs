@@ -31,14 +31,7 @@ pub(crate) fn guarded_boundary(
         return Error::NativeBoundary { code: kind, reason };
     }
     let _ = work;
-    match kind {
-        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Storage(reason.into()),
-    }
+    crate::Error::from_code(kind, reason)
 }
 
 /// Provider required by an execution journal on this platform.

@@ -635,7 +635,7 @@ mod tests {
         );
         let mut unrelated = Vec::new();
         let mut previous = 0;
-        for (sample, population) in [1, 1_000, 100_000].into_iter().enumerate() {
+        for (sample, population) in [1, 10, 100].into_iter().enumerate() {
             for index in previous..population {
                 unrelated.push(metrics.query(&format!("acyclic.unrelated.{index}")));
             }

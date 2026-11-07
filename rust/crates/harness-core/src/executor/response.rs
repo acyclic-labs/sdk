@@ -1,3 +1,4 @@
+use super::compaction::CompactionSource;
 use super::*;
 
 mod compaction_source;
@@ -174,9 +175,10 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        projection: &ResponseProjection,
+        captured: (&mut ResponseProjection, &crate::model::PreparedModelRequest),
         records: &[ExecutionRecord],
     ) -> Result<Option<crate::model::PreparedModelRequest>> {
+        let (projection, prepared) = captured;
         let mut compacted = records.iter().filter_map(|record| match &record.event {
             ExecutionEvent::ContextCompacted {
                 step: recorded,
@@ -196,8 +198,6 @@ impl StockExecution<'_> {
         if let Some((retained, proof)) = first {
             let (mut retained, request) = self.load_response_projection(journal, retained).await?;
             self.validate_response_request(&request)?;
-            retained.context.messages =
-                crate::model::clone_messages(&request.request().messages, self.io)?;
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;
@@ -219,8 +219,8 @@ impl StockExecution<'_> {
             self.validate_compacted_checkpoint(
                 journal,
                 (input, step),
-                projection,
-                &retained,
+                (projection, prepared),
+                (&mut retained, &request),
                 &proof,
             )
             .await?;
@@ -321,16 +321,14 @@ impl StockExecution<'_> {
                 }
                 let input_tokens =
                     with_history_io(self.io, |work| accounting.count.validate(&prepared, work))?;
-                let compacted = records.iter().any(|record| {
-                    matches!(record.event,
-                    ExecutionEvent::ContextCompacted { step: recorded, .. } if recorded == step)
-                });
-                if compacted {
-                    projection.context.messages =
-                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
-                }
                 if let Some(retained) = self
-                    .retained_compacted_response(journal, input, step, &projection, records)
+                    .retained_compacted_response(
+                        journal,
+                        input,
+                        step,
+                        (&mut projection, &prepared),
+                        records,
+                    )
                     .await?
                 {
                     return Ok(retained);
@@ -346,21 +344,24 @@ impl StockExecution<'_> {
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
-                if !compacted {
-                    projection.context.messages =
-                        crate::model::clone_messages(&prepared.request().messages, self.io)?;
-                }
-                let (source, pre_stage) = self
+                projection.context.messages =
+                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                let source = self
                     .response_compaction_source(journal, turn, &projection, &accounting, policy)
                     .await?;
+                let source_context = match &source {
+                    CompactionSource::Projected => &projection.context,
+                    CompactionSource::Base { context, .. } => context,
+                };
                 let stage_messages = projection
                     .context
                     .messages
                     .len()
-                    .saturating_sub(source.messages.len());
+                    .saturating_sub(source_context.messages.len());
                 let message_pressure = selected_base
-                    && source.messages.len() > 1
-                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                    && source_context.messages.len() > 1
+                    && source_context.messages.len()
+                        > self.compaction_message_limit(true, stage_messages);
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
@@ -368,7 +369,7 @@ impl StockExecution<'_> {
                     journal,
                     (input, step, prior_messages.len()),
                     (projection, accounting),
-                    (source, pre_stage),
+                    source,
                     policy,
                 )
                 .await
@@ -385,11 +386,13 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32),
-        projection: &ResponseProjection,
-        retained: &ResponseProjection,
+        captured: (&mut ResponseProjection, &crate::model::PreparedModelRequest),
+        compacted: (&mut ResponseProjection, &crate::model::PreparedModelRequest),
         proof: &crate::context::CompactionReference,
     ) -> Result<()> {
         let (input, step) = turn;
+        let (projection, prepared) = captured;
+        let (retained, request) = compacted;
         let working_changed = retained.working != projection.working;
         if working_changed {
             let reference = retained
@@ -436,6 +439,10 @@ impl StockExecution<'_> {
                 ));
             }
             if !working_changed {
+                projection.context.messages =
+                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
+                retained.context.messages =
+                    crate::model::clone_messages(&request.request().messages, self.io)?;
                 crate::context::validate_compaction(
                     proof,
                     &projection.context,

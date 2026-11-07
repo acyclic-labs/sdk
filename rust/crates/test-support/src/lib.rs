@@ -6,7 +6,7 @@
 //! [`counting_allocator!`] once at its crate root.
 pub mod differential;
 mod fixtures;
-pub use fixtures::{crate_source_path, source_path};
+pub use fixtures::{crate_source_path, runtime_path, source_path};
 /// Construct a future before entering its polling frame. Large test and model
 /// futures otherwise retain construction temporaries beside their polling stack.
 #[inline(never)]

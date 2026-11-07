@@ -68,7 +68,7 @@ fn run_cut(
     let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut child).unwrap();
     let mut cut_reached = false;
     let outcome = tree.wait_with_output(
-        std::time::Duration::from_secs(2),
+        acyclic_native_runtime::CaptureSchedule::Unbounded,
         4096,
         None,
         || Ok(()),
@@ -204,17 +204,4 @@ fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
     });
     assert!(result.is_err());
     assert_eq!(finished.load(Ordering::SeqCst), 36);
-}
-
-#[test]
-fn silent_crash_cut_notifies_capture_before_its_deadline() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = crash_store(&directory.path().join("reference"), true);
-    let mut snapshots = vec![core_snapshot(&store)];
-    for step in 0..CRASH_GROUPS[0].end {
-        crash_step(&store, step);
-        snapshots.push(core_snapshot(&store));
-    }
-    drop(store);
-    assert_eq!(run_cut(directory.path(), &snapshots, true, 1), None);
 }

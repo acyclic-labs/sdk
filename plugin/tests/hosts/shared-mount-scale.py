@@ -2,12 +2,13 @@
 
 Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
-the separate real-host suite owns the real sandbox/model matrix. GraphCoder
-must enable test-support for the shared resource sampler/oracle request.
+the separate real-host suite owns the real sandbox/model matrix. The shipped
+binaries answer the owner's public resources query; no test feature is needed.
 """
 import json
 import os
 import pathlib
+import selectors
 import signal
 import socket
 import subprocess
@@ -17,6 +18,12 @@ import time
 import traceback
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
+from native_mcp import McpClient
+
+
+class ChildExited(AssertionError):
+    def __init__(self, reference, reply):
+        super().__init__(f'step=connect {reference}: the child exited before connecting: {json.dumps(reply)}')
 
 
 def interrupted(signum, frame):
@@ -25,6 +32,18 @@ def interrupted(signum, frame):
 
 
 signal.signal(signal.SIGTERM, interrupted)
+
+
+# Marginal cost of each view added from N to 2N, in whole units per view.
+# Process constants cancel; nothing is subtracted or warmed up first.
+VIEW_LIMITS = {'descriptors': 1, 'threads': 0, 'mounts': 0}
+
+
+def exceeded(small, large):
+    added = large['live_sessions'] - small['live_sessions']
+    assert small['live_sessions'] > 0 and added == small['live_sessions'], (small, large)
+    return [name for name, limit in VIEW_LIMITS.items()
+            if large[name] - small[name] > limit * added]
 
 
 def main():
@@ -71,6 +90,8 @@ if not child:
 assert cwd.is_relative_to(pathlib.Path(os.environ['FIXTURE_WORKSPACE'])/'.volumes/agents')
 assert (cwd/'AGENTS.md').read_text()=='shared scale discovery fixture'
 prompt=sys.stdin.read()
+if prompt=='exit-before-connect':
+ sys.stderr.write('exited-before-connect');sys.exit(23)
 (cwd/(prompt+'.txt')).write_text(prompt)
 (cwd/'.volumes/home/private.txt').write_text(prompt)
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
@@ -108,28 +129,40 @@ sys.exit(17)
                                           env={**env, 'ACYCLIC_HOST_ARGS': json.dumps(parent['flags']),
                                                'ACYCLIC_WORKSPACE': str(workspace), 'ACYCLIC_TASK': task},
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                          stderr=bridge_log, text=True)
-                sequence = 0
+                                          stderr=bridge_log)
+                mcp = McpClient(bridge, 'python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER ' + host)
 
                 def tool(name, reference, prompt=None):
-                    nonlocal sequence
-                    sequence += 1
-                    arguments = {'reference': reference}
-                    if prompt is not None:
-                        arguments['prompt'] = prompt
-                    bridge.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': sequence,
-                                                   'method': 'tools/call',
-                                                   'params': {'name': name, 'arguments': arguments}}) + '\n')
-                    bridge.stdin.flush()
                     print(json.dumps({'host': host, 'step': 'await tool', 'tool': name, 'reference': reference}), flush=True)
-                    message = json.loads(bridge.stdout.readline())
-                    assert message['id'] == sequence and 'error' not in message, message
-                    result = message['result']
-                    assert not result.get('isError'), result
+                    result = mcp.call(name, reference, prompt)
                     print(json.dumps({'host': host, 'step': 'tool completed', 'tool': name, 'reference': reference}), flush=True)
-                    return json.loads(result['content'][0]['text'])
+                    return result
+
+                def connect(reference):
+                    # The child either reaches the barrier or exits first; its
+                    # parked wait settles on exit, so neither outcome is missed.
+                    settled = mcp.submit('wait', reference)
+                    with selectors.DefaultSelector() as ready:
+                        ready.register(barrier, selectors.EVENT_READ)
+                        ready.register(bridge.stdout, selectors.EVENT_READ)
+                        while mcp.responses[settled] is None:
+                            if any(key.fileobj is barrier for key, _ in ready.select()):
+                                return barrier.accept()[0], settled
+                            mcp.receive()
+                    raise ChildExited(reference, mcp.response(settled))
+
+                # Negative control: a child that exits before it connects fails
+                # this wait at once, with its exit and stderr tail.
+                tool('spawn', 'early', 'exit-before-connect')
+                try:
+                    connect('early')
+                except ChildExited as exited:
+                    assert 'exited-before-connect' in str(exited), exited
+                else:
+                    raise AssertionError('a child that exited before connecting was accepted')
 
                 paths = []
+                waits = []
                 samples = []
 
                 def assert_live():
@@ -141,7 +174,8 @@ sys.exit(17)
                     for child in range(len(paths), population):
                         reference = 'child' + str(child)
                         location = tool('spawn', reference, reference)
-                        gate, _ = barrier.accept()
+                        gate, settled = connect(reference)
+                        waits.append(settled)
                         gates.append(gate)
                         identity = gate.makefile('rb')
                         assert identity.readline() == (reference + '\n').encode(), reference
@@ -151,31 +185,31 @@ sys.exit(17)
                         assert (path / '.volumes/home/private.txt').read_text() == reference
                         paths.append(path)
                     assert_live()
-                    sample = client({'kind': 'resource_probe', 'task': task, 'agents': population,
-                                     'previous': samples[0]['counts'] if samples else None})
+                    sample = client({'kind': 'resources', 'task': task})
                     assert_live()
+                    assert sample['views'] > population, sample
                     sample['live_sessions'] = population
                     samples.append(sample)
                     print(json.dumps({'host': host, 'sample': sample,
                                       'sampled_process': 'shared_mount_owner'}), flush=True)
                 # The same N sessions remain alive through the 2N sample.
-                # Sample the mount owner with the shared oracle; descendant
+                # Sample the mount owner with the view oracle above; descendant
                 # host-runtime resources are outside that oracle's contract.
                 assert len({path.parent for path in paths}) == 1, paths
-                assert samples[1]['exceeded'] == [], samples
+                assert exceeded(*samples) == [], samples
                 for gate in gates:
                     gate.sendall(b'.')
                 for child, path in enumerate(paths):
                     reference = 'child' + str(child)
-                    observed = tool('wait', reference)
+                    observed = mcp.result(waits[child])
                     assert observed['status']['settled'], observed
-                    failure = observed['results'][0]['outcome']['Failed']['message']
+                    assert observed['reply']['kind'] == 'answered', observed
+                    failure = observed['reply']['outcome']['Failed']['message']
                     assert failure.endswith('diagnostic-tail-' + host), failure
                     assert len(failure.encode()) < 4300, len(failure.encode())
                     client({'kind': 'fs', 'task': task, 'command': 'merge agents/' + reference})
                     print(json.dumps({'host': host, 'step': 'verify merge', 'reference': reference}), flush=True)
                     assert (workspace / (reference + '.txt')).read_text() == reference
-                    assert (path / (reference + '.txt')).read_text() == reference
                 bridge.stdin.close()
                 assert bridge.wait() == 0
                 previous, owner = owner, None

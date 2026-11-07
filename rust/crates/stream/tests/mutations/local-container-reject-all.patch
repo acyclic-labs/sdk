@@ -1,0 +1,28 @@
+--- a/rust/crates/stream/src/local/frames.rs
++++ b/rust/crates/stream/src/local/frames.rs
+@@ -65,2 +65,7 @@
+ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalStreamError> {
++    if std::env::var_os("ACYCLIC_CODEC_REJECTION").as_deref()
++        == Some(std::ffi::OsStr::new("journal"))
++    {
++        return Err(LocalStreamError::Corrupt);
++    }
+     let rest = versioned_header(header, b"ACYCLIC-STREAM-LOCAL-V", b"2\0", "journal")?;
+--- a/rust/crates/stream/src/local/snapshot.rs
++++ b/rust/crates/stream/src/local/snapshot.rs
+@@ -44,2 +44,7 @@
+ ) -> Result<Snapshot, LocalStreamError> {
++    if std::env::var_os("ACYCLIC_CODEC_REJECTION").as_deref()
++        == Some(std::ffi::OsStr::new("snapshot"))
++    {
++        return Err(LocalStreamError::Corrupt);
++    }
+     let rest = versioned_header(encoded, b"ACYCLIC-STREAM-SNAP-V", b"02\0", "snapshot")?;
+@@ -77,2 +82,7 @@
+ fn decode_incarnation(encoded: &[u8]) -> Result<u128, LocalStreamError> {
++    if std::env::var_os("ACYCLIC_CODEC_REJECTION").as_deref()
++        == Some(std::ffi::OsStr::new("incarnation"))
++    {
++        return Err(LocalStreamError::Corrupt);
++    }
+     let value = versioned_header(

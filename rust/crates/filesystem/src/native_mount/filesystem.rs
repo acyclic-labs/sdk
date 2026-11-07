@@ -1,5 +1,22 @@
 use super::*;
 
+/// Acknowledgement that the source's accepted physical producers have retired.
+/// A terminal reporting failure does not revoke that acknowledgement.
+#[derive(Debug)]
+pub struct MountSourceRetirement {
+    /// Whether this operation performed retirement rather than observing it.
+    pub changed: bool,
+    /// The original terminal failure, retained after physical completion.
+    pub failure: Option<MountSourceError>,
+}
+
+impl MountSourceRetirement {
+    /// Projects the caller-visible result without changing physical custody.
+    pub fn into_result(self) -> Result<bool, MountSourceError> {
+        self.failure.map_or(Ok(self.changed), Err)
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::native_mount) fn can_disclose(
     source: &dyn MountFilesystem,
@@ -301,8 +318,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
     }
     /// Joins accepted source I/O from the existing physical retirement worker.
     /// Unlike a caller wait, this owner cannot abandon its last physical lease.
-    fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
+    /// `Ok` acknowledges physical retirement even when its payload holds a
+    /// terminal failure. `Err` supplies no acknowledgement; custody stays held.
+    fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         self.shutdown_accepted_cleanup()
+            .map(|changed| MountSourceRetirement {
+                changed,
+                failure: None,
+            })
     }
     /// Traverses actual changes to this file identity under original limits.
     fn node_unchanged_since_with_meter(

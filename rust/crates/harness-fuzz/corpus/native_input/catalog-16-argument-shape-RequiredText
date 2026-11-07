@@ -1,0 +1,1 @@
+[{"name":"find","aliases":["f"],"description":"Search the transcript","arguments":"required_text","action":{"kind":"select","query":"find"}}]

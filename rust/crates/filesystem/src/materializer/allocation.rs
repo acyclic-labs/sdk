@@ -155,6 +155,23 @@ impl NativeAllocation {
             bytes,
         })
     }
+    /// Retires a capture's remaining physical storage without re-entering its leaf.
+    /// Temporary upgrades may make the last capture owner die inside that leaf.
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn retire_captured_capacity(
+        &mut self,
+        captured: u64,
+        accounting: &crate::demand::NativeAllocationAccounting,
+    ) {
+        for bytes in [captured, std::mem::take(&mut self.bytes)] {
+            accounting.retire_native(bytes);
+            drop(NativeResourceRetirement {
+                original: self.meter.state.clone(),
+                resource: self.meter.resource.clone(),
+                bytes,
+            });
+        }
+    }
     pub(crate) fn transfer_checkout_control(
         &mut self,
         owner: &Arc<crate::kernel::ProofDataCustody>,

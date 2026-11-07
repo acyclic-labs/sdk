@@ -55,11 +55,11 @@ test("new qualification steps need no fake cargo mapping", () => {
 });
 
 test("an unknown model step or flag in the production plan fails closed", () => {
-  for (const args of [["--new-model"], ["--timer", "--all-features"], ["--guest", "--features", "x"],
+  for (const args of [["--new-model"], ["--stream-retry", "--all-features"], ["--guest", "--features", "x"],
     ["--e2e-progress", "--bogus"], ["--fs-binding", "--features"], ["--features", "--all-features"], ["--release"]]) {
     assert.throws(() => qualificationPlan(args), /unknown qualification argument/, JSON.stringify(args));
   }
-  for (const step of [{ args: ["--new-model"] }, { args: ["--timer", "--all-features"] }]) {
+  for (const step of [{ args: ["--new-model"] }, { args: ["--stream-retry", "--all-features"] }]) {
     gateQualifications.push(step);
     try { assert.throws(() => qualificationGatePlans(), /unknown qualification argument/); }
     finally { gateQualifications.pop(); }

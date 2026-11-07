@@ -41,13 +41,13 @@ pub enum CommandRequest {
         text: String,
     },
     /// Exit the client.
-    Quit,
+    Quit {},
     /// Create a new root conversation.
-    New,
+    New {},
     /// Delete the selected agent, after confirmation.
-    Delete,
+    Delete {},
     /// Toggle paused state for the selected subtree.
-    TogglePause,
+    TogglePause {},
     /// Pause the declared task set.
     Pause {
         /// Subtree or all conversation trees.
@@ -59,11 +59,11 @@ pub enum CommandRequest {
         scope: CommandTaskScope,
     },
     /// Cycle the selected agent's mode.
-    CycleMode,
+    CycleMode {},
     /// Clear conversations, after confirmation.
-    ClearAll,
+    ClearAll {},
     /// Export diagnostics.
-    Export,
+    Export {},
     /// Select an exact configured theme name.
     Theme {
         /// Canonical name from the caller's theme data.
@@ -75,7 +75,7 @@ pub enum CommandRequest {
         instructions: String,
     },
     /// Restore the currently selected summary checkpoint and its fixed history cut.
-    Rewind,
+    Rewind {},
     /// Change the model through the harness request owner.
     Model {
         /// Provider/model identifier.
@@ -250,7 +250,7 @@ impl CommandResolution {
         use CommandFileRoot::{Config, Session, Task};
         match self {
             Self::Submit {
-                request: CommandRequest::Model { .. } | CommandRequest::CycleMode,
+                request: CommandRequest::Model { .. } | CommandRequest::CycleMode {},
             } => &[(Task, "settings.json")],
             Self::Submit {
                 request: CommandRequest::Theme { .. },
@@ -269,7 +269,7 @@ impl CommandResolution {
                 (Session, "attention.json"),
             ],
             Self::Submit {
-                request: CommandRequest::Quit,
+                request: CommandRequest::Quit {},
             }
             | Self::Confirm { .. }
             | Self::Select { .. } => &[(Session, "layout.json")],
@@ -318,7 +318,7 @@ impl CommandResolution {
             Self::Confirm { request } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 let mut confirmation = json!({"request":request,"operation":operation});
-                if matches!(request, CommandRequest::Delete) {
+                if matches!(request, CommandRequest::Delete {}) {
                     let task = layout
                         .get("selected_task")
                         .and_then(Value::as_str)
@@ -358,7 +358,7 @@ impl CommandResolution {
                 theme.insert("name".into(), json!(name));
                 return Ok(config(CommandFileRoot::Config, "theme.json", theme.into()));
             }
-            CommandRequest::CycleMode => {
+            CommandRequest::CycleMode {} => {
                 let mut settings = document(snapshot, CommandFileRoot::Task, "settings.json")?;
                 cycle(&mut settings, "agent_mode", "agent_modes")?;
                 return Ok(config(
@@ -367,7 +367,7 @@ impl CommandResolution {
                     settings.into(),
                 ));
             }
-            CommandRequest::Quit => {
+            CommandRequest::Quit {} => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
                 layout.insert("exit_requested".into(), json!(true));
                 return Ok(config(
@@ -383,9 +383,9 @@ impl CommandResolution {
                         scope: CommandTaskScope::All
                     } | CommandRequest::Resume {
                         scope: CommandTaskScope::All
-                    } | CommandRequest::New
-                        | CommandRequest::ClearAll
-                        | CommandRequest::Export
+                    } | CommandRequest::New {}
+                        | CommandRequest::ClearAll {}
+                        | CommandRequest::Export {}
                 ) {
                     CommandFileRoot::Session
                 } else {

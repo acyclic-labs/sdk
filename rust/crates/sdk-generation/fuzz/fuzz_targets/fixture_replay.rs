@@ -1,21 +1,32 @@
 #![no_main]
-#[path = "../../tests/cli_regressions/package_manifest.rs"]
-mod package_manifest;
-#[path = "../../tests/cli_regressions/paths.rs"]
-mod paths;
-#[path = "../../src/historical/probe.rs"]
-mod probe;
+use sdk_docs::path_identity;
+use sdk_generation::historical;
+#[path = "../git_layout.rs"]
+mod git_layout;
+#[path = "../../../sdk-docs/fuzz/path_identity.rs"]
+mod path_identity_oracle;
+#[path = "../source_identities.rs"]
+mod source_identities;
 #[path = "../../src/source_selection.rs"]
 mod source_selection;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let _ = probe::graft_path(bytes);
-    let _ = paths::fixed_revision(b"ref: refs/heads/sdk-fixture\n", bytes);
-    let _ = paths::fixed_revision(bytes, b"0123456789012345678901234567890123456789");
+    let _ = git_layout::check_input(bytes);
+    // Construct known aliases and an unrelated source from arbitrary bytes.
+    // These are typed path mutations, not captured provider output.
+    let (leaf, other) = bytes.split_at(bytes.len() / 2);
+    let name = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    for windows in [false, true] {
+        source_identities::check_selection(&name(leaf), &name(other), windows);
+    }
     if let Ok(text) = std::str::from_utf8(bytes) {
         let fields = text
             .lines()
-            .take(8)
             .map(str::to_owned)
             .collect::<std::collections::BTreeSet<_>>();
         let sources = fields
@@ -34,18 +45,55 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 sources
             );
         }
-        let mut duplicate = sources.clone();
-        duplicate.extend(sources.clone());
-        source_selection::deduplicate(&mut duplicate);
-        let once = duplicate.clone();
-        source_selection::deduplicate(&mut duplicate);
-        assert_eq!(duplicate, once);
+        let mut identities = sources.clone();
+        if let Some(first) = sources.first() {
+            // Keep physical identity fixed while varying each other field.
+            identities.extend(sources.iter().skip(1).flat_map(|source| {
+                [
+                    sdk_docs::GeneratedSource {
+                        logical_path: source.logical_path.clone(),
+                        ..first.clone()
+                    },
+                    sdk_docs::GeneratedSource {
+                        sha256: source.sha256.clone(),
+                        ..first.clone()
+                    },
+                ]
+            }));
+        }
+        source_identities::check(&identities);
+        // Construct owned paths as well as checking arbitrary admission below:
+        // a decoder that refuses every relocation must fail this same oracle.
+        let suffix = text
+            .split('/')
+            .filter(|part| !matches!(*part, "" | "." | ".."))
+            .collect::<Vec<_>>()
+            .join("/");
+        if !suffix.is_empty() {
+            path_identity_oracle::check(
+                &format!("/checkout/{suffix}"),
+                "/checkout",
+                "/relocated",
+                &suffix,
+                false,
+            );
+        }
+        let suffix = format!("source-{}", text.replace([':', '\\', '/'], "_"));
+        for (old, new) in [
+            ("C:/checkout", "D:/relocated"),
+            ("//server/share/checkout", "//server/share/relocated"),
+        ] {
+            path_identity_oracle::check(&format!("{old}/{suffix}"), old, new, &suffix, true);
+        }
         let mut fields = text.splitn(3, '\n');
         if let (Some(old), Some(new), Some(path)) = (fields.next(), fields.next(), fields.next()) {
             for windows in [false, true] {
-                if let Some(rebased) = paths::rebase(path, old, new, windows) {
-                    assert_eq!(paths::rebase(&rebased, new, new, windows), Some(rebased));
-                    let before = paths::stable_filename(path, old);
+                if let Some(rebased) = path_identity::rebase(path, old, new, windows) {
+                    assert_eq!(
+                        path_identity::rebase(&rebased, new, new, windows),
+                        Some(rebased)
+                    );
+                    let before = path_identity::stable_filename(path, old);
                     let root_is_windows = old.as_bytes().get(1) == Some(&b':')
                         || old.starts_with("\\\\")
                         || old.starts_with("//");
@@ -57,8 +105,8 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                         && windows == new_is_windows
                     {
                         assert_eq!(
-                            paths::stable_filename(
-                                &paths::rebase(path, old, new, windows).unwrap(),
+                            path_identity::stable_filename(
+                                &path_identity::rebase(path, old, new, windows).unwrap(),
                                 new
                             ),
                             before
@@ -67,9 +115,5 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 }
             }
         }
-    }
-    let template = b"[package]\nname='demo'\nversion='1.0.0'\nbuild=false\n[lib]\nname='demo'\npath='src/lib.rs'\n";
-    if let Some(result) = package_manifest::normalize(template, bytes) {
-        assert_eq!(package_manifest::normalize(&result, bytes), Some(result));
     }
 });

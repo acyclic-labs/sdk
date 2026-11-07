@@ -1,0 +1,22 @@
+{
+  "sdk-file-identity-0.0.0/.cargo_vcs_info.json": {
+    "bytes": 128,
+    "sha256": "b62aa5e18a52e982d0e6f71dda1ea90753b91234c1b5f0dabaa82d9eea555e7c"
+  },
+  "sdk-file-identity-0.0.0/Cargo.lock": {
+    "bytes": 2266,
+    "sha256": "cad4afa5d6ac1fd2c2cbd29fc6247aa8174ca7520dfb2b8d6e6cb730bb795cd2"
+  },
+  "sdk-file-identity-0.0.0/Cargo.toml": {
+    "bytes": 951,
+    "sha256": "eb967a167e573662df26ea2412c04b3a4527dfa9cffaf8bb1e354e965d21ee53"
+  },
+  "sdk-file-identity-0.0.0/Cargo.toml.orig": {
+    "bytes": 312,
+    "sha256": "3ed32a1c7ab776f389d38af4cb2a28ceb2a8010f216b331f416ba25b34c418b6"
+  },
+  "sdk-file-identity-0.0.0/src/lib.rs": {
+    "bytes": 4500,
+    "sha256": "aeb45eddccc651099a0474490e60efafa3bd3ae16469acced1fe49a79da650b1"
+  }
+}

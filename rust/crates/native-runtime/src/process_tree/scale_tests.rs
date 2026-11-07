@@ -60,7 +60,7 @@ fn children() -> io::Result<usize> {
         Ok(limit.rlim_cur)
     };
     let per_child = if cfg!(target_os = "linux") { 2 } else { 1 };
-    let open = crate::testing::process_resources()?.descriptors;
+    let open = crate::resources::process_resources()?.descriptors;
     let descriptors =
         limit(libc::RLIMIT_NOFILE)?.saturating_sub(open + DESCRIPTOR_MARGIN) / per_child;
     // The user's process limit counts every process the user runs.
@@ -81,7 +81,7 @@ fn children() -> io::Result<usize> {
 }
 
 fn threads() -> io::Result<u64> {
-    Ok(crate::testing::process_resources()?.threads)
+    Ok(crate::resources::process_resources()?.threads)
 }
 
 struct Quiet;

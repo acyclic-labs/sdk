@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/contract/identity.rs
++++ b/rust/crates/machines/src/contract/identity.rs
+@@ -26,7 +26,7 @@
+     }
+     let mut digest = Sha256::new();
+     digest.update(b"acyclic-machines-identity-v1\0");
+-    digest.update(kind.as_bytes());
++    digest.update(b"");
+     digest.update([0]);
+     digest.update(value.as_bytes());
+     Ok(uuid_from_digest(digest.finalize().into()))

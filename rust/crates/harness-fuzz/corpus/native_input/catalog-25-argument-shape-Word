@@ -1,0 +1,1 @@
+[{"name":"theme","description":"Switch theme or open the picker","arguments":"word","action":{"kind":"theme"}}]

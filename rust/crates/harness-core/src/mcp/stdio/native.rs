@@ -21,12 +21,10 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
-mod codec;
-use codec::BoundedCodec;
-mod input;
-pub use input::JsonLineReader;
-mod server;
-pub use server::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
+use acyclic_mcp::BoundedCodec;
+pub use acyclic_mcp::{
+    JsonLineReader, ServeError, Settled, ToolCall, ToolProvider, ToolServer, Wake,
+};
 
 /// One initialized, bounded MCP connection and its owned native process tree.
 pub struct StdioMcpTransport {

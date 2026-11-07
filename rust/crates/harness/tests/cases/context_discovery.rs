@@ -598,14 +598,10 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     assert_eq!(captured.skills[1].source.path, "skills/b/SKILL.md");
     declaration.policy.skill_name = None;
     declaration.limits.entries = 1;
-    assert_eq!(
-        declaration
-            .capture(fixture.reader.as_ref())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
     declaration.limits.entries = 64;
     let scope = fixture
         .issuer
@@ -625,7 +621,7 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     )?;
     assert!(matches!(
         declaration.capture(denied.as_ref()).await,
-        Err(Error::Unauthorized(_))
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized
     ));
     declaration.policy.instruction_names.clear();
     assert_eq!(
@@ -637,23 +633,15 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         .instruction_names
         .push("AGENTS.md".into());
     fixture.put("AGENTS.md", &[b'x'; 513], "oversized").await?;
-    assert_eq!(
-        declaration
-            .capture(fixture.reader.as_ref())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
     fixture.put("AGENTS.md", b"bad\0text", "nul").await?;
-    assert_eq!(
-        declaration
-            .capture(fixture.reader.as_ref())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        declaration.capture(fixture.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
     Ok(())
 }
 
@@ -803,14 +791,10 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
         active_directory: String::new(),
     });
     declaration.policy.skill_name = None;
-    assert_eq!(
-        declaration
-            .capture(instructions.reader.as_ref())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        declaration.capture(instructions.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
 
     let skills = Fixture::new().await?;
     skills
@@ -818,14 +802,10 @@ async fn named_sources_with_wrong_file_kind_fail_explicitly() -> Result<()> {
         .await?;
     let mut declaration = skills.declaration();
     declaration.instructions.clear();
-    assert_eq!(
-        declaration
-            .capture(skills.reader.as_ref())
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        declaration.capture(skills.reader.as_ref()).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
     Ok(())
 }
 
@@ -1063,14 +1043,10 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     );
     source = first_skill(&captured)?.source.clone();
     source.path = "AGENTS.md".into();
-    assert_eq!(
-        source
-            .read(fixture.reader.as_ref(), 32_768)
-            .await
-            .unwrap_err()
-            .code(),
-        ErrorCode::Invalid
-    );
+    assert!(matches!(
+        source.read(fixture.reader.as_ref(), 32_768).await,
+        Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Invalid
+    ));
     source.path = "skills/missing/SKILL.md".into();
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     Ok(())

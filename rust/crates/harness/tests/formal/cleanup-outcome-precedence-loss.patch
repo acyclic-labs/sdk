@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/contract_errors.rs
++++ b/rust/crates/harness-core/src/contract_errors.rs
+@@ -583,7 +583,7 @@
+                 Err(Self::Cleanup(CleanupFailure {
+                     classification: ErrorClassification {
+                         code: classification.code(),
+-                        outcome: HeadlessOutcome::from_error(classification),
++                        outcome: HeadlessOutcome::from_error(&primary),
+                         operation_id: primary.operation_id().or_else(|| cleanup.operation_id()),
+                         uncertain: primary.uncertain() || cleanup.uncertain(),
+                         effect_uncertain: primary.leaves_effect_uncertain()

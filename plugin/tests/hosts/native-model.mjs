@@ -39,6 +39,11 @@ export function assertNativeCompletion(host,result,answer,selection) {
   if(typeof event.type!=='string'||!event.type)
    nativeFailure(host,'NATIVE_HOST_EVENT_INVALID','native event is not a typed record',event);
   if(host==='codex') {
+   if(event.type==='thread.started') {
+    if(session!==undefined||typeof event.thread_id!=='string'||!event.thread_id)
+     nativeFailure(host,'NATIVE_HOST_SESSION_MISMATCH','native Codex thread identity is missing or repeated',event);
+    session=event.thread_id;
+   }
    if(event.type==='turn.started') {
     if(turn==='active')nativeFailure(host,'NATIVE_HOST_TERMINAL_ORDER','native Codex turn restarted before completion',event);
     turn='active';text=undefined;
@@ -62,7 +67,7 @@ export function assertNativeCompletion(host,result,answer,selection) {
     }
    }
    if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
-   if(event.type==='turn.completed')turn='complete';
+   if(event.type==='turn.completed') {turn='complete';terminal=event;}
   } else if(host==='claude-code') {
    if(selection&&event.type==='system'&&event.subtype==='init') {
     assert.equal(initialized,false,'duplicate native Claude initialization');initialized=true;
@@ -144,7 +149,9 @@ export function assertNativeCompletion(host,result,answer,selection) {
   }
  }
  assert.ok(typeof text==='string'&&text===answer,'native answer missing');
- return builtinPlugins;
+ // Return the already decoded original terminal; consumers must not parse a
+ // second copy or infer provider usage from process duration or session reuse.
+ return {builtinPlugins,session:session??terminal?.session_id??null,terminal};
 }
 
 
@@ -180,7 +187,9 @@ export async function codexInstalled(run,executable,expected) {
  return installed;
 }
 
-export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false}) {
+export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,live,extension,installed=true,input=false,resume}) {
+ if(resume!==undefined)assert.ok(host==='codex'&&typeof resume==='string'&&resume.length>0,
+  'step=admit native continuation; recovery=supply the original Codex thread ID');
  const model=nativeModel(host,live);
  const proxy=nativeProxy(live);
  if(host==='codex') {
@@ -197,7 +206,7 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    '--config','model_providers.mock.requires_openai_auth=false','--model',model];
   const policy=[...provider,
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
-  return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
+  return {policy,args:[...policy,'exec',...(resume===undefined?[]:['resume',resume]),'--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
   if(proxy) {

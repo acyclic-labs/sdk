@@ -1,0 +1,1 @@
+[{"name":"resume","description":"Resume the selected subtree","arguments":"word","action":{"kind":"request","request":{"kind":"resume","scope":"subtree"},"confirmation":false}}]

@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-docs/src/relative_spans.rs
++++ b/rust/crates/sdk-docs/src/relative_spans.rs
+@@ -7,7 +7,7 @@
+ pub(crate) fn sources<'a>(items: impl IntoIterator<Item = &'a Item>) -> BTreeSet<&'a Path> {
+     items
+         .into_iter()
+-        .filter(|item| item.crate_id == 0)
++        .filter(|_| true)
+         .filter_map(|item| item.span.as_ref())
+         .map(|span| span.filename.as_path())
+         .filter(|path| !path.is_absolute())

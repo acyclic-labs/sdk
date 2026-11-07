@@ -93,6 +93,10 @@ pub(in crate::native_mount) struct DarwinMountSession {
 }
 
 impl DarwinMountSession {
+    pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
+        self.thread.is_some()
+    }
+
     pub(in crate::native_mount) fn invalidate(&self, _path: &[u8]) -> Result<(), NativeMountError> {
         let context = self.unmount.context()?;
         context

@@ -51,9 +51,9 @@ impl SummaryCache {
         {
             return Ok(());
         }
-        // Allocate the replacement pool before releasing anything. Pages and
-        // staging own separate pools; pending entries belong to this one and
-        // can retire only after the cut contains their complete publication.
+        // Prepare the replacement context before releasing anything. Pages,
+        // staging and shared nodes retain their original funding. Pending values
+        // retire only after the cut contains their complete publication.
         let next_io = current.map(PreparationIo::scoped).transpose()?;
         let previous = std::mem::take(&mut self.summary);
         self.summary = ExecutionSummary {

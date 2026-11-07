@@ -1,0 +1,10 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -82,6 +82,7 @@
+             };
+             all || windows && uncertain(&name) || contains(&names, &key(name, windows))
+         })
++        .take(1)
+         .cloned()
+         .collect()
+ }

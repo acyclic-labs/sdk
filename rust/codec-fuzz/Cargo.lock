@@ -103,6 +103,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-inference",
  "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -124,6 +125,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -265,6 +267,8 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-host-platform",
+ "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -364,6 +368,19 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-mcp"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio-util",
 ]
 
 [[package]]

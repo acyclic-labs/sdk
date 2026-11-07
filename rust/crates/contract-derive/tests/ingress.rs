@@ -384,11 +384,14 @@ fn compile_schema(
     proto: &std::path::Path,
 ) -> Result<prost_types::FileDescriptorSet, Box<dyn std::error::Error>> {
     let output = root.join("descriptor.bin");
-    let result = std::process::Command::new(protoc_bin_vendored::protoc_bin_path()?)
-        .arg(format!("--proto_path={}", root.display()))
-        .arg(format!("--descriptor_set_out={}", output.display()))
-        .arg(proto)
-        .output()?;
+    let result = std::process::Command::new(acyclic_test_support::runtime_path(
+        "PROTOC",
+        protoc_bin_vendored::protoc_bin_path,
+    )?)
+    .arg(format!("--proto_path={}", root.display()))
+    .arg(format!("--descriptor_set_out={}", output.display()))
+    .arg(proto)
+    .output()?;
     assert!(
         result.status.success(),
         "{}",

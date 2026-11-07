@@ -82,7 +82,7 @@ async fn admission(harness: &LocalHarness, path: &str, version: &str) -> Result<
 }
 
 #[tokio::test]
-async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() -> Result<()> {
+async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let config = || {
@@ -134,7 +134,7 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
         ),
     ] {
         let version = write(&harness, "agent.ts", source).await?;
-        let settings = super::super::agent_settings::admit(
+        let result = super::super::agent_settings::admit(
             &super::super::agent_settings::Volumes {
                 files: &harness.files,
                 verifier: &harness.verifier,
@@ -152,9 +152,15 @@ async fn home_agent_settings_apply_at_open_and_bad_ones_fall_back_to_the_seed() 
             ),
             harness.clock.as_ref(),
         )
-        .await?;
-        let expected = (status == AdmissionStatus::Applied).then_some(&sampling);
-        assert_eq!(settings.sampling.as_ref(), expected, "{source}");
+        .await;
+        match (reason, result) {
+            (None, Ok(settings)) => assert_eq!(settings.sampling.as_ref(), Some(&sampling)),
+            (Some(reason), Err(error)) => assert!(error.to_string().contains(reason), "{error}"),
+            (Some(_), Ok(_)) => {
+                panic!("invalid enforcement settings cannot fall back to seed: {source}")
+            }
+            (None, Err(error)) => return Err(error),
+        }
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, status, "{source}");
         match reason {
@@ -235,18 +241,17 @@ async fn conflicting_sampling_is_rejected_before_a_profile_bound_session_opens()
         )
         .await?;
         drop(harness);
-        harness = LocalHarness::open(config()?).await?;
+        harness = match LocalHarness::open(config()?).await {
+            Ok(harness) if expected == AdmissionStatus::Applied => harness,
+            Ok(_) => panic!("conflicting sampling cannot open a profile-bound session"),
+            Err(error) if expected == AdmissionStatus::Rejected => {
+                assert!(error.to_string().contains("pinned profile"), "{error}");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let record = admission(&harness, "agent.ts", &version).await?;
         assert_eq!(record.status, expected);
-        if expected == AdmissionStatus::Rejected {
-            assert_eq!(harness.sampling, None);
-            assert!(
-                record
-                    .error
-                    .as_deref()
-                    .is_some_and(|error| error.contains("pinned profile"))
-            );
-        }
     }
     Ok(())
 }
@@ -268,20 +273,52 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         assert_eq!(record.path, path);
         assert_eq!(record.status, AdmissionStatus::Applied);
     }
+    let version = write(
+        &harness,
+        "plugins.ts",
+        "export default {guard: {enabled: 'yes'}};",
+    )
+    .await?;
+    let reason = match super::super::agent_settings::plugins(
+        &super::super::agent_settings::Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: harness.limits.file_bytes,
+        },
+        harness.root,
+        harness.clock.as_ref(),
+    )
+    .await
+    {
+        Err(error @ Error::Invalid(_)) => error.to_string(),
+        Err(error) => return Err(error),
+        Ok(_) => panic!("invalid enforcement manifest cannot fall back to seed"),
+    };
+    let record = admission(&harness, "plugins.ts", &version).await?;
+    assert_eq!(record.status, AdmissionStatus::Invalid);
+    assert_eq!(record.error.as_deref(), Some(reason.as_str()));
     Ok(())
 }
 
 #[cfg(feature = "hooks")]
 #[tokio::test]
-async fn a_directory_at_the_selected_plugins_entry_retains_seed_settings() -> Result<()> {
+async fn a_directory_at_the_selected_plugins_entry_refuses_startup() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let harness = open(directory.path(), &project).await?;
     write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
     drop(harness);
-    let harness = open(directory.path(), &project).await?;
-    assert!(harness.plugin_hooks.is_empty());
-    Ok(())
+    match open(directory.path(), &project).await {
+        Err(Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }) => Ok(()),
+        Err(error) => panic!("original selected entry read refusal required: {error}"),
+        Ok(_) => panic!("an invalid enforcement entry cannot fall back to seed"),
+    }
 }
 
 #[cfg(feature = "hooks")]

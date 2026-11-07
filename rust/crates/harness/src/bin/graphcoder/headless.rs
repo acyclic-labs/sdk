@@ -19,24 +19,8 @@ use std::{
 type Failure = Box<dyn std::error::Error>;
 use acyclic_harness::client::ExecutionPosition;
 
-/// Each input names one action. Approval retries retain the original shown
-/// binding instead of discovering a potentially different pending action.
-#[derive(serde::Deserialize)]
-#[serde(untagged, deny_unknown_fields)]
-enum Request {
-    Prompt {
-        prompt: String,
-        id: Option<String>,
-    },
-    Approval {
-        approve: IntentId,
-        binding: ApprovalBinding,
-        approved: bool,
-    },
-    Cancel {
-        cancel: bool,
-    },
-}
+mod input;
+use input::Request;
 
 /// The original invocation, with a generated operation made explicit for replay.
 #[derive(serde::Serialize)]
@@ -1114,7 +1098,7 @@ pub(super) async fn jsonl(
                 if line.trim().is_empty() {
                     continue;
                 }
-                let request: Request = serde_json::from_str(&line)
+                let request = input::parse(&line)
                     .map_err(|error| format!("invalid JSONL request: {error}"))?;
                 outstanding.resend(conversation, output).await?;
                 match request {

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/mcp/src/input.rs b/rust/crates/mcp/src/input.rs
+--- a/rust/crates/mcp/src/input.rs
++++ b/rust/crates/mcp/src/input.rs
+@@ -22,7 +22,7 @@
+     pub fn new(input: R, maximum: u32) -> Self {
+         Self {
+             input,
+-            codec: BoundedCodec::new(Arc::new(AtomicU32::new(maximum))),
++            codec: BoundedCodec::new(Arc::new(AtomicU32::new(u32::MAX))),
+             buffer: BytesMut::new(),
+             maximum: maximum as usize,
+             ended: false,

@@ -41,7 +41,7 @@ pub trait Invoker: Send + Sync {
     /// Submit once through the holder's authenticated transport.
     fn invoke(
         &self,
-        request: &domain::InvokeActorRequest,
+        request: domain::InvokeActorRequest,
     ) -> impl Future<Output = Result<domain::InvokeActorResponse, client::Error>> + Send;
 }
 
@@ -49,7 +49,7 @@ pub trait Invoker: Send + Sync {
 impl Invoker for client::Client {
     async fn invoke(
         &self,
-        request: &domain::InvokeActorRequest,
+        request: domain::InvokeActorRequest,
     ) -> Result<domain::InvokeActorResponse, client::Error> {
         self.invoke_actor(request).await
     }
@@ -274,7 +274,7 @@ impl<T: Invoker> Stub<T> {
         let response = tokio::select! {
             biased;
             _ = failure.wait_for(|failed| *failed) => return Err(Error::Broken),
-            response = self.authority.invoke(&request) => response?,
+            response = self.authority.invoke(request) => response?,
         };
         if *self.failed.borrow() {
             return Err(Error::Broken);
@@ -337,7 +337,7 @@ mod tests {
     impl Invoker for Mock {
         async fn invoke(
             &self,
-            request: &domain::InvokeActorRequest,
+            request: domain::InvokeActorRequest,
         ) -> Result<domain::InvokeActorResponse, client::Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(request.namespace(), "ClassOne");
@@ -359,6 +359,7 @@ mod tests {
                 crate::wire::InvokeActorResponse {
                     deployment_envelope: Vec::new(),
                     status: 200,
+                    body: crate::wire::InvokeActorRequest::from(request).body,
                     ..Default::default()
                 },
             )?)

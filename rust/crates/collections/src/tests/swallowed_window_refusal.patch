@@ -1,0 +1,12 @@
+diff --git a/rust/crates/collections/src/recent.rs b/rust/crates/collections/src/recent.rs
+--- a/rust/crates/collections/src/recent.rs
++++ b/rust/crates/collections/src/recent.rs
+@@ -42,7 +42,7 @@
+         if let Some(value) = self.current.get(key, accounting)? {
+             return Ok(Some(value));
+         }
+-        self.previous.get(key, accounting)
++        self.previous.get(key, accounting).or(Ok(None))
+     }
+ 
+     /// Admits construction before changing windows or discarding any fact.

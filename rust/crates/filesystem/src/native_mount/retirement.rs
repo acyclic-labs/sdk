@@ -40,7 +40,9 @@ pub(super) fn retire_sources(
     let mut changed = false;
     if let Some(owner) = source.as_ref() {
         match join {
-            SourceRetirementWait::Physical => owner.shutdown_physical_cleanup(),
+            SourceRetirementWait::Physical => owner
+                .shutdown_physical_cleanup()
+                .and_then(MountSourceRetirement::into_result),
             SourceRetirementWait::Caller => match work {
                 NativeSessionStopWork::Meter(meter) => owner.shutdown_with_meter(meter),
                 NativeSessionStopWork::AcceptedWait(wait) => owner.shutdown_with_cleanup_wait(wait),

@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-docs/src/path_identity.rs
++++ b/rust/crates/sdk-docs/src/path_identity.rs
+@@ -6,7 +6,7 @@
+ // Compare path components explicitly so Windows Rustdoc paths can be replayed
+ // on any host. Device namespaces other than verbatim drive/UNC remain distinct.
+ pub fn components(path: &str, windows: bool) -> Option<Vec<String>> {
+-    let mut path = if windows {
++    let mut path = if true {
+         path.replace('\\', "/")
+     } else {
+         path.to_owned()

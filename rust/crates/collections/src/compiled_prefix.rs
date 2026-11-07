@@ -47,13 +47,22 @@ struct Node {
     children: Range<usize>,
 }
 
+/// A matched entry and its position in the original input vector.
+#[derive(Debug)]
+pub struct PrefixMatch<'a, V> {
+    /// The original entry, borrowed without copying its key or value.
+    pub entry: &'a V,
+    /// The entry's position in [`CompiledPrefixIndex::entries`].
+    pub position: usize,
+}
+
 /// Exact and shortest accepted proper-prefix matches from one traversal.
 #[derive(Debug)]
 pub struct PrefixMatches<'a, V> {
     /// The complete byte key, if present, independently of prefix acceptance.
-    pub exact: Option<&'a V>,
+    pub exact: Option<PrefixMatch<'a, V>>,
     /// The shortest proper prefix accepted by the caller's boundary predicate.
-    pub shortest: Option<&'a V>,
+    pub shortest: Option<PrefixMatch<'a, V>>,
 }
 
 /// A compiled radix table for immutable, arbitrary-length byte keys.
@@ -296,11 +305,17 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             }
             if key.len() == node.end {
                 if query.len() == node.end {
-                    result.exact = Some(entry);
+                    result.exact = Some(PrefixMatch {
+                        entry,
+                        position: node.key,
+                    });
                     return Ok(result);
                 }
                 if result.shortest.is_none() && accept(entry) {
-                    result.shortest = Some(entry);
+                    result.shortest = Some(PrefixMatch {
+                        entry,
+                        position: node.key,
+                    });
                 }
             }
             let Some(&byte) = query.get(node.end) else {

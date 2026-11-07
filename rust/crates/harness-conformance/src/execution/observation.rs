@@ -133,7 +133,7 @@ where
             Ok((_, bytes)) => String::from_utf8(bytes.to_vec())
                 .map(Some)
                 .map_err(|e| e.to_string()),
-            Err(acyclic_harness::Error::NotFound(_)) => Ok(None),
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error.to_string()),
         };
         files.insert(path, content);

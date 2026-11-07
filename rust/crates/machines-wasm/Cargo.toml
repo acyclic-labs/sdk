@@ -16,10 +16,8 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 serde.workspace = true
 serde_bytes.workspace = true
-sha2.workspace = true
 futures.workspace = true
 hex.workspace = true
-uuid.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true

@@ -228,7 +228,7 @@ async fn bind(
         path,
         original.clone(),
         || 1,
-        move |_, revision, node, file| {
+        move |_, revision, length, file| {
             let original = read_work.clone();
             let reads = reads.clone();
             async move {
@@ -236,9 +236,6 @@ async fn bind(
                 // is no provider stream, HTTP request or credential substitute.
                 let bytes = spawn_blocking(move || {
                     reads.fetch_add(1, Ordering::Relaxed);
-                    let length = node
-                        .logical_bytes
-                        .ok_or_else(|| error(DemandError::NotRegularFile))?;
                     let bytes = file
                         .read_range(
                             0,
@@ -260,22 +257,25 @@ async fn bind(
     .await?)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicationControl {
     Current,
     Altered,
+    Attributes,
+    Rebound,
     AlteredThenRebound,
     Replaced,
     Observed,
     ForeignRevision,
 }
 
-async fn publication_control(control: PublicationControl) -> TestResult {
+async fn publication_control(control: PublicationControl, retire_original: bool) -> TestResult {
     use acyclic_native_runtime::{RenameMode, private_file::StagedFile};
     use std::io::Write;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("credential");
     std::fs::write(&path, "original-protected-source")?;
+    let cleanup_permissions = std::fs::metadata(&path)?.permissions();
     let stop = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &stop)
@@ -317,6 +317,12 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         .as_file_mut()
                         .write_all(token.as_bytes())
                         .map_err(error)?;
+                    if retire_original {
+                        // A selected-name departure precedes the original
+                        // publisher's arrival. Both native notifications must
+                        // retain their order through publication admission.
+                        std::fs::remove_file(&path).map_err(error)?;
+                    }
                     let file = staged
                         .publish_retained(&path, RenameMode::Replace)
                         .map_err(error)?;
@@ -324,10 +330,18 @@ async fn publication_control(control: PublicationControl) -> TestResult {
                         PublicationControl::Altered => {
                             std::fs::write(&path, "foreign-in-place-value").map_err(error)?
                         }
-                        PublicationControl::AlteredThenRebound => {
-                            std::fs::write(&path, "foreign-in-place-value").map_err(error)?;
+                        PublicationControl::Attributes => {
+                            let mut permissions =
+                                std::fs::metadata(&path).map_err(error)?.permissions();
+                            permissions.set_readonly(true);
+                            std::fs::set_permissions(&path, permissions).map_err(error)?;
+                        }
+                        PublicationControl::Rebound | PublicationControl::AlteredThenRebound => {
                             let moved = path.with_extension("moved");
                             std::fs::rename(&path, &moved).map_err(error)?;
+                            if control == PublicationControl::AlteredThenRebound {
+                                std::fs::write(&moved, "foreign-in-place-value").map_err(error)?;
+                            }
                             std::fs::rename(&moved, &path).map_err(error)?;
                         }
                         PublicationControl::Replaced => {
@@ -364,6 +378,11 @@ async fn publication_control(control: PublicationControl) -> TestResult {
     let first = source.resolve().await?;
     assert!(first.reject().await?);
     let (replacement, follower) = tokio::join!(source.resolve(), source.resolve());
+    if control == PublicationControl::Attributes {
+        // Restore the fixture's permissions after both admission decisions,
+        // so native cleanup does not depend on deleting a read-only file.
+        std::fs::set_permissions(&path, cleanup_permissions)?;
+    }
     if control == PublicationControl::Current {
         let replacement = replacement?;
         assert_eq!(replacement.as_str(), follower?.as_str());
@@ -423,10 +442,25 @@ async fn publication_control(control: PublicationControl) -> TestResult {
         assert_ne!(after_rotation.binding(), next.binding());
         assert_eq!(publications.load(Ordering::Relaxed), 3);
     } else {
-        assert!(
-            replacement.is_err() && follower.is_err(),
-            "foreign, changed or omitted publication evidence must refuse"
-        );
+        for outcome in [replacement, follower] {
+            let refusal = outcome
+                .err()
+                .ok_or("foreign, changed or omitted publication evidence was admitted")?;
+            let mut cause: &(dyn std::error::Error + 'static) = &refusal;
+            let stale = loop {
+                if matches!(
+                    cause.downcast_ref::<CredentialCacheError>(),
+                    Some(CredentialCacheError::Stale)
+                ) {
+                    break true;
+                }
+                let Some(next) = cause.source() else {
+                    break false;
+                };
+                cause = next;
+            };
+            assert!(stale, "expected freshness refusal, got {refusal:?}");
+        }
         assert_eq!(
             publications.load(Ordering::Relaxed),
             1,
@@ -543,15 +577,26 @@ async fn native_source_fences_rotation_and_owner_loss_without_warm_reads() -> Te
     assert!(independent_request.check().await.is_err());
     other.0.watch.physical.stop_accepted_cleanup()?;
     assert!(other.0.watch.physical.is_stopped());
-    for control in [
-        PublicationControl::Current,
-        PublicationControl::Altered,
-        PublicationControl::AlteredThenRebound,
-        PublicationControl::Replaced,
-        PublicationControl::Observed,
-        PublicationControl::ForeignRevision,
-    ] {
-        publication_control(control).await?;
+    // Retirement precedes the same publisher and every subsequent mutation.
+    // Accepting its first arrival must never admit a later write or rebound,
+    // whether publication replaces the old binding or installs its vacant name.
+    for retire_original in [false, true] {
+        for control in [
+            PublicationControl::Current,
+            PublicationControl::Altered,
+            PublicationControl::Attributes,
+            PublicationControl::Rebound,
+            PublicationControl::AlteredThenRebound,
+            PublicationControl::Replaced,
+            PublicationControl::Observed,
+            PublicationControl::ForeignRevision,
+        ] {
+            publication_control(control, retire_original)
+                .await
+                .map_err(|error| {
+                    format!("native publication {control:?}, retired={retire_original}: {error:?}")
+                })?;
+        }
     }
     eprintln!(
         "protected source reads: cold=1 warm=0 rotation=1 independent=1; original cleanup joined"

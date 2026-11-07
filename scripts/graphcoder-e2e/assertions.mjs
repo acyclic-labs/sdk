@@ -122,13 +122,17 @@ export function toolResults(records) {
 // Evidence names a provider body, never an observer's path or diagnostic.
 // Each selected body is encoded once for all presence/absence queries.
 export function modelInputs(expected, generations) {
-  const all = expected.model_contains?.length || expected.model_absent?.length
+  const contains = expected.default_conventions
+    ? [...(expected.model_contains ?? []), ...JSON.parse(readFileSync(
+      new URL("../../rust/crates/harness-core/src/context/instructions.json", import.meta.url), "utf8"))]
+    : expected.model_contains;
+  const all = contains?.length || expected.model_absent?.length
     || expected.each_model_contains?.length || expected.each_model_absent?.length;
   if (!all && !expected.last_model_contains?.length && !expected.last_model_absent?.length) return;
   const selected = all || generations.length === 0 ? generations : [generations.at(-1)];
   const inputs = selected.map(request => JSON.stringify(request.body));
   const last = inputs.at(-1) ?? "";
-  for (const text of expected.model_contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
+  for (const text of contains ?? []) assert.ok(inputs.some(input => input.includes(text)), `model wire missing ${text}`);
   for (const text of expected.model_absent ?? []) assert.ok(inputs.every(input => !input.includes(text)), `model wire contains forbidden ${text}`);
   for (const text of expected.last_model_contains ?? []) assert.ok(last.includes(text), `final model input missing ${text}`);
   for (const text of expected.last_model_absent ?? []) assert.ok(!last.includes(text), `final model input contains forbidden ${text}`);

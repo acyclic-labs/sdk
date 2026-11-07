@@ -1,0 +1,1 @@
+[{"name":"compact","description":"Summarize the current context","arguments":"none","action":{"kind":"builtin","command":"compact"}}]

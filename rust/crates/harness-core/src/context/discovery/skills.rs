@@ -172,24 +172,7 @@ impl SkillMetadata {
     }
 }
 
-pub(super) fn discovery_error(
-    work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(|io| io.original_native_work().is_some())
-    {
-        return crate::Error::NativeBoundary { code, reason };
-    }
-    let _ = work;
-    match code {
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
-}
+pub(super) use crate::store::guarded_boundary as discovery_error;
 
 struct Frontmatter {
     name: String,

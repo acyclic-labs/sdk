@@ -1,0 +1,1 @@
+[{"name":"mode","aliases":["m"],"description":"Cycle the agent mode","arguments":"required_text","action":{"kind":"request","request":{"kind":"cycle_mode"},"confirmation":false}}]

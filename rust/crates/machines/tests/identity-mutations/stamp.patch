@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/contract/identity.rs
++++ b/rust/crates/machines/src/contract/identity.rs
+@@ -35,7 +35,7 @@
+ fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+     let mut bytes = [0_u8; 16];
+     bytes.copy_from_slice(&digest[..16]);
+-    uuid::Builder::from_sha1_bytes(bytes).into_uuid()
++    Uuid::from_bytes(bytes)
+ }
+ 
+ macro_rules! uuid_identity {

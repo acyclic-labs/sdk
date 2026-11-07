@@ -167,12 +167,22 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         offset: 65530,
         length: 16,
     };
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let read = journal.load_range(&file, range, Some(&io))?;
+    let setup_bytes = work.live_allocation_bytes();
+    let bytes = read.await?;
+    assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
+    // Residency includes a bounded authenticated chunk and policy metadata.
+    // A whole-payload load then slice would exceed this measured bound.
+    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     {
-        // Original storage chunks are authenticated whole. Credit for exactly
-        // one chunk leaves no room for metadata and must refuse before output.
+        // Fund the actual ledger and read frame, then leave less credit than
+        // the output requires, independently of provider chunks or caching.
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget {
-                peak_allocation_bytes: 1024 * 1024,
+                peak_allocation_bytes: setup_bytes + range.length - 1,
                 ..acyclic_fs::WorkBudget::UNBOUNDED
             },
             &stop,
@@ -183,19 +193,28 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
             .load_range(&file, range, Some(&io))?
             .await
             .unwrap_err();
-        assert!(matches!(error, Error::NativeWorkspace { source, .. }
-        if matches!(source.as_ref(), acyclic_fs::WorkspaceError::Work(
-            acyclic_fs::WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
-        ))));
+        let cause = match &error {
+            Error::NativeWorkspace { source, .. } => match source.as_ref() {
+                acyclic_fs::WorkspaceError::Work(cause) => Some(cause),
+                _ => None,
+            },
+            Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
+                ..
+            } => Some(cause),
+            _ => None,
+        };
+        assert!(
+            matches!(
+                cause,
+                Some(acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
     }
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let io = PreparationIo::from_native_work(&work)?;
-    let bytes = journal.load_range(&file, range, Some(&io))?.await?;
-    assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
-    // Residency includes a bounded authenticated chunk and policy metadata.
-    // A whole-payload load then slice would exceed this measured bound.
-    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     let length = file.descriptor().byte_length();
     assert!(
         journal
