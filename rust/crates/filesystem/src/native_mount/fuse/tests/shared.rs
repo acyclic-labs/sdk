@@ -323,9 +323,27 @@ fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace()
 -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::var_os(CHILD).is_some() {
+    if let Some(mode) = std::env::var_os(CHILD) {
+        if mode == "server-loss" {
+            return original_connection_retires_after_server_loss();
+        }
         return shared_view_owner_until_killed();
     }
+    let temporary = tempfile::tempdir()?;
+    let status = child(
+        "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
+        temporary.path(),
+    )
+    .env(CHILD, "server-loss")
+    .status()?;
+    assert!(status.success(), "isolated server-loss control: {status}");
+    for killed_action in [false, true] {
+        owner_exit_namespace(killed_action)?;
+    }
+    Ok(())
+}
+
+fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::error::Error>> {
     // A live facade and its notification sinks must not retain a device after
     // the original packet server has stopped. Check physical ownership before
     // issuing a lookup, so the old-source negative cannot strand a kernel call.
@@ -372,9 +390,6 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
     assert!(live.stop()?);
     assert_eq!(mounts_at(server_root.path())?, 0);
 
-    for killed_action in [false, true] {
-        owner_exit_namespace(killed_action)?;
-    }
     Ok(())
 }
 

@@ -308,13 +308,13 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
 
 /// A terminated ASCII component whose validation and native encoding are owned
 /// by its constructor. Opening and retirement borrow the same prepared name.
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
 #[derive(Debug)]
 pub(crate) struct PreparedAsciiLeaf<const N: usize> {
     units: [NativeUnit; N],
 }
 
-#[cfg(any(test, feature = "native-mount"))]
+#[cfg(any(test, feature = "native-mount", feature = "fuzzing"))]
 pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
@@ -436,6 +436,7 @@ pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
     )
     .unwrap_or_else(|(error, _)| panic!("native leaf work: {error}"));
     let before = work.receipt();
+    let live = work.live_allocation_bytes();
     let result = prepare_ascii_leaf(bytes, &work);
     let prefix = bytes.split_last().and_then(|(&last, prefix)| {
         (last == 0 && !prefix.is_empty() && !matches!(prefix, b"." | b"..")).then_some(prefix)
@@ -461,7 +462,8 @@ pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
     #[cfg(windows)]
     assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
     assert_eq!(after.allocation_operations, before.allocation_operations);
-    assert_eq!(work.live_allocation_bytes(), 0);
+    assert_eq!(after.peak_allocation_bytes, before.peak_allocation_bytes);
+    assert_eq!(work.live_allocation_bytes(), live);
 }
 
 #[cfg(all(test, not(loom)))]
