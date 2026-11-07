@@ -171,3 +171,9 @@ native parent/child volume property with the original duplicate-settlement
 observation path, then restore the exact production source and rerun the same
 property. Both phases retain the original oracle bytes, source hashes and exact
 test-selection checks under `target/conversation-observation`.
+
+The [native custody control](native-custody/README.md) groups original scoped
+task, shared error, persistence dependency, caller-drop and physical close
+mutations under one qualifier. It restores each exact production source before
+challenging the next defect and runs the existing component properties once
+after all nine mutations. It adds no parallel implementation or test fixture.

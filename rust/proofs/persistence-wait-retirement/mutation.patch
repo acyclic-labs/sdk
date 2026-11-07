@@ -1,0 +1,10 @@
+diff --git a/rust/crates/native-runtime/src/task.rs b/rust/crates/native-runtime/src/task.rs
+--- a/rust/crates/native-runtime/src/task.rs
++++ b/rust/crates/native-runtime/src/task.rs
+@@ -101,5 +101,5 @@
+             .map(|completion| {
+                 spawn(async move {
+-                    let _waiting = waiting;
++                    std::mem::forget(waiting);
+                     completion.await
+                 })

@@ -347,6 +347,202 @@ const claims = {
       ]
     }
   ],
+  "native-custody": [
+    "rust/crates/native-runtime/src/task.rs",
+    "acyclic-native-runtime",
+    "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+    "shared completion replaced the original operation error",
+    [],
+    {
+      "mutations": [
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/shared-completion-error/mutation.patch",
+          "diagnostic": "shared completion replaced the original operation error",
+          "label": "mutated-shared-completion-error",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/task-cancellation-cause/mutation.patch",
+          "diagnostic": "task cancellation lost its original typed cause",
+          "label": "mutated-task-cancellation-cause",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/shared-completion-cause/mutation.patch",
+          "diagnostic": "shared completion replaced the original typed cause",
+          "label": "mutated-shared-completion-cause",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/objects/src/local.rs",
+          "patch": "rust/proofs/objects-close-result/mutation.patch",
+          "diagnostic": "close hid",
+          "label": "mutated-objects-close-result",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-objects",
+            "--no-default-features",
+            "--features",
+            "local,test-support",
+            "--lib",
+            "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/persistence-panic/mutation.patch",
+          "diagnostic": "left: Interrupted",
+          "label": "mutated-persistence-panic",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_worker_panic_terminates_its_original_wait",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-wait-retirement/mutation.patch",
+          "diagnostic": "a failed producer retained its wait",
+          "label": "mutated-persistence-wait-retirement",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_worker_panic_terminates_its_original_wait",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-caller-custody/mutation.patch",
+          "diagnostic": "caller drop abandoned the original persistence body",
+          "label": "mutated-persistence-caller-custody",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_retains_accepted_work_after_caller_drop",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-reentry/mutation.patch",
+          "diagnostic": "Future::poll(accepted.as_mut(), &mut context)",
+          "label": "mutated-persistence-reentry",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-submission/mutation.patch",
+          "diagnostic": "reentrant persistence submission retained or ran its body",
+          "label": "mutated-persistence-submission",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        }
+      ],
+      "positiveCommand": [
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-native-runtime",
+        "-p",
+        "acyclic-objects",
+        "--features",
+        "acyclic-objects/local,acyclic-objects/test-support",
+        "--lib",
+        "--",
+        "--exact",
+        "--nocapture",
+        "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+        "task::custody::tests::seeded_executor_uses_the_same_scoped_custody_contract",
+        "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+        "task::tests::persistence_worker_panic_terminates_its_original_wait",
+        "task::tests::persistence_retains_accepted_work_after_caller_drop",
+        "local::outcome_tests::owned_close_reports_physical_completion_and_failure"
+      ],
+      "completed": [
+        "5 passed; 0 failed",
+        "1 passed; 0 failed"
+      ]
+    }
+  ],
 };
 const [claim, ...extra] = process.argv.slice(2);
 const instrumented = extra.length === 1 && extra[0] === "--instrumented" && claims[claim]?.[5]?.instrumentable;
