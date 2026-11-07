@@ -49,6 +49,7 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
         if started {
             assert!(driver.as_mut().poll(&mut cx).is_pending());
         }
+        wake.0.store(0, Ordering::SeqCst);
         drop(driver);
         assert!(
             wake.0.load(Ordering::SeqCst) > 0,

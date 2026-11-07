@@ -44,7 +44,7 @@ mod connection;
 mod local;
 pub use connection::Connections;
 #[cfg(loom)]
-pub use connection::verify_connections;
+pub use connection::{verify_connection_retirement, verify_connections};
 mod frame;
 mod gate;
 mod interest;
