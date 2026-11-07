@@ -12,6 +12,7 @@ model-checking = []
 test-support = []
 
 [dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 sdk-file-identity = { path = "file-identity" }
 cargo_metadata = "=0.23.1"
 public-api = "=0.52.2"
