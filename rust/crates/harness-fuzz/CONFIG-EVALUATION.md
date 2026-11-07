@@ -140,3 +140,12 @@ from the invalid-string case reported in review. It is an authored malformed
 internal input, not a captured external-tool fixture. The existing property
 passes these exact bytes to production source admission; replacement characters
 must not turn its expected refusal into a reference value.
+
+The same target also exercises retained `config::prepare` and
+`config::compose_with_evidence` cuts, including absent and malformed imports,
+semantic refusals, canonical base/surface/root identities, original ordered
+layer generations and off markers. No second parser, dependency collector,
+model or fuzz target is introduced. The corresponding production mutations
+are kept in `rust/proofs/config-retained-cut/` and
+`rust/proofs/config-composition-cut/`; run their two named `qualify.mjs`
+claims to require semantic negatives and restored-source acceptance.
