@@ -849,6 +849,7 @@ dependencies = [
  "arrayvec",
  "caseless",
  "crossterm",
+ "futures",
  "image",
  "loom",
  "nix 0.31.3",

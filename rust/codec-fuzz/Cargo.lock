@@ -174,9 +174,11 @@ dependencies = [
  "hex",
  "icu_casemap",
  "indexed_db_futures",
+ "indexmap",
  "js-sys",
  "libc",
  "parking_lot 0.13.0",
+ "pin-project-lite",
  "prost",
  "rustix",
  "s3s",
@@ -255,6 +257,7 @@ dependencies = [
  "bytes",
  "futures",
  "prost",
+ "pulldown-cmark",
  "serde",
  "serde_json",
  "thiserror",
@@ -392,6 +395,7 @@ dependencies = [
 name = "acyclic-model-render"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "serde",
  "serde_json",
 ]
@@ -415,6 +419,7 @@ dependencies = [
  "keyring",
  "libc",
  "linux-keyutils",
+ "parking_lot 0.13.0",
  "pin-project-lite",
  "rustix",
  "security-framework 3.7.0",
