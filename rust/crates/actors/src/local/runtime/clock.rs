@@ -41,16 +41,21 @@ impl Clock for SystemClock {
         deadline_unix_ms: u64,
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
         #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
-        return Box::pin(async move {
-            if SystemClock.now_unix_ms() >= deadline_unix_ms {
-                return Ok(());
-            }
-            let alarm = acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms)
-                .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?;
-            alarm
-                .await
-                .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))
-        });
+        {
+            // Capture the original clock producer before this future can move
+            // to another executor or outlive its creating scope.
+            let alarm = (self.now_unix_ms() < deadline_unix_ms)
+                .then(|| acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms));
+            Box::pin(async move {
+                if let Some(alarm) = alarm {
+                    alarm
+                        .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?
+                        .await
+                        .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?;
+                }
+                Ok(())
+            })
+        }
         #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
         {
             let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());

@@ -292,5 +292,59 @@ fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestRe
         futures::executor::block_on(acyclic_native_runtime::WallAlarm::wait(0)?)?;
         futures::executor::block_on(SystemClock.sleep_until(0))?;
     }
+    for polled_before_loss in [false, true] {
+        let runtime = acyclic_native_runtime::testing::seeded_runtime(71)?;
+        let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
+        let notifications = Arc::new(Notifications::default());
+        let waker = Waker::from(notifications.clone());
+        let mut wait = runtime.block_on(async {
+            tokio::time::pause();
+            schedule
+                .scope(async {
+                    let now = SystemClock.now_unix_ms();
+                    let start = tokio::time::Instant::now();
+                    let mut jumped = SystemClock.sleep_until(now + 100);
+                    let mut context = Context::from_waker(&waker);
+                    assert!(jumped.as_mut().poll(&mut context).is_pending());
+                    schedule.set_unix_millis(now - 100);
+                    assert!(
+                        jumped.as_mut().poll(&mut context).is_pending(),
+                        "a backwards wall jump completed a future deadline"
+                    );
+                    schedule.set_unix_millis(now + 100);
+                    jumped.await?;
+                    assert_eq!(
+                        start.elapsed(),
+                        std::time::Duration::ZERO,
+                        "a forward wall jump retained a relative timeout"
+                    );
+                    let mut wait = SystemClock.sleep_until(u64::MAX);
+                    if polled_before_loss {
+                        assert!(wait.as_mut().poll(&mut context).is_pending());
+                    }
+                    Ok::<_, ClockError>(wait)
+                })
+                .await
+        })?;
+        notifications.0.store(0, Ordering::SeqCst);
+        drop(schedule);
+        if polled_before_loss {
+            assert!(
+                notifications.0.load(Ordering::SeqCst) > 0,
+                "wall clock lost its registered producer-retirement wake"
+            );
+        }
+        let mut context = Context::from_waker(&waker);
+        let result = wait.as_mut().poll(&mut context);
+        assert!(
+            result.is_ready(),
+            "wall clock escaped its original producer before first poll"
+        );
+        let std::task::Poll::Ready(Err(ClockError::Native(error))) = result else {
+            panic!("wall clock did not report original producer retirement");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(error.to_string().contains("step=wall-alarm-producer"));
+    }
     Ok(())
 }
