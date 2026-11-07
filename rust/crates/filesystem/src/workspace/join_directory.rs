@@ -140,7 +140,16 @@ fn decode_resolution(
     bytes: &[u8],
     conflict: &crate::ConflictView,
 ) -> Result<MergeResolution, DrivenJoinError> {
-    parse_resolution(bytes)?.resolve(conflict)
+    let proposal = if conflict.kind == ConflictKind::Text {
+        ResolutionFile::Content {
+            content: std::str::from_utf8(bytes)
+                .map_err(WorkspaceError::engine)?
+                .to_owned(),
+        }
+    } else {
+        parse_resolution(bytes)?
+    };
+    proposal.resolve(conflict)
 }
 
 fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
@@ -152,7 +161,7 @@ fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
 /// or `None` for the original typed invalid-resolution refusal.
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
-pub fn check_captured_merge_resolution(trace: &[u8]) {
+pub fn check_captured_merge_resolution(trace: &[u8], data: &[u8]) {
     let (conflict, bytes, expected): (crate::ConflictView, Vec<u8>, Option<MergeResolution>) =
         serde_json::from_slice(trace).expect("captured public merge resolution trace");
     let actual = decode_resolution(&bytes, &conflict);
@@ -171,6 +180,17 @@ pub fn check_captured_merge_resolution(trace: &[u8]) {
             ),
             "captured public merge refusal changed"
         ),
+    }
+    // Every raw input also reaches the public text boundary, independently of
+    // whether it can decode as a structured conflict/proposal corpus entry.
+    if conflict.kind == ConflictKind::Text
+        && let Ok(resolution) = decode_resolution(data, &conflict)
+    {
+        let MergeResolution::Text(text) = resolution else {
+            panic!("plain-text proposal selected a different resolution kind");
+        };
+        assert_eq!(text.as_bytes(), data, "plain-text proposal bytes changed");
+        assert!(!crate::text_merge::has_conflict_markers(&text));
     }
 }
 
@@ -332,8 +352,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             return Err(DrivenJoinError::StaleCandidate);
         }
         let path = self.conflict_file_path(&view.key)?;
-        let text = view.kind == ConflictKind::Text;
-        let path = if text {
+        let path = if view.kind == ConflictKind::Text {
             path
         } else {
             format!("{path}.resolve.json")
@@ -349,16 +368,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             .map_err(|failure| failure.error)?
             .value;
         cancellation.check().map_err(WorkspaceError::from)?;
-        if text {
-            ResolutionFile::Content {
-                content: std::str::from_utf8(&bytes)
-                    .map_err(WorkspaceError::engine)?
-                    .to_owned(),
-            }
-            .resolve(view)
-        } else {
-            decode_resolution(&bytes, view)
-        }
+        decode_resolution(&bytes, view)
     }
 
     /// The original join, for the existing publication coordinator. Directory

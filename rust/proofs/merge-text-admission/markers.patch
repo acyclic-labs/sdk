@@ -1,0 +1,13 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -125,9 +125,7 @@
+                 }
+                 _ => Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone())),
+             },
+-            Self::Content { content }
+-                if conflict.kind == ConflictKind::Text
+-                    && !crate::text_merge::has_conflict_markers(&content) =>
++            Self::Content { content } if conflict.kind == ConflictKind::Text =>
+             {
+                 Ok(MergeResolution::Text(content))
+             }

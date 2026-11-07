@@ -48,6 +48,17 @@ const claims = {
       env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
     },
   ],
+  "merge-text-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured public merge resolution was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-text-admission/refusal.patch", label: "text-proposal-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-text-admission/markers.patch", label: "unresolved-markers-admitted", diagnostic: "captured public merge refusal changed" },
+      ],
+    },
+  ],
   "merge-directory-admission": [
     "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
     "captured merge-directory writer output was refused", ["--features", "fuzz-targets"],
