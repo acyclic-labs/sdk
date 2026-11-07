@@ -302,7 +302,7 @@ impl WasmAgentServer {
     ) -> std::result::Result<Vec<u8>, JsValue> {
         let binding = AgentBinding::new(&self.binding).map_err(boundary_error)?;
         let invocation = binding
-            .routed(&url, snapshot(&body)?)
+            .routed(&url, &snapshot(&body)?)
             .map_err(boundary_error)?;
         let credential = snapshot(&credential)?;
         let reply = self.invoke(invocation, Bytes::from(credential)).await?;

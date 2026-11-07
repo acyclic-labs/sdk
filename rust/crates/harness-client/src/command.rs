@@ -67,7 +67,7 @@ impl AgentPageRequest {
         if items == 0
             || items > 128
             || bytes == 0
-            || bytes > MAX_COMMAND_BYTES as u32
+            || u64::from(bytes) > MAX_COMMAND_BYTES as u64
             || cursor.as_ref().is_some_and(|cursor| cursor.is_empty())
         {
             return Err(CommandError::Capacity);
@@ -628,12 +628,12 @@ impl PreparedCommand {
         for (index, ch) in text.char_indices() {
             let cost = escaped_len(ch);
             if used + cost > budget {
-                parts.push(&text[start..index]);
+                parts.push(text.get(start..index).ok_or(CommandError::Invalid)?);
                 (start, used) = (index, 0);
             }
             used += cost;
         }
-        parts.push(&text[start..]);
+        parts.push(text.get(start..).ok_or(CommandError::Invalid)?);
         let parts = parts
             .into_iter()
             .enumerate()
