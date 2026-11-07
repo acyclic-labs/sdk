@@ -13,21 +13,11 @@
   "inputs": [
     {
       "mode": "headless",
-      "text": "hello",
+      "text": "/repeated",
       "exit": 1,
       "outcome": {
         "completion": "failed",
-        "error": "conflict: discovered skill names are repeated"
-      }
-    },
-    {
-      "mode": "jsonl",
-      "operation": "00000000-0000-0000-0000-000000000002",
-      "text": "hello again",
-      "exit": 0,
-      "outcome": {
-        "completion": "failed",
-        "error": "conflict: discovered skill names are repeated"
+        "error": "conflict: ambiguous skill: repeated"
       }
     },
     {
@@ -38,13 +28,14 @@
         "--input-format",
         "jsonl"
       ],
-      "stdin": "{\"prompt\":\"first\",\"id\":\"first\"}\n{\"prompt\":\"/nope\",\"id\":\"typo\"}\n{\"prompt\":\"later\",\"id\":\"later\"}\n",
-      "exit": 0,
+      "stdin": "{\"prompt\":\"/repeated\",\"id\":\"first\"}\n{\"prompt\":\"/nope\",\"id\":\"typo\"}\n{\"prompt\":\"/repeated\",\"id\":\"later\"}\n",
+      "exit": 1,
       "stdout_contains": [
         "\"id\":\"first\"",
         "\"id\":\"typo\"",
         "\"id\":\"later\"",
-        "discovered skill names are repeated"
+        "ambiguous skill: repeated",
+        "Unknown command: /nope"
       ]
     }
   ],
