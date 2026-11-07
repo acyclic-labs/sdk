@@ -224,6 +224,11 @@ async fn run(
     shutdown: completion::Shutdown,
     event_output: Option<&mut headless::Output>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(args.command, Some(Command::Doctor))
+        && (args.host_workspace || args.endpoint.is_some())
+    {
+        return Err("doctor checks local startup: incompatible host workspace or endpoint; recovery: remove --host-workspace and --endpoint when running doctor".into());
+    }
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
@@ -236,49 +241,7 @@ async fn run(
         return Err("serve takes no prompt, endpoint, host workspace or usage export".into());
     }
     if args.host_workspace {
-        let directory = args
-            .host_state_directory
-            .as_ref()
-            .ok_or("host state directory absent")?;
-        // Native hosts keep their own approvals; the configured policy
-        // answers only their permission prompts for coordination tools.
-        let policy = match &args.approval_policy {
-            Some(path) => Some(serde_json::from_slice::<
-                acyclic_harness::approvals::ApprovalPolicy,
-            >(&std::fs::read(path)?)?),
-            None => None,
-        };
-        let local = Arc::new(
-            phase(|| {
-                let config =
-                    LocalHarnessConfig::native_host(&args.workspace).state_directory(directory);
-                LocalHarness::open(match policy {
-                    Some(policy) => config.approval_policy(policy),
-                    None => config,
-                })
-            })
-            .await?,
-        );
-        phase(|| {
-            acyclic_harness::local::host_files::serve_until(
-                local,
-                || {
-                    use std::io::Write as _;
-                    std::io::stdout()
-                        .lock()
-                        .write_all(b"{\"type\":\"workspace-owner-ready\"}\n")
-                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
-                },
-                async {
-                    shutdown
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
-                },
-            )
-        })
-        .await?;
-        return Ok(());
+        return host_workspace(&args, shutdown).await;
     }
     // An endpoint serves the agent tree: nothing of this machine's harness
     // is opened.
@@ -351,6 +314,55 @@ async fn run(
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
     connected(&args, connection, output, event_output).await
+}
+
+async fn host_workspace(
+    args: &Args,
+    shutdown: completion::Shutdown,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = args
+        .host_state_directory
+        .as_ref()
+        .ok_or("host state directory absent")?;
+    // Native hosts keep their own approvals; the configured policy
+    // answers only their permission prompts for coordination tools.
+    let policy = match &args.approval_policy {
+        Some(path) => Some(serde_json::from_slice::<
+            acyclic_harness::approvals::ApprovalPolicy,
+        >(&std::fs::read(path)?)?),
+        None => None,
+    };
+    let local = Arc::new(
+        phase(|| {
+            let config =
+                LocalHarnessConfig::native_host(&args.workspace).state_directory(directory);
+            LocalHarness::open(match policy {
+                Some(policy) => config.approval_policy(policy),
+                None => config,
+            })
+        })
+        .await?,
+    );
+    phase(|| {
+        acyclic_harness::local::host_files::serve_until(
+            local,
+            || {
+                use std::io::Write as _;
+                std::io::stdout()
+                    .lock()
+                    .write_all(b"{\"type\":\"workspace-owner-ready\"}\n")
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+            },
+            async {
+                shutdown
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+            },
+        )
+    })
+    .await?;
+    Ok(())
 }
 
 /// Prints every startup refusal of this configuration, one per line with its
@@ -476,16 +488,15 @@ async fn drive(
         .map(usage_export::Output::open)
         .transpose()?;
     let mut local_output;
-    let output = match event_output {
-        Some(output) => output,
-        None => {
-            local_output = headless::Output::new(if usage_stdout {
-                acyclic_native_runtime::InheritedOutput::stderr()?
-            } else {
-                acyclic_native_runtime::InheritedOutput::stdout()?
-            });
-            &mut local_output
-        }
+    let output = if let Some(output) = event_output {
+        output
+    } else {
+        local_output = headless::Output::new(if usage_stdout {
+            acyclic_native_runtime::InheritedOutput::stderr()?
+        } else {
+            acyclic_native_runtime::InheritedOutput::stdout()?
+        });
+        &mut local_output
     };
     let result = if let Some(prompt) = &args.prompt
         && projection.is_none()

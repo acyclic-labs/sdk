@@ -40,13 +40,16 @@ struct Storage {
 
 pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
     let opening = Opening::configure(config).await?;
+    if let Some(refusal) = opening.host_refusals().into_iter().next() {
+        return Err(refusal);
+    }
     let storage = opening.storage().await?;
     opening.finish(storage).await
 }
 
 /// Every refusal opening `config` meets, from the same checks in the same
 /// order: the host checks all at once, then (when they pass) the real
-/// storage opening, so nothing is reported that opening would not refuse.
+/// storage opening and completion, so a successful check opens the same harness.
 pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     let opening = match Opening::configure(config).await {
         Ok(opening) => opening,
@@ -54,7 +57,11 @@ pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     };
     let mut refusals = opening.host_refusals();
     let opened = if refusals.is_empty() {
-        opening.storage().await.map(drop)
+        let storage = opening.storage().await;
+        match storage {
+            Ok(storage) => opening.finish(storage).await.map(drop),
+            Err(error) => Err(error),
+        }
     } else {
         opening.checkout().map(drop)
     };
@@ -242,9 +249,6 @@ impl Opening {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        if let Some(refusal) = self.host_refusals().into_iter().next() {
-            return Err(refusal);
-        }
         #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;

@@ -109,9 +109,7 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary through the shared native capture, exit and physical-close
-/// owner, retaining the original outer deadline without readiness polling.
-async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
+fn graphcoder_command(fixture: &Fixture) -> Command {
     let mut command = Command::new(acyclic_test_support::cargo_binary!("graphcoder"));
     fixture.custody.configure(|key, value| {
         command.env(key, value);
@@ -128,13 +126,26 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .env_remove("OPENAI_API_KEY")
         .current_dir(&fixture.workspace)
         .arg("--workspace")
-        .arg(&fixture.workspace)
+        .arg(&fixture.workspace);
+    command
+}
+
+async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
+    let mut command = graphcoder_command(fixture);
+    command
         .arg("--settings-root")
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(catalog)
         .args(["--model", "graphcoder-qual/tiny"])
-        .args(args)
+        .args(args);
+    capture(command, stdin).await
+}
+
+/// Runs the binary through the shared native capture, exit and physical-close
+/// owner, retaining the original outer deadline without readiness polling.
+async fn capture(mut command: Command, stdin: &str) -> Output {
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -366,6 +377,20 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "ok: a run with these flags starts
 "
     );
+    // Readiness cannot enter a serving or remote conversation mode.
+    let mut host = graphcoder_command(&fixture);
+    host.args(["--host-workspace", "--host-state-directory"])
+        .arg(&fixture.settings)
+        .arg("doctor");
+    let mut remote = graphcoder_command(&fixture);
+    remote.args(["--endpoint", "http://127.0.0.1:1", "doctor"]);
+    for command in [host, remote] {
+        let refused = capture(command, "").await;
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("doctor checks local startup"), "{stderr}");
+        assert!(stderr.contains("recovery:"), "{stderr}");
+    }
     // State nested in the checkout is the refusal opening meets, with its recovery.
     let nested = Fixture {
         workspace: fixture.workspace.clone(),
@@ -385,6 +410,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "{stdout}"
     );
     assert_eq!(model.generated(), 0);
+    model.close().await;
 }
 
 #[tokio::test]

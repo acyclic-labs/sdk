@@ -653,7 +653,10 @@ fn final_value(
     schema: Option<&acyclic_harness::model::OutputSchema>,
     path: Option<&std::path::Path>,
 ) -> Result<Value, Failure> {
-    let Some(text) = line.get("text").and_then(Value::as_str) else {
+    let Value::Object(fields) = &mut line else {
+        return Ok(line);
+    };
+    let Some(text) = fields.get("text").and_then(Value::as_str) else {
         return Ok(line);
     };
     let value = schema.map(|schema| schema.project(text)).transpose()?;
@@ -666,7 +669,7 @@ fn final_value(
         output.finish()?;
     }
     if let Some(value) = value {
-        line["structured"] = value;
+        fields.insert("structured".to_owned(), value);
     }
     Ok(line)
 }
@@ -803,19 +806,16 @@ impl Outstanding {
             }
             (_, reply) => settled(conversation, &id, inbox, reply).await?,
         };
-        match line {
-            Some(line) => {
-                if let Some(error) = line.get("error") {
-                    self.fail(id_error(&line, error));
-                }
-                let line = final_value(line, self.schema.as_ref(), self.final_output.as_deref())?;
-                emit(output, &line, self.events_operation.as_deref()).await?;
-                Ok(true)
+        if let Some(line) = line {
+            if let Some(error) = line.get("error") {
+                self.fail(id_error(&line, error));
             }
-            None => {
-                self.pending.insert(inbox, (message, id));
-                Ok(false)
-            }
+            let line = final_value(line, self.schema.as_ref(), self.final_output.as_deref())?;
+            emit(output, &line, self.events_operation.as_deref()).await?;
+            Ok(true)
+        } else {
+            self.pending.insert(inbox, (message, id));
+            Ok(false)
         }
     }
 
@@ -1163,8 +1163,7 @@ pub(super) async fn jsonl(
             }
         };
         match event {
-            None => {}
-            Some(Event::Output) => {}
+            None | Some(Event::Output) => {}
             Some(Event::Turn(entry)) => {
                 let inbox = entry
                     .goal
