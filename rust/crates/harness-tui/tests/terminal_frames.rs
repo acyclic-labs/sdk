@@ -388,120 +388,109 @@ impl<W: Present> Present for Calls<W> {
 }
 
 #[cfg(unix)]
-fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
+async fn drain_terminal(
+    controller: &mut std::fs::File,
+    stopped: futures::channel::oneshot::Receiver<()>,
+) -> io::Result<()> {
+    use acyclic_native_runtime::{DescriptorInterest, descriptor_readiness};
+    use futures::future::{Either, select};
     use std::io::Read;
+    use std::os::fd::AsFd;
+
+    let flags = rustix::fs::fcntl_getfl(&*controller)?;
+    rustix::fs::fcntl_setfl(&*controller, flags | rustix::fs::OFlags::NONBLOCK)?;
+    let mut stopped = std::pin::pin!(stopped);
+    let mut bytes = [0; 65536];
+    loop {
+        match controller.read(&mut bytes) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => {
+                // A PTY master may report EIO when its last slave closes.
+                return Ok(());
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let ready = descriptor_readiness(controller.as_fd(), DescriptorInterest::Readable)?;
+                match select(stopped.as_mut(), ready).await {
+                    // Dropping the fixture's sender is the stop event, including
+                    // when restoration retains the slave after a failure.
+                    Either::Left(_) => return Ok(()),
+                    Either::Right((outcome, _)) => outcome.into_result()?,
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_drain_cancellation_does_not_require_slave_closure() -> io::Result<()> {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    for stop_before_wait in [false, true] {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let slave = std::fs::File::from(pty.user);
+        let mut controller = std::fs::File::from(pty.controller);
+        let (stop, stopped) = futures::channel::oneshot::channel();
+        let mut drain = std::pin::pin!(drain_terminal(&mut controller, stopped));
+        let mut context = Context::from_waker(Waker::noop());
+        if !stop_before_wait {
+            assert!(drain.as_mut().poll(&mut context).is_pending());
+        }
+        drop(stop);
+        assert!(
+            matches!(drain.as_mut().poll(&mut context), Poll::Ready(Ok(()))),
+            "a retained PTY slave must not keep a cancelled drainer waiting"
+        );
+        assert!(rustix::termios::tcgetattr(&slave).is_ok());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn with_real_terminal(
+    run: impl FnOnce(&mut acyclic_harness_tui::term::Output) -> io::Result<()>,
+) -> io::Result<()> {
     let pty = rustix_openpty::openpty(None, None)?;
     let mut controller = std::fs::File::from(pty.controller);
-    // The kernel PTY is drained as fast as an emulator would read it.
-    let drain = std::thread::spawn(move || {
-        let mut bytes = [0; 65536];
-        while matches!(controller.read(&mut bytes), Ok(count) if count > 0) {}
-        // A completed drainer retains the master in its JoinHandle result.
-        // The guard tuple drops/restores Tty before releasing that result.
-        controller
-    });
-    let mut tty = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
-    tty.negotiate(&acyclic_harness_tui::term::Environment(
-        [("TERM".into(), "alacritty".into())].into(),
-    ))?;
-    let (tty, output) = tty.split();
-    Ok((output, Box::new((tty, drain))))
+    let (stop, stopped) = futures::channel::oneshot::channel();
+    std::thread::scope(|scope| {
+        let drain = scope.spawn(move || {
+            let result = futures::executor::block_on(drain_terminal(&mut controller, stopped));
+            // Keep the master alive until the original terminal has restored.
+            (controller, result)
+        });
+        let result = {
+            let _stop = stop;
+            (|| {
+                let mut tty =
+                    acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
+                tty.negotiate(&acyclic_harness_tui::term::Environment(
+                    [("TERM".into(), "alacritty".into())].into(),
+                ))?;
+                let (_tty, mut output) = tty.split();
+                run(&mut output)
+            })()
+        };
+        let (_controller, drained) = drain
+            .join()
+            .map_err(|_| io::Error::other("terminal drainer panicked"))?;
+        result.and(drained)
+    })
 }
 
 #[cfg(windows)]
-fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
+fn with_real_terminal(
+    run: impl FnOnce(&mut acyclic_harness_tui::term::Output) -> io::Result<()>,
+) -> io::Result<()> {
     // The attached console (conhost or ConPTY) with VT processing enabled.
     let mut tty = acyclic_harness_tui::term::Tty::open()?;
     tty.negotiate(&acyclic_harness_tui::term::Environment::default())?;
-    let (tty, output) = tty.split();
-    Ok((output, Box::new(tty)))
-}
-
-const PROSE: &str = "prose with `inline code`, wrapped words and tool output lines that differ on every transcript row of the page";
-
-fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
-    use acyclic_harness_tui::ratatui::{
-        style::{Color, Style, Stylize},
-        text::Span,
-    };
-    move |frame| {
-        let height = usize::from(frame.area().height);
-        let lines: Vec<Line<'_>> = (offset..offset + height)
-            .map(|row| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("{row:>6} "),
-                        Style::default().fg(Color::Rgb(120, 120, 140)),
-                    ),
-                    Span::raw("Streaming ").bold(),
-                    Span::styled("markdown", Style::default().fg(Color::Rgb(200, 120, 60))),
-                    // Distinct text per row, as when paging through a transcript.
-                    Span::raw(format!(
-                        " {}",
-                        PROSE.get(row % 25..row % 25 + 80).unwrap_or_default()
-                    )),
-                ])
-            })
-            .collect();
-        frame.render_widget(Paragraph::new(lines), frame.area());
-        frame.set_cursor_position((2, frame.area().height - 1));
-    }
-}
-
-/// Real terminal cost per page-scroll frame (every row repainted): `cargo test --release -p acyclic-harness-tui
-/// --features tui --test terminal_frames -- --exact real_terminal_frame_cost --ignored --nocapture`.
-#[test]
-#[ignore = "real terminal measurement, not an assertion"]
-fn real_terminal_frame_cost() -> io::Result<()> {
-    const FRAMES: usize = 200;
-    let mut report = Vec::new();
-    // A process owns one terminal lifecycle; both paths share it.
-    let (mut output, _guard) = real_terminal()?;
-    for size in [Size::new(120, 40), Size::new(240, 70)] {
-        let viewport = TerminalOptions {
-            viewport: Viewport::Fixed(Rect::new(0, 0, size.width, size.height)),
-        };
-        for per_command in [true, false] {
-            let calls = Rc::default();
-            let bytes = Rc::default();
-            let device = Calls(&mut output, Rc::clone(&calls), Rc::clone(&bytes));
-            let before = device_io();
-            let start = std::time::Instant::now();
-            if per_command {
-                let mut terminal =
-                    Terminal::with_options(CrosstermBackend::new(device), viewport.clone())?;
-                for offset in 0..FRAMES {
-                    terminal.draw(scrolled(offset * usize::from(size.height)))?;
-                }
-            } else {
-                let mut terminal = FrameTerminal::new(device, size)?;
-                for offset in 0..FRAMES {
-                    terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
-                }
-            }
-            let elapsed = start.elapsed();
-            let after = device_io();
-            let frames = f64::from(u32::try_from(FRAMES).unwrap_or(u32::MAX));
-            let per_frame =
-                |count: u64| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / frames;
-            report.push(format!(
-                "{} {}x{} {}: {:.0} bytes/frame, {:.1} submissions/frame, {:.1} device writes/frame, {:.2} full-queue waits/frame, {:.1} us/frame",
-                std::env::consts::OS,
-                size.width,
-                size.height,
-                if per_command { "per-command" } else { "frame" },
-                per_frame(bytes.get()),
-                per_frame(calls.get()),
-                per_frame(after.writes - before.writes),
-                per_frame(after.waits - before.waits),
-                elapsed.as_secs_f64() * 1e6 / frames
-            ));
-        }
-    }
-    for line in report {
-        eprintln!("{line}");
-    }
-    Ok(())
+    let (_tty, mut output) = tty.split();
+    run(&mut output)
 }
 
 /// A frame far beyond any realistic screen (16 MiB) reaches the real console:
@@ -511,31 +500,32 @@ fn real_terminal_frame_cost() -> io::Result<()> {
 #[test]
 #[ignore = "needs an attached console: run with --ignored"]
 fn very_large_frames_reach_the_real_console() -> io::Result<()> {
-    let (mut output, _guard) = real_terminal()?;
-    for mib in [1usize, 4, 16] {
-        let mut frame = Vec::new();
-        let mut row = 0u32;
-        while frame.len() < mib * 1024 * 1024 {
-            frame.extend_from_slice(format!("\x1b[{};1H", row % 40 + 1).as_bytes());
-            for cell in 0..100u32 {
-                let glyph = char::from(b'a' + (cell % 26) as u8);
-                frame.extend_from_slice(
-                    format!("\x1b[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
-                );
+    with_real_terminal(|output| {
+        for mib in [1usize, 4, 16] {
+            let mut frame = Vec::new();
+            let mut row = 0u32;
+            while frame.len() < mib * 1024 * 1024 {
+                frame.extend_from_slice(format!("\x1b[{};1H", row % 40 + 1).as_bytes());
+                for cell in 0..100u32 {
+                    let glyph = char::from(b'a' + (cell % 26) as u8);
+                    frame.extend_from_slice(
+                        format!("\x1b[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
+                    );
+                }
+                row += 1;
             }
-            row += 1;
+            let before = device_io();
+            let start = std::time::Instant::now();
+            output.present(&mut frame, FrameEffects::default())?;
+            let elapsed = start.elapsed();
+            eprintln!(
+                "windows {mib} MiB frame: {:.1} ms, {} console writes",
+                elapsed.as_secs_f64() * 1e3,
+                device_io().writes - before.writes
+            );
         }
-        let before = device_io();
-        let start = std::time::Instant::now();
-        output.present(&mut frame, FrameEffects::default())?;
-        let elapsed = start.elapsed();
-        eprintln!(
-            "windows {mib} MiB frame: {:.1} ms, {} console writes",
-            elapsed.as_secs_f64() * 1e3,
-            device_io().writes - before.writes
-        );
-    }
-    output.write_all(b"\x1b[0m\x1b[2J")
+        output.write_all(b"\x1b[0m\x1b[2J")
+    })
 }
 
 /// A guard shared with the test, so the session's lifecycle (suspend, resume,

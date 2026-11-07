@@ -68,17 +68,7 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         captured.version(),
         "fixture must finish its own physical capture"
     );
-    eprintln!(
-        "WRITE_REBIND_IDENTITIES equal={}",
-        same_payloads(&publisher, &staged, &captured).await?
-    );
-    let started = std::time::Instant::now();
     let original = publisher.observed(view, operation, staged.clone()).await?;
-    eprintln!(
-        "WRITE_REBIND bytes={} elapsed_us={}",
-        bytes.len(),
-        started.elapsed().as_micros()
-    );
     assert_eq!(original, captured);
     let budget = acyclic_fs::WorkBudget {
         output_bytes: 64 * 1024,
@@ -108,66 +98,9 @@ async fn observed_publication_does_not_reread_the_published_payload() -> Result<
         fallback, captured,
         "different payload layouts keep the original content fallback"
     );
-    eprintln!("WRITE_REBIND_NEGATIVE old_read_refused={failure}");
 
     harness.disconnect().await?;
     Ok(())
-}
-
-async fn same_payloads(
-    publisher: &CheckoutPublisher,
-    staged: &FileRef,
-    captured: &FileRef,
-) -> Result<bool> {
-    let view = publisher.tools.workspace.view();
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let mut payloads = Vec::new();
-    let config = view.workspace().volume_config();
-    let mut allocations = acyclic_fs::kernel::allocation::AllocationLedger::default();
-    let mut counters = acyclic_fs::WorkCounters::UNCHARGED;
-    let mut accounting = acyclic_fs::kernel::KernelAccounting::borrowed_standalone(
-        &mut allocations,
-        &mut counters,
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    );
-    let (path, _allocation) = acyclic_fs::kernel::NamespacePath::parse_in_profile(
-        "/large.txt",
-        config.profile,
-        config.limits,
-        &mut accounting,
-        &cancellation,
-    )
-    .map_err(storage)?;
-    for file in [staged, captured] {
-        let generation = view
-            .workspace()
-            .generation(
-                publisher.staged_generation(file)?,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        let (records, _allocation) = generation
-            .lookup_paths(
-                std::slice::from_ref(&path),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        payloads.push(
-            records
-                .entries
-                .first()
-                .and_then(|entry| entry.record.as_ref())
-                .map(|record| record.payload),
-        );
-    }
-    Ok(payloads.first() == payloads.get(1))
 }
 
 struct FullRead;
@@ -234,9 +167,7 @@ async fn differing_captured_bytes_keep_the_original_publication_reference() -> R
 }
 
 #[tokio::test]
-async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capture() -> Result<()>
-{
-    let mut counts = Vec::new();
+async fn fresh_checkout_writes_retain_baseline_stage_and_final_capture() -> Result<()> {
     for once in [false, true] {
         let (directory, _state, harness, publisher) = cost_fixture().await?;
         let workspace = publisher.tools.workspace.view().workspace();
@@ -251,7 +182,6 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
             b"external bytes\n",
         )
         .map_err(storage)?;
-        let started = std::time::Instant::now();
         let operation = OperationId::new();
         let (file, _) = if once {
             publisher
@@ -276,7 +206,6 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
                 )?
                 .await?
         };
-        let elapsed = started.elapsed();
         let after = workspace
             .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
@@ -300,38 +229,71 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
             file.version(),
             hex::encode(after.id().to_bytes().as_slice())
         );
+        let baseline = workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    capture::baseline_operation(workspace.id()).into_bytes(),
+                ),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .ok_or_else(|| Error::NotFound("initial checkout baseline".into()))?;
+        assert_eq!(
+            baseline
+                .read(
+                    "/external-write-cost",
+                    64,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .as_ref(),
+            b"external bytes\n",
+        );
+        let writer = publisher.writer_for(&harness.project, workspace)?;
+        let staged = if once {
+            writer
+                .observe_staged_once(operation, None, publisher.maximum, Default::default())?
+                .await?
+                .0
+        } else {
+            writer
+                .observe_staged_path(operation, "authored-write-cost", publisher.maximum, None)
+                .await?
+        }
+        .ok_or_else(|| Error::NotFound("original staged publication".into()))?;
         let mut generation = after;
-        let mut count = 0;
-        while generation.id() != before.id() {
+        for expected_parent in [
+            publisher.staged_generation(&staged)?,
+            baseline.id(),
+            before.id(),
+        ] {
             let (parents, _allocation) = generation
                 .parents(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(storage)?
                 .value;
-            let [parent] = parents.as_slice() else {
-                return Err(Error::Invalid(
-                    "write ancestry must retain its original parent".into(),
-                ));
-            };
+            assert_eq!(
+                parents,
+                [expected_parent],
+                "fresh publication must retain exactly baseline, stage and final capture",
+            );
             generation = workspace
-                .generation(*parent, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .generation(
+                    expected_parent,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
                 .await
                 .map_err(storage)?
                 .value;
-            count += 1;
-            assert!(count <= 4, "write ancestry must reach its original head");
         }
-        eprintln!(
-            "WRITE_CAPTURE once={once} generations={count} elapsed_us={}",
-            elapsed.as_micros()
-        );
-        counts.push(count);
         harness.disconnect().await?;
     }
-    assert_eq!(
-        counts,
-        [2, 2],
-        "fresh writes must share one post-write capture with external edits"
-    );
     Ok(())
 }

@@ -28,16 +28,8 @@
   "inputs": [
     {
       "mode": "pty",
+      "text": "first prompt\r\n\u001b[?1;2c\u001b[>0;1;0c\u001b[12;40R",
       "actions": [
-        {
-          "when": {
-            "contains": [
-              "GraphCoder"
-            ],
-            "cursor": true
-          },
-          "prompt": "first prompt"
-        },
         {
           "when": {
             "contains": [

@@ -21,17 +21,12 @@ python3 scripts/qualify-graphcoder-artifact.py \
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
 node --test scripts/graphcoder-pty/screen.test.mjs
 
-cargo build --locked -p graphcoder --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .sessions-shipping.jsonl
-python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl graphcoder > .sessions-binaries.env
+cargo build --locked -p graphcoder -p harness-mock-model --features acyclic-harness/grpc,acyclic-harness/search-http --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
 source .sessions-binaries.env
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY"
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive-prompt
-node scripts/test-graphcoder-resume.mjs "$SESSIONS_GRAPHCODER_BINARY" interactive
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY"
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" command-recovery
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" uncertain
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" typeahead
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel
-node scripts/test-graphcoder-pty.mjs "$SESSIONS_GRAPHCODER_BINARY" cancel-preparation
+for case in pty-conversation pty-markdown pty-slash pty-cancel-ctrl-c \
+    pty-cancel-preparation kill-during-count pty-kill-and-resume pty-quit-resume provider-error; do
+    node scripts/graphcoder-e2e/run.mjs "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$case"
+done
 
 bash scripts/qualify-graphcoder-client.sh

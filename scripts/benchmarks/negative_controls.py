@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("task skills omitted from the project", "graphcoder_harbor.py",
+     "if self.skills_dir:", "if False:",
+     "test_harbor.HarborContracts.test_task_skills_are_project_files_and_copy_failure_revokes_execution"),
     ("comparator changes model identity", "plan.py",
      'if model.count("/") != 1:', 'if False:',
      "test_harbor.HarborContracts.test_comparator_projection_cannot_change_the_effective_model"),

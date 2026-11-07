@@ -1,5 +1,6 @@
 """Exercise the actual pinned Harbor API; only environment I/O is a fixture."""
 
+import asyncio
 import hashlib
 import importlib.metadata
 import tempfile
@@ -80,6 +81,49 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
     async def test_extra_environment_is_rejected_before_setup(self):
         with self.assertRaisesRegex(ValueError, "inherited agent env"):
             GraphCoder(**self.kwargs, extra_env={"FIXTURE_TOKEN": "not-a-real-key"})
+
+    async def test_task_skills_are_project_files_and_copy_failure_revokes_execution(self):
+        skills = self.root / "task skills' $(false)"
+        files = {
+            "review/SKILL.md": b"---\nname: review\ndescription: Review task files\n---\nRead assets/rules.txt.\n",
+            "review/assets/rules.txt": b"Keep the task's public contract.\n",
+            "review/.hidden": b"skill auxiliary file\n",
+        }
+        for name, contents in files.items():
+            target = skills / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents)
+        workspace = self.root / "workspace"
+        workspace.mkdir()
+
+        class TaskEnvironment(Environment):
+            async def exec(self, command, **kwargs):
+                # Run the production task-file projection against real files.
+                # Binary upload and mount admission remain the surrounding fixture.
+                if "cp " in command:
+                    self.commands.append(command)
+                    child = await asyncio.create_subprocess_exec(
+                        "bash", "-ec", command, cwd=workspace,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    stdout, stderr = await child.communicate()
+                    return SimpleNamespace(return_code=child.returncode,
+                                           stdout=stdout.decode(), stderr=stderr.decode())
+                return await super().exec(command, **kwargs)
+
+        agent = GraphCoder(**self.kwargs, skills_dir=str(skills))
+        environment = TaskEnvironment()
+        await agent.setup(environment)
+        self.assertTrue(agent.capabilities.skills)
+        projected = workspace / ".agents/skills"
+        self.assertEqual({str(path.relative_to(projected)): path.read_bytes()
+                          for path in projected.rglob("*") if path.is_file()}, files)
+        await agent.run("use the review skill", environment, None)
+
+        skills.rename(self.root / "withdrawn-skills")
+        with self.assertRaises(RuntimeError):
+            await agent.setup(environment)
+        with self.assertRaisesRegex(RuntimeError, "not installed"):
+            await agent.run("use the review skill", environment, None)
 
     async def test_comparator_projection_cannot_change_the_effective_model(self):
         fixture = test_contracts.BenchmarkContracts()

@@ -41,9 +41,48 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
     } else if failure && (matches!(status, 400 | 413) || bytes.len() < crate::EXCERPT_BYTES) {
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
-    if let Error::ModelUnavailable { excerpt, .. } = &error {
+    if let Error::ModelUnavailable { excerpt, .. } | Error::Invalid(excerpt) = &error {
         assert!(excerpt.len() <= crate::EXCERPT_BYTES);
         assert!(excerpt.chars().all(|character| !character.is_control()));
+    }
+    let diagnostic = match &error {
+        Error::Invalid(message) if matches!(status, 400 | 413) && !failure => {
+            Some((message, format!("model HTTP status {status}: ")))
+        }
+        Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
+        _ => None,
+    };
+    if let Some((actual, prefix)) = diagnostic {
+        // Normalize the raw prefix first, then remove only the replacement for
+        // an incomplete final scalar when there was no earlier invalid input.
+        // Production instead borrows the original valid byte prefix in that case.
+        let bounded = &bytes[..bytes.len().min(crate::EXCERPT_BYTES)];
+        let normalized = String::from_utf8_lossy(bounded);
+        let text = if std::str::from_utf8(bounded).is_err_and(|error| error.error_len().is_none()) {
+            normalized.strip_suffix('\u{fffd}').unwrap()
+        } else {
+            &normalized
+        };
+        let expected: String = prefix
+            .chars()
+            .chain(text.chars())
+            .map(|character| {
+                if character.is_control() {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .scan(0usize, |length, character| {
+                *length += character.len_utf8();
+                (*length <= crate::EXCERPT_BYTES).then_some(character)
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            expected.trim(),
+            "HTTP refusal lost original diagnostic"
+        );
     }
     (error.code(), error.to_string())
 }
@@ -51,9 +90,10 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
 /// Status is a little-endian u16, followed by the unchanged response body.
 /// Chunking and JSON string escapes preserve classification; body errors cannot
 /// turn an incomplete context refusal into a successful classification.
-pub fn assert_http_failure_invariants(input: &[u8]) {
+/// Returns whether valid context-status JSON reached the spelling comparison.
+pub fn assert_http_failure_invariants(input: &[u8]) -> bool {
     let Some((status, bytes)) = input.split_first_chunk::<2>() else {
-        return;
+        return false;
     };
     let status = u16::from_le_bytes(*status);
     for failure in [false, true] {
@@ -63,20 +103,27 @@ pub fn assert_http_failure_invariants(input: &[u8]) {
         }
     }
     if matches!(status, 400 | 413)
-        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Ok(value) = crate::json(bytes)
     {
         let canonical = serde_json::to_vec(&value).expect("JSON value encodes");
         let escaped = escaped_strings(&canonical);
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&escaped).unwrap(),
+            crate::json(&escaped).unwrap(),
             value,
             "escape mutation changed JSON meaning"
         );
         assert_eq!(
-            decode(status, &canonical, canonical.len().max(1), false),
-            decode(status, &escaped, escaped.len().max(1), false)
+            decode(status, &canonical, canonical.len().max(1), false).0,
+            decode(status, &escaped, escaped.len().max(1), false).0,
+            "JSON spelling may change the original excerpt, never its class"
         );
+        return true;
     }
+    assert!(
+        !matches!(status, 400 | 413) || crate::json(bytes).is_err(),
+        "production-accepted refusal skipped fuzz spelling comparison"
+    );
+    false
 }
 
 // Mutate canonical JSON, preserving existing escapes and all non-ASCII bytes.
@@ -125,8 +172,50 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-context").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").as_slice(),
         include_bytes!("../../fuzz/corpus/http_failure/proxy-rate").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/gemini-signature").as_slice(),
+        include_bytes!("../../fuzz/corpus/http_failure/gemini-signature-literal-extension")
+            .as_slice(),
     ] {
         assert_http_failure_invariants(input);
+    }
+    let signature = include_bytes!("../../fuzz/corpus/http_failure/gemini-signature");
+    assert_eq!(decode(400, &signature[2..], 1, false).0, ErrorCode::Invalid);
+    for marker in [
+        "$serde_json::private::RawValue",
+        "$serde_json::private::Number",
+    ] {
+        // Explicit ignored-field mutations of the original refusal body.
+        let extension = serde_json::json!({(marker): "null", "nested": []});
+        let mutated = std::str::from_utf8(&signature[2..]).unwrap().replacen(
+            '{',
+            &format!("{{\"extra\":{extension},"),
+            1,
+        );
+        let mut input = signature[..2].to_vec();
+        input.extend_from_slice(mutated.as_bytes());
+        assert!(
+            assert_http_failure_invariants(&input),
+            "accepted literal-key refusal skipped spelling comparison"
+        );
+    }
+    // These are explicit byte/status mutations of the original captured body,
+    // not additional provider responses. Exercise valid scalars cut at each
+    // boundary, malformed scalars, and a real replacement before a cut scalar.
+    for marker in [
+        b"\xc2\xa2".as_slice(),
+        b"\xe2\x82\xac".as_slice(),
+        b"\xf0\x9f\x92\xa9".as_slice(),
+        b"\xff".as_slice(),
+        b"\xc0\x80".as_slice(),
+        b"\xed\xa0\x80".as_slice(),
+        b"\xef\xbf\xbd\xe2\x82".as_slice(),
+    ] {
+        for offset in [1, 17, 251, 252, 253, 254, 255] {
+            let mut input = signature.to_vec();
+            input[..2].copy_from_slice(&429u16.to_le_bytes());
+            input[2 + offset..2 + offset + marker.len()].copy_from_slice(marker);
+            assert_http_failure_invariants(&input);
+        }
     }
 
     // This is the same captured context refusal, with only its JSON spelling
@@ -138,7 +227,7 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         input[..2].copy_from_slice(&status.to_le_bytes());
         assert_http_failure_invariants(&input);
     }
-    let value: serde_json::Value = serde_json::from_slice(&captured[2..]).unwrap();
+    let value = crate::json(&captured[2..]).unwrap();
     let mut control = value.clone();
     control["ignored"] = serde_json::Value::String("\u{000b}\\u000b".into());
     let mut control_input = captured[..2].to_vec();

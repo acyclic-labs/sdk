@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/executor/model_usage/codec_fuzz.rs b/rust/crates/harness-core/src/executor/model_usage/codec_fuzz.rs
+--- a/rust/crates/harness-core/src/executor/model_usage/codec_fuzz.rs
++++ b/rust/crates/harness-core/src/executor/model_usage/codec_fuzz.rs
+@@ -82,6 +82,6 @@
+ pub(super) fn check_metadata_bytes(bytes: &[u8]) -> serde_json::Result<()> {
+     let mut decoder = serde_json::Deserializer::from_slice(bytes);
+-    let metadata = crate::deserialize_json_value(&mut decoder)?;
++    let metadata = <Value as serde::Deserialize>::deserialize(&mut decoder)?;
+     decoder.end()?;
+     check_metadata(&metadata);
+     Ok(())

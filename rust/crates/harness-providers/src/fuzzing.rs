@@ -40,6 +40,37 @@ fn parse_at(
         .map_err(|error| error.to_string())
 }
 
+fn assert_chat_usage(input: &[u8], events: &[ModelEvent]) {
+    // Reuse the shipped framer, then compare original wire values with the
+    // adapter output. Counter consensus over output alone cannot detect loss.
+    let body = Box::pin(futures::stream::once(std::future::ready(Ok(
+        Bytes::copy_from_slice(input),
+    ))));
+    let frames: Vec<String> = futures::executor::block_on(
+        crate::sse::decode(body, 4096)
+            .try_take_while(|data| std::future::ready(Ok(data != "[DONE]")))
+            .try_collect(),
+    )
+    .expect("accepted Chat stream has valid original frames");
+    let mut expected = None;
+    for frame in frames {
+        let value = crate::json(frame.as_bytes()).expect("accepted Chat frame is JSON");
+        if let Some(usage) = value.get("usage").and_then(serde_json::Value::as_object) {
+            expected
+                .get_or_insert_with(serde_json::Map::new)
+                .extend(usage.clone());
+        }
+    }
+    let Some(ModelEvent::Completed { metadata }) = events.last() else {
+        panic!("accepted Chat stream has no completion")
+    };
+    assert_eq!(
+        metadata.get("usage"),
+        expected.map(serde_json::Value::Object).as_ref(),
+        "Chat completion lost original wire usage"
+    );
+}
+
 /// Chunking cannot change acceptance, errors or the decoded events. Accepted
 /// events must round-trip through the durable model codec without losing data.
 pub fn assert_stream_invariants(input: &[u8]) {
@@ -96,18 +127,16 @@ pub fn assert_stream_invariants(input: &[u8]) {
         let Some((&kind, input)) = input.split_first() else {
             return;
         };
-        if let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) {
-            let adapter = [
-                Adapter::Anthropic,
-                Adapter::Responses,
-                Adapter::Chat,
-                Adapter::Gemini,
-            ][usize::from(kind) % 4];
-            let before = crate::validate_input(adapter, &body);
-            let encoded = serde_json::to_vec(&body).unwrap();
-            let replay = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(before, crate::validate_input(adapter, &replay));
-        }
+        let adapter = [
+            Adapter::Anthropic,
+            Adapter::Responses,
+            Adapter::Chat,
+            Adapter::Gemini,
+        ][usize::from(kind) % 4];
+        assert!(
+            input_round_trip(adapter, input) || crate::json(input).is_err(),
+            "production-accepted input skipped fuzz validation"
+        );
         return;
     }
     if kind == b'L' {
@@ -237,6 +266,9 @@ pub fn assert_stream_invariants(input: &[u8]) {
         if adapter == Adapter::Gemini {
             crate::projection::gemini::assert_visible_replay(&events);
         }
+        if adapter == Adapter::Chat {
+            assert_chat_usage(input, &events);
+        }
         // Identical provider bytes in a different turn must never reuse canonical
         // IDs. Bindings remain byte-for-byte equal, independently of chunking.
         let other = parse_at(adapter, input, input.len().max(1), [2; 16]).unwrap();
@@ -278,11 +310,26 @@ pub fn assert_stream_invariants(input: &[u8]) {
                 .all(|call| !ids.contains(call.call_id.as_str()))
         );
         for event in events {
+            if let ModelEvent::Completed { metadata } = &event {
+                acyclic_harness_core::executor::model_usage_codec_fuzz::check_metadata(metadata);
+            }
             let bytes = serde_json::to_vec(&event).unwrap();
             let restored: ModelEvent = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(restored, event);
         }
     }
+}
+
+pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
+    let Ok(body) = crate::json(input) else {
+        return false;
+    };
+    let before = crate::validate_input(adapter, &body);
+    let encoded = serde_json::to_vec(&body).unwrap();
+    let replay = crate::json(&encoded).unwrap();
+    assert_eq!(body, replay, "input JSON round trip changed literal values");
+    assert_eq!(before, crate::validate_input(adapter, &replay));
+    true
 }
 
 fn catalog_round_trip(input: &[u8]) -> bool {
@@ -394,19 +441,54 @@ mod properties {
 
     #[test]
     fn checked_in_stream_corpus_obeys_the_properties() {
+        assert_stream_invariants(include_bytes!(
+            "../fuzz/corpus/provider_stream/llamacpp-text-request-literal-extension"
+        ));
         assert!(catalog_round_trip(
             &include_bytes!("../fuzz/corpus/provider_stream/catalog.json")[1..]
         ));
         for input in [
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text-request").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool-request").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result-request").as_slice(),
+        ] {
+            assert_eq!(&input[..2], b"V\x02");
+            let body = crate::json(&input[2..]).unwrap();
+            assert!(crate::validate_input(Adapter::Chat, &body).is_empty());
+            assert_stream_invariants(input);
+            for marker in [
+                "$serde_json::private::RawValue",
+                "$serde_json::private::Number",
+            ] {
+                // Explicit ignored-field mutations of each original request.
+                let extra = json!({(marker): "null", "nested": []});
+                let mutated = std::str::from_utf8(&input[2..]).unwrap().replacen(
+                    '{',
+                    &format!("{{\"extra\":{extra},"),
+                    1,
+                );
+                assert!(
+                    input_round_trip(Adapter::Chat, mutated.as_bytes()),
+                    "accepted captured request skipped input validation"
+                );
+                let value = crate::json(mutated.as_bytes()).unwrap();
+                assert_eq!(
+                    crate::validate_input(Adapter::Chat, &value),
+                    crate::validate_input(Adapter::Chat, &body),
+                    "ignored literal-map keys changed original input diagnostics"
+                );
+            }
+        }
+        for input in [
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/anthropic.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/responses.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/chat-reused-id.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini.sse").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/gemini-signed-answer.sse").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-text").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-tool").as_slice(),
-            include_bytes!("../fuzz/corpus/provider_stream/llamacpp-result").as_slice(),
         ] {
             assert_stream_invariants(input);
             let (&kind, body) = input.split_first().unwrap();
@@ -420,6 +502,30 @@ mod properties {
                 parse(adapter, body, 7).is_ok(),
                 "seed {adapter:?} must exercise accepted events"
             );
+            if matches!(adapter, Adapter::Chat) {
+                for marker in [
+                    "$serde_json::private::RawValue",
+                    "$serde_json::private::Number",
+                ] {
+                    // Mutate an original frame's ignored extension field while
+                    // retaining its actual response content and usage bytes.
+                    let extra = json!({(marker): "null", "nested": []});
+                    let mutated = std::str::from_utf8(body).unwrap().replacen(
+                        "data: {",
+                        &format!("data: {{\"extra\":{extra},"),
+                        1,
+                    );
+                    assert_ne!(mutated.as_bytes(), body);
+                    assert_eq!(
+                        parse(adapter, mutated.as_bytes(), 7).unwrap(),
+                        parse(adapter, body, 7).unwrap(),
+                        "ignored literal-map keys changed original events"
+                    );
+                    let mut seed = vec![kind];
+                    seed.extend_from_slice(mutated.as_bytes());
+                    assert_stream_invariants(&seed);
+                }
+            }
         }
     }
 }

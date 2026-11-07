@@ -140,7 +140,7 @@ fn transport_failure(
 }
 
 /// Context refusals use the same admitted JSON budget as token-count responses.
-/// Retryable diagnostics retain only their bounded excerpt.
+/// Non-context and retryable diagnostics retain only their bounded excerpt.
 async fn http_failure(
     response: HttpResponse,
     maximum: usize,
@@ -185,7 +185,10 @@ async fn read_http_failure(
         return match http::bounded::read(body, maximum, work).await {
             Ok(body) => match stream::context_overflow_bytes(&body.bytes, work) {
                 Ok(true) => Error::ModelContextOverflow,
-                Ok(false) => http_error(status),
+                Ok(false) => Error::Invalid(diagnostic::excerpt(format_args!(
+                    "model HTTP status {status}: {}",
+                    excerpt_text(&body.bytes)
+                ))),
                 Err(error) => error,
             },
             Err(error) => error,
@@ -209,8 +212,12 @@ async fn read_http_failure(
 /// Lossy UTF-8 with control characters as spaces, bounded on a character boundary; a character
 /// the bound cut is dropped rather than replaced.
 fn excerpt(body: &[u8]) -> String {
+    diagnostic::excerpt(excerpt_text(body))
+}
+
+fn excerpt_text(body: &[u8]) -> std::borrow::Cow<'_, str> {
     let bounded = body.get(..EXCERPT_BYTES).unwrap_or(body);
-    let text = match std::str::from_utf8(bounded) {
+    match std::str::from_utf8(bounded) {
         Ok(text) => std::borrow::Cow::Borrowed(text),
         Err(cut) if cut.error_len().is_none() => std::borrow::Cow::Borrowed(
             bounded
@@ -219,8 +226,7 @@ fn excerpt(body: &[u8]) -> String {
                 .unwrap_or_default(),
         ),
         Err(_) => String::from_utf8_lossy(bounded),
-    };
-    diagnostic::excerpt(text)
+    }
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {

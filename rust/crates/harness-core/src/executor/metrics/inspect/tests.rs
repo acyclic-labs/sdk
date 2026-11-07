@@ -5,6 +5,7 @@ use crate::{
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     model::{Model, ModelDispatch, ModelSampling, ToolCall},
     resources::ProviderRef,
+    tool::ToolDefinition,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -83,7 +84,14 @@ fn request(text: String) -> ModelRequest {
             },
         ],
         compose_tools: false,
-        tools: Vec::new(),
+        tools: vec![ToolDefinition {
+            name: "read".into(),
+            revision: "generated".into(),
+            description: "Read".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"object"}),
+            projection_schema: json!({"type":"object"}),
+        }],
         sampling: ModelSampling::default(),
         max_output_tokens: None,
     }
@@ -224,7 +232,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
 
 #[test]
 fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<()> {
-    use crate::{conversation::Limits, model::PreparedModelRequest, tool::ToolDefinition};
+    use crate::{conversation::Limits, model::PreparedModelRequest};
     for arguments in [
         Value::Null,
         json!(false),
@@ -234,14 +242,6 @@ fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<
         json!({}),
     ] {
         let mut request = request("generated parallel calls".into());
-        request.tools = vec![ToolDefinition {
-            name: "read".into(),
-            revision: "generated".into(),
-            description: "Read".into(),
-            input_schema: json!({"type":"object"}),
-            output_schema: json!({"type":"object"}),
-            projection_schema: json!({"type":"object"}),
-        }];
         request.messages[1].content = ModelContent::Parts(
             (0..3)
                 .map(|index| {
@@ -519,7 +519,7 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
                 step: 2,
                 purpose: ModelPurpose::Response,
                 request_digest: *blake3::hash(&bytes).as_bytes(),
-                request: request_file,
+                request: request_file.clone(),
             },
             None,
         )?
@@ -691,32 +691,35 @@ async fn original_terminal_keeps_metadata_and_refuses_foreign_or_unfinished_call
         "partial source is not a completed call"
     );
 
-    let mut wrong_request = mismatched;
-    wrong_request.tokens.output = Some(17);
-    wrong_request.dispatch.request_digest[0] ^= 1;
-    let wrong_request_file = stage_json(
-        journal.as_ref(),
-        operation,
-        "wrong-request-usage",
-        &wrong_request,
-        None,
-    )
-    .await?;
-    let mut wrong_request_event = terminal.event.clone();
-    match &mut wrong_request_event {
-        ExecutionEvent::Model { usage, .. } | ExecutionEvent::ModelInline { usage, .. } => {
-            *usage = Some(wrong_request_file)
-        }
-        _ => unreachable!("original model terminal"),
-    }
+    // Use a fresh admitted call so the journal's duplicate-completion guard
+    // does not prevent the exporter from checking the original request binding.
     journal
         .append(
             operation,
-            "wrong-request-completion",
-            &wrong_request_event,
+            "next-admission",
+            &ExecutionEvent::ModelStarted {
+                step: 3,
+                purpose: ModelPurpose::Response,
+                request_digest: *blake3::hash(&bytes).as_bytes(),
+                request: request_file,
+            },
             None,
         )?
         .await?;
+    let mut wrong_request = mismatched;
+    wrong_request.tokens.output = Some(17);
+    wrong_request.dispatch.step = 3;
+    wrong_request.dispatch.request_digest[0] ^= 1;
+    model_observation::append(
+        journal.as_ref(),
+        operation,
+        "wrong-request-completion",
+        (3, ModelPurpose::Response),
+        &completed,
+        Some(&wrong_request),
+        None,
+    )
+    .await?;
     assert!(
         super::super::journal_page(journal.as_ref(), operation, source().agent_path, 0, |_| {
             None

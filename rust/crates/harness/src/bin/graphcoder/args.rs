@@ -26,8 +26,8 @@ pub struct Args {
     /// Emits a `workspace-owner-ready` JSONL event on stdout after request events are installed.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root", "default_config", "usage_jsonl", "resume", "agent"])]
     pub host_workspace: bool,
-    /// Explicit durable storage, opened only by this trusted harness owner.
-    #[arg(long, requires = "host_workspace")]
+    /// Explicit durable storage for the local owner or a selected agent.
+    #[arg(long, conflicts_with = "endpoint")]
     pub host_state_directory: Option<PathBuf>,
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
@@ -250,10 +250,6 @@ mod tests {
     #[test]
     fn native_workspace_owner_requires_explicit_state_and_excludes_agent_inputs() {
         assert!(Args::try_parse_from(["graphcoder", "--host-workspace"]).is_err());
-        assert!(
-            Args::try_parse_from(["graphcoder", "--host-state-directory", "fixture-state"])
-                .is_err()
-        );
         let base = [
             "graphcoder",
             "--host-workspace",

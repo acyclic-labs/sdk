@@ -76,6 +76,7 @@
         "pty-clear-history",
         "pty-cancel-escape",
         "pty-cancel-ctrl-c",
+        "pty-cancel-preparation",
         "pty-cancel-retained-history",
         "pty-approval-cancel-escape",
         "pty-approval-cancel-ctrl-c",

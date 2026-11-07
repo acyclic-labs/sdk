@@ -325,13 +325,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     if prefix.is_empty() || matches!(prefix, b"." | b"..") {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let item = WorkCounters {
-        items_examined: 1,
-        #[cfg(windows)]
-        bytes_encoded: 2,
-        ..WorkCounters::UNCHARGED
-    };
-    let credit = work.reserve_work(WorkCounters {
+    let examined = WorkCounters {
         items_examined: prefix.len() as u64,
         #[cfg(windows)]
         bytes_encoded: prefix
@@ -339,11 +333,13 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
-    })?;
+    };
+    // The whole leaf is one admission and one ledger record, not a lock per byte.
+    let credit = work.reserve_work(examined)?;
+    crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
+    credit.record_completed(examined)?;
     let mut name = [0; N];
     for (&byte, unit) in prefix.iter().zip(&mut name) {
-        crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
-        credit.record_completed(item)?;
         if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
