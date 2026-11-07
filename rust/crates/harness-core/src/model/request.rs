@@ -195,14 +195,9 @@ impl ModelRequest {
             // Only the fixed envelope is new. The admitted payload moves into
             // it for validation and returns even when its schema refuses it.
             std::mem::swap(value, &mut envelope["value"]);
-            let result = with_history_io(io, |work| {
-                crate::executor::validate_json_schema_value(
-                    &tool.projection_schema,
-                    &envelope,
-                    "model tool result",
-                    work,
-                )
-            });
+            let result = tool
+                .check_projection_schema(&envelope, io)
+                .and_then(|result| result);
             std::mem::swap(value, &mut envelope["value"]);
             return result;
         }
@@ -213,24 +208,12 @@ impl ModelRequest {
                 let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                 _hold = io.guard_bytes(&bytes)?;
                 let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, Storage)?;
-                crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.projection_schema,
-                        &envelope.0,
-                        "model tool result",
-                        work,
-                    )
-                })?;
+                tool.check_projection_schema(&envelope.0, Some(io))??;
             }
             _ => {
                 let envelope = serde_json::to_value(content)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                crate::executor::validate_json_schema_value(
-                    &tool.projection_schema,
-                    &envelope,
-                    "model tool result",
-                    &mut None,
-                )?;
+                tool.check_projection_schema(&envelope, None)??;
             }
         }
         Ok(())

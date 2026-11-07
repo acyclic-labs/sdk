@@ -261,7 +261,7 @@ impl ToolDefinition {
         }
     }
 
-    pub(super) fn check_projection_schema(
+    pub(crate) fn check_projection_schema(
         &self,
         value: &Value,
         io: Option<&crate::executor::PreparationIo>,
