@@ -64,7 +64,7 @@
             ]
           },
           "assert": {
-            "task_failure": "model provider unavailable"
+            "task_failure": "model HTTP status 409"
           },
           "prompt": "after compact",
           "after_request": {
