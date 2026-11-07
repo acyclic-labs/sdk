@@ -27,7 +27,7 @@ async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> 
         let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
         let client = Client::with_transport(
             native::endpoint(channel, None, None),
-            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable.into())))),
             executor.clone(),
         );
         let connections = client.connections();
