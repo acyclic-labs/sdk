@@ -1,0 +1,16 @@
+--- a/rust/crates/filesystem/src/native_mount/fuse/packet_workers.rs
++++ b/rust/crates/filesystem/src/native_mount/fuse/packet_workers.rs
+@@ -26,11 +26,12 @@
+     started: impl FnOnce(u32) -> Result<(), NativeMountError>,
+ ) -> Result<(), NativeMountError> {
+     let _stop = Stop(owner);
++    started(0)?;
+     std::thread::scope(|scope| {
+         // The private callers select fixed host/device worker counts. Keep
+         // their handles in these stack frames rather than allocating another
+         // vector after startup, when original cancellation may already hold.
+-        let (result, panic) = spawn_and_join(scope, owner, 0, count.get(), started);
++        let (result, panic) = spawn_and_join(scope, owner, 0, count.get(), |_| Ok(()));
+         if let Some(payload) = panic {
+             std::panic::resume_unwind(payload);
+         }

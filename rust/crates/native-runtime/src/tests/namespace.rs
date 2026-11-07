@@ -5,16 +5,11 @@ mod windows;
 
 #[test]
 fn a_service_that_exits_without_signalling_closes_its_readiness_channel() -> io::Result<()> {
+    assert!(take_service_ready_signal()?.is_none());
     // This test binary rejects the service arguments and exits, writing
     // only to its discarded standard error.
     let readiness = spawn_service_process(&std::env::current_exe()?)?;
     assert_eq!(readiness.wait()?, ServiceStartOutcome::Exited);
-    Ok(())
-}
-
-#[test]
-fn a_process_not_started_as_a_signalled_service_has_no_readiness_channel() -> io::Result<()> {
-    assert!(take_service_ready_signal()?.is_none());
     Ok(())
 }
 

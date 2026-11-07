@@ -91,7 +91,7 @@ impl<V: Clone + Revisioned> UncheckedStore<V> {
             .0
             .lock()
             .map(|mut values| {
-                values.insert(workspace, replacement);
+                values.insert(workspace, Box::new(replacement));
                 true
             })
             .map_err(|_| Poisoned)

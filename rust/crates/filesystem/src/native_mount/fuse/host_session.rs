@@ -12,6 +12,8 @@ use crate::NativeMaterializationWork;
 
 pub(super) struct HostSession {
     protocol: PacketSession,
+    #[cfg(test)]
+    worker_lifetime: Arc<()>,
     // Its waker interrupts physical I/O. Keep the actual registration alive
     // through every worker's exit, then recover the typed cause from work.
     _cancellation: crate::Cancelled<'static>,
@@ -41,6 +43,8 @@ impl HostSession {
         let cancellation = super::packet_cancellation::register(work, &io)?;
         Ok(Self {
             protocol: PacketSession::new(router, maximum_write, page_size)?,
+            #[cfg(test)]
+            worker_lifetime: Arc::new(()),
             _cancellation: cancellation,
             io,
             work: work.clone(),
@@ -74,11 +78,44 @@ impl HostSession {
         Ok(())
     }
 
-    pub(super) fn run(self) -> Result<(), NativeMountError> {
-        super::packet_workers::run(
-            &self,
-            std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS).ok_or(libc::EINVAL)?,
-        )
+    #[cfg(test)]
+    pub(super) fn worker_lifetime(&self) -> std::sync::Weak<()> {
+        Arc::downgrade(&self.worker_lifetime)
+    }
+
+    /// Startup owns the worker until all callback threads exist or have joined.
+    pub(super) fn start(
+        self,
+        builder: std::thread::Builder,
+    ) -> Result<std::thread::JoinHandle<Result<(), NativeMountError>>, NativeMountError> {
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        let worker = builder.spawn(move || {
+            super::packet_workers::run(
+                &self,
+                std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS)
+                    .ok_or(libc::EINVAL)?,
+                |_| {
+                    started
+                        .send(())
+                        .map_err(|_| NativeMountError::Lifecycle("FUSE startup observer retired"))
+                },
+            )
+        })?;
+        if ready.recv().is_ok() {
+            return Ok(worker);
+        }
+        // A partial spawn drops the producer. Recover the original failure
+        // only after every physical worker has relinquished its custody.
+        match worker.join() {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) => Err(NativeMountError::Lifecycle(
+                "FUSE startup ended without completion",
+            )),
+            Err(panic) => Err(NativeMountError::DriverPanicked {
+                operation: "start FUSE callback workers",
+                panic: std::sync::Mutex::new(panic),
+            }),
+        }
     }
 
     fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {

@@ -10,6 +10,17 @@ pub(crate) struct PausedStore {
 }
 
 impl PausedStore {
+    // The release lock is std-only test support, never a modeled primitive.
+    pub(crate) fn new(
+        inner: Arc<MemoryObjectStore>,
+        release: Option<tokio::sync::oneshot::Receiver<()>>,
+    ) -> Self {
+        Self {
+            inner,
+            release: Mutex::new(release),
+        }
+    }
+
     async fn pause(&self) -> Result<(), ObjectStoreError> {
         let release = self
             .release

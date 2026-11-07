@@ -66,19 +66,23 @@ async fn parent_and_child(parent_name: &str, child_name: &str) -> (TestWorkspace
 async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() {
     let workspace = WorkspaceId::from_bytes([6; 16]);
     let store = MemoryOperationWindowStore::new();
-    store.states.0.lock().expect("state lock").insert(
-        workspace,
-        OperationWindowSnapshot {
-            version: STATE_VERSION,
-            revision: 1,
-            workspace_id: workspace,
-            phase: OperationWindowPhase::Active {
-                pinned_parent: generation(1),
-                leases: BTreeMap::new(),
-                pending_parent: None,
+    assert!(matches!(
+        store.states.compare_and_swap(
+            workspace,
+            0,
+            OperationWindowSnapshot {
+                version: STATE_VERSION,
+                revision: 1,
+                workspace_id: workspace,
+                phase: OperationWindowPhase::Active {
+                    pinned_parent: generation(1),
+                    leases: BTreeMap::new(),
+                    pending_parent: None,
+                },
             },
-        },
-    );
+        ),
+        Ok(true)
+    ));
     let coordinator = OperationWindowCoordinator::new(store);
 
     assert!(matches!(

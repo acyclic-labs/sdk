@@ -31,12 +31,9 @@ use crate::test_support::put_file_table_page as put;
 async fn projected_point_retires_original_scratch_on_close_and_withdrawal()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::allocation::retained::Retained;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    let store = crate::test_support::PausedStore {
-        inner: Arc::new(MemoryObjectStore::default()),
-        release: Mutex::new(None),
-    };
+    let store = crate::test_support::PausedStore::new(Arc::new(MemoryObjectStore::default()), None);
     let first = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]), 8).await?;
     let last = put(&store, &FileTablePage::Leaf(vec![record(3)]), 8).await?;
     let root = put(

@@ -116,7 +116,19 @@ fn every_file_lock_goes_through_the_explicitly_releasing_guard() {
 
 #[test]
 fn planted_raw_file_locks_fail_the_scan() {
-    let files = sources();
+    let target = "rust/crates/filesystem/src/native_mount/fence_io.rs";
+    let guard = "rust/crates/native-runtime/src/file_lock.rs";
+    // The positive control scans every source. Mutations change only these
+    // two files; retain every allowance-bearing file to check both directions.
+    let files = sources()
+        .iter()
+        .copied()
+        .filter(|(path, _)| {
+            *path == target
+                || *path == guard
+                || ALLOWED.iter().any(|(allowed, _, _)| path == allowed)
+        })
+        .collect::<Vec<_>>();
     let scan = |target: &str, plant: &str| {
         assert!(
             files.iter().any(|(path, _)| *path == target),
@@ -130,7 +142,6 @@ fn planted_raw_file_locks_fail_the_scan() {
             }
         }))
     };
-    let target = "rust/crates/filesystem/src/native_mount/fence_io.rs";
     for (plant, spelling) in [
         ("fs2::FileExt::try_lock_exclusive(&file)", "fs2"),
         ("unsafe { libc::flock(fd, libc::LOCK_EX) }", "flock("),
@@ -154,6 +165,5 @@ fn planted_raw_file_locks_fail_the_scan() {
         );
     }
     // A removed allowance is stale rather than silently passing.
-    let guard = "rust/crates/native-runtime/src/file_lock.rs";
     assert!(scan(guard, "").contains(&format!("{guard}: lock_shared expected 2, found 0")));
 }
