@@ -7,12 +7,14 @@ use std::{
 };
 
 type Overrides = Vec<(OsString, Option<OsString>)>;
+#[cfg(any(test, feature = "test-support"))]
+type Executor = std::rc::Rc<dyn Fn(&mut Command) -> std::io::Result<Output>>;
 thread_local! {
     // Calling-thread ownership; no process environment mutation or shared lock.
     static OVERRIDES: RefCell<Overrides> = const { RefCell::new(Vec::new()) };
     static DIRECTORY: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     #[cfg(any(test, feature = "test-support"))]
-    static EXECUTOR: RefCell<Option<std::rc::Rc<dyn Fn(&mut Command) -> std::io::Result<Output>>>> = const { RefCell::new(None) };
+    static EXECUTOR: RefCell<Option<Executor>> = const { RefCell::new(None) };
 }
 
 pub(crate) fn overrides() -> Overrides {
@@ -136,7 +138,7 @@ pub fn with_command_executor<T>(
     executor: impl Fn(&mut Command) -> std::io::Result<Output> + 'static,
     operation: impl FnOnce() -> T,
 ) -> T {
-    struct Restore(Option<std::rc::Rc<dyn Fn(&mut Command) -> std::io::Result<Output>>>);
+    struct Restore(Option<Executor>);
     impl Drop for Restore {
         fn drop(&mut self) {
             EXECUTOR.set(self.0.take());
