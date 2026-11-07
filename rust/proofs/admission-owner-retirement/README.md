@@ -30,6 +30,16 @@ cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'te
 ```
 
 The original must fail with `original waiter retired under the admission lock`.
+The separate `missing-successor-wake.patch` removes notification from all three
+production retirement callers. The same public-entry property must fail with
+`retirement lost its successor wake`, before waiting for that successor:
+
+```sh
+git apply rust/proofs/admission-owner-retirement/missing-successor-wake.patch
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission)'
+git apply -R rust/proofs/admission-owner-retirement/missing-successor-wake.patch
+```
+
 The existing allocation controls cover final notifier ownership and removal of
 neighbor links. Registration replacement and notification snapshot cloning
 are separate callback boundaries and remain outside this qualification.
