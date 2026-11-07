@@ -1073,8 +1073,10 @@ impl Reader {
         let rtt = now.saturating_sub(flight.issued);
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
+        } else if rtt >= self.rtt_ms {
+            self.rtt_ms + (rtt - self.rtt_ms) / 8
         } else {
-            (self.rtt_ms * 7 + rtt) / 8
+            self.rtt_ms - (self.rtt_ms - rtt).div_ceil(8)
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
