@@ -216,13 +216,14 @@ mod tests {
 
         fn closed(&mut self) -> Result<()> {
             let closed = self.owner.closed();
+            let settled = closed.is_ok();
             let retired = (|| {
                 let children = self
                     .owner
                     .children
                     .as_ref()
                     .ok_or_else(|| invalid("original child owner absent"))?;
-                if children.running() {
+                if settled && children.running() {
                     return Err(invalid(
                         "EOF left native children running before reply drain",
                     ));
@@ -237,11 +238,13 @@ mod tests {
                         return Err(invalid("original process must retire before reply drain"));
                     }
                 }
-                let reply = children
-                    .wait("held")?
-                    .ok_or_else(|| invalid("retired child remains running"))?;
-                if reply["control"] != "interrupt" || reply["status"]["settled"] != true {
-                    return Err(invalid("EOF did not settle the original native claim"));
+                if settled {
+                    let reply = children
+                        .wait("held")?
+                        .ok_or_else(|| invalid("retired child remains running"))?;
+                    if reply["control"] != "interrupt" || reply["status"]["settled"] != true {
+                        return Err(invalid("EOF did not settle the original native claim"));
+                    }
                 }
                 Ok(())
             })();
@@ -249,7 +252,7 @@ mod tests {
                 .release
                 .send(())
                 .map_err(|_| invalid("reply writer stopped before retirement observation"));
-            closed.and(retired).and(released)
+            retired.and(closed).and(released)
         }
     }
 
@@ -258,7 +261,8 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         for host in ["codex", "claude-code", "pi"] {
             served(host, |host, cwd| {
-                let (mut children, _) = children(host, cwd, "eof-retirement")?;
+              for unavailable in [false, true] {
+                let (mut children, _) = children(host, cwd, if unavailable { "eof-retirement-refusal" } else { "eof-retirement" })?;
                 let (mut running, view) = claim(&mut children, cwd, "held", SessionAction::Spawn { prompt: "wait for parent".into() })?;
                 let mut command = native_fixture(&view, "", "0");
                 running.process.spawn(&mut command, running.claim.operation)?;
@@ -272,11 +276,29 @@ mod tests {
                 let (writing, written) = sync_channel(1);
                 let (release, released) = sync_channel(1);
                 let mut observed = Observed { owner: Coordination { host: host.into(), children: Some(children) }, process, release };
-                ToolServer { name: "acyclic-sessions", version: env!("CARGO_PKG_VERSION"), parked: WAITS, frame_bytes: FRAME_BYTES }.serve(
+                let displaced = tempfile::tempdir()?;
+                let hidden = displaced.path().join("workspace");
+                // Real directory withdrawal refuses the original request before
+                // publication while the held process and its custody remain live.
+                if unavailable {
+                    std::fs::rename(cwd, &hidden)?;
+                }
+                let result = ToolServer { name: "acyclic-sessions", version: env!("CARGO_PKG_VERSION"), parked: WAITS, frame_bytes: FRAME_BYTES }.serve(
                     &mut observed,
                     Input { bytes: io::Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}\n".to_vec()), writing: Some(written) },
                     Output { writing: Some(writing), release: released },
-                )?;
+                );
+                if unavailable {
+                    std::fs::rename(&hidden, cwd)?;
+                    let Err(ServeError::Provider(error)) = result else {
+                        return Err("EOF must retain the original cancellation refusal".into());
+                    };
+                    assert_eq!(error.code(), crate::wire::ErrorCode::Storage, "{error}");
+                    assert!(error.request_operation_id().is_some(), "original request refusal lost its operation");
+                } else {
+                    result?;
+                }
+              }
                 Ok(())
             }).await?;
         }
