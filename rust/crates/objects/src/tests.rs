@@ -1205,7 +1205,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         let removed = blobs.delete(parent).await?;
         assert_eq!(old, removed.references);
         let with_head = store.medium().take();
-        assert!(with_head["read"] > direct["read"]);
+        assert!(with_head["observe"] > direct["observe"]);
         println!("population={population} delete={direct:?} head_then_delete={with_head:?}");
         previous = Some(direct);
     }
@@ -1801,7 +1801,8 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// Counts each operation of a volatile medium, with the keys of each flush.
+/// Counts volatile-medium calls, returned bytes and keys in each flush.
+/// Returned byte lengths do not measure decoded or allocated backing.
 #[derive(Default)]
 pub(crate) struct Counting {
     inner: MemoryMedium,
@@ -1811,7 +1812,11 @@ pub(crate) struct Counting {
 
 impl Counting {
     fn count(&self, operation: &'static str) {
-        *self.counts.lock().unwrap().entry(operation).or_default() += 1;
+        self.record(operation, 1);
+    }
+
+    fn record(&self, operation: &'static str, amount: usize) {
+        *self.counts.lock().unwrap().entry(operation).or_default() += amount;
     }
 
     fn take(&self) -> std::collections::BTreeMap<&'static str, usize> {
@@ -1836,15 +1841,23 @@ impl Medium for Counting {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         self.count("read");
-        self.inner.read(key, range).await
+        let result = self.inner.read(key, range).await?;
+        if let Some(bytes) = &result {
+            self.record("read_bytes", bytes.len());
+        }
+        Ok(result)
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         self.count("remove");
         self.inner.remove(key).await
     }
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
-        self.count("read");
-        self.inner.observe(key).await
+        self.count("observe");
+        let result = self.inner.observe(key).await?;
+        if let Some(observed) = &result {
+            self.record("observed_bytes", observed.bytes.len());
+        }
+        Ok(result)
     }
 
     async fn replace<'a>(
@@ -1900,7 +1913,9 @@ async fn operations(
         Put::Created { .. }
     ));
     let put = store.medium().take();
-    blobs.usage().await?;
+    let usage = blobs.usage().await?;
+    assert_eq!(usage.blobs, u64::from(existing) + 1);
+    assert_eq!(usage.unique_bytes, u64::from(existing) * 4 + 64);
     Ok([put, store.medium().take()])
 }
 
@@ -1910,12 +1925,31 @@ async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size(
     let [small, small_scan] = operations(1).await?;
     let [large, large_scan] = operations(2_000).await?;
     assert_eq!(small.get("create"), Some(&2), "{small:?}");
-    for operation in ["read", "list", "replace", "remove", "remove_if", "flush"] {
+    for operation in [
+        "read",
+        "observe",
+        "list",
+        "replace",
+        "remove",
+        "remove_if",
+        "flush",
+    ] {
         assert_eq!(small.get(operation), None, "{small:?}");
     }
     assert_eq!(small, large);
     // Negative control: the same count sees a scan grow with the account.
     assert_ne!(small_scan, large_scan);
+    for scan in [&small_scan, &large_scan] {
+        assert_eq!(scan["observe"], scan["read"]);
+        assert_eq!(
+            scan["read_bytes"], 0,
+            "usage probes return no payload bytes"
+        );
+    }
+    assert!(large_scan["observe"] > small_scan["observe"]);
+    assert!(large_scan["observed_bytes"] > small_scan["observed_bytes"]);
+    assert!(large_scan["list"] > small_scan["list"]);
+    println!("fresh={small:?} usage_small={small_scan:?} usage_large={large_scan:?}");
     Ok(())
 }
 
@@ -3270,7 +3304,8 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
 }
 
 #[tokio::test]
-async fn a_repeat_put_reads_twice_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_repeat_put_observes_metadata_and_probes_presence_without_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new(Counting::default());
     let blobs = store.account(b"account")?;
     let child = Digest::of(&[1; 8]);
@@ -3282,8 +3317,17 @@ async fn a_repeat_put_reads_twice_and_writes_nothing() -> Result<(), Box<dyn std
     let counts = store.medium().take();
     // The failed envelope create, the envelope and the presence probe.
     assert_eq!(counts.get("create"), Some(&1), "{counts:?}");
-    assert_eq!(counts.get("read"), Some(&2), "{counts:?}");
-    assert_eq!(counts.len(), 2, "{counts:?}");
+    assert_eq!(
+        counts.get("observe"),
+        Some(&1),
+        "version observations must remain distinct from payload reads: {counts:?}"
+    );
+    assert_eq!(counts.get("read"), Some(&1), "{counts:?}");
+    assert_eq!(counts.get("read_bytes"), Some(&0), "{counts:?}");
+    assert!(counts["observed_bytes"] > 0);
+    for operation in ["list", "replace", "remove", "remove_if", "flush"] {
+        assert_eq!(counts.get(operation), None, "{counts:?}");
+    }
     // Negative control: a stored envelope whose payload a put still owes is
     // indexed and written.
     let parent = Digest::of(&[2; 8]).to_hex();
