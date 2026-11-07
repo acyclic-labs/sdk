@@ -13,7 +13,6 @@ description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
-
 [[test]]
 name = "main"
 path = "tests/main.rs"
@@ -23,16 +22,10 @@ name = "native_receipt"
 path = "tests/native_receipt.rs"
 required-features = ["filesystem-local", "native-execution"]
 
-
-
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [[bin]]
 name = "acyclic-virtiofsd"
 path = "src/bin/virtiofsd.rs"
 required-features = ["filesystem-local", "native-execution"]
-
 
 [[example]]
 name = "native-process-approval"
