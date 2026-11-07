@@ -25,7 +25,7 @@ struct GenerationAppend<'a> {
     changes: u64,
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) async fn prepare_append<'a, G: AuthorityGuard, M: AppendPurpose>(
         &self,
         request: &'a crate::GuardedAppend,

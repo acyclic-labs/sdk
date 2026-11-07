@@ -137,14 +137,14 @@ impl FilesystemS3Limits {
 /// Authority adapter that retains filesystem state in the canonical public hierarchical Stream provider.
 pub trait StreamBackedAuthority: AsyncAuthorityStore {
     /// Exact Stream implementation used by this deployment.
-    type Stream: acyclic_stream::StreamProvider;
+    type Stream: acyclic_stream::StreamProvider + ?Sized;
 
     /// Returns the shared provider; no shadow log or multipart catalog is created.
     fn stream_provider(&self) -> Arc<Self::Stream>;
 }
 
-impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamAuthorityStore<P> {
-    type Stream = P;
+impl StreamBackedAuthority for StreamAuthorityStore {
+    type Stream = dyn crate::distributed::AuthorityProvider;
 
     fn stream_provider(&self) -> Arc<Self::Stream> {
         self.provider()

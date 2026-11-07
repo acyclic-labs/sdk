@@ -71,8 +71,8 @@ impl ToolExecutor for Echo {
 
 struct Embedded {
     _storage: Box<dyn Storage>,
-    bound: Bound<Observed, Objects>,
-    server: Arc<Server<Observed, Objects>>,
+    bound: Bound<Objects>,
+    server: Arc<Server<Objects>>,
     client: Client,
     binding: Vec<u8>,
     effects: Arc<AtomicUsize>,

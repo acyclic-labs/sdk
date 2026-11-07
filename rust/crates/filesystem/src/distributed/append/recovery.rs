@@ -27,7 +27,7 @@ fn recover_tail(
     Ok(())
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(in crate::distributed) async fn recover_conflict_head(
         &self,
         authority: AuthorityId,

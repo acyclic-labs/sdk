@@ -49,10 +49,7 @@ pub(crate) fn authority_database_name(name: &str) -> String {
 pub async fn open_authority(
     name: &str,
     limits: acyclic_stream::BrowserStreamLimits,
-) -> Result<
-    crate::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>,
-    BrowserAuthorityOpenError,
-> {
+) -> Result<crate::StreamAuthorityStore, BrowserAuthorityOpenError> {
     if name.is_empty() {
         return Err(acyclic_stream::StreamError::InvalidArgument.into());
     }

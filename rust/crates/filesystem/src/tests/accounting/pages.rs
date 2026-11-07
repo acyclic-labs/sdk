@@ -1,6 +1,6 @@
 use super::*;
 
-struct OriginalPageAuthority<'a>(&'a StreamAuthorityStore<acyclic_stream::MemoryStream>);
+struct OriginalPageAuthority<'a>(&'a StreamAuthorityStore);
 
 impl OriginalPageAuthority<'_> {
     fn observe(work: &mut AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {

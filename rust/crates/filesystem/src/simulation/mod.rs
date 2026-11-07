@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
-type ReferenceAuthority = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
+type ReferenceAuthority = crate::distributed::StreamAuthorityStore;
 type ReferenceObjects = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
 /// One exact simulator interception point.
@@ -178,7 +178,7 @@ const SIMULATION_OPERATION_COUNT: usize = SimulationOperation::ObjectContains as
 /// Shared deterministic simulator and its two backend handles.
 #[derive(Clone)]
 pub struct Simulation<
-    A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    A = crate::distributed::StreamAuthorityStore,
     O = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 > {
     state: Arc<Mutex<State>>,

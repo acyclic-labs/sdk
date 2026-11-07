@@ -197,8 +197,9 @@ pub mod workspace_context_wire;
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 /// Scopes authority writes that survive a crash of this process but wait
-/// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+/// for a durability barrier to survive a power loss. Fund the barrier with
+/// [`Fs::prepare_durability_barrier`] before accepting the writes, then await it
+/// before acknowledging durability.
 pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};

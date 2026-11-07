@@ -170,14 +170,6 @@ where
 }
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-impl<O> Fs<LocalAuthorityBackend, O> {
-    /// Flushes the authority frames written under
-    pub fn flush_deferred_authority(&self) -> Result<(), acyclic_stream::StreamError> {
-        self.inner.authority.provider().flush()
-    }
-}
-
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     /// Observes release of every provider derived from this local root.
     #[doc(hidden)]

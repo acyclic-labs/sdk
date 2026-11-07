@@ -5,7 +5,6 @@ use crate::{
     runtime::{RuntimeScope, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
-use acyclic_fs::distributed::AuthorityProvider;
 use acyclic_fs::{StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver};
 use acyclic_stream::BoxProviderFuture;
 
@@ -28,19 +27,19 @@ pub(super) async fn read_before_effect<T>(
 }
 
 /// Filesystem commands over the remote placement itself, without a machine.
-pub struct FilesystemTools<P: ?Sized + 'static, O: 'static> {
-    host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
-    store: StreamGitCompatStore<P>,
+pub struct FilesystemTools<O: 'static> {
+    host: Arc<FilesystemHost<StreamAuthorityStore, O>>,
+    store: StreamGitCompatStore,
     volumes: BTreeMap<String, VolumeRef>,
     binding_identity: [u8; 32],
     verifier: AuthorityVerifier,
     scope: Scope,
 }
 
-impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> FilesystemTools<P, O> {
+impl<O: AsyncObjectStore + 'static> FilesystemTools<O> {
     /// Binds only the agent's committed volumes and the turn's authenticated scope.
     pub fn new(
-        host: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        host: Arc<FilesystemHost<StreamAuthorityStore, O>>,
         agent: &AgentState,
         authority: &TurnAuthority,
     ) -> Result<Self> {
@@ -177,12 +176,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         graph
             .register_root(&root)
             .await
-            .map_err(<StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error)?;
+            .map_err(<StreamGitCompatStore as crate::tools::git::CommandStore>::lineage_error)?;
         let (selected, pending) = read_before_effect(&mut cancellation, async {
             repository
                 .checkout_selection()
                 .await
-                .map_err(crate::tools::git::compat_error::<StreamGitCompatStore<P>>)
+                .map_err(crate::tools::git::compat_error::<StreamGitCompatStore>)
         })
         .await?;
         if pending.is_some() {
@@ -198,12 +197,12 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
                     .authorize_descendant(selected, root.id())
                     .await
                     .map_err(
-                        <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
+                        <StreamGitCompatStore as crate::tools::git::CommandStore>::lineage_error,
                     )?;
                 WorkspaceResolver::resolve(&(self.host.filesystem.clone(), graph), selected)
                     .await
                     .map_err(
-                        <StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error,
+                        <StreamGitCompatStore as crate::tools::git::CommandStore>::lineage_error,
                     )
             })
             .await?
@@ -266,17 +265,13 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
     }
 }
 
-impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static>
-    crate::runtime::FilesystemExecutor for FilesystemTools<P, O>
-{
+impl<O: AsyncObjectStore + 'static> crate::runtime::FilesystemExecutor for FilesystemTools<O> {
     fn binding_identity(&self) -> [u8; 32] {
         self.binding_identity
     }
 }
 
-impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> ToolExecutor
-    for FilesystemTools<P, O>
-{
+impl<O: AsyncObjectStore + 'static> ToolExecutor for FilesystemTools<O> {
     fn authorize_replay<'a>(
         &'a self,
         context: Option<&'a ToolContext>,

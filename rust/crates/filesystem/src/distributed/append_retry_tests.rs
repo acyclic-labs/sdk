@@ -5,7 +5,7 @@ use acyclic_stream::{MemoryStream, StreamProvider as _};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct Race {
-    store: Arc<StreamAuthorityStore<MemoryStream>>,
+    store: Arc<StreamAuthorityStore>,
     authority: AuthorityId,
     expected: Head,
     gate_only: bool,

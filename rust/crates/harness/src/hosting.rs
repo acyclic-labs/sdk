@@ -39,7 +39,7 @@ use crate::{
     model::ModelContent,
 };
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
-use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
+use acyclic_fs::AsyncObjectStore;
 use acyclic_harness_client::{
     AgentBinding, AgentCall, AgentCommand, AgentPageRequest, AgentReply, ChildAgent,
     MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PendingApproval, ReadTarget,
@@ -135,34 +135,33 @@ pub trait Platform: ProviderPlatform + 'static {
 const BINDING_URL: &str = "/agents/command";
 
 /// One admitted agent tree served over the unified session protocol.
-pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
+pub struct Server<O: 'static> {
     this: std::sync::Weak<Self>,
-    bound: Bound<P, O>,
+    bound: Bound<O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
     resource: String,
 }
 
 /// What serving a root came to.
-pub enum Serving<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
+pub enum Serving<O: 'static> {
     /// The root is created and served.
-    Served(Arc<Server<P, O>>),
+    Served(Arc<Server<O>>),
     /// The root's creation is uncertain: [`Unsettled::resubmit`] submits the
     /// identical prepared commit, which still holds its fresh volumes'
     /// objects.
-    Unknown(Unsettled<P, O>),
+    Unknown(Unsettled<O>),
 }
 
 /// A root whose creation is uncertain, owning its prepared commit.
-pub struct Unsettled<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
-    bound: Bound<P, O>,
+pub struct Unsettled<O: 'static> {
+    bound: Bound<O>,
     platform: Arc<dyn Platform>,
     prepared: Prepared,
 }
 
-impl<P, O> Unsettled<P, O>
+impl<O> Unsettled<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// The prepared commit awaiting a definite outcome.
@@ -175,7 +174,7 @@ where
     ///
     /// # Errors
     /// As [`serve`].
-    pub async fn resubmit(self) -> Result<Serving<P, O>, Error> {
+    pub async fn resubmit(self) -> Result<Serving<O>, Error> {
         settle(self.bound, self.platform, self.prepared).await
     }
 }
@@ -186,14 +185,13 @@ where
 ///
 /// # Errors
 /// When `bound`'s admission does not cover `root`, or the store fails.
-pub async fn serve<P, O>(
-    bound: Bound<P, O>,
+pub async fn serve<O>(
+    bound: Bound<O>,
     platform: Arc<dyn Platform>,
     intent: &IntentId,
     root: RootRequest,
-) -> Result<Serving<P, O>, Error>
+) -> Result<Serving<O>, Error>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let prepared = bound.prepare_root(intent, root).await?;
@@ -201,13 +199,12 @@ where
 }
 
 /// Submits `prepared` once under `bound` and serves the created root.
-async fn settle<P, O>(
-    bound: Bound<P, O>,
+async fn settle<O>(
+    bound: Bound<O>,
     platform: Arc<dyn Platform>,
     prepared: Prepared,
-) -> Result<Serving<P, O>, Error>
+) -> Result<Serving<O>, Error>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let root = match bound.submit_root(prepared).await? {
@@ -228,26 +225,20 @@ where
 /// authority. File operations and turns use the agent's committed bindings.
 /// The platform validates adoption before retaining placement; restoring it
 /// neither runs the agent nor activates children.
-pub async fn reopen<P, O>(
-    bound: Bound<P, O>,
+pub async fn reopen<O>(
+    bound: Bound<O>,
     platform: Arc<dyn Platform>,
     root: AgentPath,
-) -> Result<Arc<Server<P, O>>, Error>
+) -> Result<Arc<Server<O>>, Error>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     bound.admit_path(&root)?;
     Ok(server(bound, platform, root))
 }
 
-fn server<P, O>(
-    bound: Bound<P, O>,
-    platform: Arc<dyn Platform>,
-    root: AgentPath,
-) -> Arc<Server<P, O>>
+fn server<O>(bound: Bound<O>, platform: Arc<dyn Platform>, root: AgentPath) -> Arc<Server<O>>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let resource = format!(
@@ -263,9 +254,8 @@ where
     })
 }
 
-impl<P, O> Server<P, O>
+impl<O> Server<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// The served root.
@@ -308,7 +298,7 @@ where
 
     /// The binding this server serves.
     #[must_use]
-    pub fn bound(&self) -> &Bound<P, O> {
+    pub fn bound(&self) -> &Bound<O> {
         &self.bound
     }
 
@@ -1090,9 +1080,8 @@ fn parse_children_cursor(cursor: &str) -> Result<(CommitId, StreamPath), Error> 
     ))
 }
 
-impl<P, O> CallProvider for Server<P, O>
+impl<O> CallProvider for Server<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn target(

@@ -1,15 +1,11 @@
 use super::*;
 
-impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
+impl<O, S> WorkspaceGitExecutor<'_, O, S>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
-    pub(super) async fn generation(
-        &self,
-        tree: GitTreeRef,
-    ) -> Result<ManagedGeneration<P, O>, Error> {
+    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<ManagedGeneration<O>, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
                 .workspace(reference.workspace_id)
@@ -90,7 +86,7 @@ where
     }
 
     /// Takes the workspace selected by a branch switch.
-    pub(crate) fn switched_workspace(&self) -> Result<Option<OwnedView<P, O>>, Error> {
+    pub(crate) fn switched_workspace(&self) -> Result<Option<OwnedView<O>>, Error> {
         self.switched
             .lock()
             .map_err(|_| Self::error("Git workspace switch lock is unavailable"))
@@ -101,7 +97,7 @@ where
     pub(crate) async fn workspace(
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
-    ) -> Result<ManagedWorkspace<P, O>, Error> {
+    ) -> Result<ManagedWorkspace<O>, Error> {
         self.repository_access().workspace(workspace_id).await
     }
 }

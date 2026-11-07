@@ -17,9 +17,8 @@ pub(crate) struct Fixture {
     pub binding: VolumeBinding,
     pub provider: Arc<Observed>,
     scheduler: Arc<Observed>,
-    filesystem: Arc<
-        FilesystemHost<acyclic_fs::StreamAuthorityStore<Observed>, crate::conformance::ObjectStore>,
-    >,
+    filesystem:
+        Arc<FilesystemHost<acyclic_fs::StreamAuthorityStore, crate::conformance::ObjectStore>>,
     _storage: Box<dyn crate::conformance::Storage>,
 }
 

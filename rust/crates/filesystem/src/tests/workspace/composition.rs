@@ -10,10 +10,9 @@ use acyclic_stream::{
     StreamProvider,
 };
 
-type PlacedFs = Fs<StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;
-type PlacedGeneration =
-    crate::Generation<StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;
-type PlacedFork<'g> = ForkSpec<'g, StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;
+type PlacedFs = Fs<StreamAuthorityStore, crate::MemoryObjectBackend>;
+type PlacedGeneration = crate::Generation<StreamAuthorityStore, crate::MemoryObjectBackend>;
+type PlacedFork<'g> = ForkSpec<'g, StreamAuthorityStore, crate::MemoryObjectBackend>;
 
 const VOLUMES: &str = "harness/volumes";
 
@@ -24,7 +23,7 @@ fn placed(stream: &Arc<MemoryStream>) -> Result<PlacedFs, Box<dyn Error>> {
 fn placed_at(stream: &Arc<MemoryStream>, root: &str) -> Result<PlacedFs, Box<dyn Error>> {
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Fs::new(
-        StreamAuthorityStore::with_placement(Arc::clone(stream), AuthorityPlacement::new(root)?),
+        StreamAuthorityStore::with_placement(stream.clone(), AuthorityPlacement::new(root)?),
         crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
         crate::EmbeddedCapabilities::MEMORY,
     ))
@@ -171,7 +170,7 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
     // subtree the same commit forks into, and nothing lands under `fs/`.
     assert_eq!(placed_store.authorities(64).await?.len(), before + 4);
     assert!(
-        StreamAuthorityStore::new(Arc::clone(&stream))
+        StreamAuthorityStore::new(stream.clone())
             .authorities(64)
             .await?
             .is_empty()

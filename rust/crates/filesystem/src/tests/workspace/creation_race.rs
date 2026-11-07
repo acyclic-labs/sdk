@@ -162,7 +162,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
 impl acyclic_stream::NativeStreamProvider for YieldStream {}
 
 type RaceFs = Fs<
-    crate::distributed::StreamAuthorityStore<YieldStream>,
+    crate::distributed::StreamAuthorityStore,
     crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
@@ -176,7 +176,7 @@ async fn race(seed: u64, keys: [IdempotencyKey; 2]) -> Result<(usize, bool), Box
     });
     let objects = acyclic_objects::MemoryObjects::memory();
     let fs: RaceFs = Fs::new(
-        crate::distributed::StreamAuthorityStore::new(Arc::clone(&stream)),
+        crate::distributed::StreamAuthorityStore::new(stream.clone()),
         crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     );

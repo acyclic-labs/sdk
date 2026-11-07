@@ -3,9 +3,7 @@ use super::*;
 // One task borrow names the erased future lifetime; the work context remains
 // independent. Construct the task synchronously at the authority boundary.
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
-    for StreamAuthorityStore<P>
-{
+impl AsyncAuthorityStore for StreamAuthorityStore {
     fn own_group<G: crate::OwnedAuthorityGuard>(
         &self,
         group: crate::OwnedAuthorityGroup<G>,
@@ -25,7 +23,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> impl std::future::Future<
         Output = Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError>,
     > + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             StreamAuthorityStore::quote_group_append(self, request, growth, work).await
         })
@@ -40,7 +38,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> impl std::future::Future<
         Output = Result<super::AppendGroupOutcome, AuthorityError<G::Error>>,
     > + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             StreamAuthorityStore::compare_and_append_group(self, requests, cuts, work, guard).await
         })
@@ -60,7 +58,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<crate::PolicyCut, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -89,7 +87,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             work.check()?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -116,7 +114,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> Result<
         impl std::future::Future<Output = Result<(), AuthorityStoreError>>
         + acyclic_stream::ProviderTask
-        + use<'a, P>,
+        + use<'a>,
         AuthorityStoreError,
     > {
         work.check()?;
@@ -165,7 +163,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<bool, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -181,7 +179,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         guard: Option<&'task mut G>,
     ) -> impl std::future::Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -197,7 +195,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         guard: Option<&'task mut G>,
     ) -> impl std::future::Future<Output = Result<bool, AuthorityError<G::Error>>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -213,7 +211,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         guard: Option<&'task mut G>,
     ) -> impl std::future::Future<Output = Result<WorkspaceForkOutcome, AuthorityError<G::Error>>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -230,7 +228,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         guard: Option<&'task mut G>,
     ) -> impl std::future::Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             if source.lineage == crate::GenerationFork::Independent {
                 return self
@@ -251,7 +249,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         guard: Option<&'task mut G>,
     ) -> impl std::future::Future<Output = Result<FsAppendOutcome, AuthorityError<G::Error>>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P, G> {
+    + use<'task, 'context, G> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -267,7 +265,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<Head, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -285,7 +283,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> impl std::future::Future<
         Output = Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError>,
     > + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             self.head_payload_checked::<true>(authority, maximum_payload_bytes, work)
                 .await
@@ -300,7 +298,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<Option<Sequence>, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             self.seek_generation(authority, generation, through, work)
                 .await
@@ -316,7 +314,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> impl std::future::Future<
         Output = Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError>,
     > + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             if limit.records == 0 || limit.payload_bytes == 0 {
                 return Err(AuthorityStoreError::InvalidReplayLimit);
@@ -339,7 +337,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<FenceOutcome, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -356,7 +354,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<Option<DurableCommit>, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -374,7 +372,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     ) -> impl std::future::Future<
         Output = Result<Option<PublicationReservation>, AuthorityStoreError>,
     > + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -390,7 +388,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<ReservationOutcome, AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -404,7 +402,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -418,7 +416,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         work: &'task mut AuthorityWork<'context>,
     ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>>
     + acyclic_stream::ProviderTask
-    + use<'task, 'context, P> {
+    + use<'task, 'context> {
         acyclic_stream::erase_provider_future::<'task, _>(move || async move {
             let actor = self.actor(authority, work)?;
             let journal = actor.lease(work).await?;

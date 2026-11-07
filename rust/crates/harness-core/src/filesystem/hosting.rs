@@ -43,9 +43,9 @@ enum StagedInput<'a> {
     Notice(&'a crate::conversation::wire::Notice),
 }
 
-type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+type Host<O> = FilesystemHost<StreamAuthorityStore, O>;
 /// The turn host of a binding's agents.
-pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
+pub type Turner<O> = FilesystemTurnHost<dyn AuthorityProvider, StreamAuthorityStore, O>;
 
 mod journal;
 
@@ -130,9 +130,9 @@ pub enum RootSubmission {
 /// The one admitted stream instance and its placement. Agents, their actor
 /// state and their volumes' authority all live on `stream`, so a root's
 /// volumes and adoption, and every spawn, commit together.
-pub struct Placement<P: ?Sized + 'static, O: 'static> {
+pub struct Placement<O: 'static> {
     /// The canonical filesystem; its authority provider also hosts the agents.
-    pub filesystem: Fs<StreamAuthorityStore<P>, O>,
+    pub filesystem: Fs<StreamAuthorityStore, O>,
     /// The filesystem provider every volume of this placement names.
     pub provider: ProviderRef,
     /// Account and namespace of the agents' actors. The binding's runtime
@@ -158,20 +158,20 @@ pub struct Turns {
 
 /// A host's custody, a caller's admission and the one placement they act on,
 /// bound once. Every root, turn and spawn of this binding uses this placement.
-pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
+pub struct Bound<O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     within: ActorReference,
     maximum_bytes: u64,
-    agents: Arc<AgentHost<P>>,
-    turns: Arc<Turner<P, O>>,
-    volumes: Arc<Host<P, O>>,
+    agents: Arc<AgentHost<dyn AuthorityProvider>>,
+    turns: Arc<Turner<O>>,
+    volumes: Arc<Host<O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
-    spawns: Arc<FilesystemSpawnVolumes<P, O>>,
+    spawns: Arc<FilesystemSpawnVolumes<O>>,
 }
 
-impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
+impl<O> Clone for Bound<O> {
     fn clone(&self) -> Self {
         Self {
             issuer: self.issuer.clone(),
@@ -188,18 +188,17 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
     }
 }
 
-impl<P: AuthorityProvider + ?Sized + 'static, O> Bound<P, O> {
+impl<O> Bound<O> {
     /// The host's canonical filesystem facade, for content observation under
     /// the same admission as its turns.
     #[must_use]
-    pub const fn volumes(&self) -> &Arc<Host<P, O>> {
+    pub const fn volumes(&self) -> &Arc<Host<O>> {
         &self.volumes
     }
 }
 
-impl<P, O> Bound<P, O>
+impl<O> Bound<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Binds `caller`, as the host's platform verified it, to the host's
@@ -210,7 +209,7 @@ where
     pub fn admitted(
         issuer: AuthorityRoot,
         caller: VerifiedCaller,
-        placement: Placement<P, O>,
+        placement: Placement<O>,
         turns: Turns,
     ) -> Result<Self, Error> {
         Self::new(
@@ -229,7 +228,7 @@ where
     /// replacement caller, audience or signing root.
     pub fn platform_admitted(
         authority: RuntimeAuthority,
-        placement: Placement<P, O>,
+        placement: Placement<O>,
         turns: Turns,
     ) -> Result<Self, Error> {
         authority.verifier(&mut None).map_err(turn)?;
@@ -255,11 +254,11 @@ where
     pub fn admitted_host(
         issuer: AuthorityRoot,
         caller: VerifiedCaller,
-        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        volumes: Arc<FilesystemHost<StreamAuthorityStore, O>>,
         within: ActorReference,
         turns: Turns,
         cuts: Option<Arc<dyn super::ForkCuts>>,
-        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+        configure: impl FnOnce(Turner<O>) -> Turner<O>,
     ) -> Result<Self, Error> {
         Self::on(
             issuer.into(),
@@ -281,7 +280,7 @@ where
     /// As [`Self::admitted`].
     pub fn local_root(
         issuer: AuthorityRoot,
-        placement: Placement<P, O>,
+        placement: Placement<O>,
         turns: Turns,
     ) -> Result<Self, Error> {
         Self::new(issuer.into(), TurnAdmission::LocalRoot, placement, turns)
@@ -296,11 +295,11 @@ where
     /// As [`Self::admitted`].
     pub fn local_host(
         issuer: AuthorityRoot,
-        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        volumes: Arc<FilesystemHost<StreamAuthorityStore, O>>,
         within: ActorReference,
         turns: Turns,
         cuts: Option<Arc<dyn super::ForkCuts>>,
-        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+        configure: impl FnOnce(Turner<O>) -> Turner<O>,
     ) -> Result<Self, Error> {
         Self::on(
             issuer.into(),
@@ -315,7 +314,7 @@ where
     fn new(
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
-        placement: Placement<P, O>,
+        placement: Placement<O>,
         turns: Turns,
     ) -> Result<Self, Error> {
         let Placement {
@@ -342,10 +341,10 @@ where
     fn on(
         issuer: RuntimeAuthority,
         admission: TurnAdmission,
-        volumes: Arc<Host<P, O>>,
+        volumes: Arc<Host<O>>,
         within: ActorReference,
         (turns, cuts): (Turns, Option<Arc<dyn super::ForkCuts>>),
-        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+        configure: impl FnOnce(Turner<O>) -> Turner<O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
         let maximum_bytes = turns.limits.maximum_bytes;
@@ -445,13 +444,13 @@ where
 
     /// The agents this binding creates and hosts.
     #[must_use]
-    pub const fn agents(&self) -> &Arc<AgentHost<P>> {
+    pub const fn agents(&self) -> &Arc<AgentHost<dyn AuthorityProvider>> {
         &self.agents
     }
 
     /// The turns of this binding's agents: their approvals and decisions.
     #[must_use]
-    pub const fn turns(&self) -> &Arc<Turner<P, O>> {
+    pub const fn turns(&self) -> &Arc<Turner<O>> {
         &self.turns
     }
 
@@ -532,7 +531,10 @@ where
     /// As [`super::FilesystemHost::change_provider`].
     pub fn changes(
         &self,
-    ) -> Result<acyclic_fs::session::ChangeProvider<P, StreamAuthorityStore<P>, O>, Error> {
+    ) -> Result<
+        acyclic_fs::session::ChangeProvider<dyn AuthorityProvider, StreamAuthorityStore, O>,
+        Error,
+    > {
         self.volumes
             .change_provider(self.agents.provider().clone())
             .map_err(turn)

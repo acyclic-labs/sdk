@@ -149,12 +149,14 @@ impl Bucket {
 }
 
 /// The one placement over `stream`.
-fn placement<P: 'static>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
+fn placement<P: acyclic_fs::AuthorityProvider>(stream: &Arc<P>) -> Result<Placement<Objects>> {
     Ok(placed(stream)?.0)
 }
 
 /// The one placement over `stream`, and its blobs.
-fn placed<P: 'static>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
+fn placed<P: acyclic_fs::AuthorityProvider>(
+    stream: &Arc<P>,
+) -> Result<(Placement<Objects>, Bucket)> {
     let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
     let observed = Bucket(objects.clone());
@@ -562,10 +564,7 @@ impl Attestor for Digests {
 
 /// A self-host whose provider requires evidence composes its placement stream
 /// as [`Attested`], under the same admission its binding acts with.
-fn attested(
-    stream: &Arc<Evidence>,
-    attestor: &Arc<Digests>,
-) -> Result<Bound<Attested<Evidence>, Objects>> {
+fn attested(stream: &Arc<Evidence>, attestor: &Arc<Digests>) -> Result<Bound<Objects>> {
     let stream = Arc::new(Attested::new(
         stream.clone(),
         Some(attestor.clone() as Arc<dyn Attestor>),
@@ -701,7 +700,7 @@ async fn a_write_without_valid_evidence_publishes_nothing() -> Result {
 #[tokio::test]
 async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     let stream = Arc::new(MemoryStream::default());
-    let bind = |namespace: &[u8]| -> Result<Bound<MemoryStream, Objects>> {
+    let bind = |namespace: &[u8]| -> Result<Bound<Objects>> {
         let mut placement = placement(&stream)?;
         placement.within = ActorReference::new(b"account", namespace, b"owner")?;
         Ok(Bound::local_root(
@@ -717,7 +716,7 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
             turns()?,
         )?)
     };
-    let create = async |bound: &Bound<MemoryStream, Objects>, agent: u8| -> Result<AgentPath> {
+    let create = async |bound: &Bound<Objects>, agent: u8| -> Result<AgentPath> {
         let request = root(id(agent), vec![volume(PRIVATE_VOLUME, id(agent))?]);
         match bound
             .create_root(&intent(&format!("root-{agent}")), request)
@@ -737,7 +736,7 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     assert!(a.agents().runtime().track(foreign).is_err());
     // The accepted actor checkpoint is the completion event. A runtime may
     // cooperatively yield before it publishes, even with memory-backed I/O.
-    let observed = async |bound: &Bound<MemoryStream, Objects>, path: &AgentPath| -> Result {
+    let observed = async |bound: &Bound<Objects>, path: &AgentPath| -> Result {
         use futures::TryStreamExt as _;
         let actor = bound.agents().actor(path)?;
         let store = bound.agents().runtime().store();

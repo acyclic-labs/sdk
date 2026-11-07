@@ -8,7 +8,7 @@ async fn stream_lease_gate_fences_one_writer_without_fencing_its_peer() {
         acyclic_stream::MemoryLimits::default(),
         clock,
     ));
-    let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+    let authority = StreamAuthorityStore::new(stream.clone());
     let windows =
         OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
     let workspace = WorkspaceId::from_bytes([61; 16]);
@@ -132,7 +132,7 @@ async fn provider_deadline_fences_without_a_separate_expiry_sweep() {
         acyclic_stream::MemoryLimits::default(),
         clock.clone(),
     ));
-    let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+    let authority = StreamAuthorityStore::new(stream.clone());
     let windows =
         OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
     let workspace = WorkspaceId::from_bytes([81; 16]);
@@ -207,7 +207,7 @@ async fn bounded_publication_close_renewal_expiry_interleavings_preserve_peer_au
             acyclic_stream::MemoryLimits::default(),
             clock.clone(),
         ));
-        let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+        let authority = StreamAuthorityStore::new(stream.clone());
         let windows = OperationWindowCoordinator::new(StreamOperationWindowStore::new(stream));
         let workspace = WorkspaceId::from_bytes([91; 16]);
         let authority_id = crate::kernel::volume_authority_id(workspace.volume_id());
@@ -328,7 +328,7 @@ async fn stream_renewal_fences_old_permit_before_its_original_deadline() {
         acyclic_stream::MemoryLimits::default(),
         clock.clone(),
     ));
-    let authority = StreamAuthorityStore::new(Arc::clone(&stream));
+    let authority = StreamAuthorityStore::new(stream.clone());
     let windows =
         OperationWindowCoordinator::new(StreamOperationWindowStore::new(Arc::clone(&stream)));
     let workspace = WorkspaceId::from_bytes([101; 16]);

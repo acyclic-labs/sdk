@@ -66,9 +66,8 @@ impl Projection for Events {
     }
 }
 
-impl<P, O> Bound<P, O>
+impl<O> Bound<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Bounded call admissions and completions from the original private journal.
@@ -236,7 +235,11 @@ where
             u64,
             u64,
             Option<(
-                super::super::FilesystemExecutionJournal<P, StreamAuthorityStore<P>, O>,
+                super::super::FilesystemExecutionJournal<
+                    dyn AuthorityProvider,
+                    StreamAuthorityStore,
+                    O,
+                >,
                 OperationId,
             )>,
         ),

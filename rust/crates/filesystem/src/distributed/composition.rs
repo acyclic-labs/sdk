@@ -356,7 +356,7 @@ pub(super) fn install_growth<T>(entries: &mut Vec<T>, grown: Option<Vec<T>>) {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Joins the canonical append preparation to an external transaction.
     pub(crate) async fn contribute_publication(
         &self,

@@ -202,9 +202,8 @@ impl GuestSource for EnrolledSource {
     }
 }
 
-impl<P, O> Bound<P, O>
+impl<O> Bound<O>
 where
-    P: AuthorityProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Admits the exact canonical volume under this binding's original caller.

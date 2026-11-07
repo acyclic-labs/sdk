@@ -51,7 +51,7 @@ impl Providers {
     ) -> Result<Self, JsValue> {
         let placement = Fs::new(authority, objects, EmbeddedCapabilities { durable });
         let ancestry =
-            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(Arc::clone(&stream)));
+            acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(stream.clone()));
         let filesystem = FilesystemHost::new(placement.clone(), &options.filesystem_provider, None)
             .and_then(|host| host.with_project_families(ancestry))
             .map_err(js_error)?;
@@ -243,7 +243,7 @@ impl Providers {
         })
     }
 
-    pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
+    pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<Objects>> {
         Arc::new(FilesystemSpawnVolumes::new(self.filesystem.clone()))
     }
 }

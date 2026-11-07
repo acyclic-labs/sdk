@@ -36,12 +36,8 @@ pub(crate) fn git_view_policy(ignore_text: &str) -> GitIgnorePolicy {
 }
 
 /// Loads text merge drivers and workspace attributes.
-pub(crate) async fn merge_drivers_for<
-    'a,
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
->(
-    workspace: impl Into<crate::tools::git::View<'a, P, O>>,
+pub(crate) async fn merge_drivers_for<'a, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: impl Into<crate::tools::git::View<'a, O>>,
 ) -> Result<Arc<MergeDriverRegistry>> {
     let bytes = workspace
         .into()
@@ -64,12 +60,8 @@ pub(crate) async fn merge_drivers_for<
 }
 
 /// Loads ignores without reading or validating merge attributes.
-pub(crate) async fn ignore_for<
-    'a,
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
->(
-    workspace: impl Into<crate::tools::git::View<'a, P, O>>,
+pub(crate) async fn ignore_for<'a, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: impl Into<crate::tools::git::View<'a, O>>,
 ) -> Result<GitIgnorePolicy> {
     let bytes = workspace
         .into()

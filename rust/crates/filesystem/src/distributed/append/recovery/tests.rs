@@ -5,7 +5,7 @@ use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct OperationRace {
-    store: StreamAuthorityStore<MemoryStream>,
+    store: StreamAuthorityStore,
     winners: Vec<crate::GuardedAppend>,
     omit_locator: bool,
     fired: bool,
@@ -177,14 +177,8 @@ fn reply_cursor(head: Head) {
     );
 }
 
-async fn history() -> Result<
-    (
-        StreamAuthorityStore<MemoryStream>,
-        AuthorityId,
-        AuthoritySnapshot,
-    ),
-    Box<dyn std::error::Error>,
-> {
+async fn history()
+-> Result<(StreamAuthorityStore, AuthorityId, AuthoritySnapshot), Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
     let (store, authority) = crate::distributed::append::group_tests::fixture().await?;
     let requests = crate::distributed::append::group_tests::requests(authority, 7)?;

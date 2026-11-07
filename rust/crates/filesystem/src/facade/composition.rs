@@ -48,17 +48,16 @@ pub struct ForkedGeneration {
     pub generation: GenerationId,
 }
 
-impl<P: ?Sized, O> Fs<StreamAuthorityStore<P>, O> {
+impl<O> Fs<StreamAuthorityStore, O> {
     /// The Stream provider holding this filesystem's authority, so callers can
     /// compose their own records into the same consistency domain.
-    pub fn stream_provider(&self) -> std::sync::Arc<P> {
+    pub fn stream_provider(&self) -> std::sync::Arc<dyn crate::AuthorityProvider> {
         self.inner.authority.provider()
     }
 }
 
-impl<P, O> Fs<StreamAuthorityStore<P>, O>
+impl<O> Fs<StreamAuthorityStore, O>
 where
-    P: crate::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Prepares authenticated restores with the caller's own records in one
@@ -67,12 +66,12 @@ where
     /// an unknown outcome; resubmit that exact commit after transport failure.
     pub async fn prepare_restore_many(
         &self,
-        restores: &[RestoreSpec<'_, StreamAuthorityStore<P>, O>],
+        restores: &[RestoreSpec<'_, StreamAuthorityStore, O>],
         commit: &mut FilesystemCommit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> MeasuredResult<
-        OperationReceipt<Vec<crate::Generation<StreamAuthorityStore<P>, O>>>,
+        OperationReceipt<Vec<crate::Generation<StreamAuthorityStore, O>>>,
         WorkspaceError,
     > {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
@@ -164,7 +163,7 @@ where
     /// visible until the commit is submitted and committed.
     pub async fn prepare_fork_many(
         &self,
-        forks: &[ForkSpec<'_, StreamAuthorityStore<P>, O>],
+        forks: &[ForkSpec<'_, StreamAuthorityStore, O>],
         commit: &mut FilesystemCommit,
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -194,7 +193,7 @@ where
 
     async fn contribute_fork(
         &self,
-        fork: &ForkSpec<'_, StreamAuthorityStore<P>, O>,
+        fork: &ForkSpec<'_, StreamAuthorityStore, O>,
         commit: &mut FilesystemCommit,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -359,7 +358,7 @@ where
     /// read, the whole commit is rejected and nothing is published.
     pub async fn require_head<W: FsWork>(
         &self,
-        source: &crate::Generation<StreamAuthorityStore<P>, O>,
+        source: &crate::Generation<StreamAuthorityStore, O>,
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,
@@ -375,7 +374,7 @@ where
     /// owns the same partially conditioned commit and original retry identity.
     pub async fn require_heads<W: FsWork>(
         &self,
-        sources: &[&crate::Generation<StreamAuthorityStore<P>, O>],
+        sources: &[&crate::Generation<StreamAuthorityStore, O>],
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &CancellationToken,

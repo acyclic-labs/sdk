@@ -54,7 +54,7 @@ impl PreparedFilesystemCommit {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Validates a caller-submitted portable result before semantic confirmation.
     ///
     /// Every canonical append/fork and range is checked once. A conditional

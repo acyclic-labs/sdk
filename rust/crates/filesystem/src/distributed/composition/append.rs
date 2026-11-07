@@ -36,9 +36,9 @@ impl PreparedFilesystemAppend<'_> {
     /// this owner and its prefunded reply storage available for the original
     /// continuation. Success transfers that storage with the member receipts;
     /// a second confirmation is refused without allocating another reply.
-    pub async fn confirm<P: crate::distributed::AuthorityProvider + ?Sized>(
+    pub async fn confirm(
         &mut self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         outcome: &CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AppendGroupOutcome, AuthorityStoreError> {
@@ -87,7 +87,7 @@ impl PreparedFilesystemAppend<'_> {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Adds an already composed serial history to the caller's original commit.
     ///
     /// Uses the same admission, provisional predecessors, policy fences,

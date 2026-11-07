@@ -19,7 +19,7 @@ mod local {
     };
 
     type LocalFixture = Fixture<
-        acyclic_fs::distributed::StreamAuthorityStore<Counted<LocalStream>>,
+        acyclic_fs::distributed::StreamAuthorityStore,
         acyclic_fs::LogicalObjectStore<Counted<LocalObjects>>,
     >;
     struct DurableBackend {

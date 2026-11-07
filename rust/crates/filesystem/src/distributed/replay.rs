@@ -57,7 +57,7 @@ mod fence_tests {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) async fn read_records(
         &self,
         authority: AuthorityId,

@@ -166,14 +166,14 @@ impl acyclic_stream::StreamProvider for CutStream {
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for CutStream {}
 
-type CutFs = Fs<crate::distributed::StreamAuthorityStore<CutStream>, crate::MemoryObjectBackend>;
+type CutFs = Fs<crate::distributed::StreamAuthorityStore, crate::MemoryObjectBackend>;
 
 async fn first_fork_record(
     stream: &Arc<acyclic_stream::MemoryStream>,
     authority: crate::AuthorityId,
 ) -> Result<Option<crate::foundation::DurableCommit>, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
-    let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
+    let store = crate::distributed::StreamAuthorityStore::new(stream.clone());
     match store
         .replay(
             authority,
@@ -195,7 +195,7 @@ async fn first_fork_record(
 async fn assert_fork_state_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     source: &crate::Generation<
-        crate::distributed::StreamAuthorityStore<CutStream>,
+        crate::distributed::StreamAuthorityStore,
         crate::MemoryObjectBackend,
     >,
     source_volume: crate::foundation::VolumeId,
@@ -230,14 +230,8 @@ async fn assert_fork_state_exact(
 }
 
 async fn assert_fork_inheritance(
-    source: &Generation<
-        crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::MemoryObjectBackend,
-    >,
-    child: &Workspace<
-        crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::MemoryObjectBackend,
-    >,
+    source: &Generation<crate::distributed::StreamAuthorityStore, crate::MemoryObjectBackend>,
+    child: &Workspace<crate::distributed::StreamAuthorityStore, crate::MemoryObjectBackend>,
     inherits_base: bool,
 ) -> Result<(), Box<dyn Error>> {
     let generation = unbounded!(child, head())?;
@@ -272,7 +266,7 @@ async fn fork_through_every_cut(
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
             let objects = acyclic_objects::MemoryObjects::memory();
             let fs: CutFs = Fs::new(
-                crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
+                crate::distributed::StreamAuthorityStore::new(cutting.clone()),
                 crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
                 crate::EmbeddedCapabilities::MEMORY,
             );

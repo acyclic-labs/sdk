@@ -5,8 +5,8 @@ use acyclic_auth::{contract::*, testing as signed};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{FollowFilter, MemoryStream};
 
-type Engine = Fs<StreamAuthorityStore<MemoryStream>, MemoryObjectStore>;
-type Space = Workspace<StreamAuthorityStore<MemoryStream>, MemoryObjectStore>;
+type Engine = Fs<StreamAuthorityStore, MemoryObjectStore>;
+type Space = Workspace<StreamAuthorityStore, MemoryObjectStore>;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 async fn fixture() -> TestResult<(Engine, Arc<MemoryStream>, Space)> {

@@ -226,13 +226,19 @@ impl<A, O> Fs<A, O> {
 }
 
 #[cfg(any(test, feature = "distributed"))]
-impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
+impl<O> Fs<crate::StreamAuthorityStore, O> {
     /// Returns the existing durable history behind a volume snapshot/follow.
     /// This does not publish a second copy of file contents.
     pub fn authority_records(
         &self,
         volume: crate::VolumeId,
-    ) -> Result<(Arc<P>, acyclic_stream::StreamPath), crate::AuthorityStoreError> {
+    ) -> Result<
+        (
+            Arc<dyn crate::AuthorityProvider>,
+            acyclic_stream::StreamPath,
+        ),
+        crate::AuthorityStoreError,
+    > {
         Ok((
             self.inner.authority.provider(),
             self.inner
@@ -244,15 +250,16 @@ impl<P: ?Sized, O> Fs<crate::StreamAuthorityStore<P>, O> {
 
     /// Opens the SDK operation-window store on the exact Stream provider used
     #[must_use]
-    pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {
+    pub fn operation_window_store(
+        &self,
+    ) -> crate::StreamOperationWindowStore<dyn crate::AuthorityProvider> {
         crate::StreamOperationWindowStore::new(self.inner.authority.provider())
     }
 }
 
 /// Durable local authority backend with nonblocking native storage dispatch.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-pub type LocalAuthorityBackend =
-    crate::distributed::StreamAuthorityStore<acyclic_stream::LocalStream>;
+pub type LocalAuthorityBackend = crate::distributed::StreamAuthorityStore;
 
 /// Durable local immutable-object backend with nonblocking native storage dispatch.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -266,7 +273,8 @@ pub type LocalFs = Fs<LocalAuthorityBackend, LocalObjectBackend>;
 
 /// Durable operation-window store sharing the local filesystem's authority
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-pub type LocalOperationWindowStore = crate::StreamOperationWindowStore<acyclic_stream::LocalStream>;
+pub type LocalOperationWindowStore =
+    crate::StreamOperationWindowStore<dyn crate::AuthorityProvider>;
 
 /// Durable local volume handle with nonblocking native storage dispatch.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -278,8 +286,7 @@ pub type MemoryFs = Fs<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Filesystem authority adapter backed by the public in-memory Stream provider.
-pub type MemoryAuthorityBackend =
-    crate::distributed::StreamAuthorityStore<dyn crate::distributed::AuthorityProvider>;
+pub type MemoryAuthorityBackend = crate::distributed::StreamAuthorityStore;
 
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Shared filesystem object adapter backed by the public in-memory Objects provider.

@@ -72,7 +72,7 @@ fn open_lease(bencher: Bencher) {
 
 fn commit(
     runtime: &Runtime,
-    store: &StreamAuthorityStore<MemoryStream>,
+    store: &StreamAuthorityStore,
     request: GuardedAppend,
     cancellation: &CancellationToken,
     original: Option<&NativeMaterializationWork>,

@@ -54,10 +54,7 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let observed = authority
-        .observe_record(
-            StreamGitCompatStore::<MemoryStream>::path(id, "refs")?,
-            &mut work,
-        )
+        .observe_record(StreamGitCompatStore::path(id, "refs")?, &mut work)
         .await?;
     let mut commit = FilesystemCommit::new(CommitRequest {
         idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(

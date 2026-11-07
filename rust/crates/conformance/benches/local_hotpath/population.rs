@@ -34,8 +34,8 @@ use std::{
 
 pub(super) type Objects = LogicalObjectStore<Counted<LocalObjects>>;
 pub(super) type Streams = Counted<LocalStream>;
-pub(super) type Filesystem = Fs<StreamAuthorityStore<Streams>, Objects>;
-pub(super) type Binding = Bound<Streams, Objects>;
+pub(super) type Filesystem = Fs<StreamAuthorityStore, Objects>;
+pub(super) type Binding = Bound<Objects>;
 
 /// Creation-only executors refuse accidental execution rather than making up a
 /// model completion. Population roots remain dormant throughout measurement.

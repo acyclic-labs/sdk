@@ -1,5 +1,5 @@
 //! The default local composition of the shared typed server entry point.
-use super::{LocalHarness, LocalHarnessConfig, LocalStream};
+use super::{LocalHarness, LocalHarnessConfig};
 use crate::{
     Error, Result,
     server::{Composition, Hosted, Verifier},
@@ -9,7 +9,6 @@ use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
 impl Composition for LocalHarnessConfig {
-    type Stream = LocalStream;
     type Objects = LocalObjectBackend;
     type Owner = Arc<LocalHarness>;
     type Error = Error;
@@ -17,8 +16,7 @@ impl Composition for LocalHarnessConfig {
     fn open(
         self,
         verifier: &Arc<dyn Verifier>,
-    ) -> BoxProviderFuture<'static, Result<Hosted<LocalStream, LocalObjectBackend, Self::Owner>>>
-    {
+    ) -> BoxProviderFuture<'static, Result<Hosted<LocalObjectBackend, Self::Owner>>> {
         let config = self.served(Arc::clone(verifier));
         Box::pin(async move {
             let local = Arc::new(LocalHarness::open(config).await?);

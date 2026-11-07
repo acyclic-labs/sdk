@@ -1,17 +1,16 @@
 //! Repository sources are authorized before exposing saved metadata or recovering an intent.
 use super::*;
 
-pub(crate) struct RepositoryAccess<'a, P: ?Sized + 'static, O: 'static, S> {
+pub(crate) struct RepositoryAccess<'a, O: 'static, S> {
     pub access: &'a crate::filesystem::WorkspaceAccess,
-    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore, O>,
     pub store: &'a S,
-    pub current: &'a ManagedWorkspace<P, O>,
+    pub current: &'a ManagedWorkspace<O>,
     pub repository: acyclic_fs::WorkspaceId,
 }
 
-impl<P, O, S> RepositoryAccess<'_, P, O, S>
+impl<O, S> RepositoryAccess<'_, O, S>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
@@ -71,7 +70,7 @@ where
     pub(super) async fn workspace(
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
-    ) -> crate::Result<ManagedWorkspace<P, O>> {
+    ) -> crate::Result<ManagedWorkspace<O>> {
         if workspace_id == self.current.id() {
             self.access.require(self.current).await?;
             return Ok(self.current.clone());
@@ -97,13 +96,12 @@ where
     }
 }
 
-impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
+impl<O, S> WorkspaceGitExecutor<'_, O, S>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
-    pub(super) fn repository_access(&self) -> RepositoryAccess<'_, P, O, S> {
+    pub(super) fn repository_access(&self) -> RepositoryAccess<'_, O, S> {
         RepositoryAccess {
             access: self.access,
             filesystem: self.fs,

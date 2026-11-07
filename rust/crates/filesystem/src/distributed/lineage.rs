@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) fn creation_request(
         &self,
         request: &mut CommitRequest,

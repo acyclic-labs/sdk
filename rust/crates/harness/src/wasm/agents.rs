@@ -50,7 +50,7 @@ pub use providers::WasmAgentProviders;
 use providers::{Objects, Providers};
 pub use workspace::WasmMachinesWorkspace;
 
-type Authorities = StreamAuthorityStore<dyn StreamProvider>;
+type Authorities = StreamAuthorityStore;
 type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>;
 type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;

@@ -10,8 +10,8 @@ use bytes::Bytes;
 use prost::Message as _;
 use std::cell::RefCell;
 
-type Binding = Bound<dyn StreamProvider, Objects>;
-type Hosted = Server<dyn StreamProvider, Objects>;
+type Binding = Bound<Objects>;
+type Hosted = Server<Objects>;
 
 struct Policy {
     policy: Function,
@@ -76,7 +76,7 @@ pub struct WasmAgentServer {
     bound: Binding,
     observation: WasmAgents,
     server: RefCell<Option<Arc<Hosted>>>,
-    pending: RefCell<Option<hosting::Unsettled<dyn StreamProvider, Objects>>>,
+    pending: RefCell<Option<hosting::Unsettled<Objects>>>,
     platform: Arc<dyn hosting::Platform>,
     authority: Arc<acyclic_stream::session::Authority>,
     binding: Vec<u8>,

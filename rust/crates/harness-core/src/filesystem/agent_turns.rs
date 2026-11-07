@@ -456,7 +456,7 @@ struct Bindings {
     content: ContentBindings,
 }
 
-impl<P, O> FilesystemTurnHost<P, acyclic_fs::StreamAuthorityStore<P>, O>
+impl<P, O> FilesystemTurnHost<P, acyclic_fs::StreamAuthorityStore, O>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,

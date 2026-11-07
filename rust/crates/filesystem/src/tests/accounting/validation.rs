@@ -12,7 +12,7 @@ enum Damage {
 }
 
 struct DamagedReplay<'a> {
-    inner: &'a StreamAuthorityStore<acyclic_stream::MemoryStream>,
+    inner: &'a StreamAuthorityStore,
     damage: Damage,
 }
 

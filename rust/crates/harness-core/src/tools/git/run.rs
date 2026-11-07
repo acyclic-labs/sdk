@@ -1,20 +1,15 @@
 use super::*;
 
 /// The task-selected managed workspace and its publication authority.
-pub struct Workspace<
-    'a,
-    P: ?Sized + 'static = DefaultProvider,
-    O: 'static = DefaultObjects,
-    S = DefaultStore,
-> {
+pub struct Workspace<'a, O: 'static = DefaultObjects, S = DefaultStore> {
     /// Authenticated workload and invocation ceiling, checked for every resolved volume.
     pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Local filesystem owning the view.
-    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore, O>,
     /// Durable lineage and git state.
     pub store: &'a S,
     /// Selected lazy workspace.
-    pub view: View<'a, P, O>,
+    pub view: View<'a, O>,
     /// Physical view root, used to resolve patch paths.
     pub root: &'a Path,
     /// Repository identity shared by branches of this lineage.
@@ -37,13 +32,13 @@ pub struct Workspace<
 }
 
 /// A facade result and any branch view selected by checkout.
-pub struct Output<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects> {
+pub struct Output<O: 'static = DefaultObjects> {
     /// The request's saved result, or absent when another request's pending
     /// transition was recovered instead: the caller selects the recovered
     /// view and retries.
     pub command: Option<GitCommandOutput>,
     /// The newly selected view, if the command switched branches.
-    pub switched: Option<OwnedView<P, O>>,
+    pub switched: Option<OwnedView<O>>,
 }
 
 /// Runs one git-facade command against the task-selected workspace.
@@ -126,14 +121,13 @@ where
 /// No physical checkout, process or machine is involved.
 /// Descendant publications retain the repository's authenticated policy cut.
 /// The command engine is erased here, as for [`run_with_guard`].
-pub fn run_volume_with_guard<'a, F, Fut, P, O, S>(
-    workspace: Workspace<'a, P, O, S>,
+pub fn run_volume_with_guard<'a, F, Fut, O, S>(
+    workspace: Workspace<'a, O, S>,
     root_cut: Option<acyclic_fs::PolicyCut>,
     args: &'a [String],
     before_effect: F,
-) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output<P, O>>>
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output<O>>>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore + 'a,
     F: Fn() -> Fut + acyclic_stream::ProviderPlatform + 'a,
@@ -171,22 +165,21 @@ where
     })
 }
 
-enum Prepared<'a, P: ?Sized + 'static, O: 'static, S> {
-    Complete(Output<P, O>),
+enum Prepared<'a, O: 'static, S> {
+    Complete(Output<O>),
     Ready {
-        executor: WorkspaceGitExecutor<'a, P, O, S>,
+        executor: WorkspaceGitExecutor<'a, O, S>,
         tree: GitTreeRef,
         patch: Option<acyclic_stream::OwnedBytes>,
     },
 }
 
-async fn prepare<'a, P, O, S>(
-    workspace: &Workspace<'a, P, O, S>,
+async fn prepare<'a, O, S>(
+    workspace: &Workspace<'a, O, S>,
     args: &[String],
     before_effect: &'a EffectGuard<'a>,
-) -> crate::Result<Prepared<'a, P, O, S>>
+) -> crate::Result<Prepared<'a, O, S>>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
@@ -251,12 +244,11 @@ where
     })
 }
 
-fn finish<P, O, S>(
-    executor: WorkspaceGitExecutor<'_, P, O, S>,
+fn finish<O, S>(
+    executor: WorkspaceGitExecutor<'_, O, S>,
     command: Option<GitCommandOutput>,
-) -> crate::Result<Output<P, O>>
+) -> crate::Result<Output<O>>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
@@ -292,15 +284,14 @@ fn without_host_paths(output: GitCommandOutput, repository: &GitIgnorePolicy) ->
     }
 }
 
-async fn execute<E, P, O, S>(
-    workspace: &Workspace<'_, P, O, S>,
+async fn execute<E, O, S>(
+    workspace: &Workspace<'_, O, S>,
     args: &[String],
     tree: GitTreeRef,
     patch: Option<&[u8]>,
     executor: &E,
 ) -> crate::Result<Option<GitCommandOutput>>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
     E: GitFilesystemExecutor<Error = Error>,

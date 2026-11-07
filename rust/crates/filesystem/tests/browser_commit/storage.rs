@@ -16,7 +16,7 @@ use indexed_db_futures::transaction::TransactionMode;
 use js_sys::Uint8Array;
 use std::mem::size_of;
 use wasm_bindgen::JsCast;
-type BrowserAuthority = acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>;
+type BrowserAuthority = acyclic_fs::StreamAuthorityStore;
 async fn open_authority(
     name: &str,
 ) -> Result<BrowserAuthority, acyclic_fs::browser::BrowserAuthorityOpenError> {

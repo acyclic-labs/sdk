@@ -38,9 +38,9 @@ trait AppendPurpose {
     type Output<'a>;
     const FRESH_LINEAGE: bool;
 
-    fn finish<'a, P: crate::distributed::AuthorityProvider + ?Sized>(
+    fn finish<'a>(
         self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         prepared: PreparedAppend<'a>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Self::Output<'a>, AuthorityStoreError>;
@@ -52,9 +52,9 @@ impl AppendPurpose for Publication {
     type Output<'a> = PreparedAppend<'a>;
     const FRESH_LINEAGE: bool = false;
 
-    fn finish<'a, P: crate::distributed::AuthorityProvider + ?Sized>(
+    fn finish<'a>(
         self,
-        _: &StreamAuthorityStore<P>,
+        _: &StreamAuthorityStore,
         prepared: PreparedAppend<'a>,
         _: &mut AuthorityWork<'_>,
     ) -> Result<Self::Output<'a>, AuthorityStoreError> {
@@ -72,7 +72,7 @@ pub(in crate::distributed) struct AppendReceipt<'a> {
     lease_path: Option<StreamPath>,
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) async fn append<G: AuthorityGuard>(
         &self,
         request: crate::GuardedAppend,

@@ -215,7 +215,7 @@ mod probe {
 async fn fixture(
     count: u8,
     repeat: bool,
-) -> TestResult<(StreamAuthorityStore<probe::Provider>, Vec<GuardedAppend>)> {
+) -> TestResult<(StreamAuthorityStore, Vec<GuardedAppend>)> {
     fixture_with_fence(count, repeat, None).await
 }
 
@@ -223,7 +223,7 @@ async fn fixture_with_fence(
     count: u8,
     repeat: bool,
     fence: Option<bool>,
-) -> TestResult<(StreamAuthorityStore<probe::Provider>, Vec<GuardedAppend>)> {
+) -> TestResult<(StreamAuthorityStore, Vec<GuardedAppend>)> {
     let store = StreamAuthorityStore::new(Arc::new(probe::Provider::default()));
     let objects = MemoryObjectStore::default();
     let fs = crate::Fs::new(store.clone(), objects, crate::EmbeddedCapabilities::MEMORY);

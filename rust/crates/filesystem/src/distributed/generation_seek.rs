@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) async fn seek_generation(
         &self,
         authority: AuthorityId,

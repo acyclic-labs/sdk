@@ -18,11 +18,7 @@ use std::sync::Arc;
 const BUDGET: WorkBudget = crate::performance::work_budget(4096, 16 * 1024 * 1024);
 const B: WorkBudget = WorkBudget::UNBOUNDED;
 
-fn fixture() -> (
-    MemoryFs,
-    StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    MemoryObjectBackend,
-) {
+fn fixture() -> (MemoryFs, StreamAuthorityStore, MemoryObjectBackend) {
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);

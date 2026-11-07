@@ -86,9 +86,9 @@ pub(in crate::distributed) struct AppendView<'a> {
 }
 
 impl AppendView<'_> {
-    pub(super) async fn snapshot<P: crate::distributed::AuthorityProvider + ?Sized>(
+    pub(super) async fn snapshot(
         &self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<AppendCursor, AuthorityStoreError> {
@@ -146,9 +146,9 @@ impl AppendView<'_> {
         Ok(None)
     }
 
-    pub(super) async fn tail<P: crate::distributed::AuthorityProvider + ?Sized>(
+    pub(super) async fn tail(
         &self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         path: StreamPath,
         work: &mut AuthorityWork<'_>,
     ) -> Result<u64, AuthorityStoreError> {
@@ -160,9 +160,9 @@ impl AppendView<'_> {
         store.tail(path, work).await
     }
 
-    pub(super) async fn value<P: crate::distributed::AuthorityProvider + ?Sized>(
+    pub(super) async fn value(
         &self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         path: StreamPath,
         sequence: u64,
         work: &mut AuthorityWork<'_>,

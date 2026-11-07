@@ -104,7 +104,7 @@ async fn indexed_authority_record_size_admission_covers_creation_and_append() ->
 }
 
 async fn indexed_operation(
-    store: &StreamAuthorityStore<MemoryStream>,
+    store: &StreamAuthorityStore,
     authority: AuthorityId,
     operation: OperationId,
     before: u64,

@@ -32,7 +32,10 @@ struct MultipartSnapshot {
 }
 
 /// Authenticates and returns every immutable object retained by active multipart Stream state.
-pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: AsyncObjectStore>(
+pub async fn active_s3_multipart_objects<
+    P: acyclic_stream::StreamProvider + ?Sized,
+    O: AsyncObjectStore,
+>(
     provider: &P,
     objects: &O,
     protocol_limits: FilesystemS3Limits,
@@ -96,7 +99,7 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
 }
 
 /// Reads one multipart upload registry stream to completion, validating and collecting every referenced upload path and accruing the work it took.
-async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
+async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     registry: acyclic_stream::StreamPath,
     retention_limits: S3MultipartRetentionLimits,
@@ -183,7 +186,7 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
     Ok(())
 }
 
-async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider>(
+async fn discover_s3_multipart_roots<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     protocol_limits: FilesystemS3Limits,
     retention_limits: S3MultipartRetentionLimits,
@@ -247,7 +250,7 @@ fn validate_multipart_stream_path(path: &acyclic_stream::StreamPath) -> S3Result
     Ok(())
 }
 
-async fn bounded_children<P: acyclic_stream::StreamProvider>(
+async fn bounded_children<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     parent: acyclic_stream::StreamPath,
     maximum: u32,

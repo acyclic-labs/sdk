@@ -1,7 +1,7 @@
 //! Native ownership of the shared Actors serving loop.
 use super::Server;
 use crate::{Error, Result};
-use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
+use acyclic_fs::AsyncObjectStore;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -16,9 +16,8 @@ pub struct Runtime {
 impl Runtime {
     /// Starts the application's existing Actors runtime, with no second loop or
     /// per-agent task. A failed delivery retains its queued input for recovery.
-    pub fn start<P, O>(server: Arc<Server<P, O>>) -> Self
+    pub fn start<O>(server: Arc<Server<O>>) -> Self
     where
-        P: AuthorityProvider + 'static,
         O: AsyncObjectStore + 'static,
     {
         let (alive, lifetime) = watch::channel(());

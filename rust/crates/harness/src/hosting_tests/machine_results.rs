@@ -339,7 +339,7 @@ async fn parent_and_fork_expose_original_machine_results_through_session_files()
 
 async fn observe(
     client: &Client,
-    server: &Arc<Server<Counted<MemoryStream>, LogicalObjectStore<acyclic_objects::MemoryObjects>>>,
+    server: &Arc<Server<LogicalObjectStore<acyclic_objects::MemoryObjects>>>,
     agent: &AgentPath,
     credential_id: u32,
 ) -> Result<serde_json::Value> {

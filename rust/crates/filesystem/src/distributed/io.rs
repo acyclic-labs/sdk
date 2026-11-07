@@ -96,7 +96,7 @@ impl AuthorityRead {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Captures exact named heads at one provider cut. Request storage and
     /// native output remain on the original caller's funding owner.
     pub(super) async fn authority_heads(

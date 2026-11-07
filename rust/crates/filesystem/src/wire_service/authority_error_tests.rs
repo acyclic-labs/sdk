@@ -11,7 +11,7 @@ use tonic::Code;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Service = FilesystemWireService<
-    crate::StreamAuthorityStore<FaultStream>,
+    crate::StreamAuthorityStore,
     crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 

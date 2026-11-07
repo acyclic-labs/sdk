@@ -132,7 +132,7 @@ impl crate::kernel::AuthorityActor {
     }
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) fn actor(
         &self,
         authority: AuthorityId,
@@ -605,7 +605,7 @@ mod tests {
     }
 
     async fn publication_entry(
-        store: &StreamAuthorityStore<acyclic_stream::MemoryStream>,
+        store: &StreamAuthorityStore,
         authority: AuthorityId,
         requests: &[crate::GuardedAppend],
         entry: u8,
@@ -673,7 +673,7 @@ mod tests {
     }
 
     async fn fork_entry(
-        store: &StreamAuthorityStore<acyclic_stream::MemoryStream>,
+        store: &StreamAuthorityStore,
         authority: AuthorityId,
         request: &crate::GuardedAppend,
         entry: u8,

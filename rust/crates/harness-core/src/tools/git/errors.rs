@@ -44,15 +44,13 @@ mod tests {
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let custody = work.claim(123, 1, WorkCounters::UNCHARGED)?;
-        let error = run_error::<acyclic_fs::StreamGitCompatStore<acyclic_stream::MemoryStream>>(
-            GitCompatRunError::Executor(
-                acyclic_fs::LazyWorkspaceError::NativeRecordIo(
-                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-                    Some(custody),
-                )
-                .into(),
-            ),
-        );
+        let error = run_error::<acyclic_fs::StreamGitCompatStore>(GitCompatRunError::Executor(
+            acyclic_fs::LazyWorkspaceError::NativeRecordIo(
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                Some(custody),
+            )
+            .into(),
+        ));
         assert_eq!(work.live_allocation_bytes(), baseline + 123);
         let Error::NativeSource { source, .. } = &error else {
             return Err(Error::Invalid("native source cause was lost".into()));

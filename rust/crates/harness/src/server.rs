@@ -7,7 +7,7 @@
 //! difference. A host supplies only what [`ServerConfig`] names.
 pub use crate::local::{Custody, KeyFileVerifier, Observation, RootCredential, Verifier};
 use crate::{Error, LocalHarnessConfig, Result};
-use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
+use acyclic_fs::AsyncObjectStore;
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
@@ -63,10 +63,8 @@ pub struct ServerConfig<C = LocalHarnessConfig> {
 }
 
 /// A host's typed storage composition, opened before any session is admitted.
-/// Native filesystem publication keeps the concrete Stream provider throughout.
+/// Agent state and filesystem authority retain the same admitted provider.
 pub trait Composition: Send + 'static {
-    /// Stream storage shared by the agents and their filesystem authority.
-    type Stream: AuthorityProvider + 'static;
     /// Immutable object storage used by the same filesystem.
     type Objects: AsyncObjectStore + 'static;
     /// Keeps the host's runtime and resources alive until serving ends.
@@ -80,7 +78,7 @@ pub trait Composition: Send + 'static {
         verifier: &Arc<dyn Verifier>,
     ) -> BoxProviderFuture<
         'static,
-        std::result::Result<Hosted<Self::Stream, Self::Objects, Self::Owner>, Self::Error>,
+        std::result::Result<Hosted<Self::Objects, Self::Owner>, Self::Error>,
     >;
 }
 
@@ -100,17 +98,16 @@ impl<C> ServerConfig<C> {
 /// An already admitted tree, its clock and the owner of its running runtime.
 /// Pass this as [`ServerConfig::harness`] to serve any typed storage pair through
 /// the same endpoint as the default local composition.
-pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
-    server: Arc<crate::hosting::Server<P, O>>,
+pub struct Hosted<O: 'static, L> {
+    server: Arc<crate::hosting::Server<O>>,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
     completion: Option<BoxProviderFuture<'static, Result<()>>>,
     _owner: L,
 }
 
-impl<P, O, L> Hosted<P, O, L>
+impl<O, L> Hosted<O, L>
 where
-    P: AuthorityProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Retains `owner` while serving `server`. The owner must keep this tree's
@@ -119,7 +116,7 @@ where
     /// resource follows fail closed; ordinary Stream follows remain available.
     #[must_use]
     pub fn new(
-        server: Arc<crate::hosting::Server<P, O>>,
+        server: Arc<crate::hosting::Server<O>>,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         owner: L,
         resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
@@ -145,13 +142,11 @@ where
     }
 }
 
-impl<P, O, L> Composition for Hosted<P, O, L>
+impl<O, L> Composition for Hosted<O, L>
 where
-    P: AuthorityProvider + 'static,
     O: AsyncObjectStore + 'static,
     L: Send + Sync + 'static,
 {
-    type Stream = P;
     type Objects = O;
     type Owner = L;
     type Error = Error;

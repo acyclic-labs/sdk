@@ -133,7 +133,7 @@ impl acyclic_stream::NativeStreamProvider for PausingStream {}
 async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryStream::default());
-    let store = StreamAuthorityStore::new(Arc::clone(&provider));
+    let store = StreamAuthorityStore::new(provider.clone());
     let authority_id = AuthorityId::from_bytes([7; 16]);
     let cancellation = CancellationToken::new();
     assert_eq!(
@@ -354,7 +354,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
     let objects = Arc::new(MemoryObjects::memory());
-    let authority_store = StreamAuthorityStore::new(Arc::clone(&streams));
+    let authority_store = StreamAuthorityStore::new(streams.clone());
     let fs = Fs::new(
         authority_store.clone(),
         LogicalObjectStore::new(objects),
@@ -414,7 +414,7 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
         resume: Notify::new(),
         record_path: records.clone(),
     });
-    let store = StreamAuthorityStore::new(Arc::clone(&provider));
+    let store = StreamAuthorityStore::new(provider.clone());
     let cancellation = CancellationToken::new();
     ({
         let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -426,7 +426,7 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
     })?;
     let before = provider.tail(records.clone()).await?;
     provider.pause_record_commit.store(true, Ordering::SeqCst);
-    let writer_store = StreamAuthorityStore::new(Arc::clone(&provider));
+    let writer_store = StreamAuthorityStore::new(provider.clone());
     let writer = tokio::spawn(async move {
         provider_receipt!(
             writer_store,
@@ -520,7 +520,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     let streams = Arc::new(MemoryStream::default());
     let objects = Arc::new(MemoryObjects::memory());
     let fs = Fs::new(
-        StreamAuthorityStore::new(Arc::clone(&streams)),
+        StreamAuthorityStore::new(streams.clone()),
         LogicalObjectStore::new(objects),
         EmbeddedCapabilities::MEMORY,
     );
@@ -722,7 +722,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
     let objects = Arc::new(MemoryObjects::memory());
-    let store = StreamAuthorityStore::new(Arc::clone(&streams));
+    let store = StreamAuthorityStore::new(streams.clone());
     let fs = Fs::new(
         store.clone(),
         LogicalObjectStore::new(objects),

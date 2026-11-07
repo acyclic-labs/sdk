@@ -31,7 +31,7 @@ fn commit(key: &'static [u8]) -> Result<FilesystemCommit, StreamError> {
 }
 
 async fn publish(
-    store: &StreamAuthorityStore<MemoryStream>,
+    store: &StreamAuthorityStore,
     path: &StreamPath,
     key: &'static [u8],
     value: &StateRecord,

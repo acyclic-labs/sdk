@@ -51,7 +51,7 @@ pub(in crate::distributed) fn requests(
 }
 
 pub(in crate::distributed) async fn fixture()
--> Result<(StreamAuthorityStore<MemoryStream>, AuthorityId), Box<dyn std::error::Error>> {
+-> Result<(StreamAuthorityStore, AuthorityId), Box<dyn std::error::Error>> {
     let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
     let authority = AuthorityId::from_bytes([33; 16]);
     let token = CancellationToken::new();
@@ -201,7 +201,7 @@ async fn duplicate_group_operation_is_rejected_before_publication() -> TestResul
 }
 
 struct FenceAtPublication<'a> {
-    store: &'a StreamAuthorityStore<MemoryStream>,
+    store: &'a StreamAuthorityStore,
     authority: AuthorityId,
     head: Head,
 }
@@ -272,14 +272,12 @@ async fn group_checks_every_members_policy_cut_and_the_active_scope() -> TestRes
                 .create_authority(source, Epoch::GENESIS, &mut work, None::<&mut ()>)
                 .await?;
         }
-        let cut_a = <StreamAuthorityStore<MemoryStream> as AsyncAuthorityStore>::policy_cut(
-            &store, source_a, &mut work,
-        )
-        .await?;
-        let cut_b = <StreamAuthorityStore<MemoryStream> as AsyncAuthorityStore>::policy_cut(
-            &store, source_b, &mut work,
-        )
-        .await?;
+        let cut_a =
+            <StreamAuthorityStore as AsyncAuthorityStore>::policy_cut(&store, source_a, &mut work)
+                .await?;
+        let cut_b =
+            <StreamAuthorityStore as AsyncAuthorityStore>::policy_cut(&store, source_b, &mut work)
+                .await?;
         let changed_source = requests(source_b, 1)?;
         store
             .compare_and_append(

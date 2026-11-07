@@ -2,39 +2,39 @@
 use super::*;
 
 /// The task-selected filesystem view, borrowed for one facade operation.
-pub enum View<'a, P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects> {
+pub enum View<'a, O: 'static = DefaultObjects> {
     /// A normal checkout whose unchanged files remain demand-backed.
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
         not(target_arch = "wasm32")
     ))]
-    Checkout(&'a ManagedLazyWorkspace<P, O>),
+    Checkout(&'a ManagedLazyWorkspace<O>),
     /// An SDK volume, including a child's copy-on-write fork.
-    Volume(&'a ManagedWorkspace<P, O>),
+    Volume(&'a ManagedWorkspace<O>),
 }
 
 /// A branch selected by the facade and retained by its task binding.
-pub enum OwnedView<P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects> {
+pub enum OwnedView<O: 'static = DefaultObjects> {
     /// A branch retaining its original native source capability.
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
         not(target_arch = "wasm32")
     ))]
-    Checkout(ManagedLazyWorkspace<P, O>),
+    Checkout(ManagedLazyWorkspace<O>),
     /// A branch of an SDK volume.
-    Volume(ManagedWorkspace<P, O>),
+    Volume(ManagedWorkspace<O>),
 }
 
-impl<P: ?Sized + 'static, O: 'static> OwnedView<P, O> {
+impl<O: 'static> OwnedView<O> {
     /// Retains a source-backed branch for an ordinary checkout binding.
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
         not(target_arch = "wasm32")
     ))]
-    pub fn into_checkout(self) -> crate::Result<ManagedLazyWorkspace<P, O>> {
+    pub fn into_checkout(self) -> crate::Result<ManagedLazyWorkspace<O>> {
         match self {
             #[cfg(all(
                 feature = "filesystem-local",
@@ -49,7 +49,7 @@ impl<P: ?Sized + 'static, O: 'static> OwnedView<P, O> {
     }
 
     /// Borrows the selected view without copying its source or contents.
-    pub const fn view(&self) -> View<'_, P, O> {
+    pub const fn view(&self) -> View<'_, O> {
         match self {
             #[cfg(all(
                 feature = "filesystem-local",
@@ -62,23 +62,17 @@ impl<P: ?Sized + 'static, O: 'static> OwnedView<P, O> {
     }
 
     /// The authored workspace supplying this view's generations.
-    pub const fn workspace(&self) -> &ManagedWorkspace<P, O>
+    pub const fn workspace(&self) -> &ManagedWorkspace<O>
     where
-        P: acyclic_fs::distributed::AuthorityProvider,
         O: acyclic_fs::AsyncObjectStore,
     {
         self.view().workspace()
     }
 }
 
-impl<
-    'a,
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-> View<'a, P, O>
-{
+impl<'a, O: acyclic_fs::AsyncObjectStore + 'static> View<'a, O> {
     /// The authored workspace supplying this view's generations.
-    pub const fn workspace(self) -> &'a ManagedWorkspace<P, O> {
+    pub const fn workspace(self) -> &'a ManagedWorkspace<O> {
         match self {
             #[cfg(all(
                 feature = "filesystem-local",
@@ -91,18 +85,14 @@ impl<
     }
 }
 
-impl<P: ?Sized + 'static, O: 'static> Copy for View<'_, P, O> {}
-impl<P: ?Sized + 'static, O: 'static> Clone for View<'_, P, O> {
+impl<O: 'static> Copy for View<'_, O> {}
+impl<O: 'static> Clone for View<'_, O> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
-> View<'_, P, O>
-{
+impl<O: acyclic_fs::AsyncObjectStore + 'static> View<'_, O> {
     pub(super) async fn read(
         self,
         path: &str,
@@ -187,7 +177,7 @@ impl<
         destination: &str,
         operation: OperationId,
         permit: PublicationPermit,
-    ) -> crate::Result<OwnedView<P, O>> {
+    ) -> crate::Result<OwnedView<O>> {
         let cancellation = CancellationToken::new();
         let key = IdempotencyKey::from_bytes(operation.into_bytes());
         match self {
@@ -231,8 +221,8 @@ impl<
 
     pub(super) async fn related(
         self,
-        workspace: ManagedWorkspace<P, O>,
-    ) -> crate::Result<OwnedView<P, O>> {
+        workspace: ManagedWorkspace<O>,
+    ) -> crate::Result<OwnedView<O>> {
         match self {
             #[cfg(all(
                 feature = "filesystem-local",
@@ -281,14 +271,14 @@ impl<
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-impl<'a, P: ?Sized + 'static, O: 'static> From<&'a ManagedLazyWorkspace<P, O>> for View<'a, P, O> {
-    fn from(value: &'a ManagedLazyWorkspace<P, O>) -> Self {
+impl<'a, O: 'static> From<&'a ManagedLazyWorkspace<O>> for View<'a, O> {
+    fn from(value: &'a ManagedLazyWorkspace<O>) -> Self {
         Self::Checkout(value)
     }
 }
 
-impl<'a, P: ?Sized + 'static, O: 'static> From<&'a ManagedWorkspace<P, O>> for View<'a, P, O> {
-    fn from(value: &'a ManagedWorkspace<P, O>) -> Self {
+impl<'a, O: 'static> From<&'a ManagedWorkspace<O>> for View<'a, O> {
+    fn from(value: &'a ManagedWorkspace<O>) -> Self {
         Self::Volume(value)
     }
 }

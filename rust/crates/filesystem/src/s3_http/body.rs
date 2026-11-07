@@ -183,7 +183,7 @@ fn encode_multipart_aborted() -> Bytes {
     Bytes::from_static(&[MULTIPART_RECORD_VERSION, 5])
 }
 
-async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
+async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider + ?Sized>(
     provider: &P,
     path: acyclic_stream::StreamPath,
     limits: FilesystemS3Limits,

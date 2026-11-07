@@ -1,7 +1,7 @@
 //! Compatibility state and lineage on the filesystem's original Streams provider.
 use super::*;
+use crate::distributed::AuthorizedObservation;
 use crate::distributed::state_record::{CompanionKind, StateRecord};
-use crate::distributed::{AuthorityProvider, AuthorizedObservation};
 use crate::{
     AuthorityStoreError, AuthorityWork, FilesystemCommit, FilesystemCommitOutcome,
     StreamAuthorityStore, WorkspaceLineageRecord, WorkspaceLineageStore,
@@ -10,11 +10,11 @@ use acyclic_stream::{CommitCondition, CommitRequest, StreamPath};
 
 /// Durable command state shared by hosts using the same filesystem provider.
 /// Each lookup reads one stream head and its last record, independent of history.
-pub struct StreamGitCompatStore<P: ?Sized> {
-    authority: StreamAuthorityStore<P>,
+pub struct StreamGitCompatStore {
+    authority: StreamAuthorityStore,
 }
 
-impl<P: ?Sized> Clone for StreamGitCompatStore<P> {
+impl Clone for StreamGitCompatStore {
     fn clone(&self) -> Self {
         Self {
             authority: self.authority.clone(),
@@ -22,10 +22,10 @@ impl<P: ?Sized> Clone for StreamGitCompatStore<P> {
     }
 }
 
-impl<P: ?Sized> StreamGitCompatStore<P> {
+impl StreamGitCompatStore {
     /// Uses the same authority owner as the workspace generations.
     #[must_use]
-    pub const fn new(authority: StreamAuthorityStore<P>) -> Self {
+    pub const fn new(authority: StreamAuthorityStore) -> Self {
         Self { authority }
     }
 }
@@ -74,7 +74,7 @@ struct Envelope<T> {
     value: Option<T>,
 }
 
-impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
+impl StreamGitCompatStore {
     fn path(id: WorkspaceId, family: &str) -> Result<StreamPath, StreamGitCompatStoreError> {
         Ok(StreamPath::new(format!(
             "fs/git-state-v1/{}/{family}",
@@ -212,7 +212,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
     }
 }
 
-impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
+impl GitCompatStore for StreamGitCompatStore {
     type Error = StreamGitCompatStoreError;
     async fn load(&self, id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
         let cancellation = CancellationToken::new();
@@ -259,7 +259,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
 #[cfg(test)]
 mod tests;
 
-impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatStore<P> {
+impl WorkspaceLineageStore for StreamGitCompatStore {
     type Error = StreamGitCompatStoreError;
     async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
         let cancellation = CancellationToken::new();

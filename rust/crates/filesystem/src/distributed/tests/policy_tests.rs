@@ -98,7 +98,7 @@ async fn external_composition_without_seal_is_a_stale_publication_control() -> T
     external_composition_policy_fence(false).await
 }
 
-fn filesystem() -> crate::Fs<StreamAuthorityStore<ReleaseSpy>, crate::MemoryObjectBackend> {
+fn filesystem() -> crate::Fs<StreamAuthorityStore, crate::MemoryObjectBackend> {
     crate::Fs::new(
         StreamAuthorityStore::new(Arc::new(ReleaseSpy::new(Arc::new(MemoryStream::default())))),
         crate::Fs::memory().objects().clone(),

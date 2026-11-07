@@ -230,7 +230,7 @@ fn qualified(
         ))
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(super) async fn reservation_gate(
         &self,
         authority: AuthorityId,

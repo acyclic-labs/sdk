@@ -140,9 +140,7 @@ impl<A: acyclic_fs::AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static
     }
 }
 
-impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStore + 'static>
-    Manifest<'_, StreamAuthorityStore<P>, O>
-{
+impl<O: AsyncObjectStore + 'static> Manifest<'_, StreamAuthorityStore, O> {
     /// Adds every source-head condition to the SAME caller commit, spending
     /// one original work source. Nothing is published here. The caller submits
     /// its commit once through the original filesystem submission path;
@@ -155,7 +153,7 @@ impl<P: acyclic_fs::distributed::AuthorityProvider + 'static, O: AsyncObjectStor
     /// preparation, publication and allocation custody. No retry or polling.
     pub async fn condition<W: acyclic_fs::facade::FsWork>(
         &self,
-        filesystem: &Fs<StreamAuthorityStore<P>, O>,
+        filesystem: &Fs<StreamAuthorityStore, O>,
         commit: &mut FilesystemCommit,
         work: W,
         cancellation: &acyclic_fs::CancellationToken,

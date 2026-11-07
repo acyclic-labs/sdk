@@ -7,7 +7,7 @@ use crate::{
     Fs, Generation, IdempotencyKey, TransactionCommit, WorkBudget, WorkspaceError,
 };
 use acyclic_stream::{
-    ProviderPlatform, StreamProvider,
+    ProviderPlatform,
     testing::{Counted, RequestLedger, Requests},
 };
 use bytes::Bytes;
@@ -62,14 +62,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Backend fo
 /// Compose the real public Stream and Objects providers, instrumenting both
 /// before type erasure with one shared Counted ledger. All original native work,
 /// guard, error and custody forwarding remains in those primitive adapters.
-pub fn from_providers<S: StreamProvider, O: acyclic_objects::Blobs>(
+pub fn from_providers<S: crate::AuthorityProvider, O: acyclic_objects::Blobs>(
     stream: S,
     objects: O,
     capabilities: EmbeddedCapabilities,
-) -> Fixture<
-    crate::distributed::StreamAuthorityStore<Counted<S>>,
-    crate::LogicalObjectStore<Counted<O>>,
-> {
+) -> Fixture<crate::distributed::StreamAuthorityStore, crate::LogicalObjectStore<Counted<O>>> {
     let requests = RequestLedger::new();
     let authority = crate::distributed::StreamAuthorityStore::new(Arc::new(Counted::with_ledger(
         stream,

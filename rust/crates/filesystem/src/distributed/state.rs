@@ -83,7 +83,7 @@ pub struct ObservedRecord {
     pub allocation: RecordAllocation,
 }
 
-impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Reads state and its exact publication fence on the caller's work owner.
     /// Both dispatches use one coherent head; native dispatch retains the
     /// original provider allocation on the caller's work owner.

@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(crate) async fn quote_group_append(
         &self,
         request: &crate::GuardedAppend,
@@ -55,9 +55,9 @@ impl AppendPurpose for Quotation {
     type Output<'a> = Option<crate::AuthorityGroupCost>;
     const FRESH_LINEAGE: bool = true;
 
-    fn finish<'a, P: crate::distributed::AuthorityProvider + ?Sized>(
+    fn finish<'a>(
         self,
-        store: &StreamAuthorityStore<P>,
+        store: &StreamAuthorityStore,
         prepared: PreparedAppend<'a>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Self::Output<'a>, AuthorityStoreError> {

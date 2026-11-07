@@ -6,7 +6,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const AUTHORITY: AuthorityId = AuthorityId::from_bytes([73; 16]);
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
-struct Fallback<'a>(&'a StreamAuthorityStore<MemoryStream>);
+struct Fallback<'a>(&'a StreamAuthorityStore);
 impl AsyncAuthorityStore for Fallback<'_> {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.0.operation_claims()
@@ -33,20 +33,20 @@ impl AsyncAuthorityStore for Fallback<'_> {
     }
 }
 
-async fn created() -> Result<StreamAuthorityStore<MemoryStream>, Box<dyn std::error::Error>> {
+async fn created() -> Result<StreamAuthorityStore, Box<dyn std::error::Error>> {
     created_with(Some(Bytes::from_static(b"generation-payload"))).await
 }
 
 async fn created_with(
     payload: Option<Bytes>,
-) -> Result<StreamAuthorityStore<MemoryStream>, Box<dyn std::error::Error>> {
+) -> Result<StreamAuthorityStore, Box<dyn std::error::Error>> {
     created_on(Arc::new(MemoryStream::default()), payload).await
 }
 
 async fn created_on<P: crate::distributed::AuthorityProvider>(
     provider: Arc<P>,
     payload: Option<Bytes>,
-) -> Result<StreamAuthorityStore<P>, Box<dyn std::error::Error>> {
+) -> Result<StreamAuthorityStore, Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
     let store = StreamAuthorityStore::new(provider);
     let cancellation = CancellationToken::new();
@@ -74,7 +74,7 @@ async fn created_on<P: crate::distributed::AuthorityProvider>(
 }
 
 async fn single_record(
-    store: &StreamAuthorityStore<MemoryStream>,
+    store: &StreamAuthorityStore,
 ) -> Result<DurableCommit, Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let (records, _allocation) = store

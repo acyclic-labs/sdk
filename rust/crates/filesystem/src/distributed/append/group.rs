@@ -80,7 +80,7 @@ pub(in crate::distributed) fn group_first<'a>(
         .ok_or(AuthorityStoreError::RejectedStatic("empty authority group"))
 }
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     pub(in crate::distributed) async fn prepare_contribution(
         &self,
         append: &crate::GuardedAppend,

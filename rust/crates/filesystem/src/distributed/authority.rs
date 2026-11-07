@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Lists up to `maximum` exact filesystem authority identities, in order.
     /// A changed hierarchy returns its original error without restarting the traversal.
     pub async fn authorities(&self, maximum: u32) -> Result<Vec<AuthorityId>, AuthorityStoreError> {

@@ -31,20 +31,6 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
-/// Default command provider for a native checkout composition.
-#[cfg(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-))]
-pub type DefaultProvider = acyclic_stream::LocalStream;
-/// Default command provider for a portable volume composition.
-#[cfg(not(all(
-    feature = "filesystem-local",
-    feature = "native-execution",
-    not(target_arch = "wasm32")
-)))]
-pub type DefaultProvider = acyclic_stream::MemoryStream;
 /// Default object backend for a native checkout composition.
 #[cfg(all(
     feature = "filesystem-local",
@@ -72,9 +58,9 @@ pub type DefaultStore = LocalCoreStateStore;
     feature = "native-execution",
     not(target_arch = "wasm32")
 )))]
-pub type DefaultStore = acyclic_fs::StreamGitCompatStore<DefaultProvider>;
-type ManagedWorkspace<P, O> = FsWorkspace<acyclic_fs::StreamAuthorityStore<P>, O>;
-type ManagedGeneration<P, O> = Generation<acyclic_fs::StreamAuthorityStore<P>, O>;
+pub type DefaultStore = acyclic_fs::StreamGitCompatStore;
+type ManagedWorkspace<O> = FsWorkspace<acyclic_fs::StreamAuthorityStore, O>;
+type ManagedGeneration<O> = Generation<acyclic_fs::StreamAuthorityStore, O>;
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
@@ -86,8 +72,8 @@ type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-type ManagedLazyWorkspace<P, O> =
-    LazyWorkspace<acyclic_fs::StreamAuthorityStore<P>, O, NativeDemandSource, LocalCoreStateStore>;
+type ManagedLazyWorkspace<O> =
+    LazyWorkspace<acyclic_fs::StreamAuthorityStore, O, NativeDemandSource, LocalCoreStateStore>;
 
 mod command_store;
 pub use command_store::CommandStore;
@@ -137,23 +123,18 @@ pub(crate) type EffectGuard<'a> =
     dyn Fn() -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> + 'a;
 
 /// Executes the full git facade against a managed lazy workspace.
-pub(crate) struct WorkspaceGitExecutor<
-    'a,
-    P: ?Sized + 'static = DefaultProvider,
-    O: 'static = DefaultObjects,
-    S = DefaultStore,
-> {
+pub(crate) struct WorkspaceGitExecutor<'a, O: 'static = DefaultObjects, S = DefaultStore> {
     pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Revalidates task ownership before every effect.
     pub before_effect: &'a EffectGuard<'a>,
     /// Shared local filesystem.
-    pub fs: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+    pub fs: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore, O>,
     /// Durable compatibility and lineage store.
     pub store: &'a S,
     /// Current workspace.
-    pub current: ManagedWorkspace<P, O>,
+    pub current: ManagedWorkspace<O>,
     /// Demand-backed workspace view.
-    pub lazy_current: View<'a, P, O>,
+    pub lazy_current: View<'a, O>,
     /// Compatibility repository identity.
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
@@ -172,11 +153,11 @@ pub(crate) struct WorkspaceGitExecutor<
     /// Merge resolution cache.
     pub merge_cache: AsyncMutex<MemoryMergeResolutionCache>,
     /// Newly selected workspace after checkout.
-    pub switched: Mutex<Option<OwnedView<P, O>>>,
+    pub switched: Mutex<Option<OwnedView<O>>>,
 }
 
-fn committed<P: ?Sized + 'static, O: 'static>(
-    outcome: TransactionCommit<acyclic_fs::StreamAuthorityStore<P>, O>,
+fn committed<O: 'static>(
+    outcome: TransactionCommit<acyclic_fs::StreamAuthorityStore, O>,
 ) -> Result<GitFilesystemResult, Error> {
     let generation = match outcome {
         TransactionCommit::Committed(generation)

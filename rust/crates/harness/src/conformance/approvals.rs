@@ -161,7 +161,7 @@ async fn asked(
     backend: &dyn Backend,
     policy: ApprovalPolicy,
 ) -> Result<(
-    Bound<Observed, Objects>,
+    Bound<Objects>,
     AgentPath,
     Arc<AtomicUsize>,
     Box<dyn crate::conformance::Storage>,

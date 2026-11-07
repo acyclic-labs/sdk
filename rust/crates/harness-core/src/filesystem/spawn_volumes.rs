@@ -20,13 +20,13 @@ use acyclic_actors::{
 };
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
-    StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
+    StreamAuthorityStore, WorkBudget, WorkspaceName,
 };
 use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, StreamError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+type Host<O> = FilesystemHost<StreamAuthorityStore, O>;
 
 /// A fork cut either needs a new source selection or failed permanently.
 #[derive(Debug, thiserror::Error)]
@@ -49,8 +49,8 @@ impl From<ForkCutError> for GuestError {
 }
 
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
-pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
-    host: Arc<Host<P, O>>,
+pub struct FilesystemSpawnVolumes<O: 'static> {
+    host: Arc<Host<O>>,
     cuts: Option<Arc<dyn ForkCuts>>,
 }
 
@@ -71,11 +71,11 @@ pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>, ForkCutError>>;
 }
 
-impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
+impl<O> FilesystemSpawnVolumes<O> {
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider.
     #[must_use]
-    pub fn new(host: Arc<Host<P, O>>) -> Self {
+    pub fn new(host: Arc<Host<O>>) -> Self {
         Self { host, cuts: None }
     }
 
@@ -237,9 +237,8 @@ fn requested(participant: &Participant) -> Result<VolumeRequest, GuestError> {
     Ok(requested)
 }
 
-impl<P, O> SpawnVolumes for FilesystemSpawnVolumes<P, O>
+impl<O> SpawnVolumes for FilesystemSpawnVolumes<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn bind(&self, parent: &AgentState, outs: &mut [Out]) -> Result<Option<Participant>, Error> {
@@ -280,9 +279,8 @@ where
     }
 }
 
-impl<P, O> Composer for FilesystemSpawnVolumes<P, O>
+impl<O> Composer for FilesystemSpawnVolumes<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     /// Opens a possibly untrusted spawn request: the parent is the actor's own
@@ -340,8 +338,8 @@ where
 }
 
 /// The participant forking and creating one step's child volumes.
-struct SpawnFork<P: ?Sized + 'static, O: 'static> {
-    host: Arc<Host<P, O>>,
+struct SpawnFork<O: 'static> {
+    host: Arc<Host<O>>,
     cuts: Option<Arc<dyn ForkCuts>>,
     planned: Vec<Planned>,
     parent: AgentPath,
@@ -353,9 +351,8 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
     GuestError::Handler(error.to_string())
 }
 
-impl<P, O> SpawnFork<P, O>
+impl<O> SpawnFork<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     async fn compose(&self, request: CommitRequest) -> Result<FilesystemCommit, GuestError> {
@@ -509,9 +506,8 @@ where
     }
 }
 
-impl<P, O> Composition for SpawnFork<P, O>
+impl<O> Composition for SpawnFork<O>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn revalidate(&self, conflicts: &[acyclic_stream::CommitConflict]) -> bool {

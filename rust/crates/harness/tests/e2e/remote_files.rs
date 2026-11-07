@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-type ServiceFs<P, O> = Fs<StreamAuthorityStore<P>, LogicalObjectStore<O>>;
+type ServiceFs<P, O> = Fs<StreamAuthorityStore, LogicalObjectStore<O>>;
 
 async fn filesystem<P: acyclic_harness::store::JournalProvider, O: Blobs + 'static>(
     stream: Arc<P>,

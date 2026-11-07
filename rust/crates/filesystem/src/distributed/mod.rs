@@ -40,18 +40,14 @@ const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\
 
 /// Stream placement accepted by the canonical authority journal.
 ///
-/// Native publication requires native admission; any such provider, including
-/// `dyn NativeStreamProvider`, qualifies.
+/// Native publication uses the canonical native provider, including its
+/// original admission and durability ownership.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait AuthorityProvider: acyclic_stream::NativeStreamProvider {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<P: acyclic_stream::NativeStreamProvider + ?Sized> AuthorityProvider for P {}
+pub use acyclic_stream::NativeStreamProvider as AuthorityProvider;
 
 /// Stream placement accepted by the canonical browser authority journal.
 #[cfg(target_arch = "wasm32")]
-pub trait AuthorityProvider: acyclic_stream::StreamProvider {}
-#[cfg(target_arch = "wasm32")]
-impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
+pub use acyclic_stream::StreamProvider as AuthorityProvider;
 
 /// Filesystem authority over the canonical hierarchical Streams provider.
 ///
@@ -61,12 +57,12 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> AuthorityProvider for P {}
 /// also reserve 17 bytes plus their complete canonical generation reference.
 /// Oversized values return [`AuthorityStoreError::DurableCodec`] before their
 /// durable value or indexed keys are allocated.
-pub struct StreamAuthorityStore<P: ?Sized> {
-    provider: Arc<P>,
+pub struct StreamAuthorityStore {
+    provider: Arc<dyn AuthorityProvider>,
     placement: Arc<AuthorityPlacement>,
 }
 
-impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
+impl Clone for StreamAuthorityStore {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
@@ -75,16 +71,19 @@ impl<P: ?Sized> Clone for StreamAuthorityStore<P> {
     }
 }
 
-impl<P: ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Binds one authenticated public Stream provider.
     #[must_use]
-    pub fn new(provider: Arc<P>) -> Self {
+    pub fn new(provider: Arc<dyn AuthorityProvider>) -> Self {
         Self::with_placement(provider, AuthorityPlacement::default())
     }
 
     /// Binds a provider with authority streams at a caller-chosen placement.
     #[must_use]
-    pub fn with_placement(provider: Arc<P>, placement: AuthorityPlacement) -> Self {
+    pub fn with_placement(
+        provider: Arc<dyn AuthorityProvider>,
+        placement: AuthorityPlacement,
+    ) -> Self {
         Self {
             provider,
             placement: Arc::new(placement),
@@ -99,7 +98,7 @@ impl<P: ?Sized> StreamAuthorityStore<P> {
 
     /// Returns the shared public Stream provider.
     #[must_use]
-    pub fn provider(&self) -> Arc<P> {
+    pub fn provider(&self) -> Arc<dyn AuthorityProvider> {
         Arc::clone(&self.provider)
     }
 }
@@ -113,7 +112,7 @@ struct AuthoritySnapshot {
 }
 
 // Private read-only capability: retirement bypass is available only to accounting.
-struct AccountingAuthority<'a, P: ?Sized>(&'a StreamAuthorityStore<P>);
+struct AccountingAuthority<'a>(&'a StreamAuthorityStore);
 
 use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamPath};
 mod io;

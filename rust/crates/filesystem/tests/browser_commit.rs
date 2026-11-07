@@ -25,9 +25,7 @@ async fn delete_database(name: &str) -> Result<(), JsValue> {
         .await
         .map_err(js_error)
 }
-async fn open_clean_authority(
-    name: &str,
-) -> Result<acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>, JsValue> {
+async fn open_clean_authority(name: &str) -> Result<acyclic_fs::StreamAuthorityStore, JsValue> {
     delete_database(&format!("acyclic-fs-authority/{name}")).await?;
     acyclic_fs::browser::open_authority(name, acyclic_stream::BrowserStreamLimits::default())
         .await

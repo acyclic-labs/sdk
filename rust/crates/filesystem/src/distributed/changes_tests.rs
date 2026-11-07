@@ -106,7 +106,7 @@ async fn proposal_normalization_reuses_receipt_owned_publication_roots() -> Test
 }
 
 async fn fixture_publication_root(
-    store: &StreamAuthorityStore<MemoryStream>,
+    store: &StreamAuthorityStore,
     authority: AuthorityId,
     cancel: &CancellationToken,
 ) -> Result<(Head, ObjectId), Box<dyn Error>> {

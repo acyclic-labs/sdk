@@ -144,7 +144,7 @@ impl ModelProvider for ModelGate {
 fn composition(
     model: Arc<dyn ModelProvider>,
     owner: Owner,
-) -> Outcome<Actors<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+) -> Outcome<Actors<LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     composition_at(model, owner, b"root")
 }
 
@@ -152,7 +152,7 @@ fn composition_at(
     model: Arc<dyn ModelProvider>,
     owner: Owner,
     member: &[u8],
-) -> Outcome<Actors<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
+) -> Outcome<Actors<LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let root = AgentId::from_bytes(ROOT);
     let audience = Authority {
         kind: AggregateKind::Conversation,

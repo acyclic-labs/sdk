@@ -14,7 +14,7 @@ use crate::{
     tool::Tool,
 };
 use acyclic_actors::{domain::ActorLimits, local::SystemClock};
-use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
+use acyclic_fs::AsyncObjectStore;
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
@@ -46,13 +46,13 @@ pub struct Execution {
 /// A managed or self-deployed Actors composition for [`super::serve`].
 /// Storage, caller verification and model I/O are injected; turn composition,
 /// admission, root publication, spawn and serving have one implementation.
-pub struct Actors<P: AuthorityProvider + 'static, O: 'static> {
+pub struct Actors<O: 'static> {
     /// Host-held signing custody.
     pub issuer: AuthorityRoot,
     /// The platform's verified caller, never a request-supplied identity.
     pub caller: VerifiedCaller,
     /// One provider for agent state and volume authority.
-    pub placement: Placement<P, O>,
+    pub placement: Placement<O>,
     /// Stable root identity, volumes and creation intent.
     pub root: (IntentId, RootRequest),
     /// GraphCoder defaults, or the host's explicit overrides.
@@ -63,13 +63,13 @@ pub struct Actors<P: AuthorityProvider + 'static, O: 'static> {
     pub platform: Arc<dyn hosting::Platform>,
 }
 
-impl<P: AuthorityProvider + 'static, O: 'static> Actors<P, O> {
+impl<O: 'static> Actors<O> {
     /// GraphCoder on Actors, without a native workspace or a second agent loop.
     #[must_use]
     pub fn graphcoder(
         issuer: AuthorityRoot,
         caller: VerifiedCaller,
-        placement: Placement<P, O>,
+        placement: Placement<O>,
         root: (IntentId, RootRequest),
         execution: Execution,
         platform: Arc<dyn hosting::Platform>,
@@ -88,19 +88,17 @@ impl<P: AuthorityProvider + 'static, O: 'static> Actors<P, O> {
 
 /// Startup failed, or retained the exact uncertain root for caller-owned recovery.
 #[derive(thiserror::Error)]
-pub enum ActorsError<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> {
+pub enum ActorsError<O: AsyncObjectStore + 'static> {
     /// A definitive opening or serving failure.
     #[error(transparent)]
     Failed(#[from] Error),
     /// No second request is prepared. Retain this composition and open it only
     /// when the provider can make progress, or drop it on cancellation.
     #[error("root publication unknown; retain and reopen the pending Actors composition")]
-    Unknown(Box<PendingActors<P, O>>),
+    Unknown(Box<PendingActors<O>>),
 }
 
-impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> std::fmt::Debug
-    for ActorsError<P, O>
-{
+impl<O: AsyncObjectStore + 'static> std::fmt::Debug for ActorsError<O> {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Failed(error) => std::fmt::Debug::fmt(error, output),
@@ -113,11 +111,9 @@ impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> std::fmt::De
 }
 
 /// The original root publication, usable with the same [`super::serve`] entry.
-pub struct PendingActors<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
-    hosting::Unsettled<P, O>,
-);
+pub struct PendingActors<O: AsyncObjectStore + 'static>(hosting::Unsettled<O>);
 
-impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> PendingActors<P, O> {
+impl<O: AsyncObjectStore + 'static> PendingActors<O> {
     /// The original immutable request and its publication custody.
     #[must_use]
     pub fn prepared(&self) -> &hosting::Prepared {
@@ -125,36 +121,31 @@ impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> PendingActor
     }
 }
 
-impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> Composition
-    for PendingActors<P, O>
-{
-    type Stream = P;
+impl<O: AsyncObjectStore + 'static> Composition for PendingActors<O> {
     type Objects = O;
     type Owner = Runtime;
-    type Error = ActorsError<P, O>;
+    type Error = ActorsError<O>;
 
     fn open(
         self,
         _: &Arc<dyn Verifier>,
-    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
+    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<O, Runtime>, Self::Error>> {
         Box::pin(async move { started(self.0.resubmit().await.map_err(super::failed)?) })
     }
 }
 
-impl<P, O> Composition for Actors<P, O>
+impl<O> Composition for Actors<O>
 where
-    P: AuthorityProvider + 'static,
     O: AsyncObjectStore + 'static,
 {
-    type Stream = P;
     type Objects = O;
     type Owner = Runtime;
-    type Error = ActorsError<P, O>;
+    type Error = ActorsError<O>;
 
     fn open(
         self,
         _: &Arc<dyn Verifier>,
-    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
+    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<O, Runtime>, Self::Error>> {
         Box::pin(async move {
             let execution = self.execution;
             let selected = crate::tools::default_names();
@@ -211,9 +202,9 @@ where
     }
 }
 
-fn started<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
-    serving: Serving<P, O>,
-) -> std::result::Result<Hosted<P, O, Runtime>, ActorsError<P, O>> {
+fn started<O: AsyncObjectStore + 'static>(
+    serving: Serving<O>,
+) -> std::result::Result<Hosted<O, Runtime>, ActorsError<O>> {
     let server = match serving {
         Serving::Served(server) => server,
         Serving::Unknown(pending) => {

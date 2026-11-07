@@ -1,9 +1,8 @@
 //! Read a registered agent's published view through the repository binding.
 use super::*;
 
-impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
+impl<O, S> WorkspaceGitExecutor<'_, O, S>
 where
-    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
@@ -11,7 +10,7 @@ where
         &self,
         branch: &str,
         current: GitTreeRef,
-    ) -> crate::Result<super::Output<P, O>> {
+    ) -> crate::Result<super::Output<O>> {
         let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
         // The normal repository entry point validates both the current view
         // identity and the operation lease before exposing its branch catalog.

@@ -10,8 +10,7 @@ use acyclic_stream::{
 };
 use std::{error::Error, sync::Arc};
 
-type BrowserFixture =
-    Fixture<StreamAuthorityStore<Counted<BrowserStream>>, Counted<IndexedDbObjectStore>>;
+type BrowserFixture = Fixture<StreamAuthorityStore, Counted<IndexedDbObjectStore>>;
 
 async fn fresh(name: &str) -> Result<BrowserFixture, Box<dyn Error>> {
     let authority_name = format!("acyclic-fs-authority/{name}");

@@ -9,7 +9,7 @@ use crate::{
 use acyclic_actors::guest::GuestError;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, FilesystemCommit, ForkSpec, Fs, IdempotencyKey,
-    RestoreSpec, StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
+    RestoreSpec, StreamAuthorityStore, WorkBudget, WorkspaceName,
 };
 use acyclic_stream::{CommitCondition, CommitMutation, ReadRequest, StreamProvider};
 use futures::TryStreamExt as _;
@@ -49,15 +49,14 @@ pub async fn read<P: StreamProvider + ?Sized>(
     Ok(checkpoint)
 }
 
-pub(super) async fn capture<P, O>(
-    fs: &Fs<StreamAuthorityStore<P>, O>,
+pub(super) async fn capture<O>(
+    fs: &Fs<StreamAuthorityStore, O>,
     parent: &AgentState,
     next: &AgentState,
     cuts: Option<&dyn super::ForkCuts>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>
 where
-    P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
     let path = parent.path.conversation().map_err(guest)?;

@@ -42,7 +42,7 @@ pub(super) struct Hosted {
 }
 
 /// The local harness's agent tree, served as every host serves one.
-pub type LocalServer = crate::hosting::Server<LocalStream, LocalObjectBackend>;
+pub type LocalServer = crate::hosting::Server<LocalObjectBackend>;
 
 impl Hosted {
     pub(super) fn agents(&self) -> &Arc<LocalAgents> {

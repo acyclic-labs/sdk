@@ -17,7 +17,7 @@ pub enum StatePublicationOutcome {
     },
 }
 
-impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
+impl StreamAuthorityStore {
     /// Prepares and seals one all-or-none batch of portable volume snapshots
     /// and typed companion/ref records. Preparation performs no provider I/O.
     /// The iterator transfers each closure hold with its corresponding state.
