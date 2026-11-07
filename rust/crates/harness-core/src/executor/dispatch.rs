@@ -51,55 +51,67 @@ impl StockExecution<'_> {
             history: mut prior_messages,
             prepared,
         } = request;
-        let execution = async {
-            let scope = ModelStepScope {
-                purpose,
-                boundary: match &prior_messages {
-                    request::ModelStepHistory::Turn(..) => journal.model_boundary(),
-                    request::ModelStepHistory::Selected(_) => None,
-                },
-            };
-            if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
-                && let Some(boundary) = scope.boundary
-            {
-                let (_, records) = self
-                    .model_records(journal, input.operation_id, step, ModelPurpose::Response)
-                    .await?;
-                let frozen = records.iter().find_map(|record| match record.event {
-                    ExecutionEvent::ContextPrepared {
-                        step: recorded,
-                        steering,
-                        ..
-                    } if recorded == step => Some(steering),
-                    _ => None,
-                });
-                if matches!(frozen, Some(None)) {
-                    return Err(Error::Storage(
-                        "agent request has no frozen inbox range".into(),
-                    ));
-                }
-                let messages = boundary
-                    .messages(input.operation_id, step, frozen.flatten())
-                    .await?;
-                let from = history.len();
-                for message in messages {
-                    with_history_io(self.io, |work| {
-                        message.content.validate_limits(self.stock.limits, work)
-                    })?;
-                    stock_vec_push(history, message, self.io)?;
-                }
-                steering.admit(from..history.len(), self.io)?;
-            }
-            let history = match &prior_messages {
-                request::ModelStepHistory::Turn(history, _) => history.as_slice(),
-                request::ModelStepHistory::Selected(history) => history,
-            };
-            self.dispatch_model_step(journal, input, step, (history, prepared), scope, phase)
-                .await
-        };
         completion
-            .run(async move {
-                // Cancellation retires the owned provider before completion durability waits.
+            .run(async {
+                // Construct and retire provider custody inside the completion body.
+                let execution = async {
+                    let scope = ModelStepScope {
+                        purpose,
+                        boundary: match &prior_messages {
+                            request::ModelStepHistory::Turn(..) => journal.model_boundary(),
+                            request::ModelStepHistory::Selected(_) => None,
+                        },
+                    };
+                    if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
+                        && let Some(boundary) = scope.boundary
+                    {
+                        let (_, records) = self
+                            .model_records(
+                                journal,
+                                input.operation_id,
+                                step,
+                                ModelPurpose::Response,
+                            )
+                            .await?;
+                        let frozen = records.iter().find_map(|record| match record.event {
+                            ExecutionEvent::ContextPrepared {
+                                step: recorded,
+                                steering,
+                                ..
+                            } if recorded == step => Some(steering),
+                            _ => None,
+                        });
+                        if matches!(frozen, Some(None)) {
+                            return Err(Error::Storage(
+                                "agent request has no frozen inbox range".into(),
+                            ));
+                        }
+                        let messages = boundary
+                            .messages(input.operation_id, step, frozen.flatten())
+                            .await?;
+                        let from = history.len();
+                        for message in messages {
+                            with_history_io(self.io, |work| {
+                                message.content.validate_limits(self.stock.limits, work)
+                            })?;
+                            stock_vec_push(history, message, self.io)?;
+                        }
+                        steering.admit(from..history.len(), self.io)?;
+                    }
+                    let history = match &prior_messages {
+                        request::ModelStepHistory::Turn(history, _) => history.as_slice(),
+                        request::ModelStepHistory::Selected(history) => history,
+                    };
+                    self.dispatch_model_step(
+                        journal,
+                        input,
+                        step,
+                        (history, prepared),
+                        scope,
+                        phase,
+                    )
+                    .await
+                };
                 futures::pin_mut!(execution);
                 match futures::future::select(cancellation, execution).await {
                     Either::Left((result, _)) => {
