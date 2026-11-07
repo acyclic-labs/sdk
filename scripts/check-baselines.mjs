@@ -40,4 +40,4 @@ if (JSON.stringify(nativeWasmCase?.vector) !== JSON.stringify(vector)) {
   throw new Error("native/WASM fixture is not bound into the Harness suite");
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) checkDescriptors();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url) && process.argv[2] !== "--no-compile") checkDescriptors();
