@@ -7,7 +7,7 @@ npm install @acyclic-labs/objects @acyclic-labs/stream @acyclic-labs/actors @acy
 npm install --save-dev typescript @types/node
 ```
 
-Each example is a complete ES module. Save one as `example.mts`, compile with `npx tsc example.mts --module nodenext --target es2022 --types node`, then run `node example.mjs`. Use Node 22 or newer. Set `ACYCLIC_API_KEY`, the example's service-specific `*_ENDPOINT` to its HTTPS service base URL, and its resource variable (`OBJECTS_BUCKET`, `STREAM_PATH`, `ACTOR_ID`, `JOB_ID` or `FS_WORKSPACE`) to an existing resource accessible to that key. These reads require a configured deployment; compilation does not call it. Actors/Workers and Streams require their published Rust WASM/native runtime artifacts.
+Each example is a complete ES module, generated from the runnable sources in [examples/sdk-services/examples](../../../examples/sdk-services/examples) by `node scripts/generate-sdk-readmes.mjs write`. Save one as `example.mts`, compile with `npx tsc example.mts --module nodenext --target es2022 --types node`, then run `node example.mjs`. Use Node 22 or newer. Set `ACYCLIC_API_KEY`, the example's service-specific `*_ENDPOINT` to its HTTPS service base URL, and `STREAM_PATH`, `ACTOR_ID` or `FS_WORKSPACE` to an existing resource accessible to that key. The Workers example also reads `deployment.json`, `worker.mjs` and its declared `worker_bg.wasm` asset. These operations require a configured deployment; compilation does not call it. Actors/Workers and Streams require their published Rust WASM/native runtime artifacts.
 
 In this checkout, `bun run check:docs` compiles these exact snippets against source and verifies the copies in [llms.txt](../../../llms.txt). Build the generated WASM declarations with the normal package build first when absent. [Rust examples](../../../rust/README.md) are checked separately by doctests.
 
@@ -94,30 +94,34 @@ const actors = new ActorsClient({
 });
 console.log(await actors.inspectActor({
   actorId: await ActorId(process.env.ACTOR_ID!),
+  accountId: new Uint8Array(),
 }));
 ```
 
 ## Workers
 
-Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it.
+Cloud Workers are stateless Actors. This example selects `production/example-worker` from `deployment.json`, publishes its exact module closure, deploys it, invokes it and deletes it before releasing the retained root.
 
 ```ts
 import { readFile } from "node:fs/promises";
-import { CodeSha256, PositiveU64 } from "@acyclic-labs/actors";
 import { HttpObjectsV1 } from "@acyclic-labs/objects";
 import { WorkersDeploymentClient } from "@acyclic-labs/workers";
+import { initializeManifest } from "@acyclic-labs/workers/manifest";
 
+await initializeManifest({ module_or_path: await readFile(new URL(import.meta.resolve("@acyclic-labs/workers/manifest.wasm"))) });
 const options = { endpoint: process.env.EDGE_ENDPOINT!, token: process.env.ACYCLIC_API_KEY! };
 const workers = new WorkersDeploymentClient(options, new HttpObjectsV1(options));
-const digest = await workers.publish(await readFile("worker.mjs"));
-const { actor } = await workers.create({
-  codeSha256: await CodeSha256(digest), homeRegion: "la", bindings: [], subscriptions: [],
-  limits: { handlerTimeoutMillis: await PositiveU64(30000n), memoryBytes: await PositiveU64(268435456n), checkpointBytes: await PositiveU64(1048576n) },
-  idempotencyKey: "create-worker",
-});
-if (!actor) throw new Error("create returned no deployment");
-console.log(await workers.invoke({ actorId: actor.actorId, method: "GET", url: "/", headers: [], body: new Uint8Array() }));
-await workers.delete({ actorId: actor.actorId, idempotencyKey: "delete-worker" });
+const intent = new TextEncoder().encode("deployment:deploy-example-worker");
+const published = await workers.entries.publishDeployment(intent, {
+  manifest: await readFile("deployment.json", "utf8"), environment: "production", entry: "example-worker",
+  artifact: await readFile("worker.mjs"),
+  files: [{ path: "worker_bg.wasm", bytes: await readFile("worker_bg.wasm") }],
+}, "deploy-example-worker");
+const { deployment } = await workers.deploy(published);
+if (!deployment) throw new Error("deploy returned no deployment");
+console.log(await workers.invoke({ workerName: deployment.name, accountId: deployment.accountId, method: "GET", url: "/", headers: [], body: new Uint8Array(), deploymentEnvelope: new Uint8Array() }));
+await workers.delete({ workerName: deployment.name, accountId: deployment.accountId, idempotencyKey: "delete-worker" });
+await workers.entries.release(intent);
 ```
 
 ## fs
