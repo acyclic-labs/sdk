@@ -1,9 +1,9 @@
 diff --git a/rust/crates/harness-core/src/plugins.rs b/rust/crates/harness-core/src/plugins.rs
-index bc3f7462fe6..a76525780c8 100644
+index 22b6065e6bb..cd3e49e7c64 100644
 --- a/rust/crates/harness-core/src/plugins.rs
 +++ b/rust/crates/harness-core/src/plugins.rs
-@@ -220,7 +220,7 @@ pub async fn load_decision(
-         Ok((value, _)) => match load_enabled(tree, value, enabler, &mut identity).await {
+@@ -227,7 +227,7 @@ pub async fn load_decision(
+         Ok((value, _)) => match load_enabled(tree, value, enabler, Some(&mut identity)).await {
              Ok(enabled) => Ok(enabled),
              Err(LoadFailure::Semantic(error)) => Err(error),
 -            Err(LoadFailure::Operational(error)) => return Err(error),

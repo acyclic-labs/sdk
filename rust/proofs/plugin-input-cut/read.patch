@@ -1,9 +1,9 @@
 diff --git a/rust/crates/harness-core/src/plugins.rs b/rust/crates/harness-core/src/plugins.rs
-index bc3f7462fe6..3a8a89405bf 100644
+index 22b6065e6bb..9efb2fa936a 100644
 --- a/rust/crates/harness-core/src/plugins.rs
 +++ b/rust/crates/harness-core/src/plugins.rs
-@@ -258,6 +258,7 @@ async fn read_hook(
-     identity: &mut blake3::Hasher,
+@@ -266,6 +266,7 @@ async fn read_hook(
+     identity: Option<&mut blake3::Hasher>,
      hook: String,
  ) -> std::result::Result<Option<(String, String)>, LoadFailure> {
 +    let _ = tree.read(&hook).await.map_err(LoadFailure::Operational)?;
