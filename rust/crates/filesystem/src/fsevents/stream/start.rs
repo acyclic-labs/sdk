@@ -116,7 +116,7 @@ impl EventStream {
             },
             birth: work.native_source_work().map(|work| work.allocation_work()),
         };
-        let _cleanup = failed.cleanup_admitted(work);
+        let _cleanup = failed.cleanup_admitted(work).complete();
     }
 }
 

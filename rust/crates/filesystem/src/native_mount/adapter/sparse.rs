@@ -116,8 +116,7 @@ pub(super) fn validate_sparse_allocation(
     allocation: &crate::NativeAllocation,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), MountSourceError> {
-    if !allocation.work().shares_ledger(work) || !allocation.work().shares_resource_allowance(work)
-    {
+    if !allocation.work().shares_allocation_context(work) {
         return Err(MountSourceError::NativeWork(
             crate::NativeTreeMaterializationError::InvalidLayout,
         ));

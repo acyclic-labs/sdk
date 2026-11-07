@@ -13,8 +13,9 @@ pub(crate) trait SourceDemandReadWork:
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         self.with_demand_work(operation)
     }
+    /// Borrows the original context; only an escaping owner needs a clone.
     #[cfg(any(test, feature = "native-watch"))]
-    fn native_source_work(&self) -> Option<NativeMaterializationWork> {
+    fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
         None
     }
     #[cfg(any(test, feature = "native-watch"))]
@@ -85,8 +86,8 @@ impl SourceDemandReadWork for DemandWork {
 
 impl SourceDemandReadWork for NativeMaterializationWork {
     #[cfg(any(test, feature = "native-watch"))]
-    fn native_source_work(&self) -> Option<NativeMaterializationWork> {
-        Some(self.clone())
+    fn native_source_work(&self) -> Option<&NativeMaterializationWork> {
+        Some(self)
     }
     #[cfg(windows)]
     fn with_native_read_meter<T>(

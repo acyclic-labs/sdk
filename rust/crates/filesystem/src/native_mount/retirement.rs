@@ -4,21 +4,21 @@ use super::*;
 #[derive(Default)]
 pub(super) struct TerminalFailures {
     pub(super) producer: Option<NativeMountError>,
+    pub(super) source: Option<NativeMountError>,
     pub(super) cleanup: Option<NativeMountError>,
 }
 
 impl TerminalFailures {
     /// Taking one cause never consumes a distinct cause retained by the owner.
     pub(super) fn take(&mut self) -> Option<NativeMountError> {
-        self.producer.take().or_else(|| self.cleanup.take())
-    }
-
-    pub(super) fn take_pair(&mut self) -> Option<(NativeMountError, Option<NativeMountError>)> {
-        self.take().map(|first| (first, self.take()))
+        self.producer
+            .take()
+            .or_else(|| self.source.take())
+            .or_else(|| self.cleanup.take())
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.producer.is_none() && self.cleanup.is_none()
+        self.producer.is_none() && self.source.is_none() && self.cleanup.is_none()
     }
 }
 
@@ -29,56 +29,62 @@ pub(super) enum SourceRetirementWait {
     Physical,
 }
 
-/// Retires the original producers before releasing their owning references.
+/// Exactly one source is retained by operative or failed construction.
+pub(super) enum RetainedSource {
+    Filesystem(Arc<dyn MountFilesystem>),
+    Watch(lazy::NativeMountSourceWatchOwner),
+}
+
+/// Retires the original producer before releasing its owning reference.
 pub(super) fn retire_sources(
-    source: &mut Option<Arc<dyn MountFilesystem>>,
-    watch: &mut Option<lazy::NativeMountSourceWatchOwner>,
+    source: &mut Option<RetainedSource>,
     terminal_failure: &mut Option<NativeMountError>,
     work: &NativeSessionStopWork<'_>,
     join: SourceRetirementWait,
 ) -> Result<bool, NativeMountError> {
-    let mut changed = false;
-    if let Some(owner) = source.as_ref() {
-        match join {
-            SourceRetirementWait::Physical => owner
-                .shutdown_physical_cleanup()
-                .and_then(MountSourceRetirement::into_result),
-            SourceRetirementWait::Caller => match work {
-                NativeSessionStopWork::Meter(meter) => owner.shutdown_with_meter(meter),
-                NativeSessionStopWork::AcceptedWait(wait) => owner.shutdown_with_cleanup_wait(wait),
-                NativeSessionStopWork::AcceptedDrop => owner.shutdown_accepted_cleanup(),
-            },
-        }?;
-        // Failed or cancelled joins leave the original source owned.
-        drop(source.take());
-        changed = true;
-    }
-    if let Some(owner) = watch.as_mut() {
-        let result = if owner.is_stopped() {
-            Ok(false)
-        } else {
-            match work {
+    let failure = match source.as_ref() {
+        None => return Ok(false),
+        Some(RetainedSource::Filesystem(owner)) => {
+            let retired = match join {
+                SourceRetirementWait::Physical => owner.shutdown_physical_cleanup(),
+                SourceRetirementWait::Caller => match work {
+                    NativeSessionStopWork::Meter(meter) => owner.shutdown_with_meter(meter),
+                    NativeSessionStopWork::AcceptedWait(wait) => {
+                        owner.shutdown_with_cleanup_wait(wait)
+                    }
+                    NativeSessionStopWork::AcceptedDrop => owner.shutdown_accepted_cleanup(),
+                },
+            }?;
+            retired.failure.map(NativeMountError::from)
+        }
+        Some(RetainedSource::Watch(owner)) => {
+            let result = match work {
                 NativeSessionStopWork::Meter(meter) => {
                     owner.stop(&mut adapter::NativeDemandCarrier::Native(meter))
                 }
                 NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait),
                 NativeSessionStopWork::AcceptedDrop => owner.stop_accepted_cleanup(),
+            };
+            if !owner.is_stopped() {
+                result?;
+                return Err(NativeMountError::ControlPending);
             }
-        };
-        if owner.is_stopped() {
-            // Physical quiescence, including an error after its acknowledgement,
-            // permits terminal data transfer without fresh native admission.
-            drop(watch.take());
-            changed = true;
-            // A stopped producer cannot make further progress. Retain its
-            // actual outcome while the same owner releases the destination;
-            // reporting it here would strand that accepted cleanup plan.
-            *terminal_failure = result.err().map(NativeMountError::from);
-        } else {
-            result?;
+            // A refused caller wait may not have observed the saved callback
+            // outcome. Physical retirement permits its final birth-paid
+            // observation before custody is released, without restarting it.
+            let result = if result.is_err() {
+                owner.stop_accepted_cleanup().and(result)
+            } else {
+                result
+            };
+            result.err().map(NativeMountError::from)
         }
-    }
-    Ok(changed)
+    };
+    // Acknowledgement permits custody release even when recording failed.
+    // The same owner reports that failure only after destination retirement.
+    *terminal_failure = failure;
+    drop(source.take());
+    Ok(true)
 }
 
 /// Reports a physically retired producer only after its dependent cleanup.

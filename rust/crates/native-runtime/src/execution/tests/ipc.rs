@@ -41,8 +41,8 @@ fn workspace_and_network_grants_cannot_attach_host_shared_memory() {
     assert!(!segment.address.is_null());
     // Linux permits reattachment to a marked segment while our attachment
     // holds it alive. Mark now so host loss cannot leave a persistent object.
-    // SAFETY: this test owns this live segment; no output buffer is used.
     assert_eq!(
+        // SAFETY: this test owns this live segment; no output buffer is used.
         unsafe { libc::shmctl(id, libc::IPC_RMID, core::ptr::null_mut()) },
         0
     );

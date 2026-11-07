@@ -19,6 +19,26 @@ impl Drop for NativeEventBatch<'_> {
 }
 
 impl Delivery {
+    pub(super) fn is_retired(&self) -> bool {
+        self.retired.load(Ordering::Acquire)
+    }
+
+    /// Delivery loss and caller cancellation do not establish retirement.
+    pub(super) fn finish_retirement(&self) {
+        self.retired.store(true, Ordering::Release);
+        #[cfg(test)]
+        {
+            let observe = self
+                .after_retirement
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(observe) = observe {
+                observe();
+            }
+        }
+    }
+
     #[cfg(target_os = "linux")]
     pub(super) fn event_batch(&self) -> impl Drop + '_ {
         if let Some(sink) = &self.events {
@@ -51,6 +71,7 @@ impl Delivery {
         Ok(Self {
             sink,
             exact: AtomicBool::new(true),
+            retired: AtomicBool::new(false),
             budget,
             cancellation,
             failure: std::sync::Mutex::new(None),
@@ -58,6 +79,8 @@ impl Delivery {
             events: None,
             ownership,
             original,
+            #[cfg(test)]
+            after_retirement: std::sync::Mutex::new(None),
         })
     }
 
@@ -111,12 +134,11 @@ impl Delivery {
             return false;
         };
         work.native_source_work()
-            .is_some_and(|current| birth.shares_allocation_context(&current))
+            .is_some_and(|current| birth.shares_allocation_context(current))
     }
 
     pub(super) fn report_failure(&self, error: &DemandError) {
-        // The cause remains owned here until it is installed in the failure
-        // slot. Invoke outside that slot's lock so observers can retire or
+        // Invoke outside the failure slot's lock so observers can retire or
         // inspect their original source without waiting on this callback.
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.callback(|| self.sink.delivery_failed(error));
@@ -129,6 +151,12 @@ impl Delivery {
         work: &mut W,
     ) {
         self.report_failure(&error);
+        self.retain_failure(error, work);
+        self.notify_lost();
+    }
+
+    /// Saves terminal data without invoking an observer under a driver lock.
+    pub(super) fn retain_failure<W: SourceDemandReadWork>(&self, error: DemandError, work: &mut W) {
         let prior = if work.is_native_original() {
             None
         } else {
@@ -141,8 +169,6 @@ impl Delivery {
         if failed.is_none() {
             *failed = Some((error, prior));
         }
-        drop(failed);
-        self.notify_lost();
     }
 
     pub(super) fn take_failure<W: SourceDemandReadWork>(
@@ -171,7 +197,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self.callback(|| {
                 self.sink
                     .host_changed_with_native_work(changes, &mut native)
@@ -188,7 +214,7 @@ impl Delivery {
     ) -> Result<(), DemandError> {
         #[cfg(target_os = "linux")]
         if let Some(sink) = &self.events {
-            if let Some(mut native) = work.native_source_work() {
+            if let Some(mut native) = work.native_source_work().cloned() {
                 return self.callback(|| sink.invalidate_with_native_work(&mut native));
             }
             return work
@@ -210,7 +236,7 @@ impl Delivery {
             .events
             .as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self
                 .callback(|| sink.event_with_native_work(relative, mask, cookie, &mut native));
         }
@@ -229,7 +255,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
-        if let Some(mut native) = work.native_source_work() {
+        if let Some(mut native) = work.native_source_work().cloned() {
             return self.callback(|| {
                 self.sink
                     .host_changed_wide_with_native_work(changes, &mut native)

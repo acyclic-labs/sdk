@@ -140,9 +140,10 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
         assert!(state.resources.is_none());
         assert!(state.control.namespace_detach_confirmed());
         state.retirement = Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                source,
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
         });
     }
@@ -532,12 +533,22 @@ fn provider_unwind_publishes_shutdown_before_joining_its_original_panic() -> Tes
 
 #[test]
 fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> TestResult {
+    for physical in [true, false] {
+        terminal_source_outcome(physical)?;
+    }
+    Ok(())
+}
+
+fn terminal_source_outcome(physical: bool) -> TestResult {
     let temporary = tempfile::tempdir()?;
     let original = work(
         crate::performance::BOUNDARY_BUDGET,
         &crate::CancellationToken::new(),
     )?;
     let resources = sdk(temporary.path(), &original)?;
+    let cleanup =
+        std::fs::read(temporary.path()).expect_err("a directory cannot be read as cleanup bytes");
+    let cleanup_code = cleanup.raw_os_error();
     {
         let mut state = resources.state();
         resources.retire(
@@ -551,10 +562,20 @@ fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> T
         state.retirement = Some(crate::native_mount::NativeMountRetirement {
             retained_source: None,
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: Some(NativeMountError::Io(error)),
         });
+        state.failure.cleanup = Some(NativeMountError::Io(cleanup));
     }
+    if physical {
+        resources.finish();
+    } else {
+        resources.retire(
+            &mut resources.state(),
+            None,
+            crate::native_mount::retirement::SourceRetirementWait::Caller,
+        )?;
+    }
+    // A repeated completed retirement must retain both unconsumed causes.
     resources.finish();
     let mut state = resources.state();
     assert!(state.resources.is_none());
@@ -564,9 +585,20 @@ fn physical_retirement_finishes_with_its_original_terminal_source_outcome() -> T
             .as_ref()
             .is_some_and(crate::native_mount::NativeMountRetirement::is_retired)
     );
-    assert!(matches!(
-        state.failure.take(),
-        Some(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
-    ));
+    assert!(
+        matches!(
+            state.failure.take(),
+            Some(NativeMountError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+        ),
+        "terminal source cause was lost behind cleanup"
+    );
+    assert!(
+        matches!(
+            state.failure.take(),
+            Some(NativeMountError::Io(error)) if error.raw_os_error() == cleanup_code
+        ),
+        "distinct cleanup cause was lost behind source"
+    );
+    assert!(state.failure.is_empty());
     Ok(())
 }

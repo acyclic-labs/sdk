@@ -13,6 +13,7 @@ impl DriverSessionResources {
             control,
             probe,
             retirement,
+            failure,
             ..
         } = state;
         if let Some((_, destination, _)) = resources.as_ref() {
@@ -29,9 +30,12 @@ impl DriverSessionResources {
             self.free(wait)?;
         }
         if let Some(packet) = retirement {
-            let result = packet.retire(wait, join);
+            let result = packet.retire_physical(wait, join);
             if packet.is_retired() {
                 drop(resources.take());
+                if let Some(error) = packet.terminal_source_failure.take() {
+                    failure.source = Some(error);
+                }
             }
             result?;
             if !packet.is_retired() {
@@ -192,7 +196,7 @@ impl DarwinMountSession {
             .map_or((false, false), |packet| {
                 (
                     packet.destination_guard.is_some(),
-                    packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
+                    packet.retained_source.is_some(),
                 )
             })
     }

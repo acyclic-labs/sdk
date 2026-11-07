@@ -1,0 +1,13 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+index e633e78d586..c723e37f622 100644
+--- a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+@@ -47,7 +47,7 @@ impl Deadlines {
+                         "native deadline difference is not representable by Duration",
+                     )
+                 })?;
+-                midpoint - before.as_nanos()
++                midpoint + before.as_nanos()
+             }
+         };
+         let mut key = [0; std::mem::size_of::<Key>()];

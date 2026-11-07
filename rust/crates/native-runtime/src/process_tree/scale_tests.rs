@@ -151,9 +151,9 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "capture lost before arming"))?;
     }
     assert_eq!(
-        events::armed_waits(),
+        events::live_waits(),
         count,
-        "every child has one wait armed"
+        "every child owns one readiness wait"
     );
     let outstanding = threads()?;
     println!("{count} outstanding waits: {baseline} threads before, {outstanding} with all armed");
@@ -178,7 +178,7 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         assert!(outcome.result.is_ok_and(|output| output.status.success()));
     }
     assert_eq!(done.load(Ordering::Acquire), count);
-    assert_eq!(events::armed_waits(), 0);
+    assert_eq!(events::live_waits(), 0);
     Ok(())
 }
 

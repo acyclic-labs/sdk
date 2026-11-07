@@ -15,17 +15,19 @@ fn directory_command(cwd: &Path) -> ProcessCommand {
     command
 }
 
-fn directory_output(mut command: ProcessCommand, custody: Option<&ProcessCustody>) -> String {
+fn directory_output(
+    mut command: ProcessCommand,
+    custody: Option<&ProcessCustody>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut retained = None;
     match custody {
         Some(custody) => {
             ProcessTree::spawn_in_custody_controlled(&mut command, custody, None, &mut retained)
         }
         None => ProcessTree::spawn_controlled(&mut command, None, &mut retained),
-    }
-    .unwrap();
+    }?;
     let output = retained
-        .unwrap()
+        .ok_or("original launch did not retain its process tree")?
         .wait_with_output(
             Duration::from_secs(5),
             65536,
@@ -35,10 +37,9 @@ fn directory_output(mut command: ProcessCommand, custody: Option<&ProcessCustody
             None,
             None,
             None,
-        )
-        .unwrap();
+        )?;
     assert!(output.status.success(), "{output:?}");
-    String::from_utf8(output.stdout).unwrap()
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 #[test]
@@ -88,13 +89,13 @@ fn granted_cwd_keeps_the_original_object_across_path_replacement() {
         std::os::unix::fs::symlink(&external, &selected).unwrap();
         command.boundary = Some(boundary);
         assert_eq!(
-            directory_output(command, custody),
+            directory_output(command, custody).unwrap(),
             format!("{}\n", std::fs::canonicalize(&held).unwrap().display())
         );
         // The identical real command with ordinary path selection follows
         // the replacement, proving the object pin is what prevents escape.
         assert_eq!(
-            directory_output(directory_command(&selected), custody),
+            directory_output(directory_command(&selected), custody).unwrap(),
             format!("{}\n", std::fs::canonicalize(&external).unwrap().display())
         );
         // A replacement in the earlier validation/preparation interval must
@@ -126,7 +127,7 @@ fn closed_standard_streams_preserve_confined_setup() {
             .stdin(ProcessStdio::null())
             .stdout(ProcessStdio::piped())
             .stderr(ProcessStdio::piped());
-        directory_output(command, None);
+        directory_output(command, None).unwrap();
     }
 }
 
@@ -247,7 +248,7 @@ fn closed_stream_probe() {
     drop(streams);
     command.boundary = Some(boundary);
     let custody = mode.starts_with("custody").then_some(&custody);
-    assert!(directory_output(command, custody).is_empty());
+    assert!(directory_output(command, custody).unwrap().is_empty());
     assert_eq!(
         std::fs::read_to_string(selected.join("marker")).unwrap(),
         "guest"

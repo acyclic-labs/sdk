@@ -1,0 +1,29 @@
+--- a/rust/crates/filesystem/src/source_watch/inotify/hub.rs
++++ b/rust/crates/filesystem/src/source_watch/inotify/hub.rs
+@@ -83,9 +83,11 @@
+         match self {
+             Self::Records(watch) => watch.service(),
+             Self::Lost(watch, cause) => {
+-                watch
+-                    .delivery
+-                    .report_failure(&io::Error::new(cause.kind(), cause).into());
++                let mut work = watch.delivery.callback_work();
++                watch.delivery.failed_with_work(
++                    io::Error::new(cause.kind(), cause).into(),
++                    &mut work,
++                );
+                 watch.delivery.notify_lost();
+             }
+         }
+@@ -605,11 +607,6 @@
+                 .into_values()
+                 .filter_map(|watch| watch.upgrade())
+             {
+-                let mut work = watch.delivery.callback_work();
+-                watch.delivery.retain_failure(
+-                    io::Error::new(cause.kind(), Arc::clone(cause)).into(),
+-                    &mut work,
+-                );
+                 subscribers.push(watch);
+             }
+             subscribers

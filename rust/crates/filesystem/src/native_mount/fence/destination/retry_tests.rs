@@ -60,7 +60,6 @@ impl Fixture {
             packet: crate::native_mount::startup::NativeMountRetirement {
                 destination_guard: guard,
                 retained_source: None,
-                startup_source_watch: None,
                 terminal_source_failure: None,
             },
             work,

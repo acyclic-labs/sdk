@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/wall_alarm.rs
++++ b/rust/crates/native-runtime/src/wall_alarm.rs
+@@ -100,7 +100,7 @@
+     fn take_due(&mut self, now: u64) -> (ExtractedPrefix<AlarmCallback, (), 16>, Option<u64>) {
+         let due = self
+             .entries
+-            .extract_through(Self::key((now, u64::MAX)), |items| {
++            .extract_through(Self::key((now, 0)), |items| {
+                 self.counts.observe(items);
+             });
+         (due, self.first())

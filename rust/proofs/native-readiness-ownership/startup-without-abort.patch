@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/pool.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/pool.rs
+@@ -131,7 +131,7 @@
+ 
+ impl Drop for Startup<'_> {
+     fn drop(&mut self) {
+-        self.0.release_startup(false);
++        // Omit the original startup terminal event.
+     }
+ }
+ 

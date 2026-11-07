@@ -11,56 +11,63 @@ impl Drop for Released {
     }
 }
 
-async fn scoped_custody() {
+async fn scoped_custody(
+    panicking: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     for explicit_abort in [false, true] {
         let (started, starting) = oneshot::channel();
         let (released, releasing) = oneshot::channel();
         let task = spawn_owned(async move {
             let _release = Released(Some(released));
-            started.send(()).unwrap();
+            assert!(started.send(()).is_ok(), "original start observer lost");
             std::future::pending::<()>().await;
         });
-        starting.await.unwrap();
+        starting.await?;
         if explicit_abort {
             task.abort_handle().abort();
-            let error = task.await.unwrap_err();
+            let error = task.await.err().ok_or("cancelled task completed")?;
             assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             assert_eq!(error.to_string(), "TaskCancelled");
         } else {
             drop(task);
         }
         // The original future's destructor is this event's only producer.
-        releasing.await.unwrap();
+        releasing.await?;
     }
 
     let bytes = vec![73; 4096];
     let original = bytes.as_ptr() as usize;
-    let output = spawn_owned(async move { bytes }).await.unwrap();
+    let output = spawn_owned(async move { bytes }).await?;
     assert_eq!(output.as_ptr() as usize, original);
     assert!(output.iter().all(|byte| *byte == 73));
 
-    let error = spawn_owned(async { panic!("private task payload") })
+    // The test supplies the original fault producer to the real scheduler.
+    let error = spawn_owned(panicking)
         .await
-        .unwrap_err();
+        .err()
+        .ok_or("panicking original task completed")?;
     assert_eq!(error.kind(), io::ErrorKind::Other);
     assert_eq!(error.to_string(), "TaskPanicked");
     assert!(!format!("{error:?}").contains("private task payload"));
     let cause = error
         .get_ref()
-        .unwrap()
-        .downcast_ref::<JoinFailure>()
-        .unwrap();
+        .and_then(|cause| cause.downcast_ref::<JoinFailure>())
+        .ok_or("panic lost its original scheduler cause")?;
     // The original scheduler failure is retained, not replaced by a label.
     match cause {
         JoinFailure::Native(error) => assert!(error.is_panic()),
         #[cfg(feature = "test-support")]
         JoinFailure::Panicked { _payload } => assert_eq!(
-            _payload.lock().unwrap().downcast_ref::<&str>(),
+            _payload
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .downcast_ref::<&str>(),
             Some(&"private task payload")
         ),
         #[cfg(feature = "test-support")]
-        JoinFailure::Cancelled(_) => panic!("panic lost its original cause"),
+        JoinFailure::Cancelled(_) => return Err("panic lost its original cause".into()),
     }
+    Ok(())
 }
 
 #[test]
@@ -68,7 +75,9 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
     super::super::coordination_runtime()
         .unwrap()
         .block_on(async {
-            scoped_custody().await;
+            scoped_custody(async { panic!("private task payload") })
+                .await
+                .unwrap();
 
             let (started, starting) = oneshot::channel();
             let (release, held) = oneshot::channel::<()>();
@@ -122,11 +131,11 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
 fn seeded_executor_uses_the_same_scoped_custody_contract() {
     super::super::coordination_runtime().unwrap().block_on(async {
         let (schedule, mut events) = crate::testing::Schedule::seeded(83);
-        let work = schedule.scope(scoped_custody());
+        let work = schedule.scope(scoped_custody(async { panic!("private task payload") }));
         tokio::pin!(work);
         loop {
             tokio::select! {
-                () = &mut work => break,
+                result = &mut work => { result.unwrap(); break; },
                 boundary = events.recv() => boundary.expect("original boundary producer").release(),
             }
         }

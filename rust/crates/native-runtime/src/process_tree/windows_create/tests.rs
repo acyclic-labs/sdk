@@ -418,6 +418,9 @@ fn probe() -> io::Result<()> {
         return Ok(());
     };
     let mut out = std::io::stdout().lock();
+    // libtest's uncaptured test label need not end with a newline. Frame the
+    // first report before any probe waits for input or a console event.
+    writeln!(out)?;
     match mode.to_string_lossy().as_ref() {
         "conin-file" | "conin-console" => {
             let name: Vec<u16> = "CONIN$".encode_utf16().chain([0]).collect();
@@ -716,7 +719,11 @@ fn a_child_inherits_only_its_standard_handles() -> io::Result<()> {
         .to_std()?
         .stdin(std::process::Stdio::null())
         .output()?;
-    assert_eq!(probes(&output.stdout), ["seen true"], "{output:?}");
+    assert_eq!(
+        probes(&output.stdout),
+        ["seen true"],
+        "console probe record framing lost: {output:?}"
+    );
     assert_eq!(
         run_probe("handle", |probe| {
             probe

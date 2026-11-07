@@ -27,7 +27,7 @@ pub use admission::{
     admitted_descriptor_capacity,
 };
 pub use cache::Cost as DescriptorCost;
-use cache::{Access, Cache, Cost, Entry, Files, Lease};
+use cache::{Access, Cache, Completion, Cost, Entry, Files, Lease};
 
 /// The cache on this machine's files.
 struct Native;
@@ -42,6 +42,7 @@ type Identity = ();
 impl Files for Native {
     type File = File;
     type Identity = Identity;
+    type FlushState = crate::file::FlushState;
 
     fn reopen(&self, path: &Path, access: Access) -> io::Result<File> {
         let mut options = std::fs::OpenOptions::new();
@@ -62,8 +63,11 @@ impl Files for Native {
         Ok(())
     }
 
-    fn flush(&self, file: &File) -> io::Result<()> {
-        crate::flush_file_data(file)
+    fn flush(&self, file: &File, state: &Self::FlushState, ordered: Option<u64>) -> io::Result<()> {
+        if ordered.is_some_and(|cut| crate::file::cached_flush_covers(state, cut)) {
+            return Ok(());
+        }
+        crate::file::flush_cached_data(file, state)
     }
 }
 
@@ -291,7 +295,9 @@ impl FileLease {
         self.handle.file()
     }
 
-    /// Runs `write`, which writes through the descriptor.
+    /// Runs `write`, retaining its writes for a flush after the callback exits,
+    /// including on error or unwind. A flush during the callback cannot retire
+    /// writes that finish later.
     pub fn write<R>(&self, write: impl FnOnce(&File) -> io::Result<R>) -> io::Result<R> {
         self.handle.write(write)
     }
@@ -306,9 +312,67 @@ impl FileLease {
     pub fn discard_contents(&mut self) -> io::Result<()> {
         self.handle.discard(|file| crate::truncate_file(file, 0))
     }
-    /// Runs `flush`, which makes every earlier write durable.
-    pub fn flush<R>(&self, flush: impl FnOnce(&File) -> io::Result<R>) -> io::Result<R> {
-        self.handle.flush(flush)
+    /// Runs `flush` on this descriptor under its original flush lock.
+    /// A completed full flush retires earlier writes. On Apple, ordering can
+    /// retain a device cut: closing omits its flush only after a later successful
+    /// drain covers that cut. Every later write invalidates that coverage.
+    /// Error or unwind keeps the original closing obligation.
+    pub fn flush<R>(&self, flush: impl FnOnce(&FileFlush<'_>) -> io::Result<R>) -> io::Result<R> {
+        self.handle.flush(|file, state| {
+            let operation = FileFlush {
+                file,
+                state,
+                completed: std::cell::Cell::new(Completion::Unchanged),
+            };
+            let result = flush(&operation)?;
+            Ok((result, operation.completed.get()))
+        })
+    }
+}
+
+/// A flush of the original leased descriptor, valid only inside its callback.
+///
+/// Completion is recorded by the native operation. Callers cannot substitute
+/// another descriptor's completion or reuse evidence from an earlier callback.
+#[derive(Debug)]
+pub struct FileFlush<'a> {
+    file: &'a File,
+    state: &'a crate::file::FlushState,
+    completed: std::cell::Cell<Completion>,
+}
+
+impl FileFlush<'_> {
+    fn record(&self, completed: crate::Durability) {
+        if completed == crate::Durability::Full {
+            self.completed.set(Completion::Full);
+        } else if self.completed.get() != Completion::Full {
+            self.completed
+                .set(Completion::ordered(crate::file::cached_ordered_cut(
+                    self.state,
+                )));
+        }
+    }
+
+    /// Flushes data under the original file admission and returns the actual
+    /// guarantee, including a platform's full-flush fallback for a barrier.
+    pub fn sync_data(&self, requested: crate::Durability) -> io::Result<crate::Durability> {
+        let completed = crate::file::sync_cached_data(self.file, self.state, requested)?;
+        self.record(completed);
+        Ok(completed)
+    }
+
+    /// Flushes data and metadata under the original file admission.
+    pub fn sync_file(&self, requested: crate::Durability) -> io::Result<crate::Durability> {
+        let completed = crate::file::sync_cached_file(self.file, self.state, requested)?;
+        self.record(completed);
+        Ok(completed)
+    }
+
+    /// One full data flush after the caller's existing durability admission.
+    pub fn flush_data(&self) -> io::Result<()> {
+        crate::file::flush_cached_data(self.file, self.state)?;
+        self.completed.set(Completion::Full);
+        Ok(())
     }
 }
 

@@ -1,0 +1,16 @@
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -69,13 +69,12 @@
+     fn drop(&mut self) {
+         let mut progress = self
+             .coalescer
+             .progress
+             .lock()
+             .unwrap_or_else(PoisonError::into_inner);
+-        progress.draining = false;
+         if self.completed {
+             progress.completed = self.number;
+         }
+         drop(progress);
+         self.coalescer.drained.notify_one();
+     }

@@ -1,0 +1,13 @@
+--- a/rust/crates/native-runtime/src/wall_alarm.rs
++++ b/rust/crates/native-runtime/src/wall_alarm.rs
+@@ -98,6 +98,10 @@
+ 
+     /// Removes and returns the callbacks due at `now`, and the next deadline.
+     fn take_due(&mut self, now: u64) -> (ExtractedPrefix<AlarmCallback, (), 16>, Option<u64>) {
++        let mut cursor = completed(self.entries.first(&mut Work(&self.counts)));
++        while let Some((key, _)) = cursor {
++            cursor = completed(self.entries.seek_after(*key, &mut Work(&self.counts)));
++        }
+         let due = self
+             .entries
+             .extract_through(Self::key((now, u64::MAX)), |items| {

@@ -26,6 +26,7 @@
 //! queued; that record finds no route and is dropped, as the removing watch's
 //! own instance would have delivered it to a watch that no longer listed it.
 use super::*;
+use indexmap::IndexMap;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::sync::{OnceLock, Weak};
@@ -51,15 +52,17 @@ pub(super) enum Interest<'a> {
 pub(super) struct Hub {
     descriptor: OwnedFd,
     routes: Mutex<Routes>,
-    pending: Mutex<VecDeque<Arc<Shared>>>,
+    pending: Mutex<VecDeque<Pending>>,
     pending_changed: Condvar,
     next_subscriber: AtomicU64,
+    /// Collector loss is permanent; registrations still belong to their watches.
+    failure: OnceLock<Arc<io::Error>>,
 }
 
 #[derive(Default)]
 struct Route {
-    all: HashMap<u64, Weak<Shared>>,
-    named: HashMap<OsString, HashMap<u64, Weak<Shared>>>,
+    all: IndexMap<u64, Weak<Shared>>,
+    named: IndexMap<OsString, IndexMap<u64, Weak<Shared>>>,
 }
 
 struct Routes {
@@ -67,7 +70,26 @@ struct Routes {
     /// Watch descriptor -> interested watches.
     descriptors: HashMap<i32, Route>,
     /// Watches that receive queue overflow records.
-    subscribers: HashMap<u64, Weak<Shared>>,
+    subscribers: IndexMap<u64, Weak<Shared>>,
+}
+
+enum Pending {
+    Records(Arc<Shared>),
+    Lost(Arc<Shared>, Arc<io::Error>),
+}
+
+impl Pending {
+    fn deliver(self) {
+        match self {
+            Self::Records(watch) => watch.service(),
+            Self::Lost(watch, cause) => {
+                watch
+                    .delivery
+                    .report_failure(&io::Error::new(cause.kind(), cause).into());
+                watch.delivery.notify_lost();
+            }
+        }
+    }
 }
 
 /// Undelivered records routed to one watch.
@@ -85,6 +107,11 @@ static HUB: OnceLock<Hub> = OnceLock::new();
 /// Held by a test to keep the router from reading, so records stay queued.
 #[cfg(test)]
 pub(super) static ROUTER_PAUSED: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+static ROUTER_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+#[cfg(test)]
+static UNWIND_ROUTER: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn hub() -> Result<&'static Hub, DemandError> {
     if let Some(hub) = HUB.get() {
@@ -122,11 +149,12 @@ impl Hub {
             routes: Mutex::new(Routes {
                 buffer: vec![0; READ_BUFFER_BYTES],
                 descriptors: HashMap::new(),
-                subscribers: HashMap::new(),
+                subscribers: IndexMap::new(),
             }),
             pending: Mutex::new(VecDeque::new()),
             pending_changed: Condvar::new(),
             next_subscriber: AtomicU64::new(1),
+            failure: OnceLock::new(),
         })
     }
 
@@ -146,13 +174,19 @@ impl Hub {
             // that pool visible to their first subscription.
             #[cfg(test)]
             let (ready, entered) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
+            let worker = std::thread::Builder::new()
                 .name(name.into())
                 .spawn(move || {
                     #[cfg(test)]
                     let _ = ready.send(());
                     body(self);
                 })?;
+            #[cfg(test)]
+            if *started == 0 {
+                *ROUTER_THREAD.lock().unwrap_or_else(PoisonError::into_inner) = Some(worker);
+            }
+            #[cfg(not(test))]
+            drop(worker);
             *started += 1;
             #[cfg(test)]
             entered.recv().map_err(io::Error::other)?;
@@ -163,12 +197,25 @@ impl Hub {
     /// Subscribes a new watch to queue overflow records.
     pub(super) fn subscribe(&'static self, watch: &Arc<Shared>) -> Result<(), DemandError> {
         self.start_threads()?;
-        self.routes
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        #[cfg(test)]
+        super::admission_tests::before_subscribe_lock()?;
+        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        // Loss is recorded before taking this lock: an earlier subscription
+        // receives failure, and a later one cannot enter a producerless queue.
+        self.check_available()?;
+        routes
             .subscribers
             .insert(watch.subscriber, Arc::downgrade(watch));
+        #[cfg(test)]
+        super::admission_tests::after_subscribe();
         Ok(())
+    }
+
+    fn check_available(&self) -> io::Result<()> {
+        match self.failure.get() {
+            Some(cause) => Err(io::Error::new(cause.kind(), Arc::clone(cause))),
+            None => Ok(()),
+        }
     }
 
     /// Stops routing queue overflow records to `subscriber`.
@@ -177,7 +224,7 @@ impl Hub {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .subscribers
-            .remove(&subscriber);
+            .swap_remove(&subscriber);
     }
 
     pub(super) fn next_subscriber(&self) -> u64 {
@@ -199,7 +246,7 @@ impl Hub {
             .map_or((0, 0), |route| {
                 (
                     route.all.len(),
-                    route.named.values().map(HashMap::len).sum(),
+                    route.named.values().map(IndexMap::len).sum(),
                 )
             })
     }
@@ -256,7 +303,7 @@ impl Hub {
                         .try_reserve_exact(name.len())
                         .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
                     owned.push(name);
-                    route.named.insert(owned, HashMap::new());
+                    route.named.insert(owned, IndexMap::new());
                 }
                 route
                     .named
@@ -291,13 +338,13 @@ impl Hub {
         };
         match interest {
             Interest::All => {
-                route.all.remove(&subscriber);
+                route.all.swap_remove(&subscriber);
             }
             Interest::Named(name) => {
                 if let Some(subscribers) = route.named.get_mut(name) {
-                    subscribers.remove(&subscriber);
+                    subscribers.swap_remove(&subscriber);
                     if subscribers.is_empty() {
-                        route.named.remove(name);
+                        route.named.swap_remove(name);
                     }
                 }
             }
@@ -324,7 +371,7 @@ impl Hub {
         ancestors: &[(i32, OsString)],
     ) -> io::Result<()> {
         let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-        routes.subscribers.remove(&subscriber);
+        routes.subscribers.swap_remove(&subscriber);
         let mut result = Ok(());
         for (_, descriptor) in watches {
             let removed = self.remove_locked(&mut routes, subscriber, *descriptor, Interest::All);
@@ -340,6 +387,7 @@ impl Hub {
 
     /// Bytes the kernel has queued.
     fn queued(&self) -> io::Result<usize> {
+        self.check_available()?;
         let mut queued: libc::c_int = 0;
         // SAFETY: FIONREAD writes one int, the queued byte count.
         if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), libc::FIONREAD, &raw mut queued) } < 0
@@ -405,6 +453,7 @@ impl Hub {
     }
 
     fn route_batch(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<usize> {
+        self.check_available()?;
         let filled = loop {
             let length = routes.buffer.len();
             // SAFETY: the routing lock owns this buffer for the read.
@@ -469,7 +518,7 @@ impl Hub {
                     route
                         .named
                         .values()
-                        .flat_map(HashMap::iter)
+                        .flat_map(IndexMap::iter)
                         .collect::<Vec<_>>()
                 } else {
                     route.named.get(name).into_iter().flatten().collect()
@@ -495,11 +544,14 @@ impl Hub {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back(watch);
+            .push_back(Pending::Records(watch));
         self.pending_changed.notify_one();
     }
 
     fn route_forever(&'static self) {
+        // Also publishes loss if routing unwinds. The guard drops after any
+        // routing lock, so terminal callbacks can withdraw their own watches.
+        let _ended = RouterEnded(self);
         let mut descriptor = libc::pollfd {
             fd: self.descriptor.as_raw_fd(),
             events: libc::POLLIN,
@@ -509,20 +561,26 @@ impl Hub {
             // SAFETY: one initialized pollfd record.
             let ready = unsafe { libc::poll(&raw mut descriptor, 1, -1) };
             if ready < 0 {
-                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                self.fail_all();
+                self.failure.get_or_init(|| Arc::new(error));
                 return;
             }
             #[cfg(test)]
             let paused = ROUTER_PAUSED.lock().unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            if UNWIND_ROUTER.load(Ordering::Acquire) {
+                drop(paused);
+                panic!("injected source collector unwind");
+            }
             // One buffer per wakeup: delivery is scheduled between batches.
             let routed = self.drain_batch();
             #[cfg(test)]
             drop(paused);
-            if routed.is_err() {
-                self.fail_all();
+            if let Err(error) = routed {
+                self.failure.get_or_init(|| Arc::new(error));
                 return;
             }
         }
@@ -530,19 +588,49 @@ impl Hub {
 
     /// The shared queue failed: no watch can observe changes exactly again.
     fn fail_all(&self) {
-        let mut ready = Vec::new();
-        {
-            let routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-            for watch in routes.subscribers.values().filter_map(Weak::upgrade) {
-                deliver_overflow(watch, &mut ready);
+        let cause = self.failure.get_or_init(|| {
+            Arc::new(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "inotify collector ended",
+            ))
+        });
+        let subscribers = {
+            let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+            // Withdrawal uses this same lock. Save every original outcome
+            // before a controller can unsubscribe and finish retirement.
+            // Retain strong custody until unlocking: the last Shared owner
+            // withdraws from these same routes when it drops.
+            let mut subscribers = Vec::with_capacity(routes.subscribers.len());
+            for watch in std::mem::take(&mut routes.subscribers)
+                .into_values()
+                .filter_map(|watch| watch.upgrade())
+            {
+                let mut work = watch.delivery.callback_work();
+                watch.delivery.retain_failure(
+                    io::Error::new(cause.kind(), Arc::clone(cause)).into(),
+                    &mut work,
+                );
+                subscribers.push(watch);
             }
+            subscribers
+        };
+        // A subscriber callback may block. Dispatch through the existing pool
+        // so it cannot hold the collector or another worker's notifications.
+        // This terminal job needs no read cursor or fresh work admission.
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.extend(
+                subscribers
+                    .into_iter()
+                    .map(|watch| Pending::Lost(watch, Arc::clone(cause))),
+            );
         }
-        self.schedule_ready(ready);
+        self.pending_changed.notify_all();
     }
 
     fn serve_forever(&'static self) {
         loop {
-            let watch = {
+            let pending = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
                 loop {
                     if let Some(watch) = pending.pop_front() {
@@ -554,9 +642,42 @@ impl Hub {
                         .unwrap_or_else(PoisonError::into_inner);
                 }
             };
-            watch.service();
+            pending.deliver();
         }
     }
+}
+
+struct RouterEnded<'a>(&'a Hub);
+
+impl Drop for RouterEnded<'_> {
+    fn drop(&mut self) {
+        self.0.fail_all();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn collector_thread_id() -> io::Result<std::thread::ThreadId> {
+    ROUTER_THREAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|worker| worker.thread().id())
+        .ok_or_else(|| io::Error::other("source collector thread was not retained"))
+}
+
+#[cfg(test)]
+pub(super) fn end_for_test(wake: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    UNWIND_ROUTER.store(true, Ordering::Release);
+    // The real filesystem operation wakes the original poll. Joining that
+    // producer observes its exit guard even when the guard is mutated away.
+    wake()?;
+    let worker = ROUTER_THREAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| io::Error::other("source collector thread was not retained"))?;
+    assert!(worker.join().is_err(), "source collector did not unwind");
+    Ok(())
 }
 
 /// Watches that received records, and whether each needs a service pass.

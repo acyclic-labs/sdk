@@ -16,12 +16,12 @@ where
         allocations: Option<(crate::NativeAllocation, &mut crate::NativeAllocation)>,
     ) -> Result<Self, NativeMountError> {
         let original = carrier.original_native_work();
-        if let Some(original) = &original {
+        if let Some(original) = original {
             original
                 .admit(crate::WorkCounters::UNCHARGED)
                 .map_err(MountSourceError::NativeWork)?;
         }
-        validate_startup_allocations(original.as_ref(), allocations.as_ref())?;
+        validate_startup_allocations(original, allocations.as_ref())?;
         let (root_allocation, source_allocation) =
             allocations.map_or((None, None), |(root, source)| (Some(root), Some(source)));
         carrier
@@ -62,7 +62,7 @@ where
                 &lazy,
                 &sink,
                 &mut carrier,
-                original.as_ref(),
+                original,
                 &cancellation,
                 owner,
             )?;
@@ -261,29 +261,56 @@ where
         self.cancel_cleanup_with_join(
             wait,
             crate::native_mount::retirement::SourceRetirementWait::Caller,
-        )
+        )?
+        .into_result()
+        .map(|_| ())
     }
 
     pub(super) fn cancel_cleanup_with_join(
         &self,
         wait: Option<&CancellationToken>,
         join: crate::native_mount::retirement::SourceRetirementWait,
-    ) -> Result<(), MountSourceError> {
-        // A completed source owns no remaining wait for a later caller to revoke.
-        if self.physically_retired()? {
-            return Ok(());
-        }
-        self.authored
-            .cancel_cleanup_with_join(wait, join)?
-            .into_result()?;
+    ) -> Result<MountSourceRetirement, MountSourceError> {
+        // A completed source has no wait to revoke, but can still own a saved
+        // callback failure. Observe that outcome through the same stop path.
+        let completed = self.physically_retired()?;
+        let wait = if completed { None } else { wait };
+        let retired = if completed {
+            MountSourceRetirement {
+                changed: false,
+                failure: None,
+            }
+        } else {
+            self.authored.cancel_cleanup_with_join(wait, join)?
+        };
         if let Some(wait) = wait {
-            wait.check().map_err(|_| MountSourceError::Cancelled)?;
+            if wait.check().is_err() {
+                return Err(retirement_failure(
+                    retired.failure,
+                    crate::DemandError::Cancelled,
+                ));
+            }
         }
-        self.cursors.clear();
-        if let Some(watch) = &self.source_watch {
-            watch.stop_with_cleanup(wait)?;
+        if !completed {
+            self.cursors.clear();
         }
-        Ok(())
+        let failure = match &self.source_watch {
+            Some(watch) => match watch.stop_with_cleanup(wait) {
+                Ok(_) => retired.failure.map(MountSourceError::NativeWork),
+                Err(error) => {
+                    let failure = retirement_failure(retired.failure, error);
+                    if !watch.is_stopped() {
+                        return Err(failure);
+                    }
+                    Some(failure)
+                }
+            },
+            None => retired.failure.map(MountSourceError::NativeWork),
+        };
+        Ok(MountSourceRetirement {
+            changed: !completed,
+            failure,
+        })
     }
 
     pub(crate) fn native_source_io_lease(
@@ -335,6 +362,16 @@ where
     }
 }
 
+fn retirement_failure(
+    completion: Option<crate::NativeTreeMaterializationError>,
+    watch: crate::DemandError,
+) -> MountSourceError {
+    match completion {
+        Some(completion) => MountSourceError::RetirementFinalization { completion, watch },
+        None => MountSourceError::from(watch),
+    }
+}
+
 fn startup_arc<T>(
     value: T,
     carrier: &mut adapter::NativeDemandCarrier<'_>,
@@ -362,10 +399,8 @@ fn validate_startup_allocations(
 ) -> Result<(), NativeMountError> {
     let valid = match (original, allocations) {
         (Some(original), Some((root, source))) => {
-            root.work().shares_ledger(original)
-                && source.work().shares_ledger(original)
-                && root.work().shares_resource_allowance(original)
-                && source.work().shares_resource_allowance(original)
+            root.work().shares_allocation_context(original)
+                && source.work().shares_allocation_context(original)
                 && root.bytes().checked_add(source.bytes()).is_some()
         }
         (None, None) => true,

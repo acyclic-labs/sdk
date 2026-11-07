@@ -26,6 +26,8 @@ pub(crate) use fsevents::NativeSourceWatch;
 pub(crate) use fsevents::tests::terminal_cancellation_watch;
 #[cfg(target_os = "linux")]
 pub(crate) use inotify::NativeSourceWatch;
+#[cfg(all(test, target_os = "linux", feature = "native-mount"))]
+pub(crate) use tests::terminal_failure_watch;
 
 /// Known SDK control storage: Arc's two counters, alignment, and Rust payload.
 pub(super) const fn arc_control_bytes<T>() -> u64 {
@@ -230,6 +232,8 @@ pub(crate) enum CallbackWork {
 pub(crate) struct Delivery {
     sink: Arc<dyn HostChangeSink>,
     exact: AtomicBool,
+    /// Published only by the original driver after physical retirement.
+    retired: AtomicBool,
     budget: crate::performance::WorkBudget,
     cancellation: crate::cancellation::CancellationToken,
     failure: std::sync::Mutex<Option<(DemandError, Option<WorkCounters>)>>,
@@ -237,6 +241,8 @@ pub(crate) struct Delivery {
     events: Option<Arc<dyn NativeEventSink>>,
     ownership: SourcePayloadOwnership,
     original: Option<crate::NativeMaterializationWork>,
+    #[cfg(test)]
+    after_retirement: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// A failed startup retaining its actual native owner.

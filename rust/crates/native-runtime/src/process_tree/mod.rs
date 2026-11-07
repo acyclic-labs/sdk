@@ -13,6 +13,7 @@ use platform::Child;
 use std::io::{self, Read};
 use std::process::{ExitStatus, Output};
 
+mod cleanup;
 mod command;
 pub use command::{ProcessCommand, ProcessStdio};
 #[cfg(windows)]
@@ -632,6 +633,10 @@ impl ProcessTree {
     /// Transfers stdout to a host-owned reader, which owns its output bounds.
     pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
         let pipe = self.child.as_mut()?.stdout.take()?;
+        #[cfg(windows)]
+        if let Some(operation) = &self.readers[0] {
+            operation.retire();
+        }
         #[cfg(unix)]
         let pipe = pipe.into_inner();
         Some(pipe)
@@ -640,6 +645,10 @@ impl ProcessTree {
     /// Transfers stderr to a host-owned reader, which owns its output bounds.
     pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
         let pipe = self.child.as_mut()?.stderr.take()?;
+        #[cfg(windows)]
+        if let Some(operation) = &self.readers[1] {
+            operation.retire();
+        }
         #[cfg(unix)]
         let pipe = pipe.into_inner();
         Some(pipe)
@@ -649,6 +658,11 @@ impl ProcessTree {
     /// closed, queued stdin accepts bytes, or the direct child exits. Its
     /// owner then reads without waiting, as before; no thread or timer runs
     /// while it waits.
+    ///
+    /// A pipe has one pending observation. Competing admission returns
+    /// `AlreadyExists` before replacing its original event producer. Drop
+    /// the previous observation before rearming, or transfer its pipe, which
+    /// cancels that observation before handing ownership to its reader.
     pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
         self.readiness_for(true)
     }
@@ -673,6 +687,25 @@ impl ProcessTree {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         self.readiness_for(false)
+    }
+
+    #[cfg(windows)]
+    fn prepare_output_readers(&mut self) -> io::Result<()> {
+        // A pipe's IOCP association lasts until its handle closes. Readiness
+        // and capture share these original operations, including after panic.
+        let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        let [stdout, stderr] = &mut self.readers;
+        if stdout.is_none()
+            && let Some(pipe) = &child.stdout
+        {
+            *stdout = Some(events::PipeOperation::reader(pipe)?);
+        }
+        if stderr.is_none()
+            && let Some(pipe) = &child.stderr
+        {
+            *stderr = Some(events::PipeOperation::reader(pipe)?);
+        }
+        Ok(())
     }
 
     fn readiness_for(&mut self, output: bool) -> io::Result<ProcessReadiness> {
@@ -709,20 +742,10 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsHandle as _;
+            if output {
+                self.prepare_output_readers()?;
+            }
             let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
-            let [stdout, stderr] = &mut self.readers;
-            if output
-                && stdout.is_none()
-                && let Some(pipe) = &child.stdout
-            {
-                *stdout = Some(events::PipeOperation::reader(pipe)?);
-            }
-            if output
-                && stderr.is_none()
-                && let Some(pipe) = &child.stderr
-            {
-                *stderr = Some(events::PipeOperation::reader(pipe)?);
-            }
             let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
             if output
                 && child.stdout.is_some()

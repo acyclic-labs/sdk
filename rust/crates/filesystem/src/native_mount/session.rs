@@ -6,8 +6,7 @@ use super::*;
 pub struct NativeMountSession {
     // Native producers retire before source data and the destination fence.
     pub(super) driver: Option<DriverSession>,
-    pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
-    pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
+    pub(super) retained_source: Option<retirement::RetainedSource>,
     pub(super) terminal_source_failure: Option<NativeMountError>,
     pub(super) terminal_failures: retirement::TerminalFailures,
     pub(super) request: NativeMountRequest,
@@ -59,10 +58,9 @@ impl NativeMountSession {
             request,
             driver: None,
             destination_guard: None,
-            retained_source,
+            retained_source: retained_source.map(retirement::RetainedSource::Filesystem),
             terminal_source_failure: None,
             terminal_failures: retirement::TerminalFailures::default(),
-            startup_source_watch: None,
             measured_cleanup_failed: false,
             namespace_detach_confirmed: false,
             completed_future_callback_work: crate::WorkCounters::UNCHARGED,
@@ -131,9 +129,7 @@ impl NativeMountSession {
             destination: &self.request.destination,
             driver_retained: self.driver.is_some(),
             destination_fence_retained: self.destination_guard.is_some() || driver_fence,
-            source_retained: self.retained_source.is_some()
-                || self.startup_source_watch.is_some()
-                || driver_source,
+            source_retained: self.retained_source.is_some() || driver_source,
             namespace_detach_confirmed: self
                 .driver
                 .as_ref()
@@ -204,9 +200,10 @@ impl NativeMountSession {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.retained_source
-                .as_ref()
-                .ok_or(NativeMountError::ControlPending)?
+            let Some(retirement::RetainedSource::Filesystem(source)) = &self.retained_source else {
+                return Err(NativeMountError::ControlPending);
+            };
+            source
                 .capture_host_paths_with_meter(
                     self.destination(),
                     paths,
@@ -403,6 +400,7 @@ impl NativeMountSession {
                 {
                     self.namespace_outcome = driver.take_namespace_outcome();
                     if let Some(outcome) = self.namespace_outcome.as_mut() {
+                        outcome.failures.source = self.terminal_failures.source.take();
                         self.terminal_failures = std::mem::take(&mut outcome.failures);
                     }
                 }
@@ -411,7 +409,6 @@ impl NativeMountSession {
             }
             changed |= retirement::retire_sources(
                 &mut self.retained_source,
-                &mut self.startup_source_watch,
                 &mut self.terminal_source_failure,
                 work,
                 retirement::SourceRetirementWait::Caller,
@@ -476,7 +473,6 @@ impl Drop for NativeMountSession {
         // Waiting here can prevent a controlled native submission from running
         // on the executor whose current task is releasing this session.
         if self.retained_source.is_none()
-            && self.startup_source_watch.is_none()
             && self.destination_guard.is_none()
             && self.driver.as_ref().is_some_and(|driver| {
                 with_driver!(driver, session, session.has_retirement_owner(), false)

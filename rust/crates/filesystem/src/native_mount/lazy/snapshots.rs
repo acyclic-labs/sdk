@@ -18,7 +18,7 @@ where
         self.publication_snapshot(carrier, cancellation, &mut None)
             .await?
             .lazy_snapshot(&mut crate::kernel::KernelAccounting::native(
-                &original,
+                original,
                 cancellation,
             ))
             .map_err(mount_engine_error)?
@@ -46,7 +46,7 @@ where
                 )
                 .await?
                 .into_mutation_phase();
-            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(&original);
+            let mut scratch_carrier = adapter::NativeDemandCarrier::Native(original);
             let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
             let detached = {
                 let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
@@ -82,7 +82,7 @@ where
             }
             let generation = checkout.generation_id();
             drop(checkout);
-            let mut accounting = crate::kernel::KernelAccounting::native(&original, cancellation);
+            let mut accounting = crate::kernel::KernelAccounting::native(original, cancellation);
             let snapshot = self
                 .lazy
                 .publication_snapshot(&mut accounting)
@@ -237,7 +237,7 @@ where
                 .shared_checkout()
                 .publish(
                     crate::PublicationPermit::Unrestricted,
-                    crate::kernel::KernelAccounting::native(&original, cancellation),
+                    crate::kernel::KernelAccounting::native(original, cancellation),
                     Some(self.authored.cancellation()),
                     &mut adapter::source_publication_guard(
                         self.authored.callback_guard().cloned(),

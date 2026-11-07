@@ -42,14 +42,14 @@ pub(crate) fn sync_once(
     durability: Durability,
     held: Option<&crate::device_flush::HeldDevice>,
     mut admit: impl FnMut() -> io::Result<()>,
-) -> io::Result<()> {
+) -> io::Result<Durability> {
     match durability {
-        Durability::Full => full(file, durability, held, &mut admit),
+        Durability::Full => full(file, durability, held, &mut admit).map(|()| Durability::Full),
         Durability::Barrier => match syscall(file, libc::F_BARRIERFSYNC, durability, &mut admit) {
             Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
-                full(file, durability, held, &mut admit)
+                full(file, durability, held, &mut admit).map(|()| Durability::Full)
             }
-            result => result,
+            result => result.map(|()| Durability::Barrier),
         },
     }
 }

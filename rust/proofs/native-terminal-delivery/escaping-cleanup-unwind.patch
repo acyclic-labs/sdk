@@ -1,0 +1,13 @@
+diff --git a/rust/crates/native-runtime/src/delivery.rs b/rust/crates/native-runtime/src/delivery.rs
+--- a/rust/crates/native-runtime/src/delivery.rs
++++ b/rust/crates/native-runtime/src/delivery.rs
+@@ -23,7 +23,8 @@
+ impl<I: Iterator, F: FnMut(I::Item)> Delivery<I, F> {
+     fn finish(&mut self) {
+         for item in self.items.by_ref() {
+-            let _ = catch_unwind(AssertUnwindSafe(|| (self.invoke)(item)));
++            let _ = catch_unwind(AssertUnwindSafe(|| ()));
++            (self.invoke)(item);
+         }
+     }
+ }

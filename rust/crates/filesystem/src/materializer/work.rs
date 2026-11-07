@@ -184,16 +184,14 @@ impl NativeMaterializationWork {
     pub fn shares_ledger(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }
-    pub(crate) fn shares_resource_allowance(&self, other: &Self) -> bool {
-        match (&self.resource, &other.resource) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        }
-    }
-    /// Whether contexts attribute allocations to the same resource.
+    /// Whether contexts attribute allocations to the same original ledger and resource allowance.
     pub fn shares_allocation_context(&self, other: &Self) -> bool {
-        self.shares_ledger(other) && self.shares_resource_allowance(other)
+        self.shares_ledger(other)
+            && match (&self.resource, &other.resource) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
     }
     /// Whether contexts preserve the same resource owner and invocation cancellation.
     /// Accounting windows may differ when the same operation resumes.

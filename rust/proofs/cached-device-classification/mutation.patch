@@ -1,0 +1,22 @@
+--- a/rust/crates/native-runtime/src/file/operations.rs
++++ b/rust/crates/native-runtime/src/file/operations.rs
+@@ -60,7 +60,7 @@
+         match self {
+             Self::Borrowed(_) => None,
+             Self::Owned(file) => Some(&file.device),
+-            Self::Cached(_, state) => Some(state),
++            Self::Cached(_, _) => None,
+         }
+     }
+ }
+--- a/rust/crates/native-runtime/src/file/durable.rs
++++ b/rust/crates/native-runtime/src/file/durable.rs
+@@ -35,7 +35,7 @@
+         #[cfg(target_vendor = "apple")]
+         {
+             use std::os::fd::AsFd as _;
+-            crate::apple::sync_descriptor_once(file.as_fd(), Some(state))
++            { let _ = state; crate::apple::sync_descriptor_once(file.as_fd(), None) }
+         }
+         #[cfg(not(target_vendor = "apple"))]
+         {

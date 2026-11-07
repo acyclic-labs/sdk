@@ -1,0 +1,12 @@
+diff --git a/rust/crates/native-runtime/src/delivery.rs b/rust/crates/native-runtime/src/delivery.rs
+--- a/rust/crates/native-runtime/src/delivery.rs
++++ b/rust/crates/native-runtime/src/delivery.rs
+@@ -5,7 +5,7 @@
+ // through that cleanup and abort the original producer's terminal fanout.
+ pub(crate) fn deliver<I: Iterator, F: FnMut(I::Item)>(items: I, invoke: F) {
+     let mut delivery = Delivery { items, invoke };
+-    if std::thread::panicking() {
++    if false {
+         delivery.finish();
+     } else {
+         for item in delivery.items.by_ref() {

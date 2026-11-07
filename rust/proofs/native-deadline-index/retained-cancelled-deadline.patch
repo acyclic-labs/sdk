@@ -1,0 +1,13 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+index e633e78d586..29ee02d6021 100644
+--- a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+@@ -72,7 +72,7 @@ impl Deadlines {
+     pub(super) fn remove(&mut self, key: Key) {
+         // Original keys, not a fresh clock conversion or admission, retire the
+         // original entries. Infallible work cannot strand cancelled timers.
+-        completed(self.index.remove(key, &mut Work(&self.counts)));
++        let _ = key;
+     }
+ 
+     pub(super) fn clear(&mut self) {

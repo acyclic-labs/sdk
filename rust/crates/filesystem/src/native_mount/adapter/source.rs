@@ -111,13 +111,13 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        let permissions = self.require_access(&path, action, &work).await?;
-        self.disclose(permissions.policy_view(), &work, async {
+        let permissions = self.require_access(&path, action, work).await?;
+        self.disclose(permissions.policy_view(), work, async {
             let mut inspector = checkout.inspector(
-                &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(work, &cancellation),
                 &cancellation,
             )?;
-            self.require_snapshot(permissions.policy_view(), &mut inspector, &work)
+            self.require_snapshot(permissions.policy_view(), &mut inspector, work)
                 .await?;
             self.read_lookup(&mut inspector, &path, &mut inputs, &cancellation)
                 .await
@@ -214,9 +214,9 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .original_native_work()
             .ok_or(MountSourceError::AccessDenied)?;
         let permissions = self
-            .require_access(&path, crate::access::Action::Read, &work)
+            .require_access(&path, crate::access::Action::Read, work)
             .await?;
-        self.disclose(permissions.policy_view(), &work, async {
+        self.disclose(permissions.policy_view(), work, async {
             let observation = self
                 .checkout
                 .observe(
@@ -234,22 +234,22 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     ))?;
             let mut checkout = observation.observer(
-                &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(original, &cancellation),
                 &cancellation,
             )?;
-            self.require_snapshot(permissions.policy_view(), &mut checkout, &work)
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
                 .await?;
             let chunk = match range {
                 Some(range) => {
                     let read = checkout
-                        .read_file_range(&path, range, &original, &cancellation)
+                        .read_file_range(&path, range, original, &cancellation)
                         .await?;
                     let bytes = read.logical_owned_bytes();
                     crate::kernel::OwnedSourceChunk::intrinsic(read.bytes, bytes)
                 }
                 None => {
                     checkout
-                        .read_symbolic_link(&path, &original, &cancellation)
+                        .read_symbolic_link(&path, original, &cancellation)
                         .await?
                 }
             };
@@ -293,7 +293,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .carrier
             .original_native_work()
             .ok_or(MountSourceError::AccessDenied)?;
-        let access = self.pin_access(&path, &work).await?;
+        let access = self.pin_access(&path, work).await?;
         if disclose
             && !access
                 .decide(
@@ -304,7 +304,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         {
             return Ok(None);
         }
-        self.disclose(access.policy_view(), &work, async {
+        self.disclose(access.policy_view(), work, async {
             let observation = self
                 .checkout
                 .observe(
@@ -322,10 +322,10 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     ))?;
             let mut checkout = observation.observer(
-                &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+                &mut crate::kernel::allocation::KernelAccounting::native(original, &cancellation),
                 &cancellation,
             )?;
-            self.require_snapshot(access.policy_view(), &mut checkout, &work)
+            self.require_snapshot(access.policy_view(), &mut checkout, work)
                 .await?;
             self.read_lookup(&mut checkout, &path, &mut inputs, &cancellation)
                 .await
@@ -352,11 +352,11 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             ))?;
         if self.folds_names() {
             let _ = self
-                .require_unique_folded_path(checkout, path, false, &work, cancellation)
+                .require_unique_folded_path(checkout, path, false, work, cancellation)
                 .await?;
         }
         let value = checkout
-            .lookup_no_follow_with_metadata(path, &work, cancellation)
+            .lookup_no_follow_with_metadata(path, work, cancellation)
             .await?;
         inputs
             .carrier
@@ -395,11 +395,11 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
         let mut checkout = observation.observer(
-            &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
+            &mut crate::kernel::allocation::KernelAccounting::native(original, &cancellation),
             &cancellation,
         )?;
         let record = checkout
-            .read_file_record_by_id(file_id, &original, &cancellation)
+            .read_file_record_by_id(file_id, original, &cancellation)
             .await?;
         carrier.check(&cancellation, Some(&self.cancellation))?;
         Ok(record)
@@ -426,7 +426,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-        self.detached_from_checkout(&checkout, record, metadata, &work)
+        self.detached_from_checkout(&checkout, record, metadata, work)
     }
 
     fn detached_from_checkout(

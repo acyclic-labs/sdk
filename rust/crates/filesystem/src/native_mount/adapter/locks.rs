@@ -73,7 +73,7 @@ struct CancellationWait<'a, 'w> {
 impl CancellationWait<'_, '_> {
     fn prepare(&mut self, index: usize, token: &CancellationToken) -> Result<(), MountSourceError> {
         let native = self.carrier.original_native_work();
-        let wait = match &native {
+        let wait = match native {
             Some(work) => token.prepare_cancelled_with_native_work(work),
             None => self.carrier.with_work(|work| work.prepare_cancelled(token)),
         }

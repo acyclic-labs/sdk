@@ -1,0 +1,19 @@
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -70,15 +70,13 @@
+         let mut progress = self
+             .coalescer
+             .progress
+             .lock()
+             .unwrap_or_else(PoisonError::into_inner);
+         progress.draining = false;
+-        if self.completed {
+-            progress.completed = self.number;
+-        }
++        progress.completed = self.number;
+         drop(progress);
+         self.coalescer.drained.notify_one();
+     }
+ }
+ 
+ impl Coalescer {

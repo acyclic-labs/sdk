@@ -64,21 +64,27 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                         bytes[0] ^= 255;
                     }
                     let prefix = &bytes[..length];
-                    let result = index.extract_prefix(prefix, |n| visits += n);
+                    let result = if length == 5 {
+                        Ok(index.extract_through(key, |n| visits += n))
+                    } else {
+                        index.extract_prefix(prefix, |n| visits += n)
+                    };
                     prop_assert_eq!(work.live.get(), live, "extraction retired original backing");
                     prop_assert_eq!(work.claims, claims);
                     prop_assert_eq!(work.items, items);
                     work.cancelled = false;
                     work.maximum_items = None;
                     work.maximum_claims = None;
-                    if length > key.len() {
+                    if length > key.len() && length != 5 {
                         prop_assert!(matches!(result, Err(PrefixTooLong { observed, maximum: 4 }) if observed == length), "oversized prefix was not refused");
                         prop_assert_eq!(visits, 0);
                     } else {
                         let extracted = result.map_err(|error| TestCaseError::fail(error.to_string()))?;
                         let selected: BTreeMap<_, _> = expected
                             .iter()
-                            .filter(|(candidate, _)| candidate.starts_with(prefix))
+                            .filter(|(candidate, _)| {
+                                if length == 5 { **candidate <= key } else { candidate.starts_with(prefix) }
+                            })
                             .map(|(key, value)| (*key, *value))
                             .collect();
                         expected.retain(|key, _| !selected.contains_key(key));
@@ -208,8 +214,21 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             assert_eq!(after.count_total, before.count_total);
             assert_eq!(after.count_current, before.count_current);
             assert_eq!(work.live.get(), live);
+            let ordered = index.extract_through([126, 255, 255, 255], |_| {});
+            let after = acyclic_test_support::current_allocations().unwrap();
+            assert_eq!(
+                after.count_total, before.count_total,
+                "ordered extraction allocated replacement backing"
+            );
+            assert_eq!(after.count_current, before.count_current);
+            assert_eq!(after.bytes_current, before.bytes_current);
+            assert_eq!(
+                work.live.get(),
+                live,
+                "ordered extraction retired original backing under its owner"
+            );
             work.cancelled = true;
-            drop(index);
+            drop((index, ordered));
             assert!(
                 work.live.get() > 0,
                 "extracted prefix lost its original credit"
@@ -230,7 +249,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             assert!(drain_items <= 6 * 3);
 
             // Include every possible branch coordinate, constructed in reverse
-            // order. The complete-key prefix reaches the deepest original leaf.
+            // order. The inclusive ordered cut reaches the deepest original leaf.
             work.cancelled = false;
             let mut index = FixedIndex::<usize, _, 4>::default();
             index.get_or_try_insert_with([0; 4], &mut work, |_| Ok(7))?;
@@ -240,7 +259,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             }
             work.cancelled = true;
             let mut visits = 0;
-            let detached = index.extract_prefix(&[0; 4], |n| visits += n).unwrap();
+            let detached = index.extract_through([0; 4], |n| visits += n);
             assert!(visits <= 17 * 4 + 3);
             drop((index, detached));
             assert_eq!(work.live.get(), 0);
@@ -338,7 +357,7 @@ fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static st
     let original_items = work.items;
     let original_claims = work.claims;
     let before = acyclic_test_support::current_allocations().unwrap();
-    let detached = index.extract_prefix(&[], |_| {}).unwrap();
+    let detached = index.extract_through([255; N], |_| {});
     let mut visits = 0;
     let mut entries = detached.into_entries(|n| visits += n);
     let mut prior = None;
