@@ -88,6 +88,10 @@ impl Prepared {
         &self.reads
     }
 
+    pub(super) fn into_reads(self) -> Vec<ModuleRead> {
+        self.reads
+    }
+
     /// Evaluate this original cut. A hit in the evaluator's single retained
     /// result also avoids entering QuickJS. No I/O or module parsing occurs.
     pub fn evaluate(&self, base: &Value, surface: Surface) -> Result<Evaluation> {

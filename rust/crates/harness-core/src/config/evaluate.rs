@@ -52,6 +52,8 @@ pub struct Evaluated {
 
 mod prepared;
 pub use prepared::{Evaluation, ModuleRead, Prepared, prepare};
+mod composition;
+pub use composition::{Composition, LayerInput, LayerState, ModuleCut, compose_with_evidence};
 
 /// Evaluates the module at `path` holding `source`, with `base` as the value
 /// below it. Imports resolve in `tree`. A throw, an exhausted budget, an
@@ -89,22 +91,7 @@ pub async fn compose(
     tree: &dyn Tree,
     base: Value,
 ) -> Result<(Value, Vec<Link>)> {
-    let mut value = base;
-    let mut chain = Vec::new();
-    for layer in crate::layers::held(layers) {
-        let Some(source) = layer.bytes else { continue };
-        let evaluated = evaluate(path, source, tree, &value, Surface::Compose).await?;
-        chain.push(Link {
-            layer: layer.name.to_owned(),
-            generation: layer.generation.to_owned(),
-            module_digest: blake3::Hash::from_bytes(evaluated.digest)
-                .to_hex()
-                .to_string(),
-            form: evaluated.form,
-        });
-        value = evaluated.value;
-    }
-    Ok((value, chain))
+    composition::compose_plain(path, layers, tree, base).await
 }
 
 /// The most recently evaluated result or failure. Replacing the entry drops
