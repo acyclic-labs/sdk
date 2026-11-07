@@ -979,5 +979,12 @@ recorder's conflation of version observations with ranged reads. The existing
 repeat-put property must reject it. Fresh-put and usage checks share that same
 recorder and public Objects engine: returned byte lengths are measured separately
 from call counts, without claiming decoded bytes, allocated backing or backend
-copies. The volatile MemoryMedium fixture does not establish disk durability or
-the performance of another provider.
+copies. The default volatile MemoryMedium fixture does not establish disk
+durability. The same recorder also wraps the real LocalMedium, forwarding its
+allocation custody, conditional observations, recovery and durability methods.
+The existing fresh-put/usage property runs against both providers and counts
+listed keys. The local shared conformance and reopen property covers the wrapped
+provider; the existing local commit property still counts its actual barriers.
+`mutations/objects-recorder-skipped-flush.patch` suppresses forwarding a flush;
+the local commit property must reject it. These controls do not establish another
+provider's costs, decoded bytes or constant-time usage.
