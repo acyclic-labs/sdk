@@ -25,6 +25,7 @@ pub struct FieldAttr {
     pub using_serde_with: bool,
     // whether the field might be omitted during serialization by skip_serializing{_if}
     pub maybe_omitted: bool,
+    pub skip_serializing: bool,
     pub has_default: bool,
 }
 
@@ -67,6 +68,7 @@ impl Attr for FieldAttr {
 
             using_serde_with: self.using_serde_with || other.using_serde_with,
             maybe_omitted: self.maybe_omitted || other.maybe_omitted,
+            skip_serializing: self.skip_serializing || other.skip_serializing,
             has_default: self.has_default || other.has_default,
 
             // We can't emit TSDoc for a flattened field
@@ -173,13 +175,17 @@ impl_parse! {
 impl_parse! {
     Serde<FieldAttr>(input, out) {
         "rename" => out.0.rename = Some(parse_assign_str(input)?),
-        "skip" => out.0.skip = true,
+        "skip" => {
+            out.0.skip = true;
+            out.0.skip_serializing = true;
+        },
         "skip_serializing_if" => {
             let _ = parse_assign_str(input)?;
             out.0.maybe_omitted = true;
         },
         "skip_serializing" => {
             out.0.maybe_omitted = true;
+            out.0.skip_serializing = true;
         },
         "flatten" => out.0.flatten = true,
         // parse #[serde(default)] to make the TS field optional if `skip_serializing(_if)` is also present.

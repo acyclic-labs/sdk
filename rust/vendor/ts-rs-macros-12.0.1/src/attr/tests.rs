@@ -42,3 +42,75 @@ fn deserialization_metadata_preserves_serialization() -> syn::Result<()> {
     assert!(syn::parse2::<Serde<VariantAttr>>(quote!(other = "ignored")).is_err());
     Ok(())
 }
+
+#[test]
+fn container_serialization_preserves_transparent_fields() -> syn::Result<()> {
+    let newtype: ItemStruct = parse_quote!(
+        struct Wrapper(String);
+    );
+    let expected = crate::types::struct_def(&newtype)?.inline.to_string();
+    for declaration in [
+        quote!(
+            #[serde(transparent)]
+            struct Wrapper {
+                value: String,
+            }
+        ),
+        quote!(
+            #[serde(transparent)]
+            struct Wrapper(#[serde(skip)] (), String);
+        ),
+        quote!(
+            #[serde(transparent)]
+            struct Wrapper {
+                #[serde(skip_serializing)]
+                cache: (),
+                value: String,
+            }
+        ),
+        quote!(
+            #[serde(transparent)]
+            struct Wrapper(String, std::marker::PhantomData<()>);
+        ),
+    ] {
+        let item: ItemStruct = syn::parse2(declaration)?;
+        assert!(StructAttr::from_attrs(&item.attrs)?.transparent);
+        assert_eq!(
+            crate::types::struct_def(&item)?.inline.to_string(),
+            expected
+        );
+    }
+    for declaration in [
+        quote!(
+            #[serde(transparent)]
+            struct Empty;
+        ),
+        quote!(
+            #[serde(transparent)]
+            struct Empty(#[serde(skip)] ());
+        ),
+        quote!(
+            #[serde(transparent)]
+            struct Multiple(String, String);
+        ),
+    ] {
+        let item: ItemStruct = syn::parse2(declaration)?;
+        assert!(crate::types::struct_def(&item).is_err());
+    }
+    let ordinary: ItemEnum = parse_quote! {
+        #[serde(tag = "kind", rename_all = "camelCase")]
+        enum Reply { Ready { file_name: String }, Closed }
+    };
+    let mut restricted = ordinary.clone();
+    restricted
+        .attrs
+        .push(parse_quote!(#[serde(deny_unknown_fields)]));
+    assert_eq!(
+        crate::types::enum_def(&ordinary)?.inline.to_string(),
+        crate::types::enum_def(&restricted)?.inline.to_string()
+    );
+    assert!(syn::parse2::<Serde<StructAttr>>(quote!(transparent = true)).is_err());
+    assert!(syn::parse2::<Serde<StructAttr>>(quote!(deny_unknown_fields = true)).is_err());
+    assert!(syn::parse2::<Serde<EnumAttr>>(quote!(deny_unknown_fields = true)).is_err());
+    Ok(())
+}

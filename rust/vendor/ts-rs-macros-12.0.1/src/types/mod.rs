@@ -36,15 +36,18 @@ fn type_def(attr: &StructAttr, ts_name: Expr, fields: &Fields) -> Result<Derived
     if let Some(attr_type_as) = &attr.type_as {
         return type_as::type_as_struct(attr, ts_name, attr_type_as);
     }
+    if attr.transparent {
+        return newtype::newtype(attr, ts_name, StructAttr::transparent_field(fields)?);
+    }
 
     match fields {
         Fields::Named(named) => match named.named.len() {
             0 if attr.tag.is_none() => Ok(unit::empty_object(attr, ts_name)),
             _ => named::named(attr, ts_name, named),
         },
-        Fields::Unnamed(unnamed) => match unnamed.unnamed.len() {
-            0 => Ok(unit::empty_array(attr, ts_name)),
-            1 => newtype::newtype(attr, ts_name, unnamed),
+        Fields::Unnamed(unnamed) => match (unnamed.unnamed.len(), unnamed.unnamed.first()) {
+            (0, _) => Ok(unit::empty_array(attr, ts_name)),
+            (1, Some(inner)) => newtype::newtype(attr, ts_name, inner),
             _ => tuple::tuple(attr, ts_name, unnamed),
         },
         Fields::Unit => Ok(unit::null(attr, ts_name)),
