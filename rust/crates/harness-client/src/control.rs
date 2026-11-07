@@ -43,7 +43,7 @@ fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, Command
 
 /// The owning host's pure decoder for the same public invocation sent by the
 /// client. Construct this before provider I/O, then pass the actual session's
-/// CallAuthorization through the host's existing admission and execution path.
+/// `CallAuthorization` through the host's existing admission and execution path.
 /// This value asserts no identity, performs no dispatch and owns no retry loop.
 pub struct AgentCall {
     invocation: wire::InvokeActorRequest,
@@ -199,7 +199,7 @@ impl AgentBinding {
     /// endpoint. `url`, relative or absolute, names discovery's or this
     /// binding's route by its path and query alone, and `body` is one frame
     /// of the caller's prepared command, kept byte for byte: the result is
-    /// the envelope a session ActorCall carries here for the same frame.
+    /// the envelope a session `ActorCall` carries here for the same frame.
     /// Both URLs retain this binding's complete selection and metadata.
     ///
     /// # Errors
