@@ -26,5 +26,8 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     admit::<MergeConflictFile>(include_bytes!(
         "../corpus/merge_directory_resolution/type-v1"
     ));
+    admit::<MergeConflictFile>(include_bytes!(
+        "../corpus/merge_directory_resolution/mode-v1"
+    ));
     acyclic_fs::workspace::check_merge_directory_resolution(bytes);
 });
