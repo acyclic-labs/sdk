@@ -1,0 +1,15 @@
+--- a/rust/crates/harness-core/src/executor/json/records.rs
++++ b/rust/crates/harness-core/src/executor/json/records.rs
+@@ -37,10 +37,10 @@
+         Err((value_shape, syntax)) => {
+             // Nothing is decoded; the caller still holds the diagnostic the
+             // syntax error renders.
+-            charge(JsonCodecCharge::Admission {
++            let _ = charge(JsonCodecCharge::Admission {
+                 maximum_owned_bytes: 0,
+                 value_shape,
+-            })?;
++            });
+             return Err(decode_error(syntax, code));
+         }
+     };

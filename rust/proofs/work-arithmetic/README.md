@@ -21,8 +21,8 @@ fixed-input addition tests; production counter code remains unchanged.
 From the repository root:
 
 ```sh
-python3 rust/proofs/qualify.py work-arithmetic
-python3 rust/proofs/qualify.py work-mixed
+node rust/proofs/qualify.mjs work-arithmetic
+node rust/proofs/qualify.mjs work-mixed
 ```
 
 The kept mutation removes the real `checked_add` overflow rejection. The original

@@ -47,6 +47,8 @@ thiserror = "2.0.12"
 
 [features]
 
+test-support = ["parsing", "dep:serde_json"]
+
 # Dump loading using flate2
 dump-load = ["flate2", "dep:rmp-serde"]
 # Dump creation using flate2

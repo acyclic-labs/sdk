@@ -107,3 +107,9 @@ The open whole-operation and topology obligations in the table must remain
 explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot
 certify non-owner members, partial writes, upgrades or larger fork trees.
+
+Run `node rust/proofs/qualify.mjs conversation-observation` to challenge the
+native parent/child volume property with the original duplicate-settlement
+observation path, then restore the exact production source and rerun the same
+property. Both phases retain the original oracle bytes, source hashes and exact
+test-selection checks under `target/conversation-observation`.

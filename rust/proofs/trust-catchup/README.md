@@ -1,6 +1,6 @@
 # Trust catch-up boundary
 
-Run `python3 rust/proofs/qualify.py trust-catchup` from the repository root.
+Run `node rust/proofs/qualify.mjs trust-catchup` from the repository root.
 
 The existing `trust_feed::tests::losing_one_account_follow_fences_everything`
 control runs the production `TrustFeed` over original `MemoryStream` records

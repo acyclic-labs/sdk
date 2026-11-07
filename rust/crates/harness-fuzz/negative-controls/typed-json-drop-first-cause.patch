@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-core/src/executor/json/admission.rs
++++ b/rust/crates/harness-core/src/executor/json/admission.rs
+@@ -333,8 +333,6 @@
+     });
+     let release = charge.borrow_mut()(JsonCodecCharge::Release { bytes: scratch });
+-    if let Some(error) = failed.borrow_mut().take() {
+-        return Err(error);
+-    }
++    failed.borrow_mut().take();
+     release?;
+     Ok(counts)
+ }
