@@ -1,3 +1,6 @@
+[graph]
+all-features = true
+
 [advisories]
 yanked = "deny"
 # Loom's latest published release (0.7.2) uses pin-utils in its futures model.
