@@ -664,7 +664,7 @@ impl Shape {
         Self {
             answer: answer.trim().to_owned(),
             results: vec![
-                pick(&parsed("shell"), &["/exit_code", "/stdout"]),
+                parsed("shell"),
                 pick(
                     &parsed("write"),
                     &["/file/descriptor", "/file/path", "/file/volume/class"],
@@ -735,7 +735,13 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     }
     let (_, local) = &shapes[0];
     assert_eq!(local.answer, "root answer\nfollowup answer");
-    assert_eq!(local.results[0], json!([0, "conformance-shell\n"]));
+    assert!(
+        local.results[0]
+            .as_str()
+            .is_some_and(|text| text.lines().eq(["Exit code: 0", "conformance-shell"])),
+        "shell did not present a successful command and its output: {:?}",
+        local.results[0]
+    );
     assert_eq!(
         local.results[1][0]["byte_length"],
         WRITTEN.len(),
