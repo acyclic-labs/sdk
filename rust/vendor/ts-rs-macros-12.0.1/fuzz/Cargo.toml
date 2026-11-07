@@ -1,0 +1,37 @@
+[package]
+name = "ts-rs-attribute-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+default = ["serde-compat"]
+serde-compat = []
+no-serde-warnings = []
+fuzzing = ["dep:libfuzzer-sys"]
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", optional = true }
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2.0.28", features = ["full", "extra-traits"] }
+termcolor = "1"
+serde_derive_internals = "=0.30.0"
+
+[lib]
+test = false
+doctest = false
+
+[[bin]]
+name = "serde_attributes"
+path = "fuzz_targets/serde_attributes.rs"
+required-features = ["fuzzing"]
+test = false
+doc = false
+bench = false

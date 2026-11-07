@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
-use syn::{Attribute, Expr, Fields, Ident, Path, Result, Type, WherePredicate, parse_quote};
+use syn::{Attribute, Expr, Field, Fields, Ident, Path, Result, Type, WherePredicate, parse_quote};
 
 use super::{
     Attr, ContainerAttr, Serde, Tagged, parse_assign_expr, parse_assign_from_str,
     parse_assign_inflection, parse_bound, parse_concrete,
 };
 use crate::{
-    attr::{EnumAttr, Inflection, VariantAttr, parse_assign_str, parse_optional_assign_str},
+    attr::{
+        EnumAttr, FieldAttr, Inflection, VariantAttr, parse_assign_str, parse_optional_assign_str,
+    },
     optional::{Optional, parse_optional},
     utils::{extract_docs, parse_attrs},
 };
@@ -26,9 +28,40 @@ pub struct StructAttr {
     pub concrete: HashMap<Ident, Type>,
     pub bound: Option<Vec<WherePredicate>>,
     pub optional_fields: Optional,
+    pub transparent: bool,
 }
 
 impl StructAttr {
+    pub fn transparent_field(fields: &Fields) -> Result<&Field> {
+        let mut selected = None;
+        for field in fields {
+            let mut ty = &field.ty;
+            loop {
+                ty = match ty {
+                    Type::Group(group) => &group.elem,
+                    _ => break,
+                };
+            }
+            // Match Serde's serialization selection, including implicit markers.
+            if matches!(ty, Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "PhantomData"))
+                || crate::utils::parse_serde_attrs::<FieldAttr>(&field.attrs)
+                    .0
+                    .skip_serializing
+            {
+                continue;
+            }
+            if selected.replace(field).is_some() {
+                syn_err_spanned!(fields; "`transparent` requires exactly one serialized field");
+            }
+        }
+        selected.ok_or_else(|| {
+            syn::Error::new_spanned(
+                fields,
+                "`transparent` requires exactly one serialized field",
+            )
+        })
+    }
+
     pub fn from_attrs(attrs: &[Attribute]) -> Result<Self> {
         let mut result = parse_attrs::<Self>(attrs)?;
 
@@ -96,6 +129,7 @@ impl Attr for StructAttr {
                 (None, None) => None,
             },
             optional_fields: self.optional_fields.or(other.optional_fields),
+            transparent: self.transparent || other.transparent,
         }
     }
 
@@ -174,8 +208,11 @@ impl_parse! {
         "try_from" => {
             let _: Type = parse_assign_from_str(input)?;
         },
+        "transparent" => out.0.transparent = true,
+        // This ingress restriction does not change serialized fields.
+        "deny_unknown_fields" => {},
         // parse #[serde(default)] to not emit a warning
-        "deny_unknown_fields" | "default" => {
+        "default" => {
             parse_optional_assign_str(input)?;
         },
         // parse #[serde(crate = "...")] to not emit a warning

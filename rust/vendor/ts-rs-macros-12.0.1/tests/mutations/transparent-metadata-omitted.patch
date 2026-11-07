@@ -1,0 +1,13 @@
+diff --git a/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs b/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
+index 55848112170..c451222667b 100644
+--- a/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
++++ b/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
+@@ -208,7 +208,7 @@ impl_parse! {
+         "try_from" => {
+             let _: Type = parse_assign_from_str(input)?;
+         },
+-        "transparent" => out.0.transparent = true,
++        "transparent" => {},
+         // This ingress restriction does not change serialized fields.
+         "deny_unknown_fields" => {},
+         // parse #[serde(default)] to not emit a warning
