@@ -46,6 +46,27 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 .native_prepare_commit(request.clone(), 64, meter.original())
                 .await??;
             let (packet, allocation) = packet.into_parts();
+            let mut revision = stream.wait_applied(&Default::default()).await?;
+            revision.index += 1;
+            let minimum = crate::RevisionCut::of(revision);
+            let future_read = ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 1,
+                key: None,
+                at_least: minimum.clone(),
+            };
+            let mut future_follow = crate::FollowRequest::new(path.clone(), 1);
+            future_follow.at_least = minimum.clone();
+            let future_heads = crate::HeadsRequest {
+                paths: vec![path.clone()],
+                retained: Default::default(),
+                projection: crate::HeadProjection::Tail,
+                durable_through: None,
+                children: None,
+                limit: 1,
+                at_least: minimum.clone(),
+            };
             let file_path = root.path().join(JOURNAL_FILE);
             let read_only = acyclic_native_runtime::CachedFile::new(
                 std::fs::File::open(&file_path)?,
@@ -74,7 +95,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             let publication = stream.inner.publication.write().await;
             // These public operations are parked before they can observe memory.
             // Failure must wake them while both original fences remain held.
-            let mut waits: [crate::BoxProviderFuture<'_, Result<(), StreamError>>; 7] = [
+            let mut waits: [crate::BoxProviderFuture<'_, Result<(), StreamError>>; 13] = [
                 Box::pin(
                     acyclic_native_runtime::testing::untracked(stream.tail(path.clone()))
                         .map(|result| result.map(|_| ())),
@@ -128,8 +149,37 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                         .finish(crate::OwnedBytes::from_static(b"queued prepared record").into())
                         .map(observed),
                 ),
+                // Future cuts park before publication. Their original producer
+                // must retire even while both publication fences stay held.
+                Box::pin(
+                    stream
+                        .wait_applied(&minimum)
+                        .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(stream.read(future_read.clone()))
+                        .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(stream.follow(future_follow))
+                        .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(stream.heads(future_heads.clone()))
+                        .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    stream
+                        .native_read(future_read, meter.original())
+                        .map(observed),
+                ),
+                Box::pin(
+                    stream
+                        .native_heads(future_heads, meter.original())
+                        .map(observed),
+                ),
             ];
-            let observers: [_; 7] =
+            let observers: [_; 13] =
                 std::array::from_fn(|_| Arc::new(Observer(AtomicBool::new(false))));
             let wakers = observers
                 .each_ref()
@@ -151,6 +201,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                     4 => "failed journal left a native guarded commit parked",
                     5 => "failed journal left native preparation parked",
                     6 => "failed journal left a prepared completion parked",
+                    7.. => "failed journal left a future revision parked",
                     _ => "failed journal left a public observation parked",
                 };
                 assert!(observer.0.load(Ordering::Acquire), "{diagnostic}");

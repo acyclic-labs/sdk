@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-revision-failure-progress": [
+    "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a future revision parked", ["--features", "local,test-support"],
+    { patch: "retirement.patch" },
+  ],
   "local-failure-progress": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
