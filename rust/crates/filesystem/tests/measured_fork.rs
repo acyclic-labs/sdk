@@ -271,22 +271,33 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     let key = IdempotencyKey::new();
     armed.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
-    assert!(
-        parent
-            .fork::<_, _, acyclic_fs::WorkspaceError>(
-                "inflight-child",
-                ForkOptions::from_generation(pinned.clone(), key),
-                acyclic_fs::PublicationPermit::Unrestricted,
-                finite_budget()?,
-                &cancellation,
-                &mut |_| std::future::ready(Ok(acyclic_fs::OperationReceipt {
+    let budget = finite_budget()?;
+    let cancelled = match parent
+        .fork::<_, _, acyclic_fs::WorkspaceError>(
+            "inflight-child",
+            ForkOptions::from_generation(pinned.clone(), key),
+            acyclic_fs::PublicationPermit::Unrestricted,
+            budget,
+            &cancellation,
+            &mut |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
                     value: (),
-                    work: acyclic_fs::WorkCounters::default()
+                    work: acyclic_fs::WorkCounters::default(),
                 }))
-            )
-            .await
-            .is_err()
+            },
+        )
+        .await
+    {
+        Err(failure) => failure,
+        Ok(_) => return Err("fork published after staging cancelled its invocation".into()),
+    };
+    assert!(
+        matches!(cancelled.error, WorkspaceError::Cancelled(_)),
+        "staging cancellation lost its typed cause: {}",
+        cancelled.error
     );
+    cancelled.work.verify(budget)?;
+    assert!(cancelled.work.backend_write_operations > 0);
     assert!(observed.load(Ordering::SeqCst));
     assert!(cancellation.is_cancelled());
     assert!(unbounded!(fs, open_workspace("inflight-child")).is_err());
