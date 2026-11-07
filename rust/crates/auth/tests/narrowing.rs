@@ -383,6 +383,20 @@ fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
     };
     let allowed =
         |blocks: &[Block]| permits(blocks, &request, PolicyDecision::Allow, Scope::Exact).is_ok();
+    let mut inherited = actor.clone();
+    let GrantKind::Execution(grant) = &mut inherited.kind else {
+        unreachable!();
+    };
+    grant.usage_owner = None;
+    for (parent, child) in [
+        (actor.clone(), inherited.clone()),
+        (inherited, actor.clone()),
+    ] {
+        let restricted = append(&chain(vec![parent]), granting(vec![child]))
+            .expect("an execution owner may inherit or become pinned");
+        let billed = append(&restricted, allowance(&["actors"])).expect("a product allowance");
+        assert!(allowed(&billed), "the surviving signed owner can pay");
+    }
     for (survivor, admitted) in [(actor.clone(), true), (worker.clone(), false)] {
         let restricted = append(
             &chain(vec![actor.clone(), worker.clone()]),

@@ -1,3 +1,4 @@
+//! Shared Auth contract, authorization, custody and conformance controls.
 acyclic_test_support::counting_allocator!();
 
 #[path = "common/operation_context.rs"]
