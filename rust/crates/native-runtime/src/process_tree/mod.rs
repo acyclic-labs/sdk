@@ -13,6 +13,7 @@ use platform::Child;
 use std::io::{self, Read};
 use std::process::{ExitStatus, Output};
 
+mod cleanup;
 mod command;
 pub use command::{ProcessCommand, ProcessStdio};
 #[cfg(windows)]

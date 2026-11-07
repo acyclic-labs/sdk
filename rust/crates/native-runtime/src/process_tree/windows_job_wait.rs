@@ -1,5 +1,5 @@
 //! Job membership is rechecked after a pinned member exits, never on a timer.
-use super::super::windows_event::Cleanup;
+use super::super::cleanup::Cleanup;
 use super::*;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA};
