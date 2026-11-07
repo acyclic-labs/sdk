@@ -376,7 +376,7 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
 
 // Check selection against full decoding by the same canonical format reader.
 // The oracle does not reproduce parsing or the production projection path.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(all(test, not(target_arch = "wasm32")), feature = "test-support"))]
 pub(crate) fn projection_contract(record: &crate::Record) -> Result<(), StreamError> {
     if FollowFilter::default().project(record.clone())? != Some(record.clone()) {
         return Err(StreamError::InvalidResponse);

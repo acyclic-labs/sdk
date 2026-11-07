@@ -93,7 +93,7 @@ impl<T> Signal<T> {
         drop(previous);
         Ok((value, buffered))
     }
-    #[cfg(test)]
+    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
     pub(crate) fn pending(&self) -> usize {
         self.state.lock().unwrap().0.len()
     }
