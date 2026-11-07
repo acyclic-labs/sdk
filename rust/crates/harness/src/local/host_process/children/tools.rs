@@ -263,7 +263,7 @@ mod tests {
             served(host, |host, cwd| {
               for unavailable in [false, true] {
                 let (mut children, _) = children(host, cwd, if unavailable { "eof-retirement-refusal" } else { "eof-retirement" })?;
-                let (mut running, view) = claim(&mut children, cwd, "held", SessionAction::Spawn { prompt: "wait for parent".into() })?;
+                let (mut running, view) = claim(&mut children, cwd, if unavailable { "refused" } else { "held" }, SessionAction::Spawn { prompt: "wait for parent".into() })?;
                 let mut command = native_fixture(&view, "", "0");
                 running.process.spawn(&mut command, running.claim.operation)?;
                 let pid = shell_pid(&mut running)?;

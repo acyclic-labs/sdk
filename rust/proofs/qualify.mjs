@@ -26,6 +26,13 @@ const claims = {
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
   ],
+  "native-eof-refusal": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
+    "original process must retire before reply drain",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
+  ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
     "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating",
