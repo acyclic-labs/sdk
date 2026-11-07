@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn original_driver_replacement_preserves_reentrant_publication_and_unwind() -> io::Result<()> {
+    struct Retired {
+        original: std::sync::Weak<CompletionMutex<CompletionState<usize>>>,
+        publication: Arc<Mutex<Option<NativeCompletionProducer<usize>>>>,
+        panic: bool,
+    }
+    impl Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            panic!("unpublished original observer was woken");
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            let original = self.original.upgrade().expect("original producer remains");
+            assert!(
+                original.try_lock().is_ok(),
+                "original observer replacement retained the completion lock"
+            );
+            // Publication reenters the real completion while its old observer
+            // retires. No timer, thread or substitute completion drives it.
+            let producer = self.publication.lock().unwrap().take().unwrap();
+            producer.complete(Ok(37));
+            if self.panic {
+                std::panic::panic_any("original replacement observer retirement");
+            }
+        }
+    }
+    struct Notified(AtomicU64);
+    impl Wake for Notified {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    for panic in [false, true] {
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let meter: Arc<dyn NativeReadMeter> = budget.clone();
+        let (mut observation, producer) = NativeCompletion::<usize>::from_driver(&meter)?;
+        let original = Arc::clone(observation.state.as_ref().unwrap());
+        // Retain this owner outside the callback so the negative control's
+        // assertion can unwind before the original producer is dropped.
+        let publication = Arc::new(Mutex::new(Some(producer)));
+        let first = Waker::from(Arc::new(Retired {
+            original: Arc::downgrade(&original),
+            publication: Arc::clone(&publication),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut observation)
+                .poll(&mut Context::from_waker(&first))
+                .is_pending()
+        );
+        drop(first);
+        let notified = Arc::new(Notified(AtomicU64::new(0)));
+        let next = Waker::from(Arc::clone(&notified));
+        let replacement = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Pin::new(&mut observation).poll(&mut Context::from_waker(&next))
+        }));
+        assert!(
+            original.try_lock().is_ok(),
+            "original observer replacement poisoned its completion"
+        );
+        if panic {
+            assert_eq!(
+                replacement.unwrap_err().downcast_ref::<&str>(),
+                Some(&"original replacement observer retirement")
+            );
+        } else {
+            assert!(replacement.unwrap().is_pending());
+        }
+        assert_eq!(notified.0.load(Ordering::Acquire), 1);
+        assert!(publication.lock().unwrap().is_none());
+        assert!(matches!(
+            Pin::new(&mut observation).poll(&mut Context::from_waker(&next)),
+            Poll::Ready(Ok(37))
+        ));
+        drop(observation);
+        drop(original);
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn cancelled_original_driver_retires_observer_outside_completion_lock() -> io::Result<()> {
     struct Observer {
         dropped: Arc<AtomicBool>,

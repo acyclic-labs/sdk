@@ -63,6 +63,43 @@ impl std::task::Wake for NativeWake {
     }
 }
 
+/// Registers one observer without invoking its clone or retirement callbacks
+/// under the owner's lock. Unchanged observers and terminal reads use one
+/// lock and no clone. A replacement clones outside the lock, then rechecks
+/// publication under the same lock before installing its wake.
+pub(crate) fn poll_registered<S, T, G>(
+    mut lock: impl FnMut() -> G,
+    waker: &std::task::Waker,
+    mut ready: impl FnMut(&mut S) -> std::task::Poll<T>,
+    slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
+) -> std::task::Poll<T>
+where
+    G: std::ops::DerefMut<Target = S>,
+{
+    let mut state = lock();
+    if let std::task::Poll::Ready(value) = ready(&mut state) {
+        return std::task::Poll::Ready(value);
+    }
+    if slot(&mut state)
+        .as_ref()
+        .is_some_and(|current| current.will_wake(waker))
+    {
+        return std::task::Poll::Pending;
+    }
+    drop(state);
+    let waker = waker.clone();
+    let mut state = lock();
+    let result = ready(&mut state);
+    let retired = if result.is_pending() {
+        slot(&mut state).replace(waker)
+    } else {
+        Some(waker)
+    };
+    drop(state);
+    drop(retired);
+    result
+}
+
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;

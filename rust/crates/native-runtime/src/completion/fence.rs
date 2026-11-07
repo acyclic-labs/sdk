@@ -59,16 +59,23 @@ impl OperationFence {
     }
 
     pub(crate) fn ready_or_register(&self, waker: &Waker) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.complete {
-            true
-        } else {
-            state.successor = Some(waker.clone());
-            false
-        }
+        crate::wake::poll_registered(
+            || {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
+            waker,
+            |state| {
+                if state.complete {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            },
+            |state| &mut state.successor,
+        )
+        .is_ready()
     }
 
     pub(crate) fn complete(&self) {
