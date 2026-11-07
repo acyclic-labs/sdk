@@ -135,9 +135,11 @@ pub(super) fn wait(
 pub(super) fn nonblocking(file: &impl AsRawFd) -> io::Result<()> {
     // SAFETY: the caller retains the descriptor throughout this operation.
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0
-        || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-    {
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the borrowed descriptor remains open, and F_GETFL supplied its flags.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
