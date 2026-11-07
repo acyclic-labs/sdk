@@ -481,6 +481,30 @@ async fn listed_nodes_are_exactly_what_lookups_report() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn native_device_metadata_preserves_the_host_number() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let source = native_source("/dev").await?;
+    let cancellation = CancellationToken::new();
+    let reference = source.reference();
+    let node = lookup_node(&source, reference, &path("/null")?, &cancellation).await?;
+    assert_eq!(node.kind, SourceNodeKind::CharacterDevice);
+    let (major, minor) = node.device.ok_or("device number absent")?;
+    let native =
+        crate::native_host::join_device(major, minor).map_err(std::io::Error::from_raw_os_error)?;
+    assert_eq!(
+        native as u64,
+        std::fs::symlink_metadata("/dev/null")?.rdev()
+    );
+
+    let directory = lookup_node(&source, reference, &path("/")?, &cancellation).await?;
+    assert_eq!(directory.kind, SourceNodeKind::Directory);
+    assert_eq!(directory.device, None);
+    Ok(())
+}
+
 async fn held_file(
     contents: &[u8],
 ) -> Result<(tempfile::TempDir, NativeDemandSource, Box<dyn DemandFile>), Box<dyn Error>> {

@@ -148,9 +148,10 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native filesystem request's saved result until its client
-    /// withdraws it from this original held directory after reading its reply.
-    /// An uncertain observation retains the result.
+    /// Retains a filesystem command's saved result while its original file
+    /// under `directory/requests` exists. Later commands may prune that result
+    /// after withdrawal; the file bridge owns durable reply and withdrawal
+    /// ordering. This does not store every host action's encoded reply.
     #[must_use]
     pub fn with_requests(mut self, requests: Arc<acyclic_fs::HeldRoot>) -> Self {
         self.requests = Some(requests);

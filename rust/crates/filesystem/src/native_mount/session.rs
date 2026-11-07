@@ -33,23 +33,6 @@ pub(in crate::native_mount) enum NativeSessionControl {
 }
 
 impl NativeMountSession {
-    /// Recognizes projection staging still owned by this mount's held resources.
-    pub fn owns_parent_entry(
-        &self,
-        entry: &crate::native_host::HostListedEntry,
-        work: &NativeMaterializationWork,
-    ) -> Result<bool, crate::NativeTreeMaterializationError> {
-        // Ownership fences live in the registry, never in the destination's
-        // parent. No authored sibling can therefore be an ownership fence.
-        #[cfg(windows)]
-        if let Some(driver) = &self.driver {
-            return driver.owns_parent_entry(entry, work);
-        }
-        #[cfg(not(windows))]
-        let _ = (entry, work);
-        Ok(false)
-    }
-
     pub(super) fn new(
         request: NativeMountRequest,
         retained_source: Option<Arc<dyn MountFilesystem>>,
