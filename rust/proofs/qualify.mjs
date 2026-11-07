@@ -35,6 +35,12 @@ const claims = {
     "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
     { target: ["--test", "seeded_runtime"] },
   ],
+  "approval-wake-uncertainty": [
+    "rust/crates/harness-core/src/filesystem/agent_turns.rs", "acyclic-agent-host-conformance",
+    "local::local_approval_wake_retries_the_original_uncertain_request",
+    "approval wake uncertainty lost its original request", ["--features", "local"],
+    { target: ["--test", "main"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
