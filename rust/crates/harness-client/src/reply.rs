@@ -69,17 +69,23 @@ pub enum AgentReply {
         agent: AgentPath,
     },
     /// Prompt, cancellation or approval inbox delivery.
-    Delivered { delivery: Delivered },
+    Delivered {
+        /// Original inbox admission result; completion is observed separately.
+        delivery: Delivered,
+    },
     /// Spawn publication, including the canonical child path.
     Spawned {
         /// The newly published direct child.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Original admission of the child's initial input.
         delivery: Delivered,
     },
     /// A single direct-child page, with an opaque exclusive continuation.
     Children {
+        /// Direct children visible at this page's cut.
         items: Vec<ChildAgent>,
+        /// Opaque exclusive continuation, or the end of this listing.
         next: Option<String>,
     },
     /// Authorized project roots observed for an exact-head restore request.
@@ -98,11 +104,16 @@ pub enum AgentReply {
     },
     /// A single authorized pending-approval page.
     Approvals {
+        /// Undecided actions authorized for this reader.
         items: Vec<PendingApproval>,
+        /// Opaque exclusive continuation, or the end of this listing.
         next: Option<String>,
     },
     /// The committed reply to one accepted message.
-    Reply { reply: Reply },
+    Reply {
+        /// The accepted message's immutable committed result.
+        reply: Reply,
+    },
     /// A bounded committed execution query, shared by every frontend.
     Usage {
         /// Exact original inbox sequence, at or after this agent's fork cut.
@@ -184,7 +195,12 @@ pub enum AgentControlFailure {
     /// A definitive refusal, classified by the host's canonical error code,
     /// with the host error's own text as its reason.
     #[error("{}", refusal(code, reason))]
-    Refused { code: String, reason: String },
+    Refused {
+        /// Stable classification supplied by the host.
+        code: String,
+        /// Original host diagnostic, bounded at a character boundary.
+        reason: String,
+    },
     /// The exact original request; presentation must not replace this with prose.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<CommitRequest>),

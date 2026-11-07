@@ -339,10 +339,13 @@ pub enum AgentExchangeError {
     /// This is not a decoded agent refusal or proof of mutation settlement.
     #[error("agent session failed: {0}")]
     Session(StreamError),
+    /// The prepared command or decoded reply violates the wire contract.
     #[error(transparent)]
     Command(#[from] CommandError),
+    /// The host refused the command or retained an uncertain commit outcome.
     #[error(transparent)]
     Control(#[from] AgentControlFailure),
+    /// The actor rejected the invocation before an agent reply was decoded.
     #[error("actor invocation refused with status {0}")]
     ActorStatus(u32),
 }

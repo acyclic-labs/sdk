@@ -14,7 +14,7 @@
 use crate::reader::RecordBytes;
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
-use acyclic_stream::{StreamError, StreamPath, StreamProviderExt as _};
+use acyclic_stream::{StreamError, StreamPath};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Rows of lookahead in the scroll direction, at most.
@@ -52,7 +52,9 @@ mod tests {
     use super::*;
     use crate::reader::{ListedChild, Listing, Op, Outcome};
     use acyclic_harness_core::agent::AgentId;
-    use acyclic_stream::{AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream};
+    use acyclic_stream::{
+        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _,
+    };
 
     #[test]
     fn history_seeks_preserve_exclusive_ends_at_the_sequence_boundary() {

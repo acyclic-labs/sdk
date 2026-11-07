@@ -1,6 +1,5 @@
 //! Original owner identity survives authenticated private-record publication.
 use super::*;
-use std::io::Write as _;
 
 #[test]
 fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
