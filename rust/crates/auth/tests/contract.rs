@@ -73,6 +73,15 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
         protoc_bin_vendored::protoc_bin_path,
     )?)
     .arg(format!("--proto_path={}", root.path().display()))
+    .arg(format!(
+        "--proto_path={}",
+        acyclic_test_support::source_path("compatibility/proto").display()
+    ))
+    .arg(format!(
+        "--proto_path={}",
+        acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?
+            .display()
+    ))
     .arg(format!("--descriptor_set_out={}", descriptor.display()))
     .arg("auth/v1/auth.proto")
     .status()?;
