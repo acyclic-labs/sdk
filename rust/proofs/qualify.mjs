@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "compiled-prefix-invariant": [
+    "rust/crates/collections/src/compiled_prefix.rs", "acyclic-collections",
+    "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+    "changed original prefix label became absence", [],
+    {
+      positiveCommand: ["test", "--locked", "-p", "acyclic-collections", "-p", "acyclic-native-runtime", "--lib", "--", "--exact", "--nocapture",
+        "tests::compiled_prefix::compiled_prefix_matches_original_keys_and_refuses_original_read_credit",
+        "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+        "execution::tests::compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits"],
+      completed: ["2 passed; 0 failed", "1 passed; 0 failed"],
+    },
+  ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
     "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions",
