@@ -143,9 +143,10 @@ if (claim === "--help" && extra.length === 0) {
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-  const patch = claim === "work-mixed"
+  const patchRelative = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const patch = fileURLToPath(new URL(patchRelative, new URL("../../", import.meta.url)));
   const target = options.target ?? ["--lib"];
   const command = options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
