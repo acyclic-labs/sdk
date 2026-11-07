@@ -77,7 +77,12 @@ fn older_state_directory_is_refused_without_migration() -> Result<()> {
     fs::write(directory.join(V1_RECORD), b"v1").map_err(storage)?;
     let project = volume_project(root.path())?;
     let custody = root.path().join("signing-custody");
-    let error = match Owner::open(&directory, &project, None, SigningCustody::PrivateFile(&custody)) {
+    let error = match Owner::open(
+        &directory,
+        &project,
+        None,
+        SigningCustody::PrivateFile(&custody),
+    ) {
         Ok(_) => return Err(Error::Invalid("a v1 state directory was adopted".into())),
         Err(error) => error.to_string(),
     };
