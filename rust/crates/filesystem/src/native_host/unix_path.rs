@@ -20,11 +20,9 @@ pub(crate) fn prepare_unix_name<W: NativeHostWork>(
 ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = name.as_bytes();
-    for byte in bytes {
-        work.started_io(ITEM)?;
-        if *byte == 0 {
-            return Err(W::invalid_request());
-        }
+    work.started_io(items(bytes.len() as u64))?;
+    if bytes.contains(&0) {
+        return Err(W::invalid_request());
     }
     let (mut owned, allocation) = buffer(
         bytes

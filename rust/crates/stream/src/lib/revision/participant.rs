@@ -55,7 +55,8 @@ impl ObservedAuthority {
     }
 }
 
-#[cfg(loom)]
+// Only the dedicated integration target path-includes and runs this model.
+#[cfg(all(loom, test))]
 pub(super) fn verify_concurrent_frontier(replace_maximum: bool) {
     loom::model(move || {
         let first = Revision {
