@@ -35,6 +35,14 @@ max-threads = 1
 filter = "test(::rustdoc_corpus::)"
 test-group = "rustdoc-corpus"
 
+# Live service cases require a fresh full topology and its endpoints file.
+[test-groups.full-cloud]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "test(::full_cloud::)"
+test-group = "full-cloud"
+
 # Device counters and syscall traces require their native platform capability.
 [test-groups.native-terminal]
 max-threads = 1
