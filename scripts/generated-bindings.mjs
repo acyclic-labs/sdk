@@ -1,4 +1,38 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
+let tracked;
+
+// Pinned outputs are compared. Ignored build outputs are regenerated from the
+// current source, so a clean checkout needs no pre-existing generated cache.
+export function projectGenerated(path, content, check) {
+  if (check) {
+    tracked ??= new Set(execFileSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" }).split("\0"));
+    if (tracked.has(relative(sourceRoot, path).replaceAll("\\", "/"))) return checkGenerated(path, content);
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeChanged(path, content);
+}
+
+export function checkGenerated(path, content) {
+  if (!existsSync(path) || !readFileSync(path).equals(Buffer.from(content))) {
+    throw new Error(`STEP_FAILED generated-artifact: ${path} is stale; recovery: bun run generate`);
+  }
+}
+
+// Directory-producing Rust exporters use the same output in write and check
+// modes. Comparing their fresh bytes never rewrites a contributor's checkout.
+export function checkGeneratedDirectory(generated, destination) {
+  for (const entry of readdirSync(generated, { recursive: true, withFileTypes: true })) {
+    if (entry.isDirectory()) continue;
+    const source = join(entry.parentPath, entry.name);
+    const relative = source.slice(generated.length + 1);
+    projectGenerated(join(destination, relative), readFileSync(source), true);
+  }
+}
 
 export const writeChanged = (path, content) => {
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
