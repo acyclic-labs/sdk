@@ -225,13 +225,24 @@ case "$lane" in
   mount-exclusion)
     bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2
     ;;
-  docs)
-    # Independent workspaces qualify alongside the root workspace.
-    cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
-    ;;
-  generation)
-    cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
-    node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
+  docs|generation)
+    corpus_output=$(mktemp -d "$SDK_TEMP_DIR/rustdoc-corpus.XXXXXX") || {
+      echo "STEP_FAILED create-rustdoc-corpus; recovery: bash scripts/qualify-ci.sh $lane" >&2
+      exit 2
+    }
+    cargo run --locked -p sdk-generation -- generate --root "$PWD" \
+      --output "$corpus_output" --version 0.2.0 --channel preview \
+      --execute-profiles --skip-scenarios || {
+      echo "STEP_FAILED produce-rustdoc-corpus; recovery: bash scripts/qualify-ci.sh $lane" >&2
+      exit 2
+    }
+    export SDK_DOCS_RUSTDOC_CORPUS="$corpus_output/.rustdoc"
+    export SDK_GENERATION_CORPUS_ROOT="$PWD"
+    export SDK_GENERATION_CORPUS_RUSTDOC="$SDK_DOCS_RUSTDOC_CORPUS"
+    cargo test --manifest-path "rust/crates/sdk-$lane/Cargo.toml" --locked
+    if [ "$lane" = generation ]; then
+      node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
+    fi
     ;;
   preflight)
     head="$(git rev-parse HEAD)"
