@@ -1,12 +1,14 @@
 diff --git a/rust/crates/stream/src/local/prepared_commit.rs b/rust/crates/stream/src/local/prepared_commit.rs
-index a41b111666c..ddea1b2fb3c 100644
+index a41b111666c..708d46fd63d 100644
 --- a/rust/crates/stream/src/local/prepared_commit.rs
 +++ b/rust/crates/stream/src/local/prepared_commit.rs
-@@ -24,7 +24,8 @@ impl LocalStream {
+@@ -23,8 +23,9 @@ impl LocalStream {
+                         // as the store closes.
                          let handle = stream.handle.take();
                          let provider = stream.inner.provider.with_context(Arc::clone(&work));
-                         let mut failed = stream.inner.failed.subscribe();
+-                        let mut failed = stream.inner.failed.subscribe();
 -                        let result = LocalInner::observe(&mut failed, async {
++                        let failed = stream.inner.failed.subscribe();
 +                        drop(failed);
 +                        let result = async {
                              let _visibility = stream.inner.visibility.read().await;
