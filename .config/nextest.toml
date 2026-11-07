@@ -9,6 +9,12 @@ command = ["bun", "run", "--filter", "@acyclic-labs/stream", "build"]
 filter = 'package(=acyclic-stream-typescript-models)'
 setup = "stream-typescript"
 
+# Start the longer integration and scale proofs while short tests can fill
+# the other workers, rather than leaving a scale proof at the end of the run.
+[[profile.default.overrides]]
+filter = 'test(/(^|::)(fs_concurrency_bench|queue_scaling|scale_tests)::/) | test(/(^|::)(scenarios|provider_scenarios|identity_processes|local_guest_wire|local_native|shared_families_with_independent_filesystem_and_journal_providers)$/)'
+priority = 100
+
 # CI test profile: flags slow tests in the log and records per-test timings
 # as JUnit for the job summary (scripts/ci-summary.mjs).
 [profile.ci]
