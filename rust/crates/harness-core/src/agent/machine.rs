@@ -572,7 +572,7 @@ pub struct Step {
     pub state: AgentState,
     /// Effects, lowered into the same commit as the checkpoint.
     pub outs: Vec<Out>,
-    /// Status appended by this step, if the phase changed.
+    /// Status appended when the phase changes or the conversation is created.
     pub status: Option<StatusRecord>,
     /// Desired alarm.
     pub alarm: Alarm,
@@ -823,11 +823,15 @@ fn finalize_step(
             | Out::GoalCompleted { .. } => {}
         }
     }
+    // A conversation follow cannot open before its stream exists. Its first
+    // append must therefore announce creation even for an Idle -> Idle turn.
+    // Later appends already wake that follow and need no redundant status.
+    let created = state.conversation_tail == 0 && appended != 0;
     state.conversation_tail = state
         .conversation_tail
         .checked_add(appended)
         .ok_or(Error::Record("agent conversation tail overflow"))?;
-    let status = (&phase != previous).then_some(StatusRecord {
+    let status = (&phase != previous || created).then_some(StatusRecord {
         phase,
         cursor,
         conversation: state.conversation_tail,

@@ -1,5 +1,6 @@
 //! Settlement from the original actor checkpoint and consumed inbox cursor.
-//! Status records announce phase changes; conversation entries announce replies.
+//! Status records announce phase changes and conversation creation; entries
+//! announce replies.
 
 use super::{
     AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,

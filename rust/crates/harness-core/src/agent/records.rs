@@ -583,7 +583,8 @@ pub struct StatusRecord {
     /// Inbox cursor consumed by that transition.
     pub cursor: u64,
     /// The agent's conversation length after that transition, committed
-    /// with it: the conversation stream exists once this is above zero.
+    /// with it: the first conversation append always publishes this creation
+    /// event, even when the phase is unchanged. The stream exists above zero.
     #[serde(default)]
     pub conversation: u64,
 }
