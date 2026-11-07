@@ -74,7 +74,8 @@ install_tool() {
 # (.config/nextest.toml). Doctests and the serial live-mount suites stay on
 # cargo test.
 nextest() {
-  local target checksum status=0
+  local target checksum status=0 profile=ci
+  if [[ "${1:-}" == --profile ]]; then profile="$2"; shift 2; fi
   if [[ "$(cargo-nextest nextest --version 2>/dev/null)" != "cargo-nextest 0.9.146 "* ]]; then
     case "$(uname -s):$(uname -m)" in
       Linux:x86_64)
@@ -95,8 +96,8 @@ nextest() {
   # with the existing Rust producer; these lanes do not require Bun or protoc JS.
   cargo run --locked -p acyclic-actors --example actors-http-routes -- \
     typescript/packages/actors/src/generated/actors-service.ts
-  cargo nextest run --profile ci "$@" || status=$?
-  mv -f -- "$target_dir/nextest/ci/junit.xml" "$observability/rust.xml" 2>/dev/null || true
+  cargo nextest run --profile "$profile" "$@" || status=$?
+  mv -f -- "$target_dir/nextest/$profile/junit.xml" "$observability/rust.xml" 2>/dev/null || true
   return "$status"
 }
 
@@ -199,6 +200,9 @@ harness_tests() {
 }
 
 case "$lane" in
+  full-cloud)
+    nextest --profile full-cloud --locked --all-features -p acyclic-fs -p acyclic-harness
+    ;;
   gate)
     node scripts/check-dev-build.mjs
     node scripts/check-build-boundaries.mjs
@@ -408,6 +412,7 @@ case "$lane" in
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
+    node --test scripts/full-cloud-qualification.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
     node scripts/test-verify-release-binary.mjs

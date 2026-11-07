@@ -1,4 +1,20 @@
-experimental = ["setup-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+# These cases run through the full-cloud qualification entry, which owns a
+# fresh service topology per case. Portable runs do not offer that capability.
+[profile.default]
+default-filter = "not test(::full_cloud::)"
+
+[profile.full-cloud]
+default-filter = "test(::full_cloud::)"
+inherits = "ci"
+
+[scripts.wrapper.full-cloud]
+command = { command-line = "scripts/full-cloud-test.sh", relative-to = "workspace-root" }
+
+[[profile.full-cloud.scripts]]
+filter = "test(::full_cloud::)"
+run-wrapper = "full-cloud"
 
 # The transport models execute the packaged TypeScript and WASM implementation.
 # Prepare its ignored artifacts once, before any selected model starts.
