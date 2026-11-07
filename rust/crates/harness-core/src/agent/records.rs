@@ -706,6 +706,31 @@ pub(super) fn check_text(text: &str) -> Result<(), Error> {
 
 impl AgentRecord for InboxRecord {
     fn check_encoded_size(&self, bytes: usize) -> Result<(), Error> {
+        if bytes > MAX_RECORD_BYTES {
+            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
+        }
+        // These records do not carry a turn input. Adoption's brief is its
+        // own bounded reference; its volumes and profile are never settled.
+        // Keep their full frame instead of charging unrelated metadata twice.
+        if matches!(
+            self,
+            Self::ForkAdopted(_)
+                | Self::Awaited
+                | Self::ChildSettled(_)
+                | Self::Cancel(_)
+                | Self::Archive(_)
+                | Self::Spawn(_)
+                | Self::Notice {
+                    notice: NoticePayload::Quiet(_),
+                    ..
+                }
+                | Self::ChildDone(ChildDone {
+                    outcome: AgentOutcome::Archived,
+                    ..
+                })
+        ) {
+            return Ok(());
+        }
         if bytes > input_frame_limit()? {
             return Err(Error::Record("inbox record leaves no room for settlement"));
         }
