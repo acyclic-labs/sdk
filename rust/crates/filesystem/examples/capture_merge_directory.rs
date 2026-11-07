@@ -4,10 +4,32 @@ use acyclic_fs::foundation::OperationId;
 use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::workspace::{ApplyOptions, ForkOptions, MergeDirectorySection};
 use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, OperationReceipt, PublicationPermit,
-    WorkBudget, WorkCounters, WorkspaceError,
+    AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
+    OperationReceipt, PublicationPermit, Transaction, WorkBudget, WorkCounters, WorkspaceError,
 };
 use std::{error::Error, num::NonZeroU32};
+
+async fn commit<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    transaction: &mut Transaction<A, O>,
+    cancellation: &CancellationToken,
+) -> Result<(), WorkspaceError> {
+    transaction
+        .commit::<WorkspaceError, _, _>(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            cancellation,
+            |_| {
+                std::future::ready(Ok(OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|failure| failure.error)
+}
 
 fn emit(name: &str, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     println!(
@@ -38,9 +60,17 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         .create_workspace("merge-main", work, &cancellation)
         .await?
         .value;
-    for path in ["/binary", "/deleted", "/mode"] {
+    for path in ["/binary", "/deleted"] {
         main.write_text(path, "base\0").await?;
     }
+    let mut transaction = main
+        .begin_transaction(IdempotencyKey::new(), work, &cancellation)
+        .await?
+        .value;
+    transaction
+        .create_directory("/mode", work, &cancellation)
+        .await?;
+    commit(&mut transaction, &cancellation).await?;
     let mut source = main.clone();
     for name in ["merge-child", "merge-grandchild"] {
         let generation = source.head(work, &cancellation).await?.value;
@@ -83,20 +113,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                 .create_directory("/kind", work, &cancellation)
                 .await?;
         }
-        transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                PublicationPermit::Unrestricted,
-                work,
-                &cancellation,
-                |_| {
-                    std::future::ready(Ok(OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    }))
-                },
-            )
-            .await?;
+        commit(&mut transaction, &cancellation).await?;
     }
     let plan = source
         .join_into(&main)
