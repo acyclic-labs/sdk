@@ -103,11 +103,13 @@ pub(crate) fn encode_record<T: Serialize>(
 }
 
 impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
-    fn path(id: WorkspaceId, family: &str) -> Result<StreamPath, StreamGitCompatStoreError> {
-        Ok(StreamPath::new(format!(
-            "fs/git-state-v1/{}/{family}",
-            hex::encode(id.into_bytes())
-        ))?)
+    fn path(
+        id: WorkspaceId,
+        family: &str,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<StreamPath, StreamGitCompatStoreError> {
+        work.prefixed_identity_path(b"fs/git-state-v1/", id.into_bytes(), family, None)
+            .map_err(Into::into)
     }
 
     async fn read<T: serde::de::DeserializeOwned>(
@@ -119,7 +121,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
     {
         let observed = self
             .authority
-            .observe_record(Self::path(id, family)?, work)
+            .observe_record(Self::path(id, family, work)?, work)
             .await?;
         let value = match observed.record {
             None => None,
@@ -201,10 +203,9 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         let key = acyclic_stream::IdempotencyKey::new(bytes::Bytes::copy_from_slice(
             hash.finalize().as_bytes(),
         ))?;
-        let path = Self::path(id, family)?;
-        let sequence = match observation.condition() {
-            CommitCondition::Absent { .. } => 0,
-            CommitCondition::Head { expected, .. } => *expected,
+        let (path, sequence) = match observation.condition() {
+            CommitCondition::Absent { path } => (path, 0),
+            CommitCondition::Head { path, expected, .. } => (path, *expected),
             _ => return Err(StreamGitCompatStoreError::Incompatible),
         };
         let record = StateRecord::Companion {
@@ -233,7 +234,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
                 // stays an error; no retry at a newer head or polling is allowed.
                 match self
                     .authority
-                    .reconcile_record(path, sequence, &key, &record, work)
+                    .reconcile_record(path.clone(), sequence, &key, &record, work)
                     .await
                 {
                     Ok(_) => {
@@ -252,7 +253,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
     async fn load(&self, id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let (value, _) = self.read::<GitCompatState>(id, "refs", &mut work).await?;
+        let (value, _) = self.read::<GitCompatState>(id, "/refs", &mut work).await?;
         match value {
             Some(envelope)
                 if envelope.value.value.as_ref().is_some_and(|state| {
@@ -278,7 +279,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
         }
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.replace(id, "refs", expected, Some(&replacement), &mut work)
+        self.replace(id, "/refs", expected, Some(&replacement), &mut work)
             .await
     }
     async fn compare_and_delete(
@@ -291,7 +292,7 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
         }
         let cancellation = CancellationToken::new();
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.replace::<GitCompatState>(id, "refs", expected, None, &mut work)
+        self.replace::<GitCompatState>(id, "/refs", expected, None, &mut work)
             .await
     }
 }
@@ -317,7 +318,7 @@ impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatSto
             .map_err(StreamGitCompatStoreError::from)
             .map_err(crate::WorkspaceLineageError::Store)?;
         let (value, _) = self
-            .read::<WorkspaceLineageRecord>(id, "lineage", &mut work)
+            .read::<WorkspaceLineageRecord>(id, "/lineage", &mut work)
             .await
             .map_err(crate::WorkspaceLineageError::Store)?;
         match value {
@@ -361,7 +362,7 @@ impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatSto
             .scope()
             .map_err(StreamGitCompatStoreError::from)
             .map_err(crate::WorkspaceLineageError::Store)?;
-        self.replace(id, "lineage", expected, Some(replacement), &mut work)
+        self.replace(id, "/lineage", expected, Some(replacement), &mut work)
             .await
             .map_err(crate::WorkspaceLineageError::Store)
     }

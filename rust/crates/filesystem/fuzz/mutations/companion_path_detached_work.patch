@@ -1,0 +1,15 @@
+--- a/rust/crates/filesystem/src/git_compat/stream_store.rs
++++ b/rust/crates/filesystem/src/git_compat/stream_store.rs
+@@ -108,8 +108,10 @@
+         family: &str,
+         work: &mut AuthorityWork<'_>,
+     ) -> Result<StreamPath, StreamGitCompatStoreError> {
+-        work.prefixed_identity_path(b"fs/git-state-v1/", id.into_bytes(), family, None)
+-            .map_err(Into::into)
++        let _ = work;
++        Ok(StreamPath::new(format!(
++            "fs/git-state-v1/{}{}", hex::encode(id.into_bytes()), family
++        ))?)
+     }
+ 
+     async fn read<T: serde::de::DeserializeOwned>(

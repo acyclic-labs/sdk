@@ -55,7 +55,7 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let observed = authority
         .observe_record(
-            StreamGitCompatStore::<MemoryStream>::path(id, "refs")?,
+            StreamGitCompatStore::<MemoryStream>::path(id, "/refs", &mut work)?,
             &mut work,
         )
         .await?;
@@ -161,6 +161,31 @@ async fn persisted_lineage_resolution_requires_original_read_admission()
                 ..
             }
         )
+    }
+    // The production path boundary must refuse before allocating text or
+    // dispatching the provider, for both record families and work owners.
+    let path_budget = WorkBudget {
+        bytes_encoded: 0,
+        ..budget
+    };
+    for family in ["/refs", "/lineage"] {
+        let mut work = AuthorityWork::new(path_budget, &cancellation);
+        assert!(
+            StreamGitCompatStore::<MemoryStream>::path(root.id(), family, &mut work).is_err(),
+            "companion path escaped original encoding admission"
+        );
+        assert_eq!(work.spent(), crate::WorkCounters::UNCHARGED);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let original = crate::NativeMaterializationWork::new(path_budget, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let mut work = AuthorityWork::native(&original, &cancellation);
+            assert!(
+                StreamGitCompatStore::<MemoryStream>::path(root.id(), family, &mut work).is_err(),
+                "native companion path escaped original encoding admission"
+            );
+            assert_eq!(original.receipt(), crate::WorkCounters::UNCHARGED);
+        }
     }
     let mut ordinary_refused = [false; 3];
     #[cfg(not(target_arch = "wasm32"))]
