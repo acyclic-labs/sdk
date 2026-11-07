@@ -160,20 +160,30 @@ fn byte_length(bytes: &OwnedBytes) -> u64 {
     bytes.len() as u64
 }
 
-async fn in_frame<T>(
-    native: Option<&NativeMaterializationWork>,
-    future: impl std::future::Future<Output = Result<T, ObjectStoreError>>,
-) -> Result<T, ObjectStoreError> {
-    let bytes = std::mem::size_of_val(&future) as u64;
+fn in_frame<'a, T, F>(
+    native: Option<&'a NativeMaterializationWork>,
+    create: impl FnOnce() -> F,
+) -> impl std::future::Future<Output = Result<T, ObjectStoreError>> + acyclic_stream::ProviderTask + 'a
+where
+    T: acyclic_stream::ProviderTask + 'a,
+    F: std::future::Future<Output = Result<T, ObjectStoreError>>
+        + acyclic_stream::ProviderTask
+        + 'a,
+{
+    let bytes = std::mem::size_of::<F>() as u64;
     let allocation = native
         .map(|native| native.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED))
-        .transpose()?;
-    let mut future = Box::pin(future);
-    let result = future.as_mut().await;
-    // The suspended frame and its captures retire before their original claim.
-    drop(future);
-    drop(allocation);
-    result
+        .transpose();
+    match allocation {
+        Ok(allocation) => futures::future::Either::Right(
+            // Construct the body in the heap owner's short frame, rather than
+            // moving it through the caller. Erasure reuses the same allocation.
+            crate::heap_future::in_heap(create)
+                .with_allocation(allocation)
+                .erase_task(),
+        ),
+        Err(error) => futures::future::Either::Left(std::future::ready(Err(error.into()))),
+    }
 }
 
 #[cfg(test)]

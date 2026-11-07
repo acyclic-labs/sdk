@@ -84,18 +84,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Performs the operation under the supplied limits.
-    pub async fn matches_fork_selection<W: crate::facade::FsWork>(
+    pub fn matches_fork_selection<W: crate::facade::FsWork>(
         &self,
         source: &Self,
         paths: Option<Vec<String>>,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<bool, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
         self.workspace
             .volume
             .fs
             .verify_fork_selection(source, self, paths, work, cancellation)
-            .await
     }
 
     /// Computes the plaintext digest of the source parent normalized to `target`.
@@ -129,13 +128,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     /// finish a complete page or advance its continuation using authored rows
     /// alone. A source link count or equal authored generations cannot provide
     /// that coverage.
-    pub async fn changed_paths_to<W: crate::facade::FsWork>(
+    pub fn changed_paths_to<W: crate::facade::FsWork>(
         &self,
         to: &Generation<A, O>,
         work: W,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<ChangedPaths<A, O>>, WorkspaceError> {
-        ChangedPaths::open(self, to, work, cancellation).await
+    ) -> impl Future<
+        Output = crate::MeasuredResult<crate::OperationReceipt<ChangedPaths<A, O>>, WorkspaceError>,
+    > {
+        ChangedPaths::open(self, to, work, cancellation)
     }
 
     /// Performs the operation under the supplied limits.
@@ -216,13 +217,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Reads one complete regular file from this exact generation.
-    pub async fn read<W: crate::facade::FsWork>(
+    pub fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
         maximum_bytes: u64,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<acyclic_stream::OwnedBytes, WorkspaceError>> {
         read_selected(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -231,18 +232,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads one exact range from this immutable generation.
-    pub async fn read_range<W: crate::facade::FsWork>(
+    pub fn read_range<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
         length: u64,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError>> {
         read_range(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -252,7 +252,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads a range only when its immutable file payload still matches `original`.
@@ -291,42 +290,39 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     /// Shared payloads and complete chunk hashes avoid body reads; partial chunks
     /// use bounded range comparisons charged to the caller's work budget.
     /// Metadata-only changes do not affect this comparison.
-    pub async fn matches_content<W: crate::facade::FsWork>(
+    pub fn matches_content<W: crate::facade::FsWork>(
         &self,
         original: &Self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<bool, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
         self.compare_file(original, path, false, false, work, cancellation)
-            .await
     }
 
     /// Compares the exact file identity, kind and payload without reading bodies.
     /// Both paths must exist; unrelated files and metadata do not affect the result.
-    pub async fn matches_file_payload<W: crate::facade::FsWork>(
+    pub fn matches_file_payload<W: crate::facade::FsWork>(
         &self,
         original: &Self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<bool, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
         self.compare_file(original, path, true, false, work, cancellation)
-            .await
     }
 
     /// Compares an optional file's exact identity, kind and payload without
     /// reading bodies. Matching absence is equal; creation or removal differs.
     /// Use `matches_file_payload` when the source must exist.
-    pub async fn matches_optional_file_payload<W: crate::facade::FsWork>(
+    pub fn matches_optional_file_payload<W: crate::facade::FsWork>(
         &self,
         original: &Self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<bool, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<bool, WorkspaceError>> {
         self.compare_file(original, path, true, true, work, cancellation)
-            .await
     }
 
     async fn compare_file<W: crate::facade::FsWork>(
@@ -362,12 +358,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Reads complete no-follow metadata from this immutable generation.
-    pub async fn stat<W: crate::facade::FsWork>(
+    pub fn stat<W: crate::facade::FsWork>(
         &self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<WorkspaceStat, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<WorkspaceStat, WorkspaceError>> {
         stat(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -375,7 +371,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Resolves an ordered no-follow path batch, preserving absence and duplicates.
@@ -401,14 +396,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Returns one exact-generation directory page and its result allocation.
-    pub async fn list_directory<W: crate::facade::FsWork>(
+    pub fn list_directory<W: crate::facade::FsWork>(
         &self,
         path: &str,
         after: Option<&LogicalName>,
         maximum_entries: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<(crate::kernel::DirectoryPage, crate::AuthorityAllocation), WorkspaceError> {
+    ) -> impl Future<
+        Output = W::Output<
+            (crate::kernel::DirectoryPage, crate::AuthorityAllocation),
+            WorkspaceError,
+        >,
+    > {
         list(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -418,16 +418,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads one opaque symbolic-link target from this exact generation.
-    pub async fn read_symbolic_link<W: crate::facade::FsWork>(
+    pub fn read_symbolic_link<W: crate::facade::FsWork>(
         &self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError>> {
         read_link(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -435,13 +434,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Plans clipped sparse spans from this immutable generation.
     /// Retains the output on the supplied original work; keep its allocation
     /// guard until the returned spans have been destroyed.
-    pub async fn plan_extents<W: crate::facade::FsWork>(
+    pub fn plan_extents<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
@@ -449,7 +447,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
+    ) -> impl Future<Output = W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError>>
+    {
         plan(
             &self.workspace,
             GenerationSelector::Exact(self.id),
@@ -460,7 +459,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             work,
             cancellation,
         )
-        .await
     }
 
     /// Performs the operation under the supplied limits.

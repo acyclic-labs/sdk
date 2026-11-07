@@ -49,6 +49,7 @@ async fn retained_publication(delivery: Delivery) -> TestResult {
         resolved: None,
     };
     let prepared = preparation
+        .validate(&accounting)?
         .prepare::<crate::FsError, _>(&mut accounting, &mut |_, _, _| Ok(()))
         .await?;
     let crate::kernel::publication::preparation::Prepared::Ready(prepared) = prepared else {

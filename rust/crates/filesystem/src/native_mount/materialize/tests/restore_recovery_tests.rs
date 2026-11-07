@@ -538,16 +538,27 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     let prefix = original.custody.work().receipt();
     let original_work = original.custody.work().clone();
     let original_output = tempfile::tempdir()?;
-    let original_failed = materialize_reader_paths(
+    let paths = [first.clone(), missing.clone()];
+    let options = MaterializeOptions::native(original_output.path());
+    let materialization = materialize_reader_paths(
         &reader,
-        &[first.clone(), missing.clone()],
-        &MaterializeOptions::native(original_output.path()),
+        &paths,
+        &options,
         MaterializeMode::DurableOutput,
         &original_work,
-    )
-    .await
-    .err()
-    .ok_or("original source accepted a missing second path")?;
+    );
+    // Only the receipt and input/heap handles cross this boundary. The complete
+    // traversal has one funded frame, independently of the selected paths.
+    let maximum_frame = 2 * std::mem::size_of::<(GenerationReceipt, [usize; 12])>();
+    let frame_bytes = std::mem::size_of_val(&materialization);
+    assert!(
+        frame_bytes <= maximum_frame,
+        "reader materialization retained its traversal inline: {frame_bytes} > {maximum_frame}"
+    );
+    let original_failed = materialization
+        .await
+        .err()
+        .ok_or("original source accepted a missing second path")?;
     assert!(matches!(original_failed, MaterializeError::MissingPath));
     assert_eq!(
         std::fs::read(original_output.path().join("a-present"))?,
