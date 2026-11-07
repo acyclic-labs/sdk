@@ -108,19 +108,31 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
 proptest! {
     #[test]
     fn cached_discovery_cost_obeys_the_same_combined_budget(
-        a in 0u32..128, b in 0u32..128, bound in 1u32..128,
+        a in prop_oneof![0u32..128, Just(u32::MAX)],
+        b in prop_oneof![0u32..128, Just(u32::MAX)],
+        directories in prop_oneof![0u32..128, Just(u32::MAX)],
+        used_directories in prop_oneof![0u32..128, Just(u32::MAX)],
+        bound in 1u32..128, directory_bound in 1u32..128,
     ) {
-        let mut work = DiscoveryWork { entries: a, limits: ContextDiscoveryLimits { entries: bound, ..Default::default() }, ..Default::default() };
-        let used = DiscoveryWork { entries: b, ..Default::default() };
+        let mut work = DiscoveryWork { entries: a, directories, limits: ContextDiscoveryLimits { entries: bound, directories: directory_bound, ..Default::default() } };
+        let used = DiscoveryWork { entries: b, directories: used_directories, limits: ContextDiscoveryLimits { entries: u32::MAX, directories: u32::MAX, ..Default::default() } };
         let catalog = SkillCatalog::capture(Vec::new(), used, DiscoveryWork::default())?;
         let result = catalog.reuse(&mut work);
-        prop_assert_eq!(result.is_ok(), a + b <= bound);
-        if result.is_ok() {
-            prop_assert_eq!(work.entries, a + b);
-            let delta = work.since(DiscoveryWork { entries: a, ..Default::default() })?;
-            prop_assert_eq!(delta.entries, b);
+        let entries = u64::from(a) + u64::from(b);
+        let total_directories = u64::from(directories) + u64::from(used_directories);
+        if entries > u64::from(bound) {
+            prop_assert!(matches!(result, Err(Error::Invalid(reason)) if reason == "discovery entry bound exceeded"));
+        } else if total_directories > u64::from(directory_bound) {
+            prop_assert!(matches!(result, Err(Error::Invalid(reason)) if reason == "discovery directory bound exceeded"));
         } else {
-            prop_assert_eq!(work.entries, a, "rejection must not partially charge");
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(u64::from(work.entries), entries);
+            prop_assert_eq!(u64::from(work.directories), total_directories);
+            let delta = work.since(DiscoveryWork { entries: a, directories, ..Default::default() })?;
+            prop_assert_eq!((delta.entries, delta.directories), (b, used_directories));
+        }
+        if entries > u64::from(bound) || total_directories > u64::from(directory_bound) {
+            prop_assert_eq!((work.entries, work.directories), (a, directories), "rejection must not partially charge");
         }
     }
 }

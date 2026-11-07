@@ -108,18 +108,19 @@ impl DiscoveryWork {
     /// Reusing a catalog still consumes its discovery work in the caller's one budget.
     pub fn include(&mut self, used: Self) -> Result<()> {
         self.limits.validate()?;
-        let entries = self.entries.checked_add(used.entries);
-        let directories = self.directories.checked_add(used.directories);
-        match (entries, directories) {
-            (Some(entries), Some(directories))
-                if entries <= self.limits.entries && directories <= self.limits.directories =>
-            {
-                self.entries = entries;
-                self.directories = directories;
-                Ok(())
-            }
-            _ => Err(Error::Invalid("discovery work bound exceeded".into())),
-        }
+        let entries = self
+            .entries
+            .checked_add(used.entries)
+            .filter(|entries| *entries <= self.limits.entries)
+            .ok_or_else(|| Error::Invalid("discovery entry bound exceeded".into()))?;
+        let directories = self
+            .directories
+            .checked_add(used.directories)
+            .filter(|directories| *directories <= self.limits.directories)
+            .ok_or_else(|| Error::Invalid("discovery directory bound exceeded".into()))?;
+        self.entries = entries;
+        self.directories = directories;
+        Ok(())
     }
     /// Work attributable to a cached component, independent of earlier components.
     pub fn since(&self, before: Self) -> Result<Self> {
@@ -142,14 +143,10 @@ impl DiscoveryWork {
         directory: &str,
         revision: Option<&S::Revision>,
     ) -> Result<Option<(S::Revision, Vec<DiscoveryEntry>)>> {
-        self.limits.validate()?;
-        self.directories = self
-            .directories
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("discovery work overflow".into()))?;
-        if self.directories > self.limits.directories {
-            return Err(Error::Invalid("discovery directory bound exceeded".into()));
-        }
+        self.include(Self {
+            directories: 1,
+            ..Default::default()
+        })?;
         let mut pinned = revision.cloned();
         let mut entries: Vec<DiscoveryEntry> = Vec::new();
         let mut cursor = None;
