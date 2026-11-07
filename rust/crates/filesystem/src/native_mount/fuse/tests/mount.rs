@@ -43,6 +43,10 @@ pub(super) fn linux_isolated_requests_measure_original_packet_wakes()
         samples[samples.len() / 2].as_nanos(),
         samples[samples.len() * 99 / 100].as_nanos(),
     );
+    assert_eq!(
+        would_block, 0,
+        "isolated kernel requests woke competing readers without a packet"
+    );
     Ok(())
 }
 
