@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "snapshot-retired-executor": [
+    "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::retired_executor_refuses_new_public_follows_before_writer_release",
+    "retired executor left a newly admitted public follow parked", ["--no-default-features"],
+    {
+      patchPath: "rust/proofs/snapshot-producer-loss/retirement.patch",
+      negativeLabel: "rejected-worker-discards-completion",
+    },
+  ],
   "snapshot-executor-admission": [
     "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
     "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",

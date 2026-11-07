@@ -2,6 +2,57 @@ use super::*;
 use futures::Stream as _;
 use std::task::{Context, Waker};
 
+fn opened(checked: bool, progress: bool) -> (MemoryStream, crate::FollowStream) {
+    let provider = MemoryStream::default();
+    let path = StreamPath::new("retired-snapshot").unwrap();
+    let AppendOutcome::Committed(seed) =
+        futures::executor::block_on(provider.append(AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"seed").into()],
+            if_tail: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
+        }))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let mut request = crate::FollowRequest::new(path, u64::from(checked));
+    request.preceding = checked.then_some(seed.commit_id);
+    request.progress = progress;
+    let follow = futures::executor::block_on(provider.follow(request)).unwrap();
+    (provider, follow)
+}
+
+#[test]
+fn retired_executor_refuses_new_public_follows_before_writer_release() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let handle = runtime.handle().clone();
+    drop(runtime);
+    let _entered = handle.enter();
+
+    for (checked, progress) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (provider, mut follow) = opened(checked, progress);
+        let held = futures::executor::block_on(provider.state.write());
+        let result =
+            std::pin::Pin::new(&mut follow).poll_next(&mut Context::from_waker(Waker::noop()));
+        drop(follow);
+        drop(held);
+        assert!(
+            matches!(
+                result,
+                std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
+            ),
+            "retired executor left a newly admitted public follow parked"
+        );
+        assert!(
+            provider.state.try_write().is_ok(),
+            "rejected worker retained its reservation"
+        );
+    }
+}
+
 #[test]
 fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,27 +61,6 @@ fn executor_loss_ends_public_follows_before_a_retained_writer_releases() {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
-    }
-
-    fn opened(checked: bool, progress: bool) -> (MemoryStream, crate::FollowStream) {
-        let provider = MemoryStream::default();
-        let path = StreamPath::new("retired-snapshot").unwrap();
-        let AppendOutcome::Committed(seed) =
-            futures::executor::block_on(provider.append(AppendRequest {
-                path: path.clone(),
-                records: vec![Bytes::from_static(b"seed").into()],
-                if_tail: None,
-                idempotency_key: crate::IdempotencyKey::unique(),
-            }))
-            .unwrap()
-        else {
-            unreachable!()
-        };
-        let mut request = crate::FollowRequest::new(path, u64::from(checked));
-        request.preceding = checked.then_some(seed.commit_id);
-        request.progress = progress;
-        let follow = futures::executor::block_on(provider.follow(request)).unwrap();
-        (provider, follow)
     }
 
     for (checked, progress) in [(false, false), (true, false), (false, true), (true, true)] {
