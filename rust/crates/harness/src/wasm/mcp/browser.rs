@@ -5,11 +5,15 @@ use crate::{
     Error, OperationId, Result,
     mcp::{
         McpToolTransport,
-        http::{HttpMcpTransport, McpHttpProvider, McpHttpRequest, McpHttpResponse},
+        http::{
+            HttpMcpTransport, McpHttpProvider, McpHttpRequest, McpHttpResponse,
+            ResponseByteFrontier,
+        },
     },
 };
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
+use futures::StreamExt as _;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use serde::Deserialize;
 use std::{collections::BTreeMap, sync::Arc};
@@ -43,8 +47,7 @@ struct ExchangeBody {
     read: Function,
     cancel: Function,
     operation: OperationId,
-    maximum_bytes: u32,
-    received: u64,
+    frontier: ResponseByteFrontier,
 }
 
 impl Drop for ExchangeBody {
@@ -89,8 +92,7 @@ impl McpHttpProvider for BrowserProvider {
                 read,
                 cancel,
                 operation,
-                maximum_bytes: request.maximum_response_bytes,
-                received: 0,
+                frontier: ResponseByteFrontier::new(request.maximum_response_bytes),
             };
             let response = Reflect::get(&body.receiver, &JsValue::from_str("response"))
                 .map_err(|_| Error::Indeterminate(operation))?;
@@ -100,6 +102,9 @@ impl McpHttpProvider for BrowserProvider {
             let head: McpBrowserResponseHead = from_js(head)
                 .map_err(|_| Error::Invalid("MCP browser response head invalid".into()))?;
             let stream = futures::stream::try_unfold(body, |mut body| async move {
+                if body.frontier.overflowed() {
+                    return Err(Error::Indeterminate(body.operation));
+                }
                 let chunk = body
                     .read
                     .call0(&body.receiver)
@@ -113,14 +118,14 @@ impl McpHttpProvider for BrowserProvider {
                 let bytes: Uint8Array = chunk
                     .dyn_into()
                     .map_err(|_| Error::Invalid("MCP browser body needs Uint8Array".into()))?;
-                let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
-                    if length > u64::from(body.maximum_bytes).saturating_sub(body.received) {
-                        return Err(js_error(Error::Indeterminate(body.operation)));
-                    }
-                    Ok(())
-                })
-                .map_err(|_| Error::Indeterminate(body.operation))?;
-                body.received += bytes.len() as u64;
+                let (bytes, ()) =
+                    acyclic_stream::javascript_bytes::snapshot_prefix(&bytes, |length| {
+                        body.frontier
+                            .admit(u64::from(length))
+                            .map(|allowed| (allowed, ()))
+                            .ok_or_else(|| js_error(Error::Indeterminate(body.operation)))
+                    })
+                    .map_err(|_| Error::Indeterminate(body.operation))?;
                 Ok(Some((Bytes::from(bytes), body)))
             });
             Ok(McpHttpResponse {
@@ -228,18 +233,25 @@ impl WasmMcpHttpTransport {
             .request("POST", Vec::new())
             .map_err(js_error)?
             .maximum_response_bytes;
-        let (body, ()) = acyclic_stream::javascript_bytes::snapshot(&body, |length| {
-            if length > u64::from(allowance) {
-                return Err(js_error(Error::Indeterminate(operation)));
-            }
-            Ok(())
+        let mut frontier = ResponseByteFrontier::new(allowance);
+        let (body, ()) = acyclic_stream::javascript_bytes::snapshot_prefix(&body, |length| {
+            frontier
+                .admit(u64::from(length))
+                .map(|allowed| (allowed, ()))
+                .ok_or_else(|| js_error(Error::Indeterminate(operation)))
         })?;
         let body = Bytes::from(body);
+        let overflow = frontier
+            .overflowed()
+            .then_some(Err(Error::Indeterminate(operation)));
         let head: McpBrowserResponseHead = from_js(head)?;
         let response = McpHttpResponse {
             status: head.status,
             headers: head.headers,
-            body: Box::pin(futures::stream::once(async move { Ok(body) })),
+            body: Box::pin(
+                futures::stream::once(async move { Ok(body) })
+                    .chain(futures::stream::iter(overflow)),
+            ),
         };
         let (transport, result, notification) = self
             .0

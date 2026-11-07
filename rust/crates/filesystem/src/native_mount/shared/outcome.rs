@@ -48,6 +48,11 @@ impl CallbackFailure {
     }
 }
 
+/// A reply refusal whose invocation remains usable, including retained causes.
+pub(crate) fn source_refusal(error: &MountSourceError) -> Option<CallbackFailure> {
+    (!source_stops_mount(error)).then(|| source_failure(error))
+}
+
 pub(crate) fn source_failure(error: &MountSourceError) -> CallbackFailure {
     use CallbackFailure as F;
     match error.semantic_error() {
@@ -68,6 +73,28 @@ pub(crate) fn source_failure(error: &MountSourceError) -> CallbackFailure {
         MountSourceError::NativeWork(error) => materialization_failure(error),
         MountSourceError::WorkspaceCause(error) => workspace_failure(error),
         MountSourceError::Filesystem(error) => filesystem_failure(error),
+        MountSourceError::Demand(error) => demand_failure(error),
+        _ => F::Io,
+    }
+}
+
+fn demand_failure(error: &crate::DemandError) -> CallbackFailure {
+    use crate::DemandError as E;
+    use CallbackFailure as F;
+    match error {
+        E::Mount(error) => source_failure(error),
+        E::Io(error) => F::io(error),
+        E::Allocation(_) => F::OutOfMemory,
+        E::Cancelled => F::Cancelled,
+        E::StaleSource | E::StaleVersion | E::StaleCursor => F::Stale,
+        E::Absent => F::NotFound,
+        E::NotDirectory => F::NotDirectory,
+        #[cfg(feature = "native-watch")]
+        E::Observation(error) => match error.as_ref() {
+            crate::watch::NativeWatchError::Io(error) => F::io(error),
+            crate::watch::NativeWatchError::Cancelled(_) => F::Cancelled,
+            _ => F::Io,
+        },
         _ => F::Io,
     }
 }
@@ -140,12 +167,11 @@ pub(crate) fn callback_failure(error: &NativeMountError) -> CallbackFailure {
     use CallbackFailure as F;
     match error {
         NativeMountError::Source(error) => source_failure(error),
-        NativeMountError::Demand(crate::DemandError::Mount(error)) => source_failure(error),
+        NativeMountError::Demand(error) => demand_failure(error),
         NativeMountError::Materialization(error) => materialization_failure(error),
         NativeMountError::Io(error) => F::io(error),
         NativeMountError::Allocation(_) => F::OutOfMemory,
         NativeMountError::CallbackDenied { .. } => F::Denied,
-        NativeMountError::Demand(crate::DemandError::Cancelled) => F::Cancelled,
         #[cfg(target_os = "linux")]
         NativeMountError::FuseUnsupportedCapabilities(_) => F::Unsupported,
         _ => F::Io,

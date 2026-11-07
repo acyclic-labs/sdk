@@ -6,6 +6,8 @@
 //! commit.
 
 use super::checkpoint::{self, MAX_CHECKPOINT_BYTES};
+#[cfg(feature = "test-support")]
+use super::control_trace::{self, Decision};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
@@ -753,12 +755,17 @@ fn finalize_step(
     previous: &Phase,
     cursor: u64,
 ) -> Result<Step, Error> {
-    let alarm = match kernel::alarm(
-        control(&state),
-        !state.queued.is_empty() || state.overflow.is_some(),
-        approval_position(&state).is_some(),
-        state.archive_pending.len(),
-    ) {
+    let before = control(&state);
+    let queued = !state.queued.is_empty() || state.overflow.is_some();
+    let approval_ready = approval_position(&state).is_some();
+    let pending = state.archive_pending.len();
+    let alarm = kernel::alarm(before, queued, approval_ready, pending);
+    #[cfg(feature = "test-support")]
+    control_trace::record(
+        &state,
+        Decision::Alarm(before, queued, approval_ready, pending, alarm),
+    );
+    let alarm = match alarm {
         Some(deadline) => Alarm::At(deadline),
         None => Alarm::Clear,
     };
@@ -875,7 +882,10 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         InboxRecord::Archive(_) => Admit::Archive,
         _ => Admit::Input,
     };
-    let admitted = kernel::admit(control(&state), kind);
+    let before = control(&state);
+    let admitted = kernel::admit(before, kind);
+    #[cfg(feature = "test-support")]
+    control_trace::record(&state, Decision::Admit(before, kind, admitted));
     if admitted.clear_queue {
         state.dropped_before = state.dropped_before.max(sequence);
         state.drop_queue();
@@ -946,9 +956,15 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
         return;
     }
     state.need = state.need.saturating_sub(1);
-    if state.need == 0 && kernel::satisfy(control(state)).mode == Mode::Running {
-        state.awaiting.clear();
-        state.phase = Phase::Running;
+    if state.need == 0 {
+        let before = control(state);
+        let next = kernel::satisfy(before);
+        #[cfg(feature = "test-support")]
+        control_trace::record(state, Decision::Satisfy(before, next));
+        if next.mode == Mode::Running {
+            state.awaiting.clear();
+            state.phase = Phase::Running;
+        }
     }
 }
 
@@ -990,12 +1006,16 @@ async fn run<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
-    let input = match kernel::pick(
-        control(state),
-        alarm_wake,
-        !state.queued.is_empty(),
-        approval.is_some(),
-    ) {
+    let before = control(state);
+    let queued = !state.queued.is_empty();
+    let approval_ready = approval.is_some();
+    let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
+    #[cfg(feature = "test-support")]
+    control_trace::record(
+        state,
+        Decision::Pick(before, alarm_wake, queued, approval_ready, picked),
+    );
+    let input = match picked {
         Pick::Nothing => return Ok(()),
         Pick::Resume => None,
         Pick::Front => state.queued.pop_front(),
@@ -1092,7 +1112,10 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
     };
-    let (next, send) = kernel::settle(control(state), wait);
+    let before = control(state);
+    let (next, send) = kernel::settle(before, wait);
+    #[cfg(feature = "test-support")]
+    control_trace::record(state, Decision::Settle(before, wait, (next, send)));
     state.turn = started.filter(|_| next.turn).map(|inbox| Progress {
         inbox,
         checkpoint: turn.checkpoint.unwrap_or_default(),
@@ -1155,7 +1178,10 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     let outcome = AgentOutcome::Failed {
         message: failure.into(),
     };
-    let (next, send) = kernel::report(control(state));
+    let before = control(state);
+    let (next, send) = kernel::report(before);
+    #[cfg(feature = "test-support")]
+    control_trace::record(state, Decision::Report(before, (next, send)));
     state.reported = next.reported;
     if send {
         report(state, outcome.clone(), outs);
@@ -1165,7 +1191,11 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.
 fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
-    let step = kernel::cascade(control(state), state.archive_pending.len());
+    let before = control(state);
+    let pending = state.archive_pending.len();
+    let step = kernel::cascade(before, pending);
+    #[cfg(feature = "test-support")]
+    control_trace::record(state, Decision::Cascade(before, pending, step));
     let id = IntentId::try_from(format!("cascade:{}", state.path.id()))?;
     for _ in 0..step.archive {
         let Some(child) = state.archive_pending.pop_first() else {

@@ -194,3 +194,42 @@ fn inactive_event_destructors_can_record_during_initialization() {
     );
     assert_eq!(dropped.get(), 3);
 }
+
+#[test]
+fn async_capture_excludes_other_polls_and_releases_on_drop() {
+    use std::{
+        future::poll_fn,
+        task::{Context, Poll, Waker},
+    };
+    let mut polls = 0_u8;
+    let producer = poll_fn(|cx| {
+        assert!(acyclic_differential::capturing());
+        record(polls);
+        polls += 1;
+        if polls == 1 {
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            Poll::Ready(42)
+        }
+    });
+    let mut capture = Box::pin(super::observe_async::<_, u8>(producer));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(std::future::Future::poll(capture.as_mut(), &mut context).is_pending());
+    assert!(!acyclic_differential::capturing());
+    record(99_u8); // Another task's observation between the original polls.
+    assert_eq!(
+        std::future::Future::poll(capture.as_mut(), &mut context),
+        Poll::Ready((42, vec![0, 1]))
+    );
+    drop(capture);
+    assert!(!acyclic_differential::capturing());
+    let mut dropped = Box::pin(super::observe_async::<_, u8>(poll_fn(|_| {
+        record(7_u8);
+        Poll::<()>::Pending
+    })));
+    assert!(std::future::Future::poll(dropped.as_mut(), &mut context).is_pending());
+    drop(dropped);
+    assert!(!acyclic_differential::capturing());
+    assert_eq!(observe(|| (), |()| record(8_u8)), ((), vec![8_u8]));
+}

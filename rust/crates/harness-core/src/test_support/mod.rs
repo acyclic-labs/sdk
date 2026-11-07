@@ -24,6 +24,12 @@ pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
 };
 
+/// Observe the shipping error envelope and outcome uncertainty together.
+/// Comparing only error codes would hide lost diagnostics or operation identity.
+pub fn error_observation(error: &crate::Error) -> (crate::wire::Error, bool) {
+    (crate::encode_error(error), error.uncertain())
+}
+
 /// Reads child-fixture controls while refusing ambient user directory discovery.
 /// Available wherever this module is (unit tests on every target, or `test-support`).
 pub fn environment(name: &str) -> Option<std::ffi::OsString> {

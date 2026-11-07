@@ -8,9 +8,6 @@ impl From<DemandError> for MountSourceError {
             DemandError::Mount(error) => *error,
             DemandError::Io(error) => MountSourceError::Io(error, None),
             DemandError::Allocation(error) => MountSourceError::Allocation(error),
-            DemandError::StaleSource | DemandError::StaleVersion | DemandError::StaleCursor => {
-                MountSourceError::Stale
-            }
             DemandError::Absent => MountSourceError::NotFound,
             DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
             DemandError::NativeMetadata(error) => MountSourceError::Metadata(error),
