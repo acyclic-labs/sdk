@@ -10,6 +10,7 @@ use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
+mod completion;
 mod dispatcher;
 mod interrupt;
 mod limits;
@@ -26,6 +27,7 @@ use acyclic_stream::{
 };
 use clock::sleep;
 pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
+use completion::{Completion, Completions};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
@@ -110,8 +112,6 @@ struct Inner {
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
 }
 
-type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
-
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
@@ -121,6 +121,7 @@ enum Event {
     Due(Result<(), ClockError>),
     Failed(StreamError),
     Completion(Completion),
+    CompletionCancelled,
     Idle,
 }
 
@@ -142,7 +143,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: tokio::sync::Semaphore,
-    completions: OnceLock<tokio::sync::mpsc::UnboundedSender<Completion>>,
+    completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -432,11 +433,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// or loss of the running host returns [`Error::CompletionStopped`], as does
     /// calling before [`Self::run`] creates its dispatcher future. A failed delivery
     /// refuses completion until the host is restarted.
+    /// One handoff credit backpressures requests; cancellation retires the
+    /// original request without waiting for a delivery or an idle cut.
     pub async fn complete(&self) -> Result<(), Error> {
         let completions = self.completions.get().ok_or(Error::CompletionStopped)?;
         let (send, receive) = tokio::sync::oneshot::channel();
         completions
             .send(send)
+            .await
             .map_err(|_| Error::CompletionStopped)?;
         receive
             .await
@@ -458,7 +462,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // it must refuse observers even if the executor never polls it.
         let mut completions = Err(Error::CompletionStopped);
         self.completions.get_or_init(|| {
-            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+            // One handoff credit: a backpressured caller retains its request,
+            // so cancelling it cannot leave unbounded queued acknowledgements.
+            let (send, receive) = tokio::sync::mpsc::channel(1);
             completions = Ok(receive);
             send
         });
@@ -468,10 +474,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     async fn run_owned(
         &self,
         report: impl Fn(&ActorReference, &Error),
-        completions: Result<tokio::sync::mpsc::UnboundedReceiver<Completion>, Error>,
+        completions: Result<tokio::sync::mpsc::Receiver<Completion>, Error>,
     ) -> Result<Infallible, Error> {
         let mut completions = completions?;
-        let mut completing: Vec<Completion> = Vec::new();
+        let mut completing = Completions::default();
         let mut completion_tail = 0;
         let mut failure = None;
         let root = self.store.root().clone();
@@ -512,9 +518,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
                 self.ready.listen(context);
-                for _ in 0..4 {
+                for _ in 0..5 {
                     let class = next_class;
-                    next_class = (next_class + 1) % 4;
+                    next_class = (next_class + 1) % 5;
                     match class {
                         0 => {
                             // Provider I/O owned by an active delivery must keep
@@ -549,7 +555,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Work(work));
                             }
                         }
-                        _ => {
+                        3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
                             let next = self.ready.next_deadline();
@@ -562,10 +568,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Due(result));
                             }
                         }
+                        _ => {
+                            if completing.poll_cancelled(context).is_ready() {
+                                return Poll::Ready(Event::CompletionCancelled);
+                            }
+                            if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
+                                return Poll::Ready(Event::Completion(completion));
+                            }
+                        }
                     }
-                }
-                if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
-                    return Poll::Ready(Event::Completion(completion));
                 }
                 if !completing.is_empty()
                     && running.is_empty()
@@ -615,7 +626,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .wake_due(self.clock.now_unix_ms(), self.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
-                Event::Completion(completion) => completing.push(completion),
+                Event::Completion(completion) => completing.insert(completion),
+                Event::CompletionCancelled => {}
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
@@ -631,12 +643,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .map(|(deadline, _)| *deadline)
                             .is_none_or(|deadline| deadline > self.clock.now_unix_ms())
                     {
-                        for completion in completing.drain(..) {
-                            let result = failure
-                                .as_ref()
-                                .map_or(Ok(()), |error| Err(Arc::clone(error)));
-                            let _cancelled = completion.send(result);
-                        }
+                        completing.finish(failure.as_ref());
                     }
                 }
             }

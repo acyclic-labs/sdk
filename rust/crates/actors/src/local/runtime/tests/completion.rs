@@ -1,9 +1,82 @@
 use super::*;
 
+#[derive(Default)]
+struct CompletionWake(AtomicUsize);
+
+impl std::task::Wake for CompletionWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Exercise the actual production collection, with every three-caller
+/// cancellation order, registered and never-polled observer loss and live peers.
+async fn completion_cancellation_orders() -> TestResult {
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        // Each schedule starts with the executor's ordinary cooperative credit.
+        tokio::task::yield_now().await;
+        let wake = Arc::new(CompletionWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+        let mut completing = Completions::default();
+        let mut observers = Vec::new();
+        for _ in 0..3 {
+            let (send, receive) = tokio::sync::oneshot::channel();
+            completing.insert(send);
+            observers.push(Some(receive));
+        }
+        assert!(
+            completing.poll_cancelled(&mut context).is_pending(),
+            "live completion retired before its original idle cut"
+        );
+        for index in order {
+            let before = wake.0.load(Ordering::SeqCst);
+            drop(observers[index].take());
+            assert!(wake.0.load(Ordering::SeqCst) > before);
+            assert!(
+                completing.poll_cancelled(&mut context).is_ready(),
+                "completion retained its cancelled original observer"
+            );
+            for observer in observers.iter_mut().flatten() {
+                assert!(matches!(
+                    observer.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+                ));
+            }
+        }
+        assert!(completing.is_empty());
+        let (send, receive) = tokio::sync::oneshot::channel();
+        drop(receive);
+        completing.insert(send);
+        assert!(
+            completing.is_empty(),
+            "never-polled observer retained a completion node"
+        );
+        let (send, mut receive) = tokio::sync::oneshot::channel();
+        completing.insert(send);
+        completing.finish(None);
+        assert!(matches!(receive.try_recv(), Ok(Ok(()))));
+        assert!(completing.is_empty());
+    }
+    Ok(())
+}
+
 /// Completion belongs to the original dispatcher, including discovery, work
 /// spilled across cooperative batches, cancellation and failed deliveries.
 #[tokio::test]
 async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResult {
+    completion_cancellation_orders().await?;
     for (stop_before_poll, stopped) in [(true, false), (false, false), (false, true)] {
         let provider = Arc::new(Counted::new(MemoryStream::default()));
         let store = Store::new(Arc::clone(&provider), root()?);
@@ -137,6 +210,40 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
             "completion added a control request outside its original idle cut"
         );
         assert_eq!(calls.data(), 0);
+        // Keep a real actor delivery parked while its accepted completion
+        // caller retires. The original handoff credit proves the dispatcher
+        // received it; cancellation must wake that SAME dispatcher, not wait
+        // for the handler or an idle cut to release resources.
+        let cancelled_actor = spawn_with(runtime.store(), "complete-cancelled", &[b"emit"]).await?;
+        observe_while_running(serving.as_mut(), async {
+            state_after(runtime.store(), &cancelled_actor, |state| {
+                state.epoch() == 1
+            })
+            .await?;
+            Ok(())
+        })
+        .await?;
+        let mut cancelled = Box::pin(runtime.complete());
+        assert!(futures::poll!(cancelled.as_mut()).is_pending());
+        observe_while_running(serving.as_mut(), async {
+            let _handoff = runtime.completions.get().unwrap().reserve().await?;
+            Ok(())
+        })
+        .await?;
+        let wake = Arc::new(CompletionWake::default());
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        let mut context = Context::from_waker(&waker);
+        // Five scheduling classes, one immediate event per cooperative step.
+        // This is a bounded schedule over the actual dispatcher, not a recheck.
+        for _ in 0..5 {
+            assert!(std::future::Future::poll(serving.as_mut(), &mut context).is_pending());
+        }
+        let before = wake.0.load(Ordering::SeqCst);
+        drop(cancelled);
+        assert!(
+            wake.0.load(Ordering::SeqCst) > before,
+            "cancelled completion did not wake the original dispatcher"
+        );
         drop(serving);
     }
     let provider = Arc::new(MemoryStream::default());
