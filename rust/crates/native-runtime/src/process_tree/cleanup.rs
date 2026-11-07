@@ -39,7 +39,9 @@ impl<'a> Cleanup<'a> {
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
         if let (Some(meter), Some(token)) = (self.meter, self.token.take()) {
-            meter.cancel_cleanup_write(token);
+            crate::delivery::deliver(std::iter::once(token), |token| {
+                meter.cancel_cleanup_write(token);
+            });
         }
     }
 }

@@ -192,6 +192,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) fail_recorded_operation: Option<u64>,
     /// Observes an actual operation for event-driven native progress controls.
     pub(super) operation_recorded: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
+    /// Observes the actual refund of unused native cleanup credit.
+    pub(super) cleanup_cancelled: Option<Box<dyn Fn() + Send + Sync>>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -487,6 +489,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn cancel_cleanup_write(&self, token: u64) {
         self.cancel_reserved_operations(NativeOperationKind::Write, token);
+        if let Some(cancelled) = &self.cleanup_cancelled {
+            cancelled();
+        }
     }
     fn record_cleanup_write(&self, _: u64) -> io::Result<()> {
         self.record_reserved_operation(NativeOperationKind::Write)

@@ -192,6 +192,37 @@ fn exit_watch_prepays_and_records_its_descriptor_release() -> io::Result<()> {
         assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
     }
 
+    // Original read-attempt accounting unwinds before native open. The
+    // production cleanup owner must refund its unused close reservation even
+    // when that original refund callback also unwinds.
+    let refunds = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut cancelled = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    cancelled.operation_recorded = Some(Box::new(|| {
+        std::panic::panic_any("original operation admission unwind");
+    }));
+    cancelled.cleanup_cancelled = Some(Box::new({
+        let refunds = std::sync::Arc::clone(&refunds);
+        move || {
+            refunds.fetch_add(1, Ordering::AcqRel);
+            std::panic::panic_any("original unused cleanup refund failure");
+        }
+    }));
+    let id = tree.owned_child_id()?;
+    let admission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _watch = open(id, Some(&cancelled));
+    }));
+    assert_eq!(
+        admission
+            .err()
+            .and_then(|panic| panic.downcast::<&str>().ok()),
+        Some(Box::new("original operation admission unwind")),
+        "cleanup refund replaced the original admission unwind"
+    );
+    assert_eq!(refunds.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.used_operations.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.read_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.write_attempts.load(Ordering::Acquire), 0);
+
     let refused = crate::tests::ReadBudgetMeter::new(1, u64::MAX);
     assert!(
         open(tree.owned_child_id()?, Some(&refused)).is_err(),

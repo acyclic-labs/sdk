@@ -107,4 +107,35 @@ cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree:
 
 Restore the patch after any failure. The isolated process makes the original
 abort finite; an unrelated compiler failure does not qualify this control.
-This checks release accounting, not cancellation of an unused reservation.
+This control checks release accounting. The unused-reservation control below
+checks its separate refund boundary.
+
+## Unused cleanup credit during admission unwind
+
+The same property also cuts actual read-attempt accounting before native open.
+Its original cleanup reservation must then be refunded once. A panic from that
+real refund callback must preserve the original admission panic, with one
+recorded read attempt, no recorded close and no unused cleanup credit.
+The existing test meter observes its real refund after returning the credit;
+no replacement resource or native operation is invented.
+
+`original-refund-unwind.patch` restores `cleanup.rs` exactly to
+`1b15b053e3b6088f0faaa3a674a1dfaed3308cae`, retaining this admission cut.
+That source aborts in the unused cleanup token's destructor. The fixed owner
+uses the same terminal-delivery primitive for this one original refund.
+There is no native close for an unopened watch and no extra syscall,
+allocation, copy, round trip, barrier or wait; the fixed iterator executes one
+refund once. This does not qualify other native reservation mechanisms.
+
+```sh
+git apply --check rust/proofs/process-resource-release/original-refund-unwind.patch
+git apply rust/proofs/process-resource-release/original-refund-unwind.patch
+cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
+# Require original unused cleanup refund failure and panic in a destructor during cleanup.
+git apply -R rust/proofs/process-resource-release/original-refund-unwind.patch
+cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
+# Require the original admission panic, one refund and unchanged native counts.
+```
+
+Restore after any failure. Require the actual finite isolated-process abort;
+a compilation failure does not qualify the negative control.
