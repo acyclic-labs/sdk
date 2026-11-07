@@ -1343,7 +1343,16 @@ if (claim === "--help" && extra.length === 0) {
       require(result.output.includes(started));
     }
     console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
-    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
+    const lines = result.output.trimEnd().split(/\r?\n/);
+    const firstError = lines.findIndex(line => /^error(?:\[|:)/.test(line));
+    if (firstError >= 0 && firstError < lines.length - 35) {
+      console.log(lines.slice(firstError, firstError + 12).join("\n"));
+    }
+    console.log(lines.slice(-35).join("\n"));
+    if (options.fuzz) {
+      const coverage = result.output.match(/^#.*\bcov:.*$/gm)?.at(-1);
+      if (coverage) console.log(coverage);
+    }
     return result;
   }
   try {
