@@ -632,7 +632,12 @@ async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> 
     schedule
         .scope(async {
             let before = 1_700_000_000_000;
-            for after in [before + 100, before - 100, u64::MAX] {
+            for (before, after) in [
+                (before, before + 100),
+                (before, before - 100),
+                (before, u64::MAX),
+                (u64::MAX, before),
+            ] {
                 schedule.set_unix_millis(before);
                 let observer = schedule.clone();
                 let provider = Arc::new(
@@ -662,11 +667,11 @@ async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> 
                 let output = executor.execute(input.clone(), &journal).await?;
                 let original = usage_page(&journal, input.operation_id, "unbound", 0).await?;
                 let completed = original.items.iter().find(|row| row.completed).unwrap();
-                assert_eq!(completed.started_at, Some(before * 1_000_000));
+                assert_eq!(completed.started_at, before.checked_mul(1_000_000));
                 assert_eq!(completed.completed_at, after.checked_mul(1_000_000));
                 assert_eq!(completed.latency_ns, Some(7_000_000));
                 let original = crate::contract::canonical_json_bytes(&original)?;
-                schedule.set_unix_millis(before + 1_000);
+                schedule.set_unix_millis(after.saturating_add(1_000));
                 assert_eq!(executor.execute(input.clone(), &journal).await?, output);
                 assert_eq!(provider.requests().len(), 1);
                 assert_eq!(

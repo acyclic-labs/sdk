@@ -391,7 +391,7 @@ pub(super) async fn project_completion(
 }
 
 pub(super) struct CallClock {
-    started_at: Option<u64>,
+    started_millis: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     started: Option<tokio::time::Instant>,
     #[cfg(feature = "research")]
@@ -401,7 +401,7 @@ pub(super) struct CallClock {
 impl CallClock {
     pub(super) fn unknown() -> Self {
         Self {
-            started_at: None,
+            started_millis: None,
             #[cfg(not(target_arch = "wasm32"))]
             started: None,
             #[cfg(feature = "research")]
@@ -410,7 +410,7 @@ impl CallClock {
     }
 
     pub(super) fn start(&mut self) {
-        self.started_at = Self::wall_ns();
+        self.started_millis = Some(Self::wall_millis());
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.started = Some(tokio::time::Instant::now());
@@ -418,17 +418,18 @@ impl CallClock {
     }
 
     pub(super) fn started_at(&self) -> Option<u64> {
-        self.started_at
+        self.started_millis
+            .and_then(|millis| millis.checked_mul(1_000_000))
     }
 
     pub(super) fn completed_at(&self) -> Option<u64> {
         // A reconciled call must not acquire the recovery process's time.
-        self.started_at.and_then(|_| Self::wall_ns())
+        self.started_millis
+            .and_then(|_| Self::wall_millis().checked_mul(1_000_000))
     }
 
-    fn wall_ns() -> Option<u64> {
+    fn wall_millis() -> u64 {
         acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
-            .checked_mul(1_000_000)
     }
 
     #[cfg(feature = "research")]
