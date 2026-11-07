@@ -76,12 +76,30 @@ pub(crate) struct Execution {
 }
 
 #[derive(Default)]
-struct Attempt {
+struct AttemptResult {
     started: bool,
     appended: Option<AppendIf>,
 }
 
-impl Attempt {
+struct Attempt<'a> {
+    result: AttemptResult,
+    failed: &'a mut bool,
+    revisions: &'a AppliedRevisions,
+}
+
+impl<'a> Attempt<'a> {
+    fn new(failed: &'a mut bool, revisions: &'a AppliedRevisions) -> Self {
+        Self {
+            result: AttemptResult::default(),
+            failed,
+            revisions,
+        }
+    }
+
+    fn finish(mut self) -> AttemptResult {
+        std::mem::take(&mut self.result)
+    }
+
     fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
@@ -89,7 +107,7 @@ impl Attempt {
         frame: JournalFrame<'_>,
     ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
         async move {
-            self.started = true;
+            self.result.started = true;
             let result = journal.append_if(expected, &[frame]).await?;
             let outcome = match &result {
                 AppendIf::Accepted {
@@ -105,8 +123,19 @@ impl Attempt {
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 AppendIf::Refused(error) => Err(error.clone()),
             };
-            self.appended = Some(result);
+            self.result.appended = Some(result);
             outcome
+        }
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        // A dropped durability waiter proves neither refusal nor installation.
+        // Retire its original authority before another observer can use its cut.
+        if self.result.started {
+            *self.failed = true;
+            self.revisions.close();
         }
     }
 }
@@ -232,7 +261,7 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     /// A proven stale cut refuses this proposal without invalidating the replica.
-    fn complete<T>(&mut self, attempt: Attempt, result: &Result<T, StreamError>) -> bool {
+    fn complete<T>(&mut self, attempt: AttemptResult, result: &Result<T, StreamError>) -> bool {
         match attempt.appended {
             Some(AppendIf::Stale { head }) if head > self.cursor => {
                 self.stale = true;
@@ -280,7 +309,7 @@ impl<J: CommandJournal> Replicated<J> {
             at_millis: self.clock.now_unix_millis(),
             deadline: request.deadline_unix_millis,
         };
-        let mut attempt = Attempt::default();
+        let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
         let result = plan
             .with_commit_clock(Arc::clone(&self.clock) as _)
             .settle_durable(body, attempt.persist(&mut self.journal, expected, frame))
@@ -289,6 +318,7 @@ impl<J: CommandJournal> Replicated<J> {
                 outcome: WriteOutcome::Commit(outcome),
                 _allocation: allocation,
             });
+        let attempt = attempt.finish();
         if !self.complete(attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
         }
@@ -432,7 +462,7 @@ impl<J: CommandJournal> Replicated<J> {
             }
             observe.observe(&self.provider, command, false).await?;
             let expected = self.cursor;
-            let mut attempt = Attempt::default();
+            let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
             let frame = JournalFrame {
                 command,
                 #[cfg(any(
@@ -453,6 +483,7 @@ impl<J: CommandJournal> Replicated<J> {
                     .apply_durable(&canonical, deadline, persist)
                     .await
             };
+            let attempt = attempt.finish();
             // Exact accepted identities and mismatched immutable bindings are
             // authoritative at the retained cut. A local refusal needs one
             // current observation before it can be returned as current state.

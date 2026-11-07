@@ -12,11 +12,31 @@ use std::{
 };
 use wasm_bindgen::{JsCast as _, prelude::*};
 
-struct Observer(AtomicBool);
+pub(super) struct Observer(pub(super) AtomicBool);
 impl futures::task::ArcWake for Observer {
     fn wake_by_ref(observer: &Arc<Self>) {
         observer.0.store(true, Ordering::Release);
     }
+}
+
+pub(super) async fn fork_chain(
+    provider: &JournalStream,
+    mut path: StreamPath,
+) -> Result<StreamPath, StreamError> {
+    for destination in ["progress/child", "progress/grandchild"] {
+        let destination = StreamPath::new(destination)?;
+        provider
+            .fork(ForkRequest {
+                source: path,
+                destination: destination.clone(),
+                at_tail: None,
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::new(destination.as_str().as_bytes().to_vec())?,
+            })
+            .await?;
+        path = destination;
+    }
+    Ok(path)
 }
 
 /// Observes terminal publication through the public provider and the host's real storage.
@@ -39,7 +59,7 @@ pub async fn qualify_journal_progress(
     let peer = JournalStream::open(journal.clone(), JournalStreamLimits::default())
         .await
         .map_err(stream_error)?;
-    let mut path = StreamPath::new("progress/root").map_err(stream_error)?;
+    let path = StreamPath::new("progress/root").map_err(stream_error)?;
     provider
         .append(AppendRequest {
             path: path.clone(),
@@ -50,20 +70,7 @@ pub async fn qualify_journal_progress(
         })
         .await
         .map_err(stream_error)?;
-    for destination in ["progress/child", "progress/grandchild"] {
-        let destination = StreamPath::new(destination).map_err(stream_error)?;
-        peer.fork(ForkRequest {
-            source: path,
-            destination: destination.clone(),
-            at_tail: None,
-            exclude: Vec::new(),
-            idempotency_key: IdempotencyKey::new(destination.as_str().as_bytes().to_vec())
-                .map_err(stream_error)?,
-        })
-        .await
-        .map_err(stream_error)?;
-        path = destination;
-    }
+    let path = fork_chain(&peer, path).await.map_err(stream_error)?;
     let mut follow = provider
         .follow(FollowRequest::new(path.clone(), 1))
         .await

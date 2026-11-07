@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "journal-cancellation-progress": [
+    "rust/crates/stream/src/replicated.rs", "acyclic-cloudflare-conformance", "",
+    "cancelled journal append left its public follow parked", [],
+    {
+      runner: ["node", "rust/proofs/journal-follow-progress/run.mjs", "--cancellation"],
+      patchPath: "rust/proofs/journal-follow-progress/cancellation.patch",
+      negativeExit: 1,
+      failed: true,
+      started: "journal public conditional cancellation START",
+      completed: ["journal public conditional cancellation PASS"],
+    },
+  ],
   "journal-follow-progress": [
     "rust/crates/stream/src/journal_provider.rs", "acyclic-cloudflare-conformance", "",
     "journal failure left a public follow parked", [],
@@ -738,6 +750,7 @@ if (claim === "--help" && extra.length === 0) {
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
           : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && (options.started === undefined || mutated.output.includes(options.started))
             && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? "0 passed; 1 failed")));
       } finally {
         writeFileSync(mutatedPath, original);
