@@ -147,6 +147,13 @@ struct Bit {
     offset: u32,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Selection {
+    Empty,
+    Exact,
+    Different(Bit),
+}
+
 fn high<K: AsRef<[u8]> + ?Sized>(key: &K, bit: Bit) -> bool {
     key.as_ref()
         .get(bit.byte)
@@ -341,9 +348,10 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         after: [u8; N],
         accounting: &mut W,
     ) -> Result<Option<(&[u8; N], &V)>, W::Error> {
-        let (differing, _) = self.differing_bit(after, accounting)?;
-        let Some(differing) = differing else {
-            return Ok(None);
+        let differing = match self.select(after, accounting)?.0 {
+            Selection::Empty => return Ok(None),
+            Selection::Exact => None,
+            Selection::Different(bit) => Some(bit),
         };
         let mut cursor = self.root.as_ref();
         let mut successor = None;
@@ -392,7 +400,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
         create: impl FnOnce(&mut W) -> Result<V, W::Error>,
     ) -> Result<&mut V, W::Error> {
-        let selected = self.differing_bit(key, accounting)?;
+        let selected = self.select(key, accounting)?;
         self.selected_or_try_insert_with(key, selected, accounting, create)
     }
 
@@ -402,22 +410,26 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
     fn selected_or_try_insert_with<W: IndexWork<Allocation = A>>(
         &mut self,
         key: [u8; N],
-        (differing, depth): (Option<Option<Bit>>, u64),
+        (selected, depth): (Selection, u64),
         accounting: &mut W,
         create: impl FnOnce(&mut W) -> Result<V, W::Error>,
     ) -> Result<&mut V, W::Error> {
-        if differing == Some(None) {
-            accounting.charge_items(depth)?;
-            return Ok(Self::selected_value_mut(&mut self.root, key));
-        }
-        let link = match differing.flatten() {
+        let differing = match selected {
+            Selection::Exact => {
+                accounting.charge_items(depth)?;
+                return Ok(Self::selected_value_mut(&mut self.root, key));
+            }
+            Selection::Empty => None,
+            Selection::Different(bit) => Some(bit),
+        };
+        let link = match differing {
             Some(bit) => self.insertion_link(key, bit, accounting)?,
             None => &mut self.root,
         };
         // Pay the local return before publication. The selected link contains
         // only the new leaf, or its new branch and leaf; no root search remains.
-        accounting.charge_items(if differing.flatten().is_some() { 2 } else { 1 })?;
-        let funding = Funding::admit::<V, W, N>(differing.flatten().is_some(), accounting)?;
+        accounting.charge_items(if differing.is_some() { 2 } else { 1 })?;
+        let funding = Funding::admit::<V, W, N>(differing.is_some(), accounting)?;
         let value = match create(accounting) {
             Ok(value) => value,
             Err(error) => {
@@ -433,7 +445,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
             kind: Box::new(Kind::Leaf { key, value }),
             _allocation: leaf_funding,
         };
-        let replacement = match (differing.flatten(), branch_funding) {
+        let replacement = match (differing, branch_funding) {
             (Some(bit), Some(allocation)) => {
                 let mut branch = Node {
                     kind: Box::new(Kind::Branch {
@@ -465,11 +477,11 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         Ok(Self::selected_value_mut(link, key))
     }
 
-    fn differing_bit<W: IndexReadWork>(
+    fn select<W: IndexReadWork>(
         &self,
         key: [u8; N],
         accounting: &mut W,
-    ) -> Result<(Option<Option<Bit>>, u64), W::Error> {
+    ) -> Result<(Selection, u64), W::Error> {
         accounting.validate()?;
         let mut cursor = self.root.as_ref();
         let mut depth = 0;
@@ -480,7 +492,11 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 Kind::Leaf { key: observed, .. } => {
                     let bytes = N as u64;
                     accounting.examine(bytes)?;
-                    return Ok((Some(difference(&key, observed)), depth));
+                    let selected = match difference(&key, observed) {
+                        None => Selection::Exact,
+                        Some(bit) => Selection::Different(bit),
+                    };
+                    return Ok((selected, depth));
                 }
                 Kind::Branch {
                     bit,
@@ -491,7 +507,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 }
             }
         }
-        Ok((None, depth))
+        Ok((Selection::Empty, depth))
     }
 
     fn insertion_link<W: IndexWork<Allocation = A>>(

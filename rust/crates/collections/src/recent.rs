@@ -52,14 +52,14 @@ impl<V, A, const N: usize, const WINDOW: usize> RecentIndex<V, A, N, WINDOW> {
         accounting: &mut W,
         create: impl FnOnce(&mut W) -> Result<V, W::Error>,
     ) -> Result<&mut V, W::Error> {
-        let current = self.current.differing_bit(key, accounting)?;
-        if current.0 == Some(None) {
+        let current = self.current.select(key, accounting)?;
+        if current.0 == Selection::Exact {
             return self
                 .current
                 .selected_or_try_insert_with(key, current, accounting, create);
         }
-        let previous = self.previous.differing_bit(key, accounting)?;
-        if previous.0 == Some(None) {
+        let previous = self.previous.select(key, accounting)?;
+        if previous.0 == Selection::Exact {
             return self
                 .previous
                 .selected_or_try_insert_with(key, previous, accounting, create);
