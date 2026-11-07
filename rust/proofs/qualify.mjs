@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-snapshot-producer-loss": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "local::tests::wakeups::executor_retirement_ends_forked_follows_before_publication_unlocks",
+    "retired local snapshot left its public follow parked", ["--no-default-features", "--features", "local"],
+    {
+      mutations: [
+        { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-local-producer-retirement", diagnostic: "retired local snapshot did not wake its public follow" },
+        { patch: "rust/proofs/snapshot-producer-loss/retry.patch", label: "restarted-local-read-after-producer-loss", diagnostic: "retired local snapshot left its public follow parked" },
+      ],
+    },
+  ],
   "snapshot-retired-executor": [
     "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
     "memory::tests::runtime_shutdown::retired_executor_refuses_new_public_follows_before_writer_release",
