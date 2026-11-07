@@ -50,68 +50,8 @@ impl StockExecution<'_> {
             .run(async {
                 // Construct and retire provider custody inside the completion body.
                 let cancellation = journal.model_cancellation();
-                let request::ModelStepRequest {
-                    history: mut prior_messages,
-                    prepared,
-                } = request;
-                let execution = async {
-                    let scope = ModelStepScope {
-                        purpose,
-                        boundary: match &prior_messages {
-                            request::ModelStepHistory::Turn(..) => journal.model_boundary(),
-                            request::ModelStepHistory::Selected(_) => None,
-                        },
-                    };
-                    if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
-                        && let Some(boundary) = scope.boundary
-                    {
-                        let (_, records) = self
-                            .model_records(
-                                journal,
-                                input.operation_id,
-                                step,
-                                ModelPurpose::Response,
-                            )
-                            .await?;
-                        let frozen = records.iter().find_map(|record| match record.event {
-                            ExecutionEvent::ContextPrepared {
-                                step: recorded,
-                                steering,
-                                ..
-                            } if recorded == step => Some(steering),
-                            _ => None,
-                        });
-                        if matches!(frozen, Some(None)) {
-                            return Err(Error::Storage(
-                                "agent request has no frozen inbox range".into(),
-                            ));
-                        }
-                        let messages = boundary
-                            .messages(input.operation_id, step, frozen.flatten())
-                            .await?;
-                        let from = history.len();
-                        for message in messages {
-                            with_history_io(self.io, |work| {
-                                message.content.validate_limits(self.stock.limits, work)
-                            })?;
-                            stock_vec_push(history, message, self.io)?;
-                        }
-                        steering.admit(from..history.len(), self.io)?;
-                    }
-                    let history = match &prior_messages {
-                        request::ModelStepHistory::Turn(history, _) => history.as_slice(),
-                        request::ModelStepHistory::Selected(history) => history,
-                    };
-                    self.dispatch_model_step(
-                        journal,
-                        input,
-                        step,
-                        (history, prepared),
-                        scope,
-                        phase,
-                    )
-                    .await
-                };
+                let execution =
+                    self.dispatch_model_step(journal, input, step, request, purpose, phase);
                 futures::pin_mut!(execution);
                 match futures::future::select(cancellation, execution).await {
                     Either::Left((result, _)) => {
@@ -132,13 +72,58 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        material: (&[ModelMessage], Option<crate::model::PreparedModelRequest>),
-        scope: ModelStepScope<'_>,
+        request: request::ModelStepRequest<'_>,
+        purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         crate::conversation::BoundedContentFuture::new(self.io, || async {
             let io = self.io;
-            let (prior_messages, prepared) = material;
+            let request::ModelStepRequest {
+                history: mut prior_messages,
+                prepared,
+            } = request;
+            let scope = ModelStepScope {
+                purpose,
+                boundary: match &prior_messages {
+                    request::ModelStepHistory::Turn(..) => journal.model_boundary(),
+                    request::ModelStepHistory::Selected(_) => None,
+                },
+            };
+            if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
+                && let Some(boundary) = scope.boundary
+            {
+                let (_, records) = self
+                    .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                    .await?;
+                let frozen = records.iter().find_map(|record| match record.event {
+                    ExecutionEvent::ContextPrepared {
+                        step: recorded,
+                        steering,
+                        ..
+                    } if recorded == step => Some(steering),
+                    _ => None,
+                });
+                if matches!(frozen, Some(None)) {
+                    return Err(Error::Storage(
+                        "agent request has no frozen inbox range".into(),
+                    ));
+                }
+                let messages = boundary
+                    .messages(input.operation_id, step, frozen.flatten())
+                    .await?;
+                let from = history.len();
+                for message in messages {
+                    with_history_io(self.io, |work| {
+                        message.content.validate_limits(self.stock.limits, work)
+                    })?;
+                    stock_vec_push(history, message, self.io)?;
+                }
+                steering.admit(from..history.len(), self.io)?;
+            }
+            let prior_messages = match &prior_messages {
+                request::ModelStepHistory::Turn(history, _) => history.as_slice(),
+                request::ModelStepHistory::Selected(history) => history,
+            };
             let PreparedDispatchStep {
                 #[cfg(feature = "research")]
                 journal_cut,

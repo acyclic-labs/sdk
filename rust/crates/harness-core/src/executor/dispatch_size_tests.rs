@@ -26,8 +26,17 @@ fn model_step_callers_keep_only_control_state() -> Result<()> {
         execution.prepare_dispatch_step(&journal, &input, 0, (&[], None), scope, &mut phase);
     let preparation_bytes = std::mem::size_of_val(&preparation);
     drop(preparation);
-    let dispatch =
-        execution.dispatch_model_step(&journal, &input, 0, (&[], None), scope, &mut phase);
+    let dispatch = execution.dispatch_model_step(
+        &journal,
+        &input,
+        0,
+        request::ModelStepRequest {
+            history: request::ModelStepHistory::Selected(&[]),
+            prepared: None,
+        },
+        ModelPurpose::Response,
+        &mut phase,
+    );
     let dispatch_bytes = std::mem::size_of_val(&dispatch);
     drop(dispatch);
     let cancellable = execution.cancellable_model_step(
