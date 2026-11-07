@@ -542,6 +542,20 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         matches!(harness.connect().await, Err(Error::Storage(_))),
         "late clients observe the already closed runtime"
     );
+    // The failed run's committed call outlives that runtime: its observation
+    // still exports exactly the one admitted call, never a completion.
+    let mut exported = Vec::new();
+    client
+        .observation()
+        .await?
+        .write_usage_jsonl(&mut exported)
+        .await?;
+    let rows = serde_json::Deserializer::from_slice(&exported)
+        .into_iter::<crate::executor::ModelUsageProjection<'_>>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(agent)?;
+    assert_eq!(rows.len(), 1, "the failed run lost its committed call");
+    assert!(!rows[0].usage.completed);
     Ok(())
 }
 

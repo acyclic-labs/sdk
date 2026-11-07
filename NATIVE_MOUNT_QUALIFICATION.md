@@ -36,8 +36,10 @@ unconfined AppArmor profile or `fusermount3`) select physical mounting instead:
 GraphCoder's `--workspace-mounting physical`. GraphCoder's default, `auto`,
 selects it when `probe_native_mount` reports the native provider unavailable
 and writes one stderr line naming the reason. `native` refuses to start without
-the provider, as before. `auto` cannot detect a usable `/dev/fuse` whose mount is
-still refused by capabilities or AppArmor; select `physical` explicitly there.
+the provider, as before. The probe checks mount authority as well as the
+device: effective `CAP_SYS_ADMIN`, or a setuid-root `fusermount3` with it in the
+bounding set and no `no_new_privs`, under any AppArmor profile but Docker's stock
+one. It is the one check `auto`, startup and `graphcoder doctor` share.
 It needs no device, capability, mount helper or privileged process.
 
 Physical mounting is the checkout's existing plain-directory path, applied to

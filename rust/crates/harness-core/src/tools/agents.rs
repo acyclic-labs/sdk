@@ -39,7 +39,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 
 /// Revision of the agent tools, selected for the model over other revisions.
-pub const REVISION: &str = "agent-1";
+pub const REVISION: &str = "agent-2";
 /// Names of the agent tools; every agent turn is granted them.
 pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
@@ -619,7 +619,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership; peers names the siblings it may message (`*` for all). Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Delegate a task to a subagent: spawn a named child agent from templates/<role>/AGENT.md in a fork of your volumes. Spawn every independent subtask before waiting, then call wait. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership; peers names the siblings it may message (`*` for all). Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
@@ -640,7 +640,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for children to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as running. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as running. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {

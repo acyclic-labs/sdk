@@ -1,4 +1,5 @@
-use super::super::windows_event::{Cleanup, Event};
+use super::super::cleanup::Cleanup;
+use super::super::windows_event::Event;
 use crate::process_tree::Child;
 use std::ffi::c_void;
 use std::io;

@@ -96,17 +96,25 @@ impl Grant {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<acyclic_collections::PrefixMatches<'_, BoundPath>> {
         let query = path.as_os_str().as_encoded_bytes();
-        self.read.matches(
-            query,
-            |root| {
-                let key: &[u8] = root.as_ref();
-                // Canonical paths have normalized separators. Test the next
-                // byte, not all prior components, at each radix terminal.
-                key.last().is_some_and(|byte| separator(*byte))
-                    || query.get(key.len()).is_some_and(|byte| separator(*byte))
-            },
-            &mut RootIndexRead(meter),
-        )
+        self.read
+            .matches(
+                query,
+                |root| {
+                    let key: &[u8] = root.as_ref();
+                    // Canonical paths have normalized separators. Test the next
+                    // byte, not all prior components, at each radix terminal.
+                    key.last().is_some_and(|byte| separator(*byte))
+                        || query.get(key.len()).is_some_and(|byte| separator(*byte))
+                },
+                &mut RootIndexRead(meter),
+            )
+            .map_err(|error| match error {
+                acyclic_collections::CompiledPrefixError::Work(error) => error,
+                other => io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("execution root index: {other:?}"),
+                ),
+            })
     }
 }
 
@@ -313,6 +321,9 @@ impl ExecutionGrant {
                         refused("execution root index exceeds address space")
                     }
                     CompiledPrefixError::Allocation(error) => failure(io::Error::other(error)),
+                    CompiledPrefixError::Invariant => {
+                        refused("execution root index invariant changed")
+                    }
                 }
             })?;
         #[cfg(target_os = "linux")]

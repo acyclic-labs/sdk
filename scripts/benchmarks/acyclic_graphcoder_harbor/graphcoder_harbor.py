@@ -7,11 +7,14 @@ import uuid
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
-from .contracts import Artifact, catalog, run_command
+from harbor.agents.capabilities import AgentCapabilities
+from .contracts import Artifact, catalog, doctor_command, run_command
 
 
 class GraphCoder(BaseInstalledAgent):
     """Harbor 0.24 installed-agent interface, with no optional execution path."""
+
+    capabilities = AgentCapabilities(skills=True)
 
     @staticmethod
     def name() -> str:
@@ -26,8 +29,8 @@ class GraphCoder(BaseInstalledAgent):
         kwargs["version"] = source_sha
         extra_env = kwargs.pop("extra_env", None)
         super().__init__(*args, **kwargs)
-        if self.mcp_servers or self.skills_dir:
-            raise ValueError("this benchmark adapter does not project task MCP/skills")
+        if self.mcp_servers:
+            raise ValueError("this benchmark adapter does not project task MCP")
         self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
                                         allow_http_host=allow_http_host, extra_env=extra_env)
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
@@ -41,10 +44,6 @@ class GraphCoder(BaseInstalledAgent):
     async def install(self, environment):
         self._installed_environment = None
         # The binary owns workspace admission and its physical/native choice.
-        # The adapter requires only the artifact transport tools and task cwd.
-        await self.exec_as_agent(environment, command=(
-            "command -v sha256sum >/dev/null"
-            " && test \"$PWD\" != /"))
         await self.exec_as_root(environment, command="install -d -m 700 " + shlex.join([
             self.state, self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
         with tempfile.TemporaryDirectory(prefix="graphcoder-artifact-") as temporary:
@@ -55,10 +54,9 @@ class GraphCoder(BaseInstalledAgent):
             provider.write_text(json.dumps(self.provider_catalog) + "\n")
             await environment.upload_file(binary, self.binary)
             await environment.upload_file(provider, self.state + "/catalog.json")
-        checksum = self.artifact.sha256 + "  " + self.binary + "\n"
+        # The uploaded bytes are the artifact already verified on this host.
         await self.exec_as_root(environment, command=(
-            "printf %s " + shlex.quote(checksum) + " | sha256sum -c - && chmod 755 "
-            + shlex.quote(self.binary) + " && chmod 600 "
+            "chmod 755 " + shlex.quote(self.binary) + " && chmod 600 "
             + shlex.quote(self.state + "/catalog.json")))
         if environment.default_user is not None:
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
@@ -67,6 +65,15 @@ class GraphCoder(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=shlex.join([
             "env", "-i", "PATH=/usr/bin:/bin", "HOME=" + self.state + "/home",
             "CODEX_HOME=" + self.state + "/fixture-codex", self.binary, "--version"]))
+        # GraphCoder's own startup checks list every missing prerequisite at once.
+        await self.exec_as_agent(environment, command=doctor_command(
+            self.binary, self.state, self.model_name))
+        if self.skills_dir:
+            # Harbor supplies an environment path. Capture its contents through
+            # the harness's ordinary project-skill discovery and volume checkout.
+            await self.exec_as_agent(environment, command=(
+                "mkdir -p .agents/skills && cp -R -- "
+                + shlex.quote(self.skills_dir.rstrip("/") + "/.") + " .agents/skills/"))
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,

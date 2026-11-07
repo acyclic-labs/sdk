@@ -89,10 +89,10 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
     return result
 
 
-def run_command(binary: str, state: str, logs: str, model: str, instruction: str) -> str:
-    """Keep prompt and every path as single shell arguments, including newlines."""
+def _invocation(binary: str, state: str, model: str) -> list[str]:
+    """The one environment and flag set both the readiness check and the run use."""
     home = str(PurePosixPath(state) / "home")
-    arguments = [
+    return [
         "HOME=" + home,
         "USERPROFILE=" + home, "CODEX_HOME=" + str(PurePosixPath(state) / "fixture-codex"),
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
@@ -102,8 +102,17 @@ def run_command(binary: str, state: str, logs: str, model: str, instruction: str
         "ACYCLIC_SIGNING_CUSTODY_DIRECTORY=" + str(PurePosixPath(state) / "custody"),
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
-        "--prompt=" + instruction,
     ]
+
+
+def doctor_command(binary: str, state: str, model: str) -> str:
+    """GraphCoder's own startup checks for the run's exact flags: every refusal at once."""
+    return 'env -i PATH="$PATH" ' + shlex.join(_invocation(binary, state, model) + ["doctor"])
+
+
+def run_command(binary: str, state: str, logs: str, model: str, instruction: str) -> str:
+    """Keep prompt and every path as single shell arguments, including newlines."""
+    arguments = _invocation(binary, state, model) + ["--prompt=" + instruction]
     # --workspace defaults to the task's native working directory. Redirection
     # preserves GraphCoder's exit status rather than that of a logging pipeline.
     return ('env -i PATH="$PATH" ' + shlex.join(arguments) + " > " + shlex.quote(str(PurePosixPath(logs) / "graphcoder.jsonl"))
