@@ -16,6 +16,17 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Removes one descendant tree relative to this original held directory,
+    /// without following links or reopening the root's label. An absent leaf
+    /// is already released; a substituted object refuses removal. Work grows
+    /// only with the entries that must be deleted.
+    pub fn remove_tree(&self, leaf: &Path) -> Result<(), DemandError> {
+        let mut work = crate::native_host::ordinary_work();
+        crate::native_host::host_path(leaf, &mut work, |name, work| {
+            self.root.remove(name, None, work)
+        })
+    }
+
     /// Reports changes in this original held directory through the shared
     /// native notification service. Event paths are relative to this directory;
     /// registration never reopens its original label. Source loss reports an

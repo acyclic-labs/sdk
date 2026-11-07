@@ -175,10 +175,18 @@ fn require_selected_generation(
     Ok(())
 }
 
-/// Spawned forks of this checkout's lazy volumes fork their retained cut.
-pub(in crate::local) struct LazyForkCuts(pub(in crate::local) Arc<LocalWorkspace>);
+/// Fork cuts and physical retirement belong to the same volume binding.
+pub(in crate::local) struct LocalVolumeResources(pub(in crate::local) Arc<LocalWorkspace>);
 
-impl crate::filesystem::ForkCuts for LazyForkCuts {
+impl crate::filesystem::VolumeResources for LocalVolumeResources {
+    fn release<'a>(
+        &'a self,
+        _agent: &'a crate::agent::AgentPath,
+        bindings: &'a [crate::agent::VolumeBinding],
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        Box::pin(async move { self.0.release_physical_bindings(bindings) })
+    }
+
     fn cut<'a>(
         &'a self,
         source: &'a str,

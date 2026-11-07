@@ -13,7 +13,7 @@ replacement attachment, and typed failure for both waiters when the original
 retirement producer disappears. The existing idle-view lifecycle control
 retains settled contents and active-session custody.
 
-The historical-child scenario also exercises the native `ForkCuts` adapter
+The historical-child scenario also exercises the native `VolumeResources` adapter
 opened by the real local harness. It retains a cut, advances the parent with
 an actual write, reuses the original operation and refuses mismatched selected
 generations on both retained and fresh destinations.
@@ -61,3 +61,17 @@ settlement query`. After exact source restoration, the same scenario must pass.
 The scenario counts actual native stream head reads, checks the root observer's
 settled cursor, and retains the original parent/child volume, context and
 authority assertions. Explicit replay cursors keep their original semantics.
+
+`physical-view-release.patch` omits physical release from the actual closing
+composition. Run the unchanged public-host control:
+
+```sh
+cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::tests::agents::physical_archive_releases_only_the_closed_binding_and_retains_history -- --exact
+```
+
+It must fail `archived physical binding survived its committed close`.
+The restored control opens two real physical child views, waits on original
+actor settlement, archives one child and checks its exact directory is gone.
+The idle sibling and root retain their bytes, and the archived child's actual
+conversation content remains readable. Repeating release is idempotent.
+Reverse the patch afterward; restored production must pass this same control.

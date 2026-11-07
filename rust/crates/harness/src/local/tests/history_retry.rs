@@ -15,11 +15,19 @@ use std::sync::{Arc, Mutex};
 /// Change the real source once, after capture selected its head and before
 /// the native adapter takes its snapshot. Every cut still uses that adapter.
 struct BeforeCut {
-    cuts: Arc<dyn crate::filesystem::ForkCuts>,
+    cuts: Arc<dyn crate::filesystem::VolumeResources>,
     change: Mutex<Option<acyclic_stream::BoxProviderFuture<'static, Result<()>>>>,
 }
 
-impl crate::filesystem::ForkCuts for BeforeCut {
+impl crate::filesystem::VolumeResources for BeforeCut {
+    fn release<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        bindings: &'a [crate::agent::VolumeBinding],
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        self.cuts.release(agent, bindings)
+    }
+
     fn cut<'a>(
         &'a self,
         source: &'a str,
@@ -117,14 +125,14 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
     let entry = entries
         .last()
         .ok_or_else(|| Error::Invalid("settled transition has no conversation".into()))?;
-    let cuts = Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(
+    let cuts = Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
         harness
             .workspace
             .as_ref()
             .ok_or_else(|| Error::Invalid("native transition has no workspace".into()))?,
     )));
     let composer = crate::filesystem::FilesystemSpawnVolumes::new(Arc::clone(harness.filesystem()))
-        .with_fork_cuts(cuts.clone());
+        .with_volume_resources(cuts.clone());
     let participant = composer
         .bind(
             &parent,
@@ -151,7 +159,7 @@ async fn a_refused_history_preparation_can_select_a_new_project_generation() -> 
         .map_err(storage)?;
     let changing = workspace.clone();
     let racing = crate::filesystem::FilesystemSpawnVolumes::new(Arc::clone(harness.filesystem()))
-        .with_fork_cuts(Arc::new(BeforeCut {
+        .with_volume_resources(Arc::new(BeforeCut {
             cuts,
             change: Mutex::new(Some(Box::pin(async move {
                 changing

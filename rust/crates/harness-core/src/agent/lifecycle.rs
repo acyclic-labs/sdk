@@ -1,14 +1,15 @@
-//! Host-side lifecycle of the provider resources an agent holds (its Machines).
+//! Host-side lifecycle of the provider resources and physical volumes an agent holds.
 //!
 //! Pausing an agent suspends them through [`super::AgentHost::pause`]. Archive
 //! releases them in the agent's own closing step: the handler asks for the
 //! [`CLOSE`] participant, and the host's [`AgentComposer`] re-derives the close
-//! from the committed checkpoints and runs [`AgentLifecycle::close`] before the
+//! from the committed checkpoints and releases its original volumes, then runs
+//! [`AgentLifecycle::close`] before the
 //! step's commit is first submitted. So an agent whose closing step committed
 //! holds nothing, credentials never enter the handler, and a retried step
 //! repeats only idempotent releases.
 
-use super::{AgentPath, AgentState, Error, SpawnVolumes};
+use super::{AgentPath, AgentState, Error, SpawnVolumes, VolumeBinding};
 use acyclic_actors::{
     addressing::ActorReference,
     guest::{Checkpoint, Composer, Composition, GuestError, GuestFuture, Participant},
@@ -89,10 +90,9 @@ impl Composer for AgentComposer {
                 None => Err(guest("this host composes no spawned volumes")),
             };
         }
-        let lifecycle = self
-            .lifecycle
-            .clone()
-            .ok_or_else(|| guest("this host releases no agent resources"))?;
+        if self.lifecycle.is_none() && self.volumes.is_none() {
+            return Err(guest("this host releases no agent resources"));
+        }
         // Re-derived from the committed checkpoints, never from the request:
         // the publishing agent is open before this step and closed after it.
         let closed: AgentState = super::checkpoint_state(next).map_err(guest)?;
@@ -102,12 +102,11 @@ impl Composer for AgentComposer {
         {
             return Err(guest("close request is not canonical"));
         }
-        let was_open = match previous {
-            Some(previous) => !super::checkpoint_state(previous).map_err(guest)?.closed,
-            None => true,
-        };
+        let original = super::checkpoint::committed_state(previous, delivered).map_err(guest)?;
         if !closed.closed
-            || !was_open
+            || original.closed
+            || original.path != closed.path
+            || original.volumes != closed.volumes
             || closed.path.id().as_str() != actor.id()
             || request.agent != closed.path
         {
@@ -132,7 +131,9 @@ impl Composer for AgentComposer {
             None => None,
         };
         Ok(Box::new(Closing {
-            lifecycle,
+            lifecycle: self.lifecycle.clone(),
+            owner: self.volumes.clone(),
+            bindings: original.volumes,
             agent: closed.path,
             volumes,
         }))
@@ -141,7 +142,9 @@ impl Composer for AgentComposer {
 
 /// Releases one closing agent's resources before its step first commits.
 struct Closing {
-    lifecycle: Arc<dyn AgentLifecycle>,
+    lifecycle: Option<Arc<dyn AgentLifecycle>>,
+    owner: Option<Arc<dyn SpawnVolumes>>,
+    bindings: Vec<VolumeBinding>,
     agent: AgentPath,
     volumes: Option<Box<dyn Composition>>,
 }
@@ -158,7 +161,15 @@ impl Composition for Closing {
                 Some(volumes) => volumes.seal(request).await?,
                 None => request,
             };
-            self.lifecycle.close(&self.agent).await.map_err(guest)?;
+            if let Some(owner) = &self.owner {
+                owner
+                    .release(&self.agent, &self.bindings)
+                    .await
+                    .map_err(guest)?;
+            }
+            if let Some(lifecycle) = &self.lifecycle {
+                lifecycle.close(&self.agent).await.map_err(guest)?;
+            }
             Ok(request)
         })
     }

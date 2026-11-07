@@ -1033,6 +1033,104 @@ async fn checkout_scripted(
     Ok((directory, harness, provider))
 }
 
+/// Archive releases a physical view through the original closing composition,
+/// while an idle sibling, root checkout and retained child history survive.
+#[tokio::test]
+async fn physical_archive_releases_only_the_closed_binding_and_retains_history() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    let directory = tempfile::tempdir().map_err(agent)?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
+    let provider = super::scripted(
+        ["first", "second"].map(|text| crate::test_support::ScriptedTurn::Text(text.into())),
+    );
+    let harness = Arc::new(
+        LocalHarness::open(
+            super::checkout_config(directory.path(), (super::model()?, provider))?
+                .workspace_mounting(crate::WorkspaceMounting::Physical),
+        )
+        .await?,
+    );
+    let workspace = harness.workspace.as_ref().expect("physical checkout");
+    std::fs::write(workspace.path.join("kept.txt"), b"inherited").map_err(agent)?;
+    let (agents, root) = harness.agents().await?;
+    let root = root.clone();
+    let connection = harness.connect().await?;
+    let mut children = Vec::new();
+    for name in ["archived", "idle"] {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: root.clone(),
+                id: crate::agent::IntentId::try_from(name).map_err(agent)?,
+                brief: crate::model::ModelContent::Text(name.into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("spawn did not return its child".into()));
+        };
+        let history = settled(&harness, &child).await?;
+        let state = agents.state(&child).await.map_err(agent)?;
+        let project = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .expect("child project");
+        let id = workspace
+            .filesystem
+            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .map_err(agent)?;
+        let path = workspace
+            .held_task_mount_root()?
+            .path()
+            .join(".physical")
+            .join(hex::encode(id.into_bytes()));
+        assert_eq!(
+            std::fs::read(path.join("kept.txt")).map_err(agent)?,
+            b"inherited"
+        );
+        children.push((child, path, history, state.volumes));
+    }
+    let (child, path, history, bindings) = &children[0];
+    agents
+        .archive(
+            child,
+            &crate::agent::Sender::User {
+                principal: crate::approvals::HUMAN_APPROVER.into(),
+            },
+            &crate::agent::IntentId::try_from("close-physical").map_err(agent)?,
+        )
+        .await
+        .map_err(agent)?;
+    settled(&harness, child).await?;
+    assert!(agents.state(child).await.map_err(agent)?.closed);
+    assert!(
+        !path.try_exists().map_err(agent)?,
+        "archived physical binding survived its committed close"
+    );
+    assert_eq!(
+        records(&**agents.provider(), child.conversation().map_err(agent)?).await?,
+        *history
+    );
+    let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
+    assert_eq!(
+        Conversation::open(connection).turn(&entry).await?.1,
+        "first"
+    );
+    assert_eq!(
+        std::fs::read(children[1].1.join("kept.txt")).map_err(agent)?,
+        b"inherited"
+    );
+    assert_eq!(
+        std::fs::read(workspace.path.join("kept.txt")).map_err(agent)?,
+        b"inherited"
+    );
+    // The same volume owner completes crash/retry cleanup without reopening a
+    // logical volume or taking custody of the idle sibling's directory.
+    workspace.release_physical_bindings(bindings)?;
+    assert!(children[1].1.is_dir());
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<()> {
     use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
@@ -2343,7 +2441,7 @@ async fn selected_restore_retains_files_and_settles_stale_heads_without_model_wo
 
 #[tokio::test]
 async fn historical_child_settles_after_its_parent_has_later_context_segments() -> Result<()> {
-    use crate::filesystem::ForkCuts;
+    use crate::filesystem::VolumeResources;
     use acyclic_fs::{CancellationToken, WorkBudget};
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
@@ -2381,7 +2479,7 @@ async fn historical_child_settles_after_its_parent_has_later_context_segments() 
         client.send(id, id).await?;
         settled(&harness, &root).await?;
         if id == "first" {
-            let cuts = crate::local::workspace::LazyForkCuts(Arc::clone(
+            let cuts = crate::local::workspace::LocalVolumeResources(Arc::clone(
                 harness.workspace.as_ref().ok_or_else(|| {
                     Error::Invalid("historical fork has no native workspace".into())
                 })?,

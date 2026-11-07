@@ -1,6 +1,6 @@
 //! Spawned volumes: each child's volumes, created in the parent step's one commit.
 
-use super::{AgentState, Error, Out};
+use super::{AgentPath, AgentState, Error, Out, VolumeBinding};
 use acyclic_actors::guest::{Composer, Participant};
 
 /// Binds the volumes of every child a step spawns and joins their creation to
@@ -13,4 +13,13 @@ pub trait SpawnVolumes: Composer {
     /// Fills the volumes of each `Out::Spawn` in `outs`, and returns the
     /// participant request that creates them, or `None` when `outs` spawns nothing.
     fn bind(&self, parent: &AgentState, outs: &mut [Out]) -> Result<Option<Participant>, Error>;
+
+    /// Idempotently releases the physical resources of these committed bindings
+    /// before their agent's closing step commits. Retained volume history remains
+    /// readable. A failed release refuses the close and may be retried.
+    fn release<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        bindings: &'a [VolumeBinding],
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>>;
 }

@@ -582,9 +582,9 @@ impl NativeAgents {
         let within = ActorReference::new(b"local", b"native", b"hosts").map_err(storage)?;
         let volumes = FilesystemSpawnVolumes::new(local.files.clone());
         let volumes = if let Some(workspace) = local.workspace() {
-            volumes.with_fork_cuts(Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(
-                workspace,
-            ))))
+            volumes.with_volume_resources(Arc::new(crate::local::workspace::LocalVolumeResources(
+                Arc::clone(workspace),
+            )))
         } else {
             volumes
         };

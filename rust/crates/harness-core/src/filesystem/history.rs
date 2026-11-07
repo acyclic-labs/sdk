@@ -53,7 +53,7 @@ pub(super) async fn capture<P, O>(
     fs: &Fs<StreamAuthorityStore<P>, O>,
     parent: &AgentState,
     next: &AgentState,
-    cuts: Option<&dyn super::ForkCuts>,
+    cuts: Option<&dyn super::VolumeResources>,
     commit: &mut FilesystemCommit,
 ) -> Result<(), GuestError>
 where

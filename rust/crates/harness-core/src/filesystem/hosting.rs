@@ -168,7 +168,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: Arc<Host<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
-    spawns: Arc<FilesystemSpawnVolumes<P, O>>,
+    composer: Arc<crate::agent::AgentComposer>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -183,7 +183,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             volumes: self.volumes.clone(),
             clock: self.clock.clone(),
             handler: self.handler.clone(),
-            spawns: self.spawns.clone(),
+            composer: self.composer.clone(),
         }
     }
 }
@@ -258,7 +258,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
-        cuts: Option<Arc<dyn super::ForkCuts>>,
+        cuts: Option<Arc<dyn super::VolumeResources>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -299,7 +299,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
-        cuts: Option<Arc<dyn super::ForkCuts>>,
+        cuts: Option<Arc<dyn super::VolumeResources>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -344,7 +344,7 @@ where
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
         within: ActorReference,
-        (turns, cuts): (Turns, Option<Arc<dyn super::ForkCuts>>),
+        (turns, cuts): (Turns, Option<Arc<dyn super::VolumeResources>>),
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
@@ -369,20 +369,22 @@ where
         // each spawn's fork cut, so a child's project is a related fork.
         let spawns = FilesystemSpawnVolumes::new(Arc::clone(&volumes));
         let spawns = Arc::new(match cuts {
-            Some(cuts) => spawns.with_fork_cuts(cuts),
+            Some(cuts) => spawns.with_volume_resources(cuts),
             None => spawns,
         });
         let handler = Arc::new(
             AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
                 .map_err(|_| Error::Record("agent handler manifest"))?
-                .with_spawn_volumes(spawns.clone()),
+                .with_spawn_volumes(spawns.clone())
+                .with_close(),
         );
+        let composer = Arc::new(crate::agent::AgentComposer::new(Some(spawns.clone()), None));
         let agents = AgentHost::hosting(
             stream,
             within.clone(),
             handler.clone(),
             turns.clock.clone(),
-            Some(spawns.clone()),
+            Some(composer.clone()),
         )?;
         // The host pins roots to the same creation reader these turns use.
         let agents = Arc::new(match templates {
@@ -399,7 +401,7 @@ where
             volumes,
             clock: turns.clock,
             handler,
-            spawns,
+            composer,
         })
     }
 
@@ -415,7 +417,7 @@ where
         self.agents = Arc::new(self.agents.rehosted(
             handler.clone(),
             self.clock.clone(),
-            Some(self.spawns.clone()),
+            Some(self.composer.clone()),
         )?);
         self.handler = handler;
         Ok(self)

@@ -455,11 +455,12 @@ impl LocalHarness {
         // Only native execution has checkouts; a configured volume has none.
         #[cfg(any(test, feature = "native-execution"))]
         let cuts = self.workspace().map(|workspace| {
-            Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(workspace)))
-                as Arc<dyn crate::filesystem::ForkCuts>
+            Arc::new(crate::local::workspace::LocalVolumeResources(Arc::clone(
+                workspace,
+            ))) as Arc<dyn crate::filesystem::VolumeResources>
         });
         #[cfg(not(any(test, feature = "native-execution")))]
-        let cuts: Option<Arc<dyn crate::filesystem::ForkCuts>> = None;
+        let cuts: Option<Arc<dyn crate::filesystem::VolumeResources>> = None;
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
                 &super::Custody {
