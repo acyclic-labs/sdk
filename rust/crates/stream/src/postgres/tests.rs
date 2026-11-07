@@ -1,5 +1,5 @@
 use super::*;
-use crate::replicated::{CommandJournal as _, JournalNotifications as _, ReplayObserver};
+use crate::replicated::{JournalNotifications as _, ReplayObserver};
 use futures::FutureExt as _;
 
 async fn append(provider: &PostgresStream, path: &str) -> Result<(), StreamError> {
