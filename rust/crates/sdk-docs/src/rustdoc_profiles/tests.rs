@@ -104,9 +104,11 @@ fn historical_defaults_cover_features_without_changing_current_profiles() {
         historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
     assert!(historical.iter().all(|profile| profile.default_features));
     assert!(historical.iter().any(|profile| profile.features.is_empty()));
-    assert!(historical
-        .iter()
-        .any(|profile| profile.features == BTreeSet::from(["codec".into(), "json".into()])));
+    assert!(
+        historical
+            .iter()
+            .any(|profile| profile.features == BTreeSet::from(["codec".into(), "json".into()]))
+    );
     assert!(historical.iter().any(|profile| profile.features
         == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
     assert!(
@@ -125,9 +127,11 @@ fn historical_docs_rs_policy_is_required_and_validated() {
         serde_json::json!({"docs":{"rs":{"all-features":true,"no-default-features":true}}});
     let profiles =
         historical_profiles_for_package(&metadata, "feature-rich", "host", &targets).unwrap();
-    assert!(profiles
-        .iter()
-        .any(|profile| profile.default_features && profile.features.is_empty()));
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.default_features && profile.features.is_empty())
+    );
     assert!(profiles.iter().any(|profile| !profile.default_features
         && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
     metadata.packages[0].metadata = serde_json::json!({"docs":{"rs":{"features":["absent"]}}});
@@ -151,12 +155,16 @@ fn feature_profiles_include_local_closure_and_all_features() {
         &BTreeSet::from(["host".into()]),
     )
     .unwrap();
-    assert!(profiles
-        .iter()
-        .any(|profile| profile.default_features && profile.features.is_empty()));
-    assert!(profiles
-        .iter()
-        .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()])));
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.default_features && profile.features.is_empty())
+    );
+    assert!(
+        profiles
+            .iter()
+            .any(|profile| profile.features == BTreeSet::from(["json".into(), "codec".into()]))
+    );
     assert!(profiles.iter().any(|profile| profile.default_features
         && profile.features == BTreeSet::from(["codec".into(), "json".into(), "wasm".into()])));
 }
@@ -224,6 +232,21 @@ fn invalid_feature_fails_before_cargo_runs() {
 
 #[test]
 fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
+    if std::env::var_os("SDK_DOCS_PROFILE_STDERR_CHILD").is_none() {
+        let thread = std::thread::current();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", thread.name().unwrap(), "--nocapture"])
+            .env("SDK_DOCS_PROFILE_STDERR_CHILD", "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("profile-owner compiler diagnostic witness"),
+            "successful compiler diagnostics must reach the producer's stderr: {stderr}"
+        );
+        return;
+    }
     crate::with_rustdoc_cache(|| {
         let lookups_before = super::execution::rustup_lookup_count();
         let fixture = tempfile::tempdir().unwrap();
@@ -239,6 +262,7 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         fs::write(
         root.join("build.rs"),
         r#"fn main() {
+    println!("cargo:warning=profile-owner compiler diagnostic witness");
     assert_eq!(std::env::var("RUSTUP_TOOLCHAIN").unwrap(), format!("nightly-2026-07-01-{}", std::env::var("HOST").unwrap()));
     let compiler = std::process::Command::new(std::env::var_os("RUSTC").unwrap())
         .arg("--version").output().unwrap();
@@ -254,12 +278,14 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         )
         .unwrap();
         let cargo = PathBuf::from(env!("CARGO"));
-        assert!(Command::new(&cargo)
-            .args(["generate-lockfile", "--offline", "--manifest-path"])
-            .arg(root.join("Cargo.toml"))
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new(&cargo)
+                .args(["generate-lockfile", "--offline", "--manifest-path"])
+                .arg(root.join("Cargo.toml"))
+                .status()
+                .unwrap()
+                .success()
+        );
         let metadata = load_metadata(
             root.join("Cargo.toml"),
             CargoExecutionContext {
@@ -325,9 +351,11 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
         match browser_result {
             Ok(observed) => {
                 assert_eq!(observed.target, browser.target);
-                assert!(local_item_names(&browser_receipt)
-                    .unwrap()
-                    .contains("Witness"));
+                assert!(
+                    local_item_names(&browser_receipt)
+                        .unwrap()
+                        .contains("Witness")
+                );
             }
             Err(ProfileError::UnsupportedTarget { target }) => {
                 assert_eq!(target, browser.target);
@@ -498,9 +526,11 @@ fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
     assert!(items.iter().all(|item| {
         item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"
     }));
-    assert!(items
-        .iter()
-        .any(|item| { item.key.path.contains("Browser") || item.key.path.contains("browser") }));
+    assert!(
+        items
+            .iter()
+            .any(|item| { item.key.path.contains("Browser") || item.key.path.contains("browser") })
+    );
 }
 
 #[test]
@@ -617,14 +647,16 @@ fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
         .iter()
         .find(|entry| entry.path.starts_with("acyclic_fs_napi::Native") && entry.kind == "struct");
     let native_binding = native_binding.expect("binding-only type should be projected");
-    assert!(native_binding
-        .profiles
-        .iter()
-        .any(|profile| profile.rustdoc_package == "acyclic-fs-napi"
-            && profile.published_owner == "acyclic-fs"
-            && profile.rustdoc_version == "0.2.0"
-            && profile.published_version == "0.2.0"
-            && profile.capabilities == vec!["napi", "native"]));
+    assert!(
+        native_binding
+            .profiles
+            .iter()
+            .any(|profile| profile.rustdoc_package == "acyclic-fs-napi"
+                && profile.published_owner == "acyclic-fs"
+                && profile.rustdoc_version == "0.2.0"
+                && profile.published_version == "0.2.0"
+                && profile.capabilities == vec!["napi", "native"])
+    );
 }
 
 #[test]
