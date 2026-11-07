@@ -80,7 +80,8 @@ switch ($Lane) {
             cargo run --locked -p acyclic-actors --example actors-http-routes -- `
                 typescript/packages/actors/src/generated/actors-service.ts
             try {
-                cargo nextest run @WorkspaceArgs --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
+                # All-target Clippy and contract generation qualify ordinary examples.
+                cargo nextest run @WorkspaceArgs --all-features --locked --tests --profile ci --test-threads "$env:RUST_TEST_THREADS"
             } finally {
                 $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
                 if (Test-Path -LiteralPath $junit) {
