@@ -162,7 +162,15 @@ fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
     let mut original = Work::default();
     let index = CompiledPrefixIndex::from_entries(
         vec![b"root/a".to_vec(), b"root/b".to_vec()],
-        |entry: &Vec<u8>| if changed.get() { &[] } else { entry.as_slice() },
+        |entry: &Vec<u8>| {
+            if changed.get() {
+                // Retain the real first edge so lookup reaches the original
+                // shared label, rather than refusing an empty edge first.
+                entry.get(..1).unwrap_or_default()
+            } else {
+                entry.as_slice()
+            }
+        },
         &mut original,
     )
     .unwrap();
