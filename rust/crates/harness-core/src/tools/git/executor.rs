@@ -1,16 +1,44 @@
 use super::*;
 
-impl<F, Fut, P, O, S> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F, P, O, S>
+impl<P, O, S> GitFilesystemExecutor for WorkspaceGitExecutor<'_, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     type Error = Error;
 
-    async fn validate(&self) -> Result<(), Self::Error> {
+    fn validate(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<(), Self::Error>> {
+        acyclic_stream::erase_provider_future(move || self.validate_lease())
+    }
+
+    fn validate_merge_resolution<'a>(
+        &'a self,
+        operation: OperationId,
+        action: &'a GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
+        acyclic_stream::erase_provider_future(move || {
+            self.validated_merge_resolution(operation, action, tree)
+        })
+    }
+
+    fn execute<'a>(
+        &'a self,
+        operation_id: OperationId,
+        action: &'a GitFilesystemAction,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
+        acyclic_stream::erase_provider_future(move || self.perform(operation_id, action))
+    }
+}
+
+impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
+where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
+{
+    pub(super) async fn validate_lease(&self) -> Result<(), Error> {
         (self.before_effect)().await?;
         self.access.require(&self.current).await?;
         let Some(lease) = &self.lease else {
@@ -37,13 +65,13 @@ where
         }
     }
 
-    async fn validate_merge_resolution(
+    async fn validated_merge_resolution(
         &self,
         operation: OperationId,
         action: &GitFilesystemAction,
         tree: GitTreeRef,
-    ) -> Result<GitFilesystemResult, Self::Error> {
-        self.validate().await?;
+    ) -> Result<GitFilesystemResult, Error> {
+        self.validate_lease().await?;
         let GitFilesystemAction::Join {
             target_tree,
             tracked_paths,
@@ -103,18 +131,18 @@ where
         )
         .await
         .map_err(Error::from)?;
-        self.validate().await?;
+        self.validate_lease().await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(tree),
             tracked_paths: Some(tracked_paths),
         })
     }
 
-    async fn execute(
+    async fn perform(
         &self,
         operation_id: OperationId,
         action: &GitFilesystemAction,
-    ) -> Result<GitFilesystemResult, Self::Error> {
+    ) -> Result<GitFilesystemResult, Error> {
         match action {
             GitFilesystemAction::CaptureCommit {
                 workspace_tree,
@@ -162,9 +190,12 @@ where
                 rebase,
                 tracked_paths: tracked,
             } => {
-                // The join is the deepest facade action; its state lives on
-                // the heap so it never sizes every other command's future.
-                Box::pin(self.join(operation_id, *target_tree, *source, *rebase, tracked)).await
+                // The join is the deepest facade action; it is erased so it
+                // never sizes, or deepens, every other command's future.
+                acyclic_stream::erase_provider_future(|| {
+                    self.join(operation_id, *target_tree, *source, *rebase, tracked)
+                })
+                .await
             }
             GitFilesystemAction::ApplyCommit {
                 base,

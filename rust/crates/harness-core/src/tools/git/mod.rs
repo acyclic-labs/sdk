@@ -125,17 +125,27 @@ mod path;
 use path::workspace_path_argument;
 
 use crate::Error;
+
+/// Revalidates task ownership before an effect. It is erased so the command
+/// engine is one type, whatever guard a caller supplies: neither the engine's
+/// layout nor its `Send` proof grows with the caller's future.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type EffectGuard<'a> =
+    dyn Fn() -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> + Send + Sync + 'a;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type EffectGuard<'a> =
+    dyn Fn() -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> + 'a;
+
 /// Executes the full git facade against a managed lazy workspace.
 pub(crate) struct WorkspaceGitExecutor<
     'a,
-    F,
     P: ?Sized + 'static = DefaultProvider,
     O: 'static = DefaultObjects,
     S = DefaultStore,
 > {
     pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Revalidates task ownership before every effect.
-    pub before_effect: &'a F,
+    pub before_effect: &'a EffectGuard<'a>,
     /// Shared local filesystem.
     pub fs: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
     /// Durable compatibility and lineage store.
