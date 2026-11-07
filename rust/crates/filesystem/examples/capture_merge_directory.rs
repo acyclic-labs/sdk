@@ -1,10 +1,11 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
+use acyclic_fs::facade::{FileMetadata, MetadataField};
 use acyclic_fs::foundation::OperationId;
 use acyclic_fs::workspace::{ApplyOptions, ForkOptions, MergeDirectorySection};
 use acyclic_fs::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, PublicationPermit, WorkBudget,
-    WorkspaceError,
+    CancellationToken, Fs, IdempotencyKey, LocalOptions, OperationReceipt, PublicationPermit,
+    WorkBudget, WorkCounters, WorkspaceError,
 };
 use std::{error::Error, num::NonZeroU32};
 
@@ -37,7 +38,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         .create_workspace("merge-main", work, &cancellation)
         .await?
         .value;
-    for path in ["/binary", "/deleted"] {
+    for path in ["/binary", "/deleted", "/mode"] {
         main.write_text(path, "base\0").await?;
     }
     let mut source = main.clone();
@@ -60,8 +61,46 @@ async fn capture() -> Result<(), Box<dyn Error>> {
     main.write_text("/deleted", "changed\0").await?;
     source.remove("/deleted").await?;
     source.write_text("/clean", "retained clean body").await?;
+    main.write_text("/kind", "ours").await?;
+    for (workspace, mode, create_kind) in [(&main, 0o700, false), (&source, 0o770, true)] {
+        let mut transaction = workspace
+            .begin_transaction(IdempotencyKey::new(), work, &cancellation)
+            .await?
+            .value;
+        transaction
+            .set_metadata(
+                "/mode",
+                FileMetadata {
+                    posix_mode: MetadataField::Value(mode),
+                    ..FileMetadata::default()
+                },
+                work,
+                &cancellation,
+            )
+            .await?;
+        if create_kind {
+            transaction
+                .create_directory("/kind", work, &cancellation)
+                .await?;
+        }
+        transaction
+            .commit::<WorkspaceError, _, _>(
+                None,
+                PublicationPermit::Unrestricted,
+                work,
+                &cancellation,
+                |_| {
+                    std::future::ready(Ok(OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await?;
+    }
     let plan = source
         .join_into(&main)
+        .git_metadata()
         .plan(work, &cancellation)
         .await?
         .value;
