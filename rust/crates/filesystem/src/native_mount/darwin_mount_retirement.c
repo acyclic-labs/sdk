@@ -9,6 +9,26 @@ struct retirement_result {
   int dissent;
 };
 
+/* Keep the original DAReturn separately: errno describes the refusal class,
+   not whether the authenticated kernel mount has physically detached. */
+static int retirement_error(DAReturn status) {
+  switch (status) {
+    case kDAReturnSuccess: return 0;
+    case kDAReturnBusy:
+    case kDAReturnExclusiveAccess: return EBUSY;
+    case kDAReturnBadArgument: return EINVAL;
+    case kDAReturnNoResources: return ENOMEM;
+    case kDAReturnNotFound:
+    case kDAReturnNotMounted: return ENOENT;
+    case kDAReturnNotPermitted:
+    case kDAReturnNotPrivileged: return EACCES;
+    case kDAReturnNotReady: return ENXIO;
+    case kDAReturnNotWritable: return EROFS;
+    case kDAReturnUnsupported: return ENOTSUP;
+    default: return EIO;
+  }
+}
+
 static void retirement_completed(DADiskRef disk, DADissenterRef dissent, void *context) {
   (void)disk;
   struct retirement_result *result = context;
@@ -42,7 +62,7 @@ int acyclic_fs_darwin_retire_mount(const char *destination, int *dissent) {
       DADiskUnmount(disk, kDADiskUnmountOptionForce, retirement_completed, &result);
       while (!result.completed) CFRunLoopRunInMode(mode, DBL_MAX, true);
       *dissent = result.dissent;
-      error = result.dissent == 0 ? 0 : EACCES;
+      error = retirement_error(result.dissent);
     }
     DASessionUnscheduleFromRunLoop(session, loop, mode);
     CFRelease(disk);
