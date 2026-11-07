@@ -59,10 +59,7 @@ impl Publications {
             .filter_map(|path| self.follows.get(&path).ok().flatten())
             .collect::<Vec<_>>();
         for index in indices {
-            index
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .invalidate();
+            crate::follow_index::FollowIndex::invalidate(&index);
         }
     }
     pub(super) fn publish(&self) -> Result<(), StreamError> {

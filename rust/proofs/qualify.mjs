@@ -15,6 +15,22 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "follow-index-reentry": [
+    "rust/crates/stream/src/follow_index.rs", "acyclic-stream",
+    "memory::tests::parking::publication_wakers_can_cancel_other_follows",
+    "follow wake retained the index lock", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/follow-index-reentry/locked.patch", label: "notification-under-index-lock", diagnostic: "follow wake retained the index lock" },
+        { patch: "rust/proofs/follow-index-reentry/omitted.patch", label: "missing-publication-wake", diagnostic: "publication left its follow parked" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::parking::publication_wakers_can_cancel_other_follows",
+        "follow_index::tests::unrelated_publications_never_notify_filtered_interests",
+        "follow_index::tests::interval_index_stays_balanced_and_matches_a_reference_after_removal"],
+      completed: ["3 passed; 0 failed"],
+    },
+  ],
   "snapshot-waker-retirement": [
     "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
     "local_follow_loom::snapshot_consumer_departures_return_every_reservation",

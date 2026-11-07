@@ -61,10 +61,7 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    index
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .created(*tail);
+                    crate::follow_index::FollowIndex::created(&index, *tail);
                 }
             }
             for (path, (records, tail)) in &self.keys.records {
@@ -77,10 +74,7 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    index
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .publish(records, *tail);
+                    crate::follow_index::FollowIndex::publish(&index, records, *tail);
                 }
             }
         }

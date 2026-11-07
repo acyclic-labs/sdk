@@ -114,11 +114,7 @@ impl MemoryStream {
             if let Some(signals) = state.signals.get(&path)? {
                 let tail = state.paths.get(&path).map_or(0, |path| path.tail);
                 signals.changed.send_replace(tail);
-                signals
-                    .follows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .created(tail);
+                crate::follow_index::FollowIndex::created(&signals.follows, tail);
             }
         }
         self.applied(&state);

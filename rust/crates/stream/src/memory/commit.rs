@@ -894,11 +894,7 @@ fn install_namespace(
             if let Some(signals) = state.signals.get(&path)? {
                 let tail = state.paths.get(&path).map_or(0, |path| path.tail);
                 signals.changed.send_replace(tail);
-                signals
-                    .follows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .created(tail);
+                crate::follow_index::FollowIndex::created(&signals.follows, tail);
             }
         }
         if matches!(fact, CommittedMutation::Fork(_)) {
@@ -915,11 +911,7 @@ fn install_namespace(
                 if let Some(signals) = state.signals.get(&path)? {
                     let tail = stream.tail;
                     signals.changed.send_replace(tail);
-                    signals
-                        .follows
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .created(tail);
+                    crate::follow_index::FollowIndex::created(&signals.follows, tail);
                 }
             }
         }
@@ -935,11 +927,7 @@ fn install_namespace(
         let notify = true;
         if notify && let Some(signals) = state.signals.get(path)? {
             signals.changed.send_replace(tail);
-            signals
-                .follows
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .publish(fact_records(fact), tail);
+            crate::follow_index::FollowIndex::publish(&signals.follows, fact_records(fact), tail);
         }
         state.record_count += fact_records(fact).len();
         state.payload_bytes += fact_records(fact)

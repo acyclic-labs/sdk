@@ -1,6 +1,98 @@
 use super::*;
+use futures::Stream as _;
 use futures::TryFutureExt as _;
 use std::task::{Context, Waker};
+
+#[tokio::test]
+async fn publication_wakers_can_cancel_other_follows() {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::task::Wake;
+
+    struct CancelFollow {
+        index: Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
+        victim: Mutex<Option<crate::FollowStream>>,
+        wakes: AtomicUsize,
+    }
+    impl Wake for CancelFollow {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            // Fail before taking the registration's lock: the original source
+            // would deadlock while synchronously dropping this real follow.
+            assert!(
+                self.index.try_lock().is_ok(),
+                "follow wake retained the index lock"
+            );
+            let victim = self.victim.lock().unwrap().take();
+            drop(victim);
+            self.wakes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for existing in [false, true] {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("cancel-during-publication").unwrap();
+        let request = || AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"record").into()],
+            if_tail: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
+        };
+        if existing {
+            provider.append(request()).await.unwrap();
+        }
+        let mut request_follow = crate::FollowRequest::new(path.clone(), u64::from(existing));
+        request_follow.when_absent = crate::WhenAbsent::Wait;
+        let victim = provider.follow(request_follow.clone()).await.unwrap();
+        let mut followed = provider.follow(request_follow).await.unwrap();
+        let index = provider
+            .state
+            .read()
+            .await
+            .signals
+            .get(&path)
+            .unwrap()
+            .unwrap()
+            .follows;
+        let observer = Arc::new(CancelFollow {
+            index: Arc::clone(&index),
+            victim: Mutex::new(Some(victim)),
+            wakes: AtomicUsize::new(0),
+        });
+        let wake = Waker::from(Arc::clone(&observer));
+        assert!(
+            std::pin::Pin::new(&mut followed)
+                .poll_next(&mut Context::from_waker(&wake))
+                .is_pending()
+        );
+        assert_eq!(observer.wakes.load(Ordering::SeqCst), 0);
+        provider.append(request()).await.unwrap();
+        assert!(
+            observer.wakes.load(Ordering::SeqCst) > 0,
+            "publication left its follow parked"
+        );
+        assert!(observer.victim.lock().unwrap().is_none());
+        assert!(
+            matches!(std::pin::Pin::new(&mut followed).poll_next(&mut Context::from_waker(Waker::noop())),
+            std::task::Poll::Ready(Some(Ok(crate::FollowUpdate::Record(record)))) if record.sequence == u64::from(existing))
+        );
+        drop(followed);
+        assert!(
+            provider
+                .state
+                .read()
+                .await
+                .signals
+                .get(&path)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
 
 #[tokio::test]
 async fn cancelled_missing_follows_release_path_registrations() {
