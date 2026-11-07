@@ -24,7 +24,13 @@ const claims = {
     "rust/crates/stream/src/query_sync/watch.rs", "acyclic-stream-publication-models",
     "watch_publication_cancellation_and_loss_match_tokio",
     "unmodified watch publication woke a parked reader", ["--features", "model-checking"],
-    { target: ["--test", "publication"], loom: true },
+    {
+      target: ["--test", "publication"], loom: true,
+      mutations: [
+        { patch: "rust/proofs/conditional-watch-parity/mutation.patch", label: "mutated", diagnostic: "unmodified watch publication woke a parked reader" },
+        { patch: "rust/proofs/conditional-watch-parity/owner.patch", label: "nonfinal-publisher-drop", diagnostic: "nonfinal watch publisher drop woke a parked reader" },
+      ],
+    },
   ],
   "journal-cancellation-progress": [
     "rust/crates/stream/src/replicated.rs", "acyclic-cloudflare-conformance", "",

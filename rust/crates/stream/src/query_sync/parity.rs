@@ -213,10 +213,17 @@ pub(crate) fn watch_progress() {
     macro_rules! progress {
         ($channel:path) => {{
             let (sender, mut receiver) = $channel(0u8);
+            let spare = sender.clone();
             let flag = Arc::new(Flag(AtomicBool::new(false)));
             let waker = Waker::from(Arc::clone(&flag));
             let mut cx = Context::from_waker(&waker);
             let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            drop(spare);
+            assert!(
+                !flag.0.load(Ordering::SeqCst),
+                "nonfinal watch publisher drop woke a parked reader"
+            );
             assert!(changed.as_mut().poll(&mut cx).is_pending());
             assert!(!sender.send_if_modified(|_| false));
             assert!(

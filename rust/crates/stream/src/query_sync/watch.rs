@@ -145,6 +145,9 @@ impl<T> Drop for Sender<T> {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             value.senders -= 1;
+            if value.senders != 0 {
+                return;
+            }
             std::mem::take(&mut value.waiters)
         };
         for waiter in waiters {
