@@ -170,3 +170,50 @@ proptest::proptest! {
         });
     }
 }
+
+/// This is the original Change used by BrowserPort's detached changed future,
+/// not a parallel model. No wall-clock timeout or retry can hide a lost wake.
+#[test]
+fn producer_loss_terminates_detached_subscriptions() {
+    for before_poll in [false, true] {
+        loom::model(move || {
+            let producer = Change::new();
+            let last = producer.clone();
+            let mut subscription = producer.subscribe().unwrap();
+            let mut cancelled = producer.subscribe().unwrap();
+            let (count, wake) = probe();
+            let mut context = Context::from_waker(&wake);
+            assert!(cancelled.poll_changed(&mut context).is_pending());
+            drop(cancelled);
+            drop(producer);
+            // An unrelated clone retiring must not close a living producer.
+            assert!(subscription.poll_changed(&mut context).is_pending());
+            let mut late = last.subscribe().unwrap();
+            let mut wait = Box::pin(subscription.changed());
+            if before_poll {
+                assert!(wait.as_mut().poll(&mut context).is_pending());
+            }
+            let retiring = loom::thread::spawn(move || drop(last));
+            let observed = wait.as_mut().poll(&mut context);
+            retiring.join().unwrap();
+            if observed.is_pending() {
+                assert!(
+                    count.count.load(Ordering::SeqCst) > 0,
+                    "final change producer dropped without waking its subscription"
+                );
+                assert_eq!(
+                    wait.as_mut().poll(&mut context),
+                    Poll::Ready(Err(StreamError::Unavailable)),
+                    "detached subscription retained a vanished change producer"
+                );
+            } else {
+                assert_eq!(observed, Poll::Ready(Err(StreamError::Unavailable)));
+            }
+            assert_eq!(
+                Box::pin(late.changed()).as_mut().poll(&mut context),
+                Poll::Ready(Err(StreamError::Unavailable)),
+                "unpolled subscription retained a vanished change producer"
+            );
+        });
+    }
+}
