@@ -1943,7 +1943,7 @@ where
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxFuture<'a, Result<Option<crate::agent::Phase>>> {
+    ) -> BoxFuture<'a, Result<Option<crate::agent::Settlement>>> {
         Box::pin(async move {
             match crate::agent::settled(&self.stream, &self.within, child).await {
                 Ok(settled) => Ok(settled),
@@ -1955,14 +1955,11 @@ where
         })
     }
 
-    fn answer<'a>(&'a self, child: &'a AgentPath) -> BoxFuture<'a, Result<Option<String>>> {
+    fn answer<'a>(&'a self, child: &'a AgentPath, sequence: u64) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let Some(entry) = crate::agent::answer(&*self.stream, child)
+            let entry = crate::agent::answer(&*self.stream, child, sequence)
                 .await
-                .map_err(agent_error)?
-            else {
-                return Ok(None);
-            };
+                .map_err(agent_error)?;
             let external = [entry.output];
             let authority = agent_authority(
                 &self.issuer,
@@ -1984,7 +1981,7 @@ where
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-            Ok(Some(output.text))
+            Ok(output.text)
         })
     }
 }

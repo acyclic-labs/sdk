@@ -1475,26 +1475,15 @@ async fn every_request_retains_the_roster_across_history_and_compaction_boundari
 /// request holds the parent's settled turn, whose output the parent staged on
 /// its own private volume.
 #[tokio::test]
-async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Result {
+async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_turns() -> Result {
     let parent = AgentPath::root(&id(5));
-    let child_intent = intent("child");
-    let child = parent.child(&AgentId::derive(&parent.id(), child_intent.as_str()))?;
     let stream = Arc::new(MemoryStream::default());
     let model = Arc::new(ScriptedModelProvider::new([
         ScriptedTurn::Text("parent answer".into()),
         ScriptedTurn::Text("child answer".into()),
+        ScriptedTurn::Text("later child answer".into()),
     ]));
     let (host, binding) = private_in(&stream, &parent).await?;
-    let own = VolumeRef::new(
-        binding.volume.provider().clone(),
-        "agent-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
-            child.id().to_bytes(),
-        )),
-        &mut None,
-    )?;
-    host.create_volume(&own).await?;
     let turn_host = Arc::new(FilesystemTurnHost::new(
         stream.clone(),
         within(),
@@ -1519,45 +1508,67 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     let parent_state = deliver(&root_host, &parent, requested("p1", &parent)).await?;
     assert_eq!(parent_state.phase, Phase::Idle);
     assert_eq!(parent_state.conversation_tail, 1);
-    let forked = ForkAdopted {
-        profile: None,
-        agent: child.id(),
-        parent: Some(parent.clone()),
-        forked_at: 2,
-        conversation_tail: 1,
-        checkpoint: None,
-        volumes: vec![VolumeBinding {
-            name: PRIVATE_VOLUME.into(),
-            volume: own,
-        }],
-        brief: None,
-        policy: None,
-    };
-    let fork = spawn(&parent, &child_intent, 2, forked.clone())?;
-    assert_eq!(fork.child, child);
-    assert!(matches!(
-        submit(&*stream, fork.request).await?,
-        Submitted::Committed(_)
-    ));
-    let state = AgentState::adopted(child.clone(), &forked).expect("adopts");
-    let settled = step(
-        &ExecutorDriver::new(turn_host),
-        &child,
-        Some(state),
-        (3, 0),
-        Wake::Inbox {
-            sequence: 3,
-            record: InboxRecord::ApprovalRequested(ApprovalRequested {
-                child: child.clone(),
-                id: intent("c1"),
-            }),
+    let brief = answer(&*stream, &parent, 0).await?.output;
+    let request = InboxRecord::Spawn(SpawnRequest {
+        by: super::user(),
+        id: intent("spawn"),
+        brief: Box::new(brief),
+        profile: CreationConfig {
+            context: SpawnContext::Fork,
+            template: None,
+            peers: Default::default(),
         },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(settled.state.phase, Phase::Idle);
+        history: None,
+    });
+    let Delivered::Committed { inbox } = root_host.send(&parent, &super::user(), &request).await?
+    else {
+        return Err("spawn request was not committed".into());
+    };
+    let (_, child) = requested_child(&parent, inbox)?;
+    root_host.drain(&parent).await?;
+    assert_eq!(settled(&stream, &within(), &child).await?, None);
+    root_host.drain(&child).await?;
+    let observed = settled(&stream, &within(), &child)
+        .await?
+        .ok_or("child did not settle its first answer")?;
+    let position = observed.answer.ok_or("child omitted its own answer")?;
+    assert_eq!(position, 1, "the child's answer follows inherited context");
+    let first = answer(&*stream, &child, position).await?;
+    assert_eq!(observed.phase, Phase::Idle);
+
+    // Pause the observer after its actor cut. A reopened host commits another
+    // real stock-executor turn before the observer loads the selected output.
+    let reopened = committing(&stream, &host, ExecutorDriver::new(turn_host))?;
+    assert_eq!(
+        deliver(&reopened, &child, requested("c2", &child))
+            .await?
+            .phase,
+        Phase::Idle
+    );
+    let counted = acyclic_stream::testing::Counted::new(stream.clone());
+    let ledger = counted.ledger();
+    let sample = ledger.start_sample();
+    assert_eq!(
+        answer(&counted, &child, position).await?,
+        first,
+        "a later child turn substituted the original observed answer"
+    );
+    let requests = sample.finish().requests;
+    assert_eq!(requests.data(), 1, "one selected immutable entry read");
+    assert_eq!(requests.control(), 0, "no status or live-tail discovery");
+    let latest = settled(&stream, &within(), &child)
+        .await?
+        .and_then(|settled| settled.answer)
+        .ok_or("child did not settle its second answer")?;
+    assert_ne!(latest, position);
+    assert!(matches!(
+        answer(&counted, &child, latest + 1).await,
+        Err(Error::Record("committed conversation entry is missing"))
+    ));
+    assert!(matches!(answer(&*stream, &child, latest).await?.input,
+        TurnInput::ApprovalRequested { id, .. } if id == intent("c2")));
     let requests = model.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(
         requests[1]
             .messages
