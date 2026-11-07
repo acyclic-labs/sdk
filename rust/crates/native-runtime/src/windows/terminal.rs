@@ -13,6 +13,7 @@ use windows_sys::Win32::{
             GetConsoleOutputCP, INPUT_RECORD, KEY_EVENT, PeekConsoleInputW, ReadConsoleInputW,
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
+        IO::CancelSynchronousIo,
         Threading::{SetEvent, WaitForMultipleObjects},
     },
 };
@@ -117,6 +118,16 @@ pub fn console_break() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// Request cancellation of a worker's synchronous I/O. The caller must retain
+/// the original worker and wait for its completion acknowledgement: this request
+/// alone does not fence a submission that has not reached the OS yet.
+pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
+    // SAFETY: JoinHandle retains the original thread handle throughout this call.
+    // Completion, including a raced or unsuccessful request, belongs to the
+    // owner's acknowledgement path rather than the cancellation return value.
+    let _ = unsafe { CancelSynchronousIo(worker.as_raw_handle() as HANDLE) };
 }
 
 /// Read VT bytes directly into the caller's buffer. A native call consumes at
