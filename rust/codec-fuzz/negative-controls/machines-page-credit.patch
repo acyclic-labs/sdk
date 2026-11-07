@@ -1,0 +1,14 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -39,9 +39,7 @@
+         .as_ref()
+         .map(|value| decode_machine(Some(value)))
+         .transpose()?;
+-    if machines.len()
+-        > usize::try_from(limit).map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
+-        || next.is_some() && next != machines.last().map(|value| value.id)
++    if next.is_some() && next != machines.last().map(|value| value.id)
+     {
+         return Err(ProviderError::Rejected(
+             "server returned a malformed machine cursor".into(),

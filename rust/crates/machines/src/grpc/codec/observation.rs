@@ -1,5 +1,64 @@
 use super::*;
 
+impl From<MachineState> for wire::MachineStatus {
+    fn from(value: MachineState) -> Self {
+        match value {
+            MachineState::Starting => Self::Starting,
+            MachineState::Running => Self::Running,
+            MachineState::Suspending => Self::Suspending,
+            MachineState::Suspended => Self::Suspended,
+            MachineState::Waking => Self::Waking,
+            MachineState::Destroying => Self::Destroying,
+            MachineState::Destroyed => Self::Destroyed,
+            MachineState::Failed => Self::Failed,
+            MachineState::Indeterminate => Self::Indeterminate,
+            MachineState::Offline => Self::Offline,
+        }
+    }
+}
+
+impl From<MachineEvent> for wire::MachineEvent {
+    fn from(event: MachineEvent) -> Self {
+        let mut value = Self {
+            machine: Some(encode_machine(event.machine)),
+            sequence: event.sequence,
+            observed_at_unix_ms: event.observed_at_unix_ms,
+            ..Default::default()
+        };
+        match event.fact {
+            EventFact::State(state) => {
+                value.kind = wire::EventKind::State as i32;
+                value.state = wire::MachineStatus::from(state) as i32;
+            }
+            EventFact::Pressure(pressure) => {
+                value.kind = wire::EventKind::Pressure as i32;
+                value.pressure = match pressure {
+                    Pressure::CustomerBudget => wire::PressureKind::CustomerBudget,
+                    Pressure::MachineLimit => wire::PressureKind::MachineLimit,
+                    Pressure::ServiceSaturation => wire::PressureKind::ServiceSaturation,
+                } as i32;
+            }
+            EventFact::CapacityChanged => value.kind = wire::EventKind::Capacity as i32,
+        }
+        value
+    }
+}
+
+impl TryFrom<MachinePage> for wire::MachinePage {
+    type Error = ProviderError;
+
+    fn try_from(value: MachinePage) -> Result<Self, Self::Error> {
+        Ok(Self {
+            machines: value
+                .machines
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+            next: value.next.map(encode_machine),
+        })
+    }
+}
+
 pub(in super::super) fn decode_machine_page(
     page: wire::MachinePage,
     after: Option<MachineId>,
@@ -46,69 +105,10 @@ impl TryFrom<MachineObservation> for wire::MachineState {
     type Error = ProviderError;
 
     fn try_from(value: MachineObservation) -> Result<Self, Self::Error> {
-        let contract = value.contract;
-        let platform = contract.platform;
         Ok(Self {
             machine: Some(encode_machine(value.id)),
-            status: (match value.state {
-                MachineState::Starting => wire::MachineStatus::Starting,
-                MachineState::Running => wire::MachineStatus::Running,
-                MachineState::Suspending => wire::MachineStatus::Suspending,
-                MachineState::Suspended => wire::MachineStatus::Suspended,
-                MachineState::Waking => wire::MachineStatus::Waking,
-                MachineState::Destroying => wire::MachineStatus::Destroying,
-                MachineState::Destroyed => wire::MachineStatus::Destroyed,
-                MachineState::Failed => wire::MachineStatus::Failed,
-                MachineState::Indeterminate => wire::MachineStatus::Indeterminate,
-                MachineState::Offline => wire::MachineStatus::Offline,
-            }) as i32,
-            contract: Some(wire::MachineContract {
-                image: Some(encode_image(&contract.image)?),
-                selected_volume_ref: contract.selected_volume_ref,
-                capabilities: contract
-                    .capabilities
-                    .into_iter()
-                    .map(encode_capability)
-                    .collect(),
-                compatibility: Some(encode_compatibility(&contract.compatibility)?),
-                compatibility_revision: contract.compatibility_revision.to_vec(),
-                suspension: Some(encode_suspension(contract.suspension)?),
-                expiration: Some(encode_expiration(contract.expiration)?),
-                network_policy_digest: contract.network_policy_digest.to_vec(),
-                budgets: Some(wire::Budgets {
-                    spend_micros: contract.budgets.spend_micros,
-                    concurrency: contract.budgets.concurrency,
-                }),
-                platform: Some(wire::Platform {
-                    os: (match platform.os {
-                        OperatingSystem::Linux => wire::OperatingSystem::Linux,
-                        OperatingSystem::Macos => wire::OperatingSystem::Macos,
-                        OperatingSystem::Windows => wire::OperatingSystem::Windows,
-                    }) as i32,
-                    arch: (match platform.arch {
-                        Architecture::X64 => wire::Architecture::X64,
-                        Architecture::Arm64 => wire::Architecture::Arm64,
-                    }) as i32,
-                    device_kind: (match platform.device_kind {
-                        DeviceKind::VirtualMachine => wire::DeviceKind::VirtualMachine,
-                        DeviceKind::Container => wire::DeviceKind::Container,
-                        DeviceKind::Desktop => wire::DeviceKind::Desktop,
-                        DeviceKind::Server => wire::DeviceKind::Server,
-                    }) as i32,
-                    shell: (match platform.shell {
-                        Shell::Bash => wire::Shell::Bash,
-                        Shell::PowerShell => wire::Shell::Powershell,
-                    }) as i32,
-                    path_style: (match platform.path_style {
-                        PathStyle::Posix => wire::PathStyle::Posix,
-                        PathStyle::Windows => wire::PathStyle::Windows,
-                    }) as i32,
-                }),
-                lifecycle: (match contract.lifecycle {
-                    LifecycleClass::Provisioned => wire::LifecycleClass::Provisioned,
-                    LifecycleClass::Attached => wire::LifecycleClass::Attached,
-                }) as i32,
-            }),
+            status: wire::MachineStatus::from(value.state) as i32,
+            contract: Some(value.contract.try_into()?),
             endpoints: value
                 .endpoints
                 .into_iter()
@@ -121,6 +121,91 @@ impl TryFrom<MachineObservation> for wire::MachineState {
             created_at_unix_ms: value.created_at_unix_ms,
             changed_at_unix_ms: value.changed_at_unix_ms,
         })
+    }
+}
+
+impl TryFrom<MachineContract> for wire::MachineContract {
+    type Error = ProviderError;
+
+    fn try_from(contract: MachineContract) -> Result<Self, Self::Error> {
+        let platform = contract.platform;
+        Ok(Self {
+            image: Some(encode_image(&contract.image)?),
+            selected_volume_ref: contract.selected_volume_ref,
+            capabilities: contract
+                .capabilities
+                .into_iter()
+                .map(encode_capability)
+                .collect(),
+            compatibility: Some(encode_compatibility(&contract.compatibility)?),
+            compatibility_revision: contract.compatibility_revision.to_vec(),
+            suspension: Some(encode_suspension(contract.suspension)?),
+            expiration: Some(encode_expiration(contract.expiration)?),
+            network_policy_digest: contract.network_policy_digest.to_vec(),
+            budgets: Some(wire::Budgets {
+                spend_micros: contract.budgets.spend_micros,
+                concurrency: contract.budgets.concurrency,
+            }),
+            platform: Some(wire::Platform {
+                os: (match platform.os {
+                    OperatingSystem::Linux => wire::OperatingSystem::Linux,
+                    OperatingSystem::Macos => wire::OperatingSystem::Macos,
+                    OperatingSystem::Windows => wire::OperatingSystem::Windows,
+                }) as i32,
+                arch: (match platform.arch {
+                    Architecture::X64 => wire::Architecture::X64,
+                    Architecture::Arm64 => wire::Architecture::Arm64,
+                }) as i32,
+                device_kind: (match platform.device_kind {
+                    DeviceKind::VirtualMachine => wire::DeviceKind::VirtualMachine,
+                    DeviceKind::Container => wire::DeviceKind::Container,
+                    DeviceKind::Desktop => wire::DeviceKind::Desktop,
+                    DeviceKind::Server => wire::DeviceKind::Server,
+                }) as i32,
+                shell: (match platform.shell {
+                    Shell::Bash => wire::Shell::Bash,
+                    Shell::PowerShell => wire::Shell::Powershell,
+                }) as i32,
+                path_style: (match platform.path_style {
+                    PathStyle::Posix => wire::PathStyle::Posix,
+                    PathStyle::Windows => wire::PathStyle::Windows,
+                }) as i32,
+            }),
+            lifecycle: (match contract.lifecycle {
+                LifecycleClass::Provisioned => wire::LifecycleClass::Provisioned,
+                LifecycleClass::Attached => wire::LifecycleClass::Attached,
+            }) as i32,
+        })
+    }
+}
+
+impl TryFrom<CheckpointObservation> for wire::CheckpointState {
+    type Error = ProviderError;
+
+    fn try_from(value: CheckpointObservation) -> Result<Self, Self::Error> {
+        Ok(Self {
+            checkpoint: Some(encode_checkpoint(value.id)),
+            source: Some(encode_machine(value.source)),
+            contract: Some(value.contract.try_into()?),
+            forkable: value.forkable,
+            created_at_unix_ms: value.created_at_unix_ms,
+        })
+    }
+}
+
+impl From<OperationObservation> for wire::OperationState {
+    fn from(value: OperationObservation) -> Self {
+        Self {
+            operation: Some(encode_operation(value.id)),
+            status: match value.phase {
+                OperationPhase::Pending => wire::OperationStatus::Pending,
+                OperationPhase::Succeeded => wire::OperationStatus::Succeeded,
+                OperationPhase::Cancelled => wire::OperationStatus::Cancelled,
+                OperationPhase::Indeterminate => wire::OperationStatus::Indeterminate,
+                OperationPhase::Failed => wire::OperationStatus::Failed,
+            } as i32,
+            outcome: None,
+        }
     }
 }
 

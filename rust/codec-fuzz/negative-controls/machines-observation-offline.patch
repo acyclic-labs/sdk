@@ -1,0 +1,10 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -366,5 +366,5 @@
+         wire::MachineStatus::Failed => Ok(MachineState::Failed),
+         wire::MachineStatus::Indeterminate => Ok(MachineState::Indeterminate),
+-        wire::MachineStatus::Offline => Ok(MachineState::Offline),
++        wire::MachineStatus::Offline => Ok(MachineState::Running),
+         wire::MachineStatus::Unspecified => Err(ProviderError::Rejected(
+             "machine state is unspecified".into(),
