@@ -65,6 +65,9 @@ Guarantees that differ from native mounting:
   target: it costs a copy, a directory and a watcher per agent view.
 - No volume is projected. `.volumes/home` and other bound volumes are absent,
   and the model's context omits the home-volume convention.
+  Shell overflow is retained as `shell-<operation>.log` in the primary view,
+  captured and committed with the command's other effects. A projected home
+  retains the same output in that private volume instead.
 - Physical view directories remain after an agent is archived, below the
   reserved `.volumes/agents` root, which checkout capture, the Git facade and Git
   exclusions all omit. Their contents are ordinary files of the harness user:
