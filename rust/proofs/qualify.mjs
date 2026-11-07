@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "execution-allowance-grant": [
+    "rust/crates/auth/src/authority.rs", "acyclic-auth",
+    "narrowing::execution_allowances_require_one_eligible_grant",
+    "billing allowance combined incompatible grants", [],
+    { target: ["--test", "main"] },
+  ],
   "revision-publication-progress": [
     "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
     "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",

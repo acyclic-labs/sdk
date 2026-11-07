@@ -257,7 +257,13 @@ fn plain_resource_and_socket_grants_narrow_too() {
     assert!(append(&exact, granting(vec![plain("fs:/v/file", true, "fs/read")])).is_none());
 }
 
-fn owned_execution(action: &str, owner: &str) -> Grant {
+fn owned_execution(
+    action: &str,
+    owner: &str,
+    cpu_millis: Option<u64>,
+    memory_bytes: Option<u64>,
+    max_concurrency: Option<u64>,
+) -> Grant {
     Grant {
         kind: GrantKind::Execution(ExecutionGrant {
             grant: ResourceGrant {
@@ -267,22 +273,14 @@ fn owned_execution(action: &str, owner: &str) -> Grant {
                 },
                 actions: vec![action.into()],
             },
-            cpu_millis: None,
-            memory_bytes: None,
+            cpu_millis,
+            memory_bytes,
             policy_generation: None,
             usage_owner: Some(owner.into()),
-            max_concurrency: None,
+            max_concurrency,
             reserved_capacity_units: None,
         }),
     }
-}
-
-// The rule this replaces: an action's capability prefix had to be a listed
-// billing product, which refused unmetered renewal and misspelled products.
-fn prefix_rule(products: &[&str], action: &str) -> bool {
-    action
-        .split_once('/')
-        .is_some_and(|(product, _)| products.contains(&product))
 }
 
 #[test]
@@ -319,14 +317,13 @@ fn renewed_allowance_restricts_only_what_each_action_bills() {
     let mut leaf = Vec::new();
     for (action, resource, owner, _) in cases {
         leaf.push(match owner {
-            Some(owner) => owned_execution(action, owner),
+            Some(owner) => owned_execution(action, owner, None, None, None),
             None => plain(resource, false, action),
         });
     }
     let renewed = append(&chain(leaf), allowance(&covered)).expect("a renewed allowance");
     let attributes = RecordAttributes::default();
     let usage = limits(None);
-    let mut prefix_disagrees = false;
     for (action, resource, _, admitted) in cases {
         let request = Request {
             target: Target::Resource { action, resource },
@@ -344,18 +341,56 @@ fn renewed_allowance_restricts_only_what_each_action_bills() {
             admitted,
             "{action}"
         );
-        prefix_disagrees |= prefix_rule(&covered, action) != admitted;
     }
-    // Negative control: the prefix rule refuses billing renewal, secrets,
-    // Machines, inference and Actors execution under the same allowance.
-    assert!(prefix_disagrees);
-    for action in [
-        "billing/usage",
-        "secrets/put",
-        "machines/create",
-        "infer/generate",
-        "execution/actor-turn",
-    ] {
-        assert!(!prefix_rule(&covered, action), "{action}");
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn execution_allowances_require_one_eligible_grant(
+        ceilings in proptest::array::uniform3((
+            proptest::option::of(0_u64..4),
+            proptest::option::of(0_u64..4),
+            proptest::option::of(0_u64..4),
+        )),
+        requested in (0_u64..4, 0_u64..4, 0_u64..4),
+        masks in proptest::array::uniform2(1_u8..4),
+    ) {
+        let owners = ["actors/a", "managed_agents/a", "actors/b"];
+        let grants = ceilings.iter().zip(owners).map(|(&(cpu, memory, concurrency), owner)| {
+            owned_execution("execution/job-execute", owner, cpu, memory, concurrency)
+        }).collect();
+        let mut blocks = chain(grants);
+        for mask in masks {
+            let products = [(1, "actors"), (2, "managed_agents")].into_iter()
+                .filter_map(|(bit, product)| (mask & bit != 0).then_some(product))
+                .collect::<Vec<_>>();
+            blocks = append(&blocks, allowance(&products)).expect("canonical allowance attenuation");
+        }
+        let expected = ceilings.iter().enumerate().any(|(index, &(cpu, memory, concurrency))| {
+            cpu.is_none_or(|limit| requested.0 <= limit)
+                && memory.is_none_or(|limit| requested.1 <= limit)
+                && concurrency.is_none_or(|limit| requested.2 <= limit)
+                && masks.iter().all(|mask| mask & if index == 1 { 2 } else { 1 } != 0)
+        });
+        let attributes = RecordAttributes::default();
+        let mut usage = limits(None);
+        usage.concurrency = Some(requested.2);
+        let request = Request {
+            target: Target::Resource { action: "execution/job-execute", resource: "execution:/work" },
+            audience: "workers:/app",
+            holder: None,
+            now_unix_seconds: 2,
+            keys: &[],
+            attributes: &attributes,
+            usage: &usage,
+            cpu_millis: requested.0,
+            memory_bytes: requested.1,
+        };
+        proptest::prop_assert_eq!(
+            permits(&blocks, &request, PolicyDecision::Allow, Scope::Exact).is_ok(),
+            expected,
+            "billing allowance combined incompatible grants",
+        );
     }
 }
