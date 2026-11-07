@@ -1,5 +1,75 @@
 use super::*;
 
+/// An ordinary failed record stays unconsumed, while the next explicit attempt
+/// gives another ready subscription its turn through the same public runtime.
+#[tokio::test]
+async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = actor("failed-input-fairness")?;
+    let mut create = PreparedPublish::foreign(key("failed-input-fairness/create")?);
+    let mut subscriptions = BTreeMap::new();
+    for (name, value) in [
+        ("inbox", b"unknown".as_slice()),
+        ("mirror", b"emit".as_slice()),
+    ] {
+        let path = StreamPath::new(format!("fairness/{name}"))?;
+        subscriptions.insert(
+            name.to_owned(),
+            Subscription {
+                path: path.clone(),
+                cursor: 0,
+            },
+        );
+        create.join(Effect {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutation: CommitMutation::Append {
+                path,
+                records: vec![Bytes::copy_from_slice(value).into()],
+            },
+        })?;
+    }
+    for effect in store.create(&address, subscriptions, Some(ledger("out/fairness")?))? {
+        create.join(effect)?;
+    }
+    store.submit(create).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    runtime.track(address.clone())?;
+    assert!(matches!(
+        runtime.drain_actor(&address).await,
+        Err(Error::Handler(_))
+    ));
+    let failed = store.load(&address).await?;
+    for name in ["inbox", "mirror"] {
+        assert_eq!(failed.state().and_then(|state| state.cursor(name)), Some(0));
+    }
+    assert!(records(&*provider, "out/fairness").await?.is_empty());
+    // This is an explicit caller attempt, not a readiness retry loop.
+    assert!(matches!(
+        runtime.drain_actor(&address).await,
+        Err(Error::Handler(_))
+    ));
+    let resumed = store.load(&address).await?;
+    assert_eq!(
+        resumed.state().and_then(|state| state.cursor("inbox")),
+        Some(0)
+    );
+    assert_eq!(
+        resumed.state().and_then(|state| state.cursor("mirror")),
+        Some(1),
+        "failed input starved another ready subscription"
+    );
+    assert_eq!(
+        records(&*provider, "out/fairness").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    Ok(())
+}
+
 /// Refuses the first delivery of its actor's alarm with a retained failure,
 /// then delegates; counts every alarm delivery it is handed.
 struct RefusesFirstAlarm {
