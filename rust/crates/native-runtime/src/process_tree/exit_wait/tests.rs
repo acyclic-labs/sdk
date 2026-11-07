@@ -126,19 +126,52 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
 #[test]
 fn exit_watch_prepays_and_records_its_descriptor_release() -> io::Result<()> {
     let mut tree = child("0")?;
-    let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-    let watch = open(tree.owned_child_id()?, Some(&meter))?;
-    assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
-    drop(watch);
-    assert_eq!(
-        meter.write_attempts.load(Ordering::Acquire),
-        1,
-        "the exit descriptor close must stay on its original ledger"
-    );
-    #[cfg(target_os = "linux")]
-    assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
-    #[cfg(target_vendor = "apple")]
-    assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+    for panic_after_recording in [false, true] {
+        let descriptor = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(-1));
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.operation_recorded = Some(Box::new({
+            let descriptor = std::sync::Arc::clone(&descriptor);
+            let released = std::sync::Arc::clone(&released);
+            move || {
+                let fd = descriptor.load(Ordering::Acquire);
+                if fd >= 0 {
+                    // Observe the actual original descriptor inside its original
+                    // accounting callback, before any later test assertion.
+                    // SAFETY: F_GETFD observes a descriptor number without borrowing
+                    // memory or taking ownership, including the closed-FD case.
+                    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                    released.store(
+                        result == -1
+                            && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
+                        Ordering::Release,
+                    );
+                    if panic_after_recording {
+                        panic!("original cleanup callback failure");
+                    }
+                }
+                Ok(())
+            }
+        }));
+        let watch = open(tree.owned_child_id()?, Some(&meter))?;
+        descriptor.store(watch.as_raw_fd(), Ordering::Release);
+        assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(watch)));
+        assert_eq!(dropped.is_err(), panic_after_recording);
+        assert!(
+            released.load(Ordering::Acquire),
+            "cleanup accounting preceded the original descriptor release"
+        );
+        assert_eq!(
+            meter.write_attempts.load(Ordering::Acquire),
+            1,
+            "the exit descriptor close must stay on its original ledger"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+    }
 
     let refused = crate::tests::ReadBudgetMeter::new(1, u64::MAX);
     assert!(

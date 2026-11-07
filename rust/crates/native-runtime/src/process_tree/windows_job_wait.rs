@@ -1,5 +1,5 @@
 //! Job membership is rechecked after a pinned member exits, never on a timer.
-use super::super::cleanup::Cleanup;
+use super::super::cleanup::{Cleanup, Resource};
 use super::*;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA};
@@ -78,8 +78,7 @@ fn first_member(
 }
 
 struct Member<'a> {
-    handle: OwnedHandle,
-    cleanup: Cleanup<'a>,
+    handle: Resource<'a, OwnedHandle>,
 }
 
 impl<'a> Member<'a> {
@@ -111,7 +110,9 @@ impl<'a> Member<'a> {
                 let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
                 Ok(Some(handle))
             })?;
-        let process = opened?.map(|handle| Self { handle, cleanup });
+        let process = opened?.map(|handle| Self {
+            handle: cleanup.adopt(handle),
+        });
         recorded?;
         let Some(process) = process else {
             return Ok(None);
@@ -128,12 +129,6 @@ impl<'a> Member<'a> {
                 Ok(member != 0)
             })?;
         Ok(member.then_some(process))
-    }
-}
-
-impl Drop for Member<'_> {
-    fn drop(&mut self) {
-        let _ = self.cleanup.record();
     }
 }
 

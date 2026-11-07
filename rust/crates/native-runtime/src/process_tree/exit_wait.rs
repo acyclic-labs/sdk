@@ -1,5 +1,5 @@
 //! Direct-child exit notification leaves the leader unreaped for tree cleanup.
-use super::cleanup::Cleanup;
+use super::cleanup::{Cleanup, Resource};
 use super::*;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -97,20 +97,13 @@ pub(super) fn wait_metered(
 }
 
 pub(super) struct ExitWatch<'a> {
-    fd: OwnedFd,
+    fd: Resource<'a, OwnedFd>,
     meter: Option<&'a dyn crate::NativeReadMeter>,
-    cleanup: Cleanup<'a>,
 }
 
 impl AsRawFd for ExitWatch<'_> {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
         self.fd.as_raw_fd()
-    }
-}
-
-impl Drop for ExitWatch<'_> {
-    fn drop(&mut self) {
-        let _ = self.cleanup.record();
     }
 }
 
@@ -148,9 +141,8 @@ fn open_watch(
             open_descriptor_for(id)
         })?;
     let watch = ExitWatch {
-        fd: opened?,
+        fd: cleanup.adopt(opened?),
         meter,
-        cleanup,
     };
     // Retain the descriptor and its prepaid close before late accounting can
     // fail. Every successful open has one physical release on this ledger.

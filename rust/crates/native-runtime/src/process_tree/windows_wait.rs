@@ -1,4 +1,4 @@
-use super::super::cleanup::Cleanup;
+use super::super::cleanup::{Cleanup, Resource};
 use super::super::windows_event::Event;
 use crate::process_tree::Child;
 use std::ffi::c_void;
@@ -21,9 +21,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(in crate::process_tree) struct ResumeNotification<'a> {
+    // Unregister before releasing the callback's event, then account each
+    // native release through the same resource-ordering primitive.
+    _registration: Resource<'a, ResumeRegistration>,
     pub(in crate::process_tree) event: Event<'a>,
-    registration: isize,
-    cleanup: Cleanup<'a>,
 }
 impl<'a> ResumeNotification<'a> {
     pub(in crate::process_tree) fn new() -> io::Result<Self> {
@@ -58,20 +59,20 @@ impl<'a> ResumeNotification<'a> {
             })?;
         let registration = registration?;
         let notification = Self {
+            _registration: cleanup.adopt(ResumeRegistration(registration)),
             event,
-            registration,
-            cleanup,
         };
         recorded?;
         Ok(notification)
     }
 }
-impl Drop for ResumeNotification<'_> {
+struct ResumeRegistration(isize);
+
+impl Drop for ResumeRegistration {
     fn drop(&mut self) {
-        let _ = self.cleanup.record();
         // SAFETY: this exclusively owned registration is cancelled before
         // releasing the event handle carried by its callback.
-        unsafe { UnregisterSuspendResumeNotification(self.registration) };
+        unsafe { UnregisterSuspendResumeNotification(self.0) };
     }
 }
 

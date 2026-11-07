@@ -1,13 +1,12 @@
 //! Owned Windows events and their original metered cleanup custody.
-use super::cleanup::Cleanup;
+use super::cleanup::{Cleanup, Resource};
 use super::*;
 use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Threading::CreateEventW;
 
 pub(in crate::process_tree) struct Event<'a> {
-    handle: OwnedHandle,
-    cleanup: Cleanup<'a>,
+    handle: Resource<'a, OwnedHandle>,
 }
 
 impl<'a> Event<'a> {
@@ -34,8 +33,7 @@ impl<'a> Event<'a> {
                 Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
             })?;
         let event = Self {
-            handle: opened?,
-            cleanup,
+            handle: cleanup.adopt(opened?),
         };
         recorded?;
         Ok(event)
@@ -51,11 +49,5 @@ impl AsHandle for Event<'_> {
 impl AsRawHandle for Event<'_> {
     fn as_raw_handle(&self) -> HANDLE {
         self.handle.as_raw_handle()
-    }
-}
-
-impl Drop for Event<'_> {
-    fn drop(&mut self) {
-        let _ = self.cleanup.record();
     }
 }
