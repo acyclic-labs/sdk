@@ -69,17 +69,23 @@ pub enum AgentReply {
         agent: AgentPath,
     },
     /// Prompt, cancellation or approval inbox delivery.
-    Delivered { delivery: Delivered },
+    Delivered {
+        /// Original inbox admission result; completion is observed separately.
+        delivery: Delivered,
+    },
     /// Spawn publication, including the canonical child path.
     Spawned {
         /// The newly published direct child.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// Parent inbox receipt for the committed spawn request.
         delivery: Delivered,
     },
     /// A single direct-child page, with an opaque exclusive continuation.
     Children {
+        /// Direct children visible at this page's cut.
         items: Vec<ChildAgent>,
+        /// Opaque exclusive continuation, or the end of this listing.
         next: Option<String>,
     },
     /// Authorized project roots observed for an exact-head restore request.
@@ -98,11 +104,16 @@ pub enum AgentReply {
     },
     /// A single authorized pending-approval page.
     Approvals {
+        /// The pending action authorized for this reader, if any.
         items: Vec<PendingApproval>,
+        /// Always `None`; the pending-action view has no continuation.
         next: Option<String>,
     },
     /// The committed reply to one accepted message.
-    Reply { reply: Reply },
+    Reply {
+        /// The accepted message's immutable committed result.
+        reply: Reply,
+    },
     /// A bounded committed execution query, shared by every frontend.
     Usage {
         /// Exact original inbox sequence, at or after this agent's fork cut.
@@ -184,7 +195,12 @@ pub enum AgentControlFailure {
     /// A definitive refusal, classified by the host's canonical error code,
     /// with the host error's own text as its reason.
     #[error("{}", refusal(code, reason))]
-    Refused { code: String, reason: String },
+    Refused {
+        /// Stable classification supplied by the host.
+        code: String,
+        /// Original host diagnostic, bounded when decoding a wire reply.
+        reason: String,
+    },
     /// The exact original request; presentation must not replace this with prose.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<CommitRequest>),
@@ -290,7 +306,8 @@ pub fn encode_agent_reply(
         reason,
     };
     let encoded_len = match &envelope.value {
-        Some(Value::Reply(bytes)) => encoded_agent_reply_size(bytes.len() as u64)? as usize,
+        Some(Value::Reply(bytes)) => usize::try_from(encoded_agent_reply_size(bytes.len() as u64)?)
+            .map_err(|_| CommandError::Capacity)?,
         _ => envelope.encoded_len(),
     };
     if encoded_len > MAX_AGENT_REPLY_BYTES {
@@ -595,8 +612,8 @@ fn validate_reply(
         }
         (AgentReply::History { items, next }, AgentCommand::History { page, .. }) => {
             if items
-                .windows(2)
-                .any(|pair| pair[1].conversation.checked_add(1) != Some(pair[0].conversation))
+                .array_windows::<2>()
+                .any(|[newer, older]| older.conversation.checked_add(1) != Some(newer.conversation))
             {
                 return Err(CommandError::Invalid);
             }

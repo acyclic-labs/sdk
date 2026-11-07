@@ -1067,7 +1067,7 @@ mod tests {
                     let mut metadata = original.data.schema().metadata().clone();
                     match saved_version {
                         Some(version) => {
-                            metadata.insert("acyclic.metrics.version".into(), version.into());
+                            metadata.insert("acyclic.metrics.version", version);
                         }
                         None => metadata.clear(),
                     }

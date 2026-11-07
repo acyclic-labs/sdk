@@ -14,7 +14,7 @@
 use crate::reader::RecordBytes;
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
-use acyclic_stream::{StreamError, StreamPath, StreamProviderExt as _};
+use acyclic_stream::{StreamError, StreamPath};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Rows of lookahead in the scroll direction, at most.
@@ -52,7 +52,9 @@ mod tests {
     use super::*;
     use crate::reader::{ListedChild, Listing, Op, Outcome};
     use acyclic_harness_core::agent::AgentId;
-    use acyclic_stream::{AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream};
+    use acyclic_stream::{
+        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProviderExt as _,
+    };
 
     #[test]
     fn history_seeks_preserve_exclusive_ends_at_the_sequence_boundary() {
@@ -1008,10 +1010,12 @@ impl Explorer {
             self.intent_wants(agent, false, &mut wants);
         }
         // Lookahead in the scroll direction, overscan behind.
-        let rtt_rows = (self.reader.rtt_ms() / self.frame_ms) as usize;
-        let ahead = (self.overscan
-            + (self.velocity.unsigned_abs() as usize).saturating_mul(rtt_rows.max(1)))
-        .min(MAX_LOOKAHEAD);
+        let rtt_rows = usize::try_from(self.reader.rtt_ms() / self.frame_ms).unwrap_or(usize::MAX);
+        let velocity = usize::try_from(self.velocity.unsigned_abs()).unwrap_or(usize::MAX);
+        let ahead = self
+            .overscan
+            .saturating_add(velocity.saturating_mul(rtt_rows.max(1)))
+            .min(MAX_LOOKAHEAD);
         let (forward, backward) = if self.velocity < 0 {
             (self.overscan, ahead)
         } else {

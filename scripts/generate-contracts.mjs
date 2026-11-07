@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
+import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -37,85 +38,100 @@ const availableModules = [
   "generate-machines-managed-oci-contract.mjs",
 ];
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const families = process.argv.slice(3);
-const knownFamilies = workspaceManifests(root);
-// A complete family or one exact contract can be selected. Exact selection
-// keeps a narrow contract update from compiling unrelated bindings.
-const matchesFamily = (name, family) => name === `generate-${family}.mjs` || name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
-for (const family of families) {
-  if (!knownFamilies.has(family) && !availableModules.includes(`generate-${family}.mjs`)) {
-    throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
-  }
-}
-const modules = availableModules.filter(name => !families.length || families.some(family => matchesFamily(name, family)));
-
-const mode = process.argv[2] ?? "write";
-if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
-// One build compiles every contract target from current Rust source; the
-// emitted executables are then run directly instead of one `cargo run` each.
-// Selected packages omit defaults; Cargo still unifies dependency features.
-/** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, cargo_version: string, rustc_version: string, rustc_error?: string, toolchain_ms: number, rustc_ms: number, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
-const report = { revision: 1, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, cargo_version: "", rustc_version: "", toolchain_ms: 0, rustc_ms: 0, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
-const started = performance.now();
-const saveReport = () => {
-  if (!process.env.SDK_TEMP_DIR) return;
-  const directory = join(process.env.SDK_TEMP_DIR, "observability");
-  mkdirSync(directory, { recursive: true });
-  const path = join(directory, "generated-contracts.json");
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify({ ...report, total_ms: performance.now() - started })}\n`);
-  renameSync(temporary, path);
-};
-// Replace any earlier success before running; abrupt process termination then
-// leaves an explicitly incomplete report rather than a stale successful one.
-saveReport();
-try {
-  report.phase = "source";
-  saveReport();
-  report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
-  if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
-  report.phase = "imports";
-  saveReport();
-  const generators = await Promise.all(modules.map(name => import(`./${name}`)));
-  const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
-    .map(target => [JSON.stringify(target), target])).values()];
-  const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
-  const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
-  const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
-  const consumers = generators.flatMap(generator => (generator.rust ?? [])
-    .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
-  const outputFor = contractTargetOutputs(root, executables, consumers);
-
-  const stale = [];
-  for (const [index, generator] of generators.entries()) {
-    const executionStart = performance.now();
-    report.phase = `execute:${modules[index]}`;
-    saveReport();
-    const stdout = (generator.rust ?? []).map(target => {
-      const targetSlot = targetIndex.get(JSON.stringify(target));
-      return outputFor(targetSlot, generator.rustPayload);
-    });
-    const execute_ms = performance.now() - executionStart;
-    const renderStart = performance.now();
-    report.phase = `render:${modules[index]}`;
-    saveReport();
-    const files = await generator.render(stdout, root);
-    for (const [relative, content] of Object.entries(files)) {
-      const path = join(root, relative);
-      const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
-      if (mode === "write" && !baseline) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); }
-      else if (!existsSync(path) || !Buffer.from(content).equals(readFileSync(path))) stale.push(relative);
+export function contractModules(families = []) {
+  const knownFamilies = workspaceManifests(root);
+  // A complete family or one exact contract can be selected. Exact selection
+  // keeps a narrow contract update from compiling unrelated bindings.
+  const matchesFamily = (name, family) => name === `generate-${family}.mjs` || name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
+  for (const family of families) {
+    if (!knownFamilies.has(family) && !availableModules.includes(`generate-${family}.mjs`)) {
+      throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
     }
-    report.generators.push({ name: modules[index], execute_ms, render_compare_ms: performance.now() - renderStart });
+  }
+  return availableModules.filter(name => !families.length || families.some(family => matchesFamily(name, family)));
+
+}
+
+export async function generateContracts(mode = "write", families = []) {
+  const modules = contractModules(families);
+
+  if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
+  // One build compiles every contract target from current Rust source; the
+  // emitted executables are then run directly instead of one `cargo run` each.
+  // Selected packages omit defaults; Cargo still unifies dependency features.
+  /** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, cargo_version: string, rustc_version: string, rustc_error?: string, toolchain_ms: number, rustc_ms: number, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
+  const report = { revision: 1, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, cargo_version: "", rustc_version: "", toolchain_ms: 0, rustc_ms: 0, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
+  const started = performance.now();
+  const saveReport = () => {
+    if (!process.env.SDK_TEMP_DIR) return;
+    const directory = join(process.env.SDK_TEMP_DIR, "observability");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "generated-contracts.json");
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify({ ...report, total_ms: performance.now() - started })}\n`);
+    renameSync(temporary, path);
+  };
+  // Replace any earlier success before running; abrupt process termination then
+  // leaves an explicitly incomplete report rather than a stale successful one.
+  saveReport();
+  try {
+    report.phase = "source";
+    saveReport();
+    report.source_commit = captureContractCommand(root, "git", ["rev-parse", "HEAD"], "source").trim();
+    if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");
+    report.phase = "imports";
+    saveReport();
+    const generators = await Promise.all(modules.map(name => import(`./${name}`)));
+    const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
+      .map(target => [JSON.stringify(target), target])).values()];
+    const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
+    const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
+    const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
+    const consumers = generators.flatMap(generator => (generator.rust ?? [])
+      .map(target => [targetIndex.get(JSON.stringify(target)), generator.rustPayload]));
+    const outputFor = contractTargetOutputs(root, executables, consumers);
+
+    const stale = [];
+    for (const [index, generator] of generators.entries()) {
+      const executionStart = performance.now();
+      report.phase = `execute:${modules[index]}`;
+      saveReport();
+      const stdout = (generator.rust ?? []).map(target => {
+        const targetSlot = targetIndex.get(JSON.stringify(target));
+        return outputFor(targetSlot, generator.rustPayload);
+      });
+      const execute_ms = performance.now() - executionStart;
+      const renderStart = performance.now();
+      report.phase = `render:${modules[index]}`;
+      saveReport();
+      const files = await generator.render(stdout, root);
+      for (const [relative, content] of Object.entries(files)) {
+        const path = join(root, relative);
+        const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
+        try {
+          if (baseline && mode === "check") checkGenerated(path, content);
+          else projectGenerated(path, content, mode === "check");
+        } catch (error) {
+          if (!error.message.startsWith("STEP_FAILED generated-artifact:")) throw error;
+          stale.push(relative);
+        }
+      }
+      report.generators.push({ name: modules[index], execute_ms, render_compare_ms: performance.now() - renderStart });
+      saveReport();
+    }
+    report.phase = "drift-check";
+    saveReport();
+    if (stale.length > 0) throw new Error(`STEP_FAILED generated-contracts: stale artifacts ${stale.join(", ")}; recovery: bun run generate`);
+    report.status = "success";
+  } finally {
+    if (report.status !== "success") report.status = "failed";
+    const total_ms = performance.now() - started;
+    console.error(`Rust contracts: ${report.status}; metadata ${report.metadata_ms.toFixed(0)}ms; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
     saveReport();
   }
-  report.phase = "drift-check";
-  saveReport();
-  if (stale.length > 0) throw new Error(`generated contracts are stale; run bun run generate:\n${stale.join("\n")}`);
-  report.status = "success";
-} finally {
-  if (report.status !== "success") report.status = "failed";
-  const total_ms = performance.now() - started;
-  console.error(`Rust contracts: ${report.status}; metadata ${report.metadata_ms.toFixed(0)}ms; build ${report.build_ms.toFixed(0)}ms; total ${total_ms.toFixed(0)}ms`);
-  saveReport();
+
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  await generateContracts(process.argv[2] ?? "write", process.argv.slice(3));
 }

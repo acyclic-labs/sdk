@@ -37,7 +37,7 @@ fn decode<T: Record + crate::HeapLayout>(
             maximum_depth: 256,
         },
         None,
-        Some(&crate::executor::json::JsonValueSchema::None),
+        Some(crate::executor::json::JsonValueSchema::None),
         &mut |_| Ok(()),
     )
     .map(|value| (value, None))

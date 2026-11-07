@@ -143,9 +143,11 @@ mod tests {
         units.extend([0xd800, u16::from(b'x'), 0xdcff]);
         let path = PathBuf::from(OsString::from_wide(&units));
         let actual = strip_verbatim(&path);
-        assert_eq!(
-            actual.as_os_str().encode_wide().collect::<Vec<_>>(),
-            units[4..]
+        assert!(
+            actual
+                .as_os_str()
+                .encode_wide()
+                .eq(units.into_iter().skip(4))
         );
         for (path, root, expected) in [
             (r"C:\a\b", r"\\?\C:\a", Some("b")),

@@ -285,7 +285,7 @@ impl LocalHarnessConfig {
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
-    #[cfg(any(test, feature = "native-execution"))]
+    #[cfg(test)]
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
         let location = self.state_location()?;
         if let StateLocation::Directory(directory) = location {
@@ -403,38 +403,6 @@ impl LocalHarnessConfig {
     pub fn bind_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
         if self.web_tools {
             super::web::WebExecutor::bind(registry, self.search_provider.clone())?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "search-http")]
-    pub(super) fn validate_web_binding(
-        &self,
-        registry: &ToolRegistry,
-        verifier: &AuthorityVerifier,
-        signed: &Scope,
-    ) -> Result<()> {
-        if !self.web_tools {
-            return Ok(());
-        }
-        verifier.verify(signed, &mut None)?;
-        for definition in crate::search::web::definitions(self.search_provider.is_some())? {
-            if !signed
-                .capabilities()
-                .contains(&format!("tool:call:{}", definition.name))
-            {
-                return Err(Error::Unauthorized(
-                    "requested web tools require prebound signed call grants".into(),
-                ));
-            }
-            if registry
-                .get(&definition.name, None, None)?
-                .is_none_or(|tool| tool.definition != definition)
-            {
-                return Err(Error::Unsupported(
-                    "prebind requested web tools before opening the task runtime".into(),
-                ));
-            }
         }
         Ok(())
     }

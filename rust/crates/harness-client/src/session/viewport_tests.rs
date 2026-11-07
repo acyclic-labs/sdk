@@ -156,7 +156,6 @@ async fn fill(view: &mut StreamView, followed: Option<&StreamPath>) {
                 }),
                 accepted: sequence + 1,
                 durable: sequence + 1,
-                ..Default::default()
             })),
             ..Default::default()
         };

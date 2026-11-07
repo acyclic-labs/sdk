@@ -286,7 +286,7 @@ async fn selected_discovery_preserves_the_published_member() -> Outcome {
     let published = acyclic_actors::wire::InvokeActorRequest::decode(encoded.as_slice())?;
     let binding = AgentBinding::new(&encoded)?;
     let command = PreparedCommand::new(&AgentCommand::Bind { agent: None })?;
-    let routed = binding.routed("/agents/bind", command.command().to_vec())?;
+    let routed = binding.routed("/agents/bind", command.command())?;
     // Fetch and session ingress attach the same command to the actual wire
     // publication, including every selected routing and deployment field.
     assert_eq!(binding.prepare(&command)?.invocations(), [routed.clone()]);

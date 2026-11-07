@@ -3,6 +3,7 @@
 //! it does not implement filesystem policy or perform mutable quota accounting.
 use crate::{Error, contract::*};
 use prost::Message;
+use std::collections::HashSet;
 
 /// Owner policy result. A capability can never override Deny.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,45 +327,163 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     if matches!(r.target, Target::Context) {
         return true;
     }
-    set.grants.iter().any(|g| {
-        let Target::Resource { action, resource } = r.target else {
-            return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
-        };
-        let grant = match &g.kind {
-            GrantKind::Resource(g) => g,
-            GrantKind::Execution(g)
-                if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
-                    && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
-                    && g.max_concurrency
-                        .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
-            {
-                &g.grant
-            }
-            GrantKind::Billing(g)
-                if g.spend_micros
-                    .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n) =>
-            {
-                &g.grant
-            }
-            GrantKind::Filesystem(g) => &g.grant,
-            _ => return false,
-        };
-        grant.actions.iter().any(|a| a == action)
-            && (resource_matches(&grant.resource, resource)
-                || !record_facts && matches!(action, "streams/list" | "fs/list")
-                    && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
-    })
+    set.grants.iter().any(|g| grant_allows(g, r, record_facts))
 }
-// An allowance limits spend on the products it covers and admits no other.
-fn allowance_covers(allowance: &Allowance, target: Target<'_>) -> bool {
-    allowance.products.is_empty()
-        || match target {
-            Target::Resource { action, .. } => action
-                .split_once('/')
-                .is_some_and(|(product, _)| allowance.products.iter().any(|p| p == product)),
-            Target::Context => true,
-            _ => false,
+
+fn grant_allows(g: &Grant, r: &Request<'_>, record_facts: bool) -> bool {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(GrantMatch);
+    let Target::Resource { action, resource } = r.target else {
+        return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
+    };
+    let grant = match &g.kind {
+        GrantKind::Resource(g) => g,
+        GrantKind::Execution(g)
+            if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
+                && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
+                && g.max_concurrency
+                    .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
+        {
+            &g.grant
         }
+        GrantKind::Billing(g)
+            if g.spend_micros
+                .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n) =>
+        {
+            &g.grant
+        }
+        GrantKind::Filesystem(g) => &g.grant,
+        _ => return false,
+    };
+    grant.actions.iter().any(|a| a == action)
+        && (resource_matches(&grant.resource, resource)
+            || !record_facts
+                && matches!(action, "streams/list" | "fs/list")
+                && resource_matches(
+                    &ResourcePattern {
+                        name: resource.into(),
+                        prefix: true,
+                    },
+                    &grant.resource.name,
+                ))
+}
+// An allowance limits spend on the billing products it covers and admits no
+// other billed work. The action catalog says what each action bills: unmetered
+// actions (billing, secrets) are never restricted by a product list, and an
+// execution needs one signed owner that survives every grant restriction and
+// whose product is covered by every allowance, including sibling caveats.
+fn allowances_cover(blocks: &[Block], certificates: &CertificateChain, r: &Request<'_>) -> bool {
+    use crate::action::Metering;
+    let allowances = blocks
+        .iter()
+        .flat_map(|block| &block.caveats)
+        .filter_map(|c| match &c.kind {
+            CaveatKind::Allowance(signed) => Some(&signed.allowance),
+            _ => None,
+        });
+    if allowances
+        .clone()
+        .all(|allowance| allowance.products.is_empty())
+    {
+        return true;
+    }
+    let covers = |product: &str| {
+        allowances.clone().all(|allowance| {
+            allowance.products.is_empty() || allowance.products.iter().any(|p| p == product)
+        })
+    };
+    match r.target {
+        Target::Resource { action, .. } => {
+            match action
+                .split_once('/')
+                .and_then(|(product, _)| crate::action::metering(product))
+            {
+                Some(Metering::Unmetered) => true,
+                Some(Metering::Billed(product)) => covers(product),
+                Some(Metering::UsageOwner) => {
+                    let mut products = None;
+                    for allowance in allowances.filter(|allowance| !allowance.products.is_empty()) {
+                        intersect_names(
+                            &mut products,
+                            allowance.products.iter().map(String::as_str).collect(),
+                        );
+                    }
+                    let Some(products) = products.filter(|products| !products.is_empty()) else {
+                        return false;
+                    };
+                    execution_owners_cover(grant_sets(blocks, certificates), &products, r)
+                }
+                None => false,
+            }
+        }
+        Target::Context => true,
+        Target::Websocket(_) => false,
+    }
+}
+
+// Retain the new input's table, whose capacity is bounded by that input. Keeping
+// an old, mostly empty table would rescan its original capacity at every step.
+fn intersect_names<'a>(surviving: &mut Option<HashSet<&'a str>>, mut next: HashSet<&'a str>) {
+    if let Some(previous) = surviving {
+        next.retain(|name| previous.contains(name));
+    }
+    *surviving = Some(next);
+}
+
+fn execution_owners_cover<'a>(
+    sets: impl Iterator<Item = &'a GrantSet>,
+    products: &HashSet<&str>,
+    r: &Request<'_>,
+) -> bool {
+    let mut surviving = None;
+    let mut witnessed = false;
+    for set in sets {
+        let mut owners = HashSet::new();
+        let mut inherits = false;
+        for grant in set
+            .grants
+            .iter()
+            .filter(|grant| grant_allows(grant, r, true))
+        {
+            match &grant.kind {
+                GrantKind::Execution(execution) => match execution.usage_owner.as_deref() {
+                    Some(owner) => {
+                        if owner
+                            .split_once('/')
+                            .is_some_and(|(product, _)| products.contains(product))
+                        {
+                            owners.insert(owner);
+                            witnessed = true;
+                        }
+                    }
+                    None => inherits = true,
+                },
+                _ => inherits = true,
+            }
+        }
+        if !inherits {
+            intersect_names(&mut surviving, owners);
+            if surviving.as_ref().is_some_and(HashSet::is_empty) {
+                return false;
+            }
+        }
+    }
+    witnessed
+}
+
+fn grant_sets<'a>(
+    blocks: &'a [Block],
+    certificates: &'a CertificateChain,
+) -> impl Iterator<Item = &'a GrantSet> {
+    certificates.keys.iter().map(|cert| &cert.key.grants).chain(
+        blocks
+            .iter()
+            .flat_map(|block| &block.caveats)
+            .filter_map(|c| match &c.kind {
+                CaveatKind::Grants(set) => Some(set),
+                _ => None,
+            }),
+    )
 }
 
 fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {
@@ -533,7 +652,8 @@ fn permits_canonical<const CURRENT: bool>(
             || r.now_unix_seconds >= key.validity.not_before_unix_seconds
                 && r.now_unix_seconds < key.validity.expires_at_unix_seconds)
             && grants_allow(&key.grants, r, record_facts)
-    }) {
+    }) || !allowances_cover(blocks, certificates, r)
+    {
         return false;
     }
     blocks.iter().enumerate().all(|(i, block)| {
@@ -565,7 +685,6 @@ fn permits_canonical<const CURRENT: bool>(
             CaveatKind::Allowance(signed) => {
                 (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
                     && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
-                    && allowance_covers(&signed.allowance, r.target)
             }
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })
@@ -575,3 +694,7 @@ fn permits_canonical<const CURRENT: bool>(
 #[cfg(test)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct StructuralAdmission;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct GrantMatch;
