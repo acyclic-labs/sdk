@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "plugin-input-cut": [
+    "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "plugin decision lost an original manifest or hook observation", ["--features", "filesystem-local,test-support,hooks"],
+    { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--retries", "0", "--no-tests=fail"],
+      mutations: [
+        { patch: "rust/proofs/plugin-input-cut/identity.patch", label: "discarded-original-hook-bytes", diagnostic: "plugin decision lost an original manifest or hook observation" },
+        { patch: "rust/proofs/plugin-input-cut/operation.patch", label: "operational-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
+        { patch: "rust/proofs/plugin-input-cut/read.patch", label: "repeated-original-hook-read", diagnostic: "plugin decision repeated an original file read" },
+      ] },
+  ],
   "config-composition-cut": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",

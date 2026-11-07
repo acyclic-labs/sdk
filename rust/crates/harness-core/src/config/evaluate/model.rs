@@ -4,6 +4,8 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
 mod composition;
+#[cfg(feature = "hooks")]
+mod plugins;
 mod prepared;
 
 thread_local! {
@@ -230,6 +232,8 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     prepared::check(bytes).await?;
     composition::check(bytes).await?;
+    #[cfg(feature = "hooks")]
+    plugins::check(bytes).await?;
     raw_source(bytes).await?;
     let cache = Cache::default();
     let mode = bytes.first().copied().unwrap_or_default() % 13;

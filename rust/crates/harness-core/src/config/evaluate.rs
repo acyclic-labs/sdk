@@ -66,9 +66,26 @@ pub async fn evaluate(
     base: &Value,
     surface: Surface,
 ) -> Result<Evaluated> {
-    evaluate_cached(path, source, tree, base, surface, cache()).await
+    evaluate_decision(path, source, tree, base, surface)
+        .await?
+        .into_result()
 }
 
+/// Evaluate once while retaining the original input identity on semantic
+/// refusal. This is the same inline path as [`evaluate`]; it allocates no
+/// additional preparation future. Operational tree failures remain outer
+/// errors. Use [`prepare`] when the original scripts must be evaluated again.
+pub async fn evaluate_decision(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+) -> Result<Evaluation> {
+    evaluate_decision_cached(path, source, tree, base, surface, cache()).await
+}
+
+#[cfg(any(test, feature = "test-support"))]
 async fn evaluate_cached(
     path: &str,
     source: &[u8],
@@ -77,10 +94,22 @@ async fn evaluate_cached(
     surface: Surface,
     cache: &Cache,
 ) -> Result<Evaluated> {
+    evaluate_decision_cached(path, source, tree, base, surface, cache)
+        .await?
+        .into_result()
+}
+
+async fn evaluate_decision_cached(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    base: &Value,
+    surface: Surface,
+    cache: &Cache,
+) -> Result<Evaluation> {
     prepared::prepare_inner(path, source, tree)
         .await?
-        .evaluate_cached(base, surface, cache)?
-        .into_result()
+        .evaluate_cached(base, surface, cache)
 }
 
 /// Folds the copies of a settings entry point over `layers` (lowest first)

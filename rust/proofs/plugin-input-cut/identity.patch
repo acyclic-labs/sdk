@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/plugins.rs b/rust/crates/harness-core/src/plugins.rs
+index bc3f7462fe6..f1dd788cef9 100644
+--- a/rust/crates/harness-core/src/plugins.rs
++++ b/rust/crates/harness-core/src/plugins.rs
+@@ -249,7 +249,7 @@ fn observe(identity: &mut blake3::Hasher, path: &str, bytes: Option<&[u8]>) {
+     identity.update(path.as_bytes());
+     identity.update(&[u8::from(bytes.is_some())]);
+     if let Some(bytes) = bytes {
+-        identity.update(blake3::hash(bytes).as_bytes());
++        identity.update(&[u8::from(!bytes.is_empty())]);
+     }
+ }
+ 
