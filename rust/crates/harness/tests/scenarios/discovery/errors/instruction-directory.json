@@ -1,1 +1,1 @@
-{"seed":{"AGENTS.md/child":"nested"},"expect":{"error":"instruction entry is not a file"}}
+{"seed":{"AGENTS.md/child":"nested"},"expect":{"error":"tool rejected: selected path is not a regular file"}}
