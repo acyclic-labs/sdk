@@ -219,6 +219,11 @@ pub enum Command {
     /// (`acyclic_harness::server::serve`), as a managed host does; prints its
     /// endpoint, credential and principal as one JSON line.
     Serve(Serve),
+    /// List every refusal a run with these same flags would meet at startup
+    /// (FUSE device and mount authority, state directory, signing custody,
+    /// catalog and provider policy), each with its recovery, from the checks
+    /// startup itself makes. Exits 0 only when a run would start.
+    Doctor,
 }
 
 #[derive(Debug, clap::Args)]

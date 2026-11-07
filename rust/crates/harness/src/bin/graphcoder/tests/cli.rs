@@ -335,6 +335,37 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     model.close().await;
 }
 
+/// `doctor` reports what startup itself refuses, all at once, and passes a
+/// host that starts; it calls no model.
+#[tokio::test]
+async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    assert_eq!(
+        succeeded(&ready),
+        "ok: a run with these flags starts
+"
+    );
+    // State nested in the checkout is the refusal opening meets, with its recovery.
+    let nested = Fixture {
+        workspace: fixture.workspace.clone(),
+        settings: fixture.workspace.join("state"),
+        ..self::fixture()
+    };
+    std::fs::create_dir_all(nested.settings.join(".codex")).unwrap();
+    let refused = graphcoder(&nested, &model.catalog, vec!["doctor"], "").await;
+    let stdout = String::from_utf8_lossy(&refused.stdout);
+    assert_eq!(refused.status.code(), Some(1), "{stdout}");
+    assert!(
+        stdout.starts_with("refused: ")
+            && stdout.contains("separate from the checkout")
+            && stdout.contains("recovery:"),
+        "{stdout}"
+    );
+    assert_eq!(model.generated(), 0);
+}
+
 #[tokio::test]
 async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
     let fixture = fixture();

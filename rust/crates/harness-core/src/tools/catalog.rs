@@ -92,9 +92,12 @@ pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
     specs.into_iter()
 }
 
-/// These tools already carry their call schemas in the native model surface.
+/// These tools already carry their call schemas in the native model surface:
+/// the stock catalog and the agent tools. Delegation is a top-level tool, as in
+/// every other harness, never only a capability discovered inside `code`. Both
+/// sets are fixed for an agent's life, so the declared prefix never changes.
 pub(crate) fn is_native_declaration(name: &str) -> bool {
-    catalog().any(|spec| spec.name == name)
+    catalog().any(|spec| spec.name == name) || super::agents::AGENT_TOOLS.contains(&name)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

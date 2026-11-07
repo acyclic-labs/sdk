@@ -44,6 +44,24 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
     opening.finish(storage).await
 }
 
+/// Every refusal opening `config` meets, from the same checks in the same
+/// order: the host checks all at once, then (when they pass) the real
+/// storage opening, so nothing is reported that opening would not refuse.
+pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
+    let opening = match Opening::configure(config).await {
+        Ok(opening) => opening,
+        Err(error) => return vec![error],
+    };
+    let mut refusals = opening.host_refusals();
+    let opened = if refusals.is_empty() {
+        opening.storage().await.map(drop)
+    } else {
+        opening.checkout().map(drop)
+    };
+    refusals.extend(opened.err());
+    refusals
+}
+
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
@@ -191,27 +209,45 @@ impl Opening {
         Ok((directory, checkout))
     }
 
-    async fn storage(&self) -> Result<Storage> {
-        acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+    /// The host's own refusals, before any state is touched: each names what
+    /// is missing and its recovery. Opening stops at the first.
+    fn host_refusals(&self) -> Vec<Error> {
+        let mut refusals = Vec::new();
         #[cfg(any(test, feature = "native-execution"))]
-        acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
-        #[cfg(any(test, feature = "native-execution"))]
-        if self.native_mounts {
-            if matches!(self.config.project, LocalProject::Workspace(_)) {
-                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
-            }
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+        if self.native_mounts
+            && matches!(self.config.project, LocalProject::Workspace(_))
+            && let Err(error) =
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())
+        {
+            refusals.push(error);
         }
         #[cfg(not(any(test, feature = "native-execution")))]
         if matches!(self.config.project, LocalProject::Workspace(_)) {
-            return Err(Error::Unsupported(
+            refusals.push(Error::Unsupported(
                 "checkout workspaces require native-execution".into(),
             ));
         }
         if let LocalProject::Workspace(path) = &self.config.project
             && !path.is_dir()
         {
-            return Err(Error::Invalid("local workspace is not a directory".into()));
+            refusals.push(Error::Invalid(format!(
+                "local workspace {} is not a directory",
+                path.display()
+            )));
+        }
+        refusals
+    }
+
+    async fn storage(&self) -> Result<Storage> {
+        acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
+        #[cfg(any(test, feature = "native-execution"))]
+        acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
+        if let Some(refusal) = self.host_refusals().into_iter().next() {
+            return Err(refusal);
+        }
+        #[cfg(any(test, feature = "native-execution"))]
+        if self.native_mounts {
+            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         }
         let (directory, checkout) = self.checkout()?;
         #[cfg(test)]
