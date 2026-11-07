@@ -8,7 +8,7 @@ use super::file_ops::{
     acyclic_fs_darwin_mount_create, acyclic_fs_darwin_mount_durable_writes,
     acyclic_fs_darwin_mount_getattr, acyclic_fs_darwin_mount_write,
 };
-use super::namespace_ops::{acyclic_fs_darwin_mount_mkdir, acyclic_fs_darwin_mount_rename};
+use super::namespace_ops::acyclic_fs_darwin_mount_rename;
 use super::*;
 use crate::native_mount::MountPublication;
 use acyclic_native_runtime::ProcessCommand;
