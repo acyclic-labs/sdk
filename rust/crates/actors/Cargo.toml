@@ -94,7 +94,6 @@ tracing-subscriber.workspace = true
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["codegen"] }
-protoc-bin-vendored = "=3.3.0"
 
 [lints]
 workspace = true
