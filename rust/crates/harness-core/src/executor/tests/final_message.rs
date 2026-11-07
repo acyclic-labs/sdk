@@ -668,7 +668,11 @@ async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> 
                 let original = usage_page(&journal, input.operation_id, "unbound", 0).await?;
                 let completed = original.items.iter().find(|row| row.completed).unwrap();
                 assert_eq!(completed.started_at, before.checked_mul(1_000_000));
-                assert_eq!(completed.completed_at, after.checked_mul(1_000_000));
+                assert_eq!(
+                    completed.completed_at,
+                    after.checked_mul(1_000_000),
+                    "live completion time was lost after wall correction"
+                );
                 assert_eq!(completed.latency_ns, Some(7_000_000));
                 let original = crate::contract::canonical_json_bytes(&original)?;
                 schedule.set_unix_millis(after.saturating_add(1_000));
