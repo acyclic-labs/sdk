@@ -381,21 +381,10 @@ impl AgentTool {
         let mut unsettled = Vec::new();
         let mut stranded = Vec::new();
         for (name, child) in &children {
-            let phase = match observer.settled(child).await {
-                Ok((phase, true)) => phase,
-                Ok((phase, false)) => {
-                    let phase = serde_json::to_value(&phase)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    if open.contains(child) {
-                        unsettled.push(json!({"name": name, "phase": phase}));
-                    } else {
-                        stranded.push(format!("{name} ({phase}, not an open child)"));
-                    }
-                    continue;
-                }
-                // Spawned this turn: its creation commits with the step.
-                Err(Error::NotFound(_)) if open.contains(child) => {
-                    unsettled.push(json!({"name": name, "phase": "spawning"}));
+            let observed = match observer.settled(child).await {
+                Ok(Some(observed)) => observed,
+                Ok(None) => {
+                    running.push(name.as_str());
                     continue;
                 }
                 Err(Error::NotFound(_)) => {
@@ -403,11 +392,14 @@ impl AgentTool {
                 }
                 Err(error) => return Err(error),
             };
-            let (answer, outcome) = observer.answer(child).await?.unzip();
+            let answer = match observed.answer {
+                Some(sequence) => Some(observer.answer(child, sequence).await?),
+                None => None,
+            };
             let mut entry = json!({
                 "name": name,
                 "agent": child.as_str(),
-                "phase": serde_json::to_value(&phase)
+                "phase": serde_json::to_value(&observed.phase)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 "answer": answer,
             });
@@ -787,25 +779,23 @@ mod tests {
         fn settled<'a>(
             &'a self,
             child: &'a AgentPath,
-        ) -> BoxProviderFuture<'a, Result<(crate::agent::Phase, bool)>> {
-            let settled = self.settled.contains(child);
-            let phase = if settled {
-                crate::agent::Phase::Done {
-                    outcome: crate::agent::AgentOutcome::Failed {
-                        message: String::new(),
+        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Settlement>>> {
+            let phase = self
+                .settled
+                .contains(child)
+                .then(|| crate::agent::Settlement {
+                    phase: crate::agent::Phase::Done {
+                        outcome: crate::agent::AgentOutcome::Failed {
+                            message: String::new(),
+                        },
                     },
-                }
-            } else {
-                crate::agent::Phase::Running
-            };
-            Box::pin(async move { Ok((phase, settled)) })
+                    answer: None,
+                });
+            Box::pin(async move { Ok(phase) })
         }
 
-        fn answer<'a>(
-            &'a self,
-            _: &'a AgentPath,
-        ) -> BoxProviderFuture<'a, Result<Option<(String, TurnOutcome)>>> {
-            Box::pin(async { Ok(None) })
+        fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
+            Box::pin(async { Err(Error::Invalid("no answer selected".into())) })
         }
     }
 

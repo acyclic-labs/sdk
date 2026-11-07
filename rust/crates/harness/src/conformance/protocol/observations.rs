@@ -4,7 +4,7 @@ use acyclic_harness_client::{AgentCommand, ExecutionPosition, ExecutionQuery, Re
 use acyclic_harness_core::{
     agent::AgentPath,
     executor::{ExecutionEvent, ExecutionPayloadField},
-    tool::{RecordedInvocation, ToolResult},
+    tool::{RecordedInvocation, ToolInvocation, ToolResult},
 };
 
 pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u64) -> Result {
@@ -83,12 +83,21 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                             "execution invocation accepted foreign envelope authority".into()
                         );
                     }
-                    let invocation = recorded.invocation;
-                    if pending.is_some()
-                        || invocation.call_id != *call_id
-                        || invocation.name != TOOL
-                    {
-                        return Err("tool admission differs from its original invocation".into());
+                    let mut invocation = recorded.invocation;
+                    admission(&invocation, record.operation_id, *step, call_id)?;
+                    // Change only the actual saved operation. Its model call ID,
+                    // name, arguments and envelope still belong to the original call.
+                    let original = invocation.operation_id;
+                    let mut changed = original.into_bytes();
+                    changed[0] ^= 1;
+                    invocation.operation_id =
+                        acyclic_harness_core::OperationId::from_bytes(changed);
+                    if admission(&invocation, record.operation_id, *step, call_id).is_ok() {
+                        return Err("execution invocation accepted another tool operation".into());
+                    }
+                    invocation.operation_id = original;
+                    if pending.is_some() {
+                        return Err("tool admission overlaps its original invocation".into());
                     }
                     pending = Some((*step, call_id.clone(), invocation.arguments));
                     // A valid observation cannot disclose an unrelated payload field.
@@ -174,6 +183,21 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
         ExecutionPayloadField::Result,
     )
     .await
+}
+
+fn admission(
+    invocation: &ToolInvocation,
+    parent: acyclic_harness_core::OperationId,
+    step: u32,
+    call_id: &str,
+) -> Result {
+    if invocation.operation_id != ToolInvocation::model_call_operation(parent, step, call_id, None)?
+        || invocation.call_id != call_id
+        || invocation.name != TOOL
+    {
+        return Err("tool admission differs from its original invocation".into());
+    }
+    Ok(())
 }
 
 async fn read(

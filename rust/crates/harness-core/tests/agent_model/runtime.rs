@@ -94,7 +94,10 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         assert!(host.input_progress(&root, inbox).await?.0);
         assert_eq!(
             settled(&provider, &within, &root).await?,
-            (Phase::Idle, true)
+            Some(Settlement {
+                phase: Phase::Idle,
+                answer: Some(n),
+            })
         );
         let statuses = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(statuses.len(), 1);

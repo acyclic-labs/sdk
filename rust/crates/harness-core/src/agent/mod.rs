@@ -48,7 +48,7 @@ mod reply;
 mod settled;
 #[cfg(test)]
 mod ui_tests;
-pub use settled::{TurnChildren, answer, settled};
+pub use settled::{Settlement, TurnChildren, answer, settled};
 pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
