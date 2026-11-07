@@ -109,7 +109,7 @@ export async function generateContracts(mode = "write", families = []) {
         const path = join(root, relative);
         const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
         try {
-          if (baseline) checkGenerated(path, content);
+          if (baseline && mode === "check") checkGenerated(path, content);
           else projectGenerated(path, content, mode === "check");
         } catch (error) {
           if (!error.message.startsWith("STEP_FAILED generated-artifact:")) throw error;
