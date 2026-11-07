@@ -10,7 +10,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(path) = StreamPath::new(text) {
         assert_eq!(path.as_str(), text);
         assert_eq!(StreamPath::new(path.as_str()).ok().as_ref(), Some(&path));
-        let mut current = path.clone();
+        let mut current = path;
         while let Some(parent) = current.parent() {
             assert_eq!(
                 current.as_str().rsplit_once('/').map(|(prefix, _)| prefix),
