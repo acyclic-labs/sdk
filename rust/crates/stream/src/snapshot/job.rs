@@ -45,13 +45,19 @@ pub(super) fn new<S: Snapshot>(
         #[cfg(loom)]
         mutant: super::model::mutant(),
     }));
+    #[cfg(all(test, not(loom)))]
+    let observation = {
+        let mut observation = inspection::take();
+        inspection::notify(&mut observation, &completed, inspection::Cut::Created);
+        observation
+    };
     let job = Job {
         state: Some(state),
         completed: completed.clone(),
         #[cfg(loom)]
         discard_on_drop: super::model::discard_on_drop(),
         #[cfg(all(test, not(loom)))]
-        observation: inspection::take(),
+        observation,
     };
     (
         job,
@@ -179,7 +185,7 @@ impl<S: Snapshot> Job<S> {
                 let result = read.as_mut().poll(cx).map(Some);
                 #[cfg(all(test, not(loom)))]
                 if result.is_pending() {
-                    inspection::notify(observation, inspection::Cut::Pending);
+                    inspection::notify(observation, &completed, inspection::Cut::Pending);
                 }
                 result
             })
@@ -233,6 +239,10 @@ impl<S: Snapshot> Drop for Job<S> {
         // already released any queued/granted permit and has not moved a cursor.
         self.finish(None);
         #[cfg(all(test, not(loom)))]
-        inspection::notify(&mut self.observation, inspection::Cut::Retired);
+        inspection::notify(
+            &mut self.observation,
+            &self.completed,
+            inspection::Cut::Retired,
+        );
     }
 }

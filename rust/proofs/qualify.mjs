@@ -33,20 +33,14 @@ const claims = {
   ],
   "snapshot-waker-retirement": [
     "rust/crates/stream/src/snapshot/job.rs", "acyclic-stream",
-    "local_follow_loom::snapshot_consumer_departures_return_every_reservation",
-    "wake must run outside the publication lock", ["--features", "local,http,model-checking"],
+    "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex",
+    "wake must run outside the publication lock", ["--no-default-features"],
     {
-      target: ["--test", "main"], loom: true,
       mutations: [
         { patch: "rust/proofs/snapshot-waker-retirement/replacement.patch", label: "retired-under-replacement-lock", diagnostic: "wake must run outside the publication lock" },
         { patch: "rust/proofs/snapshot-waker-retirement/cancellation.patch", label: "retired-under-cancellation-lock", diagnostic: "wake must run outside the publication lock" },
+        { patch: "rust/proofs/snapshot-waker-retirement/completion.patch", label: "published-under-completion-lock", diagnostic: "wake must run outside the publication lock" },
       ],
-      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--features", "local,http,model-checking", "--test", "main", "--", "--exact", "--nocapture",
-        "local_follow_loom::snapshot_consumer_departures_return_every_reservation",
-        "local_follow_loom::negative_control_abandoned_job_leaks_its_reservation",
-        "local_follow_loom::negative_control_cancellation_skips_the_wake",
-        "local_follow_loom::negative_control_completion_leaves_the_job_armed"],
-      completed: ["4 passed; 0 failed"],
     },
   ],
   "independent-terminal-observers": [

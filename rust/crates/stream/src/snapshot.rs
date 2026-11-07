@@ -5,7 +5,7 @@ use std::{
 
 mod job;
 #[cfg(all(test, not(loom)))]
-pub(crate) use job::inspection::{Cut, observe};
+pub(crate) use job::inspection::{Cut, Probe, observe};
 #[cfg(loom)]
 pub(crate) mod model;
 

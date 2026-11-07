@@ -4,6 +4,123 @@ use futures::TryFutureExt as _;
 use std::task::{Context, Waker};
 
 #[tokio::test]
+async fn snapshot_callbacks_retire_outside_the_original_job_mutex() {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    use std::task::Wake;
+
+    struct Trace {
+        retired: AtomicUsize,
+        under_lock: AtomicBool,
+    }
+    struct ConsumerWake {
+        probe: Arc<crate::snapshot::Probe>,
+        trace: Arc<Trace>,
+        published: Mutex<Option<futures::channel::oneshot::Sender<()>>>,
+    }
+    impl ConsumerWake {
+        fn observe(&self) {
+            if !self.probe.unlocked() {
+                self.trace.under_lock.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    impl Wake for ConsumerWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.observe();
+            if let Some(published) = self.published.lock().unwrap().take() {
+                let _ = published.send(());
+            }
+        }
+    }
+    impl Drop for ConsumerWake {
+        fn drop(&mut self) {
+            self.observe();
+            self.trace.retired.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for keep in [false, true] {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("snapshot-callback-custody").unwrap();
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"record").into()],
+                if_tail: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
+            })
+            .await
+            .unwrap();
+        let mut follow = provider
+            .follow(crate::FollowRequest::new(path, 0))
+            .await
+            .unwrap();
+        let held = provider.state.write().await;
+        let (pending, created) = crate::snapshot::observe(crate::snapshot::Cut::Created, || {
+            std::pin::Pin::new(&mut follow)
+                .poll_next(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        });
+        assert!(pending);
+        let probe = Arc::new(
+            created
+                .await
+                .expect("the dispatched snapshot owns its mutex"),
+        );
+        let (published, publication) = futures::channel::oneshot::channel();
+        let mut published = Some(published);
+        let trace = Arc::new(Trace {
+            retired: AtomicUsize::new(0),
+            under_lock: AtomicBool::new(false),
+        });
+        // Each Waker's last owner is the real receiver registration. Replacing
+        // it, cancelling it and publishing it must all permit callback re-entry.
+        for index in 0..2 {
+            let waker = Waker::from(Arc::new(ConsumerWake {
+                probe: Arc::clone(&probe),
+                trace: Arc::clone(&trace),
+                published: Mutex::new(if index == 1 { published.take() } else { None }),
+            }));
+            assert!(
+                std::pin::Pin::new(&mut follow)
+                    .poll_next(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+        assert_eq!(trace.retired.load(Ordering::SeqCst), 1);
+        if keep {
+            drop(held);
+            // The job is this event's producer. Its final owner dropping also
+            // closes the channel, so executor loss cannot leave this wait open.
+            publication
+                .await
+                .expect("snapshot ended without publishing");
+            assert!(matches!(
+                follow.next().await,
+                Some(Ok(crate::FollowUpdate::Record(_)))
+            ));
+            drop(follow);
+        } else {
+            drop(follow);
+            drop(held);
+        }
+        assert_eq!(trace.retired.load(Ordering::SeqCst), 2);
+        // A destructor records the violation; report only after all owners
+        // retire so the negative control cannot poison cleanup while unwinding.
+        assert!(
+            !trace.under_lock.load(Ordering::SeqCst),
+            "wake must run outside the publication lock"
+        );
+    }
+}
+
+#[tokio::test]
 async fn publication_wakers_can_cancel_other_follows() {
     use std::sync::{
         Mutex,
