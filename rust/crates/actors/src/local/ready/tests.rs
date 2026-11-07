@@ -74,7 +74,25 @@ fn due_alarms_share_one_bounded_index_and_replacements_remove_old_nodes()
 #[cfg(not(loom))]
 #[test]
 fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), super::super::Error> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    struct Retiring {
+        core: Weak<Core<u64>>,
+        retired: Arc<AtomicUsize>,
+        locked: Arc<AtomicBool>,
+    }
+    impl Wake for Retiring {
+        fn wake(self: Arc<Self>) {}
+    }
+    impl Drop for Retiring {
+        fn drop(&mut self) {
+            if let Some(core) = self.core.upgrade()
+                && core.index.try_lock().is_err()
+            {
+                self.locked.store(true, Ordering::SeqCst);
+            }
+            self.retired.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     struct Signal {
         core: Arc<Core<u64>>,
         wakes: AtomicUsize,
@@ -96,6 +114,47 @@ fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), su
         wakes: AtomicUsize::new(0),
     });
     let waker = Waker::from(Arc::clone(&signal));
+    let retired = Arc::new(AtomicUsize::new(0));
+    let locked = Arc::new(AtomicBool::new(false));
+    for replace_by_listen in [false, true] {
+        // The original index owns the last callback. Record its destructor's
+        // lock observation, then assert only AFTER all callback cleanup ends.
+        let original = Waker::from(Arc::new(Retiring {
+            core: Arc::downgrade(&set.core),
+            retired: Arc::clone(&retired),
+            locked: Arc::clone(&locked),
+        }));
+        if replace_by_listen {
+            assert!(
+                set.poll_ready(&mut Context::from_waker(&original))
+                    .is_pending()
+            );
+        } else {
+            set.listen(&Context::from_waker(&original));
+        }
+        drop(original);
+        assert_eq!(
+            retired.load(Ordering::SeqCst),
+            usize::from(replace_by_listen)
+        );
+        if replace_by_listen {
+            set.listen(&Context::from_waker(&waker));
+        } else {
+            assert!(
+                set.poll_ready(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
+        assert!(
+            !locked.load(Ordering::SeqCst),
+            "dispatcher observer retirement retained the ready index lock"
+        );
+        assert_eq!(
+            retired.load(Ordering::SeqCst),
+            1 + usize::from(replace_by_listen),
+            "dispatcher replacement retained its original callback"
+        );
+    }
     assert!(
         set.poll_ready(&mut Context::from_waker(&waker))
             .is_pending()
