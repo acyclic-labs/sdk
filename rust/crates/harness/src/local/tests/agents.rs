@@ -1037,7 +1037,7 @@ async fn checkout_scripted(
 /// while an idle sibling, root checkout and retained child history survive.
 #[tokio::test]
 async fn physical_archive_releases_only_the_closed_binding_and_retains_history() -> Result<()> {
-    use acyclic_harness_client::{AgentCommand, AgentReply};
+    use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
     let provider = super::scripted(
@@ -1112,10 +1112,10 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
         *history
     );
     let entry = ConversationEntry::decode(&history[0]).map_err(agent)?;
-    assert_eq!(
-        Conversation::open(connection).turn(&entry).await?.1,
-        "first"
-    );
+    let output =
+        Conversation::read(&connection, child, ReadTarget::File { file: entry.output }).await?;
+    let output: crate::executor::TurnOutput = serde_json::from_slice(&output).map_err(agent)?;
+    assert_eq!(output.text, "first");
     assert_eq!(
         std::fs::read(children[1].1.join("kept.txt")).map_err(agent)?,
         b"inherited"
