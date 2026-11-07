@@ -173,6 +173,25 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
+test('static checks start only through explicit dispatch',()=>{
+ const verify=(workflow,names)=>{
+  assert.deepEqual(workflow.on,{workflow_dispatch:null});
+  assert.ok(!names.includes('readme-guard.yml'),'the retired workflow must stay absent');
+ };
+ const workflow=YAML.parse(read(STATIC));
+ verify(workflow,workflows);
+ for(const event of ['push','pull_request','pull_request_target','schedule','workflow_run']){
+  const altered=structuredClone(workflow);
+  altered.on[event]=null;
+  assert.throws(()=>verify(altered,workflows));
+ }
+ assert.throws(()=>verify(workflow,[...workflows,'readme-guard.yml']),/retired workflow/);
+ for(const name of workflows){
+  const events=YAML.parse(read(name)).on;
+  assert.ok(!Object.hasOwn(events,'pull_request')&&!Object.hasOwn(events,'pull_request_target'),name+': no automatic PR checks');
+ }
+});
+
 test('heavy workflows are reachable only through the release caller',()=>{
  for(const name of workflows.filter(name=>![STATIC,'release.yml','readme-guard.yml'].includes(name))){
   assert.match(triggers(read(name)),/workflow_call:/,name);
