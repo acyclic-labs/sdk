@@ -58,9 +58,26 @@ frames or a second semantic model.
 | `resolution-remove-v1` | 591 | `ed1a88b7a5099b301f72ecff8319c35d6143e5efb7fbd9876d420b32283306ef` |
 
 The decoder is checked against these accepted outputs unconditionally. Raw fuzz
-inputs remain untrusted and never supply their own expected resolution. Plain
-text proposals take a separate public route and are not covered by these JSON
-traces. Restart, upgrades and remote serving remain outside this capture.
+inputs remain untrusted and never supply their own expected resolution.
+
+## Plain-text merge resolutions
+
+Two additional traces were captured with the same command on Linux x86_64 at
+source `b359e8b3ee87b4fb23d3f5755e3f95703f89cf4d`. The durable local workspace,
+child and grandchild change the same original text file. The capture calls
+`MergeDirectory::resolution` on the unchanged writer output and requires the
+typed `InvalidMergeResolution` refusal for unresolved markers. It then writes
+an edited proposal, pins its generation, and records the actual admitted
+`MergeResolution::Text`. The original conflict and exact proposal bytes are
+retained; the refusal trace has a null expected resolution.
+
+| Trace | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `resolution-text-accepted-v1` | 224 | `76da544e2c97cdb5711579c7c42324ca5ae427e852a02e20e0b66d46a678f822` |
+| `resolution-text-refused-v1` | 418 | `91c0fd4b3b589c4b31d5b2352f6b9c0ead5ec8d21e5fb5829ebe583e35c771d2` |
+
+These traces exercise plain-text proposals rather than JSON resolution files.
+Restart, upgrades and remote serving remain outside this capture.
 
 ## Session subtree
 
