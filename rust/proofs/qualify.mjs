@@ -18,7 +18,7 @@ const claims = {
   "config-retained-cut": [
     "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
-    "original dependency observation was discarded", [],
+    "original dependency observation was discarded", ["--features", "filesystem"],
     {
       mutations: [
         { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
