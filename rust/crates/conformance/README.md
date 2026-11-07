@@ -22,6 +22,15 @@ mounted qualification separately.
 
 The portable [AgentHost suite](agent-host/README.md) drives the public host API against disposable backend storage, including exact uncertain retry, admission, spawn cuts, guest codec/cancellation and crash/reopen vectors. It is also an independent workspace crate for browser wasm builds and is re-exported as `acyclic_conformance::agent_host`.
 
+The `graphcoder-backends` vector runs the shipping binary against local, served
+and injected-seam backends. Its human policy uses the shared local human
+approver identity; an endpoint credential does not select that approval stage.
+The retained `mutations/backend_human_approval_identity.patch` restores the
+endpoint-principal policy and must fail with
+`principal is not the active approval stage`. Build `graphcoder` with
+`acyclic-native-runtime/test-support`, then run
+`cargo test -p acyclic-conformance --features graphcoder-backends --test graphcoder_backends graphcoder_runs_one_scenario_identically_on_every_backend -- --exact`.
+
 The `inference` feature supplies real-capture adapters for the eight `ModelProvider` vectors published at `acyclic_harness_core::model::conformance`: streaming, cancellation, paired tools/results, exact usage, typed refusals and deterministic replay. The public module exposes `Backend`, `verify`, `bench`, `suite!` and the shared `Counted` dispatch wrapper through `counted(provider)`. `inference-qualify` validates complete response families and their provenance; see [composition and qualification](../../../docs/backends/inference.md). This model seam is separate from the customer Inference context/run client. The host suite also includes cached OIDC identity admission and zero-read refusal vectors, with [local Dex qualification](../../../docs/backends/oidc.md).
 
 The published Stream, Objects v1, Machines and Actors crates expose their shared `conformance` features, with `Backend`, `verify`, `bench` and `suite!(factory)`. AgentHost lives in `acyclic_harness::conformance`; the private agent-host crate re-exports that same implementation for existing adapters. Filesystem publishes portable workspace vectors over its existing public seam, while the historical workload taxonomy and proof producers remain available here. Run suites and benchmarks against independently fresh, disposable state. The Objects suite checks the v1 provider API, including durable local reopening; it makes no claim about a separate v2 contract.

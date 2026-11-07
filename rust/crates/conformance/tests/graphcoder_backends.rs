@@ -679,16 +679,8 @@ impl Shape {
 #[tokio::test(flavor = "multi_thread")]
 async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     let directory = tempfile::tempdir().unwrap();
-    // The approver is the principal the endpoint credential authenticates,
-    // read from a minted credential rather than assumed.
-    let principal = {
-        let model = model(directory.path()).await;
-        let home = Home::new(directory.path(), "probe");
-        let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
-        let endpoint = served(&mut server).await;
-        server.kill().await;
-        endpoint["principal"].as_str().unwrap().to_owned()
-    };
+    // All three backends use the local host's human approval stage. Its
+    // principal is distinct from the credential admitted by the endpoint.
     let policy = directory.path().join("policy.json");
     std::fs::write(
         &policy,
@@ -696,7 +688,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             {"kind": "rules", "principal": "policy:conformance",
              "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
              "fallback": "allow"},
-            {"kind": "human", "principal": principal},
+            {"kind": "human", "principal": acyclic_harness::approvals::HUMAN_APPROVER},
         ]}))
         .unwrap(),
     )
@@ -723,7 +715,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
                 &["serve", "127.0.0.1:0"],
             ));
             let endpoint = served(&mut server).await;
-            assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
                 url: endpoint["endpoint"].as_str().unwrap().to_owned(),
                 credential: endpoint["credential"].as_str().unwrap().to_owned(),
