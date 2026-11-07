@@ -1,4 +1,10 @@
 //! Volume creations and forks contributed to one caller-built Streams commit.
+//!
+//! Every operation accepts the caller's work and cancellation. Batch preparation
+//! admits its ordered output backing before contributing any volume. With native
+//! work, the returned allocation belongs to that original ledger and must outlive
+//! the returned vector. Preparation errors roll back only this call's additions;
+//! an unresolved submitted commit retains the original proofs and holds.
 use super::*;
 use crate::distributed::{FilesystemCommit, FilesystemCommitOutcome, StreamAuthorityStore};
 
@@ -65,20 +71,17 @@ where
     /// conditional transaction. No volume head changes during preparation.
     /// The commit retains all proofs and collection/projection guards through
     /// an unknown outcome; resubmit that exact commit after transport failure.
-    pub async fn prepare_restore_many(
+    pub async fn prepare_restore_many<W: FsWork>(
         &self,
         restores: &[RestoreSpec<'_, StreamAuthorityStore<P>, O>],
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<
-        OperationReceipt<Vec<crate::Generation<StreamAuthorityStore<P>, O>>>,
-        WorkspaceError,
-    > {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::OwnedOutput<Vec<crate::Generation<StreamAuthorityStore<P>, O>>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         let mut guard = commit.guard();
         let result = async {
-            let mut generations = Vec::with_capacity(restores.len());
+            let mut generations = Owned::<Vec<_>>::allocate(restores.len(), &mut accounting)?;
             for restore in restores {
                 let volume = &restore.expected.workspace.volume;
                 if !self.same_deployment(&volume.fs)
@@ -143,53 +146,56 @@ where
                 if let Some((root, _, _, _)) = copied {
                     drop(root);
                 }
-                generations.push(crate::Generation {
-                    workspace: restore.expected.workspace.clone(),
-                    id: GenerationId::from_root(generation_root),
-                    publication_closure: None,
-                });
+                generations.push(
+                    crate::Generation {
+                        workspace: restore.expected.workspace.clone(),
+                        id: GenerationId::from_root(generation_root),
+                        publication_closure: None,
+                    },
+                    &mut accounting,
+                )?;
             }
-            Ok(generations)
+            Ok((generations.value, generations.allocation))
         }
         .await;
         if result.is_ok() {
             guard.disarm();
         }
-        measured(result, &accounting)
+        work.finish_owned::<_, WorkspaceError>(result, &accounting)
     }
 
     /// Adds every fork to `commit`, all-or-none with the caller's mutations.
     ///
     /// Returns each destination's workspace and generation, in order. Nothing is
     /// visible until the commit is submitted and committed.
-    pub async fn prepare_fork_many(
+    pub async fn prepare_fork_many<W: FsWork>(
         &self,
         forks: &[ForkSpec<'_, StreamAuthorityStore<P>, O>],
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<ForkedGeneration>>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::OwnedOutput<Vec<ForkedGeneration>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
         // the whole batch succeeded.
         let mut guard = commit.guard();
         let result = async {
             let accounting = &mut accounting;
-            let mut created = Vec::with_capacity(forks.len());
+            let mut created = Owned::<Vec<_>>::allocate(forks.len(), accounting)?;
             for fork in forks {
-                created.push(
-                    self.contribute_fork(fork, guard.commit(), accounting, cancellation)
-                        .await?,
-                );
+                let value = self
+                    .contribute_fork(fork, guard.commit(), accounting, cancellation)
+                    .await?;
+                created.push(value, accounting)?;
             }
-            Ok(created)
+            Ok((created.value, created.allocation))
         }
         .await;
         if result.is_ok() {
             guard.disarm();
         }
-        measured(result, &accounting)
+        work.finish_owned::<_, WorkspaceError>(result, &accounting)
     }
 
     async fn contribute_fork(
@@ -259,34 +265,34 @@ where
 
     /// Adds every fresh workspace to `commit`, all-or-none with the caller's
     /// mutations. Returns each workspace identity, in order.
-    pub async fn prepare_create_many(
+    pub async fn prepare_create_many<W: FsWork>(
         &self,
         creations: &[CreateSpec<'_>],
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<crate::WorkspaceId>>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::OwnedOutput<Vec<crate::WorkspaceId>, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
         // All-or-none, even when this future is dropped mid-way: the guard
         // removes every entry, contribution and hold this call added unless
         // the whole batch succeeded.
         let mut guard = commit.guard();
         let result = async {
             let accounting = &mut accounting;
-            let mut created = Vec::with_capacity(creations.len());
+            let mut created = Owned::<Vec<_>>::allocate(creations.len(), accounting)?;
             for creation in creations {
-                created.push(
-                    self.contribute_creation(creation, guard.commit(), accounting, cancellation)
-                        .await?,
-                );
+                let value = self
+                    .contribute_creation(creation, guard.commit(), accounting, cancellation)
+                    .await?;
+                created.push(value, accounting)?;
             }
-            Ok(created)
+            Ok((created.value, created.allocation))
         }
         .await;
         if result.is_ok() {
             guard.disarm();
         }
-        measured(result, &accounting)
+        work.finish_owned::<_, WorkspaceError>(result, &accounting)
     }
 
     async fn contribute_creation(
@@ -410,20 +416,20 @@ where
     /// Fences the active policy cut and freezes a caller-submitted commit.
     /// Call this before sending its request through an external provider.
     /// Repeated sealing preserves the exact request and key.
-    pub fn seal_commit(
+    pub fn seal_commit<W: FsWork>(
         &self,
         commit: &mut FilesystemCommit,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<()> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<(), FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = (|| {
             let mut authority = crate::async_storage::AuthorityFrame::borrow(&mut accounting)?;
             let result = self.inner.authority.seal(commit, &mut authority);
             finish_authority_work(authority)?;
             result.map_err(FsError::from)
         })();
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     /// Submits a composed commit once. On `Unknown`, resubmit the returned
@@ -458,20 +464,20 @@ where
 
     /// Settles a composed commit the caller submitted through its own
     /// provider, from the exact outcome of [`FilesystemCommit::request`].
-    pub async fn settle_commit(
+    pub async fn settle_commit<W: FsWork>(
         &self,
         commit: FilesystemCommit,
         outcome: acyclic_stream::CommitOutcome,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<FilesystemCommitOutcome> {
-        let accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<FilesystemCommitOutcome, FsError> {
+        let accounting = work.accounting(cancellation);
         let result = self
             .inner
             .authority
             .settle_recorded(commit, outcome, |commit, commit_id| {
                 self.inner.authority.refresh_committed(commit, commit_id);
             });
-        measured(result.map_err(FsError::from), &accounting)
+        work.finish(result.map_err(FsError::from), &accounting)
     }
 }

@@ -86,7 +86,8 @@ fn one_byte_short_budget_rejects_before_claim() -> Result<(), AllocationError> {
 }
 
 #[test]
-fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), AllocationError> {
+fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut capacity = LogicalVecCapacity::default();
     let mut values = Vec::<u64>::new();
     let mut ledger = AllocationLedger::default();
@@ -122,7 +123,120 @@ fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Alloca
         ledger.release(admitted + 1),
         Err(AllocationError::ReleaseInvariant)
     );
+    drop(values);
     ledger.release(admitted)?;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    for (owned, copy_budget, initial_capacity) in [false, true]
+        .into_iter()
+        .flat_map(|owned| [0, u64::MAX].map(|budget| (owned, budget)))
+        .flat_map(|(owned, budget)| [1, 31].map(|capacity| (owned, budget, capacity)))
+    {
+        let cancellation = crate::CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                bytes_copied: copy_budget,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let check_growth = |result: Result<(), crate::FsError>,
+                            values: &Vec<u64>,
+                            (pointer, capacity, before): (*const u64, usize, WorkCounters)|
+         -> Result<(), Box<dyn std::error::Error>> {
+            if copy_budget == 0 {
+                assert!(
+                    matches!(
+                        result,
+                        Err(crate::FsError::NativeKernel(
+                            crate::NativeTreeMaterializationError::Work(
+                                WorkError::BudgetExceeded {
+                                    counter: "bytes_copied",
+                                    ..
+                                }
+                            )
+                        ))
+                    ),
+                    "growth bypassed copy admission"
+                );
+                assert_eq!(values.as_ptr(), pointer);
+                assert_eq!(values.capacity(), capacity);
+                assert_eq!(original.receipt(), before);
+            } else {
+                result?;
+                assert!(values.capacity() > capacity);
+                assert_eq!(
+                    original.receipt().bytes_copied - before.bytes_copied,
+                    if values.as_ptr() == pointer {
+                        0
+                    } else {
+                        usize_to_u64(capacity * size_of::<u64>())
+                    }
+                );
+            }
+            assert!(values.iter().all(|value| *value == 7));
+            Ok(())
+        };
+        let mut accounting = KernelAccounting::native(&original, &cancellation);
+        if owned {
+            let mut values = super::super::persistent_point::Owned::<Vec<u64>>::allocate(
+                initial_capacity,
+                &mut accounting,
+            )?;
+            let old_capacity = values.value.capacity();
+            values.value.resize(old_capacity, 7);
+            let old_pointer = values.value.as_ptr();
+            let before = original.receipt();
+            let result = values.ensure_for_push(old_capacity * 2, &mut accounting);
+            check_growth(result, &values.value, (old_pointer, old_capacity, before))?;
+            values.retire(&mut accounting)?;
+        } else {
+            let mut values = Vec::<u64>::new();
+            let mut capacity = LogicalVecCapacity::default();
+            let mut allocation = KernelOwnedAllocation::Standalone;
+            reserve_vec_with_accounting(
+                &mut values,
+                initial_capacity,
+                &mut allocation,
+                &mut accounting,
+                |error| crate::NativeTreeMaterializationError::AllocationFailed(error).into(),
+            )?;
+            let old_capacity = values.capacity();
+            values.resize(old_capacity, 7);
+            // Allocators may return extra backing. Admit that existing backing
+            // logically before asking the production helper to grow it.
+            while capacity.elements < old_capacity {
+                capacity.ensure_for_push_with_accounting(
+                    &mut values,
+                    old_capacity,
+                    &mut allocation,
+                    &mut accounting,
+                )?;
+            }
+            let old_pointer = values.as_ptr();
+            let before = original.receipt();
+            let result = capacity.ensure_for_push_with_accounting(
+                &mut values,
+                old_capacity * 2,
+                &mut allocation,
+                &mut accounting,
+            );
+            check_growth(result, &values, (old_pointer, old_capacity, before))?;
+            drop(values);
+            super::super::persistent_point::retire_allocation(
+                allocation,
+                capacity.logical_bytes(),
+                &mut accounting,
+            )?;
+        }
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(
+            original.remaining()?.bytes_copied,
+            copy_budget - original.receipt().bytes_copied
+        );
+    }
 
     let mut overflow = AllocationLedger::default();
     overflow.claim_bytes(u64::MAX, 0, &mut work, WorkBudget::UNBOUNDED)?;
@@ -353,18 +467,35 @@ fn vector_completed_growth_survives_a_late_budget_error() -> Result<(), Allocati
         1,
         |error| error,
         |step| match step {
-            LogicalVecAllocationStep::Claim { bytes } => {
+            VecAllocationStep::CopyAdmission { bytes } => {
+                work.admit(
+                    &WorkCounters {
+                        bytes_copied: bytes,
+                        ..WorkCounters::UNCHARGED
+                    },
+                    &WorkBudget::UNBOUNDED,
+                )?;
+                Ok(())
+            }
+            VecAllocationStep::Claim { bytes } => {
                 ledger.claim_bytes(bytes, 1, &mut work, WorkBudget::UNBOUNDED)
             }
-            LogicalVecAllocationStep::ReserveFailed { bytes, .. } => {
+            VecAllocationStep::ReserveFailed { bytes, .. } => {
                 ledger.release(bytes)?;
                 Err(AllocationError::AllocationFailed)
             }
-            LogicalVecAllocationStep::Capacity { requested, actual } => {
+            VecAllocationStep::Capacity { requested, actual } => {
                 ledger.record_owned_bytes(actual - requested, &mut work)?;
                 work.verify(WorkBudget {
                     peak_allocation_bytes: 0,
                     ..WorkBudget::UNBOUNDED
+                })?;
+                Ok(())
+            }
+            VecAllocationStep::CopyComplete { bytes } => {
+                work.try_add_assign(&WorkCounters {
+                    bytes_copied: bytes,
+                    ..WorkCounters::UNCHARGED
                 })?;
                 Ok(())
             }

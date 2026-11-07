@@ -155,14 +155,46 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-        let mut keys = Owned::<Vec<Vec<u8>>>::allocate(input.len() * 2, &mut accounting)?;
+        let maximum = input.len();
+        let mut keys = Owned::<Vec<Vec<u8>>>::allocate(0, &mut accounting)?;
         for key in input {
+            if !keys.value.is_empty() && keys.value.len() == keys.value.capacity() {
+                let before = (keys.bytes, keys.value.as_ptr(), accounting.spent());
+                let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
+                    return Err("expected standalone custody".into());
+                };
+                budget.bytes_copied = before.2.bytes_copied;
+                let refused = keys.ensure_for_push(maximum, &mut accounting);
+                let KernelAccounting::Standalone { budget, .. } = &mut accounting else {
+                    return Err("expected standalone custody".into());
+                };
+                *budget = WorkBudget::UNBOUNDED;
+                assert!(matches!(
+                    refused,
+                    Err(FsError::Work(WorkError::BudgetExceeded {
+                        counter: "bytes_copied",
+                        ..
+                    }))
+                ));
+                assert_eq!(
+                    (keys.bytes, keys.value.as_ptr(), accounting.spent()),
+                    before,
+                    "refused growth changed nested buffer custody"
+                );
+            }
+            keys.ensure_for_push(maximum, &mut accounting)?;
             let mut owned = Owned::<Vec<u8>>::allocate(key.len() + 7, &mut accounting)?;
             owned.value.extend_from_slice(&key);
             keys.bytes += owned.bytes;
             keys.allocation.absorb(&mut owned.allocation)?;
             keys.value.push(owned.value);
         }
+        assert_eq!(
+            keys.bytes,
+            (keys.value.capacity() * size_of::<Vec<u8>>()
+                + keys.value.iter().map(Vec::capacity).sum::<usize>()) as u64,
+            "growth lost nested buffer custody"
+        );
         let keys = retain_ambiguous_keys(keys, &mut accounting)?;
         assert_eq!(
             keys.value

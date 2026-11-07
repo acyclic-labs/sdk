@@ -20,16 +20,8 @@ fn value(id: u8) -> DecodedCacheValue {
         native_custody: None,
     }
 }
-// Equivalent to the real admission at the model's one-entry/eight-byte bound,
-// except the broken variant releases the guard between checking and inserting.
-fn publish(cache: &CachedObjectStore<()>, id: u8, split: bool) {
-    if split {
-        let mut state = cache.lock_state().unwrap();
-        if state.decoded.len() != 0 {
-            evict_oldest(&mut state).unwrap();
-        }
-        drop(state);
-        loom::thread::yield_now();
+fn publish(cache: &CachedObjectStore<()>, id: u8, unbounded: bool) {
+    if unbounded {
         cache
             .decoded_admit_bounded::<false>(key(id), cache.shared.fill_epoch(), value(id))
             .unwrap();
@@ -42,7 +34,7 @@ fn publish(cache: &CachedObjectStore<()>, id: u8, split: bool) {
         }
     }
 }
-fn scenario(alias: bool, split: bool) {
+fn scenario(alias: bool, unbounded: bool) {
     let cache = Arc::new(
         CachedObjectStore::new(
             (),
@@ -54,7 +46,7 @@ fn scenario(alias: bool, split: bool) {
         .unwrap(),
     );
     let writer = cache.clone();
-    let peer = loom::thread::spawn(move || publish(&writer, 0, split));
+    let peer = loom::thread::spawn(move || publish(&writer, 0, unbounded));
     let observed = if alias {
         cache.decoded_get_matching::<false>(key(1))
     } else {
@@ -65,7 +57,7 @@ fn scenario(alias: bool, split: bool) {
     }
     .unwrap();
     let correct = observed.is_none_or(|v| *v.value.downcast::<u64>().unwrap() == 1);
-    publish(&cache, 1, split);
+    publish(&cache, 1, unbounded);
     // Join before terminal observations so assertion-deletion leaves no live actor.
     peer.join().unwrap();
     let stats = cache.stats().unwrap();
@@ -79,8 +71,8 @@ fn scenario(alias: bool, split: bool) {
 fn decoded_read_and_replacement_are_atomic() {
     loom::model(|| scenario(false, false));
 }
-fn detected(alias: bool, split: bool, target: &str) {
-    let error = std::panic::catch_unwind(|| loom::model(move || scenario(alias, split)))
+fn detected(alias: bool, unbounded: bool, target: &str) {
+    let error = std::panic::catch_unwind(|| loom::model(move || scenario(alias, unbounded)))
         .expect_err("cache mutation survived");
     let text = error
         .downcast_ref::<String>()

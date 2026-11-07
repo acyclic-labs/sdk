@@ -7,7 +7,6 @@ use crate::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamPath,
-    StreamProvider,
 };
 
 type PlacedFs = Fs<StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;
@@ -131,6 +130,8 @@ async fn compose(
 #[tokio::test]
 async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
 -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
@@ -139,13 +140,49 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
         AuthorityPlacement::new(VOLUMES)?,
     );
     let before = placed_store.authorities(64).await?.len();
+    #[cfg(not(target_arch = "wasm32"))]
+    let cancel = CancellationToken::new();
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+        .map_err(|(error, _)| error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let commit = {
+        let mut commit = FilesystemCommit::new(spawn_request(1, true)?);
+        let (forked, allocation) = fs
+            .prepare_fork_many(&forks(&source)?, &mut commit, &work, &cancel)
+            .await?;
+        assert_eq!(forked.len(), 2);
+        assert_eq!(
+            allocation.bytes(),
+            (forked.capacity() * std::mem::size_of::<crate::ForkedGeneration>()) as u64
+        );
+        assert!(allocation.work().shares_ledger(&work));
+        drop(forked);
+        drop(allocation);
+        let before = work.receipt();
+        fs.require_head(&source, &mut commit, &work, &cancel)
+            .await?;
+        assert!(work.receipt().items_examined > before.items_examined);
+        let before = work.receipt();
+        fs.seal_commit(&mut commit, &work, &cancel)?;
+        assert!(
+            work.receipt().items_examined > before.items_examined,
+            "seal lost its original request traversal"
+        );
+        commit
+    };
+    #[cfg(target_arch = "wasm32")]
     let commit = compose(&fs, &source, true).await?;
     assert_eq!(
         commit.authorities().len(),
         4,
         "two forks, each with its retention"
     );
-    let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
+    #[cfg(not(target_arch = "wasm32"))]
+    let outcome = fs.submit_commit(commit, &work, &cancel).await?;
+    #[cfg(target_arch = "wasm32")]
+    let outcome = unbounded!(fs, submit_commit(commit))?;
+    let FilesystemCommitOutcome::Committed(_) = outcome else {
         return Err("spawn composition did not commit".into());
     };
     let project = unbounded!(fs, open_workspace("child-project"))?;
@@ -213,6 +250,8 @@ async fn a_rejected_caller_condition_leaves_no_forked_volume() -> Result<(), Box
 /// between preparation and submission must also reject the complete restore.
 #[tokio::test]
 async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let original = parent(&fs, &stream).await?;
@@ -266,18 +305,32 @@ async fn restoring_generation_and_context_cut_is_atomic() -> Result<(), Box<dyn 
             }],
             idempotency_key: acyclic_stream::IdempotencyKey::new(vec![attempt])?,
         });
-        unbounded!(
-            fs,
-            prepare_restore_many(
-                &[crate::RestoreSpec {
-                    expected: &expected,
-                    source: &retained,
-                    operation: OperationId::from_bytes([attempt; 16]),
-                    permit: crate::PublicationPermit::Unrestricted,
-                }],
-                &mut commit
-            )
-        )?;
+        let restores = [crate::RestoreSpec {
+            expected: &expected,
+            source: &retained,
+            operation: OperationId::from_bytes([attempt; 16]),
+            permit: crate::PublicationPermit::Unrestricted,
+        }];
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let cancel = CancellationToken::new();
+            let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+                .map_err(|(error, _)| error)?;
+            let (generations, allocation) = fs
+                .prepare_restore_many(&restores, &mut commit, &work, &cancel)
+                .await?;
+            assert_eq!(generations.len(), 1);
+            assert_eq!(generations[0].workspace_id(), expected.workspace_id());
+            assert_eq!(
+                allocation.bytes(),
+                (generations.capacity() * std::mem::size_of::<PlacedGeneration>()) as u64
+            );
+            assert!(allocation.work().shares_ledger(&work));
+            drop(generations);
+            drop(allocation);
+        }
+        #[cfg(target_arch = "wasm32")]
+        unbounded!(fs, prepare_restore_many(&restores, &mut commit))?;
         assert_eq!(unbounded!(workspace, head())?.id(), expected.id());
         if concurrent {
             workspace.write_text("/plan.md", "user edit").await?;
@@ -470,7 +523,12 @@ async fn one_composition_cannot_create_a_volume_twice() -> Result<(), Box<dyn Er
 }
 
 #[tokio::test]
+// `composition_unfunded.patch` restores unadmitted output backing in all three
+// production batch methods. Applying it must fail this unchanged control at
+// "batch output admission was not first" or the original backing assertion.
 async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let initialization = crate::VolumeInitialization {
@@ -500,8 +558,65 @@ async fn root_creation_creates_every_volume_in_the_caller_commit() -> Result<(),
         .ok_or("an unsubmitted commit accepts caller entries")?
         .mutations
         .truncate(1);
+    #[cfg(not(target_arch = "wasm32"))]
+    let (created, allocation) = {
+        let cancel = CancellationToken::new();
+        let denied = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes(),
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        )
+        .map_err(|(error, _)| error)?;
+        let original = commit.request().clone();
+        let before = denied.receipt();
+        let failure = fs
+            .prepare_create_many(&creations, &mut commit, &denied, &cancel)
+            .await
+            .err()
+            .ok_or("unfunded composed output was allocated")?;
+        assert!(
+            matches!(
+                failure,
+                WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    observed,
+                    maximum,
+                }) if observed == maximum + (creations.len() * std::mem::size_of::<crate::WorkspaceId>()) as u64
+            ),
+            "batch output admission was not first: {failure:?}"
+        );
+        assert_eq!(commit.request(), &original);
+        assert!(commit.authorities().is_empty());
+        assert_eq!(denied.receipt(), before);
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+            .map_err(|(error, _)| error)?;
+        let result = fs
+            .prepare_create_many(&creations, &mut commit, &work, &cancel)
+            .await?;
+        assert_eq!(
+            result.1.bytes(),
+            (result.0.capacity() * std::mem::size_of::<crate::WorkspaceId>()) as u64,
+            "composed output lost its original backing allocation"
+        );
+        assert!(result.1.work().shares_ledger(&work));
+        assert!(work.receipt().items_examined > 0);
+        result
+    };
+    #[cfg(target_arch = "wasm32")]
     let created = unbounded!(fs, prepare_create_many(&creations, &mut commit))?;
     assert_eq!(created.len(), 2);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let retained = allocation.work().live_allocation_bytes();
+        let bytes = allocation.bytes();
+        let work = allocation.work().clone();
+        drop(created);
+        assert_eq!(work.live_allocation_bytes(), retained);
+        drop(allocation);
+        assert_eq!(work.live_allocation_bytes(), retained - bytes);
+    }
     let FilesystemCommitOutcome::Committed(_) = unbounded!(fs, submit_commit(commit))? else {
         return Err("root creation did not commit".into());
     };
@@ -611,6 +726,8 @@ async fn distinct_placements_keep_separate_change_streams() -> Result<(), Box<dy
 /// now survives both and the next open re-reads the durable head.
 #[tokio::test]
 async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<dyn Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
     for public in [false, true] {
         let stream = Arc::new(MemoryStream::default());
         let fs = placed(&stream)?;
@@ -629,12 +746,21 @@ async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<
         let committed = envelope.commit_id;
         let outcome = acyclic_stream::CommitOutcome::Committed(envelope);
         let cancelled = CancellationToken::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
+            .map_err(|(error, _)| error)?;
         cancelled.cancel();
         let settled = if public {
-            value!(
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = fs
+                .settle_commit(commit, outcome, &original, &cancelled)
+                .await?;
+            #[cfg(target_arch = "wasm32")]
+            let outcome = value!(
                 fs.settle_commit(commit, outcome, WorkBudget::UNBOUNDED, &cancelled)
                     .await
-            )?
+            )?;
+            outcome
         } else {
             StreamAuthorityStore::with_placement(
                 Arc::clone(&stream),
