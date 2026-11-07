@@ -1,3 +1,6 @@
+//! Checks the production control-block allocation layout with Kani.
+
+#[cfg(kani)]
 #[path = "../../src/arc_layout.rs"]
 mod arc_layout;
 
