@@ -154,7 +154,7 @@ impl AgentBinding {
     /// When the reply is not a binding, or its bytes are not one.
     pub fn from_reply(reply: &crate::AgentReply) -> Result<(Self, String), CommandError> {
         use base64::Engine as _;
-        let crate::AgentReply::Bound { binding, tools } = reply else {
+        let crate::AgentReply::Bound { binding, tools, .. } = reply else {
             return Err(CommandError::Invalid);
         };
         let binding = Self::new(
@@ -168,11 +168,17 @@ impl AgentBinding {
     /// The [`crate::AgentReply::Bound`] reply naming `binding` and the root's
     /// tool-output resource `tools`.
     #[must_use]
-    pub fn reply(binding: &wire::InvokeActorRequest, tools: String) -> crate::AgentReply {
+    pub fn reply(
+        binding: &wire::InvokeActorRequest,
+        tools: String,
+        observation: Option<&[u8]>,
+    ) -> crate::AgentReply {
         use base64::Engine as _;
         crate::AgentReply::Bound {
             binding: base64::engine::general_purpose::STANDARD.encode(binding.encode_to_vec()),
             tools,
+            observation: observation
+                .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes)),
         }
     }
 
@@ -232,12 +238,14 @@ fn route_path(url: &str) -> &str {
     })
 }
 
-/// Controls use the very same pool and credential as the selected agent fold.
+/// Controls retain the caller's credential. Read-only observation may enroll
+/// a selected private resource on the same pool under its owning host's grant.
 /// Cloning the pool handle creates no connection, task, queue or result index.
 #[derive(Clone)]
 pub struct AgentControls {
     client: Client,
     credential: u32,
+    observation: Option<(Client, u32)>,
     binding: AgentBinding,
 }
 
@@ -263,7 +271,8 @@ impl AgentControls {
             .await
     }
 
-    /// Select a descendant without creating another session or credential slot.
+    /// Select a descendant on this pool. Its host may enroll read-only access
+    /// to the descendant's private output; command identity never changes.
     pub async fn select(
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
@@ -276,11 +285,26 @@ impl AgentControls {
         agent: Option<acyclic_harness_core::agent::AgentPath>,
     ) -> Result<(Self, String), AgentExchangeError> {
         let invocation = self.prepare(PreparedCommand::new(&AgentCommand::Bind { agent })?)?;
-        let (binding, tools) = AgentBinding::from_reply(&self.execute(&invocation).await?)?;
-        Ok((
-            Self::new(self.client.clone(), self.credential, binding),
-            tools,
-        ))
+        let reply = self.execute(&invocation).await?;
+        let (binding, tools) = AgentBinding::from_reply(&reply)?;
+        let mut selected = Self::new(self.client.clone(), self.credential, binding);
+        if let AgentReply::Bound {
+            observation: Some(credential),
+            ..
+        } = reply
+        {
+            use base64::Engine as _;
+            let credential = base64::engine::general_purpose::STANDARD
+                .decode(credential)
+                .map_err(|_| CommandError::Invalid)?;
+            selected.observation = Some(
+                self.client
+                    .with_credential(credential.into())
+                    .await
+                    .map_err(AgentExchangeError::Session)?,
+            );
+        }
+        Ok((selected, tools))
     }
 
     /// Canonical host-published routing, without a command body or ordering.
@@ -294,16 +318,36 @@ impl AgentControls {
         Self {
             client,
             credential,
+            observation: None,
             binding,
         }
     }
 
-    /// Start bounded observation on this same authenticated pool and slot.
+    /// Slot owning the selected resource's observation. This grants no command
+    /// authority; commands always use the caller's original slot.
+    pub fn observation_credential(&self) -> u32 {
+        self.observation
+            .as_ref()
+            .map_or(self.credential, |(_, slot)| *slot)
+    }
+
+    fn observation_client(&self) -> Client {
+        self.observation
+            .as_ref()
+            .map_or_else(|| self.client.clone(), |(client, _)| client.clone())
+    }
+
+    /// Start bounded observation on this same authenticated pool.
     pub fn observe(
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
-        crate::AgentClient::observing(self.client.clone(), selection, self.credential, false)
+        crate::AgentClient::observing(
+            self.observation_client(),
+            selection,
+            self.observation_credential(),
+            false,
+        )
     }
 
     /// Replay all committed transitions through the ordinary session owner.
@@ -311,7 +355,12 @@ impl AgentControls {
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
-        crate::AgentClient::observing(self.client.clone(), selection, self.credential, true)
+        crate::AgentClient::observing(
+            self.observation_client(),
+            selection,
+            self.observation_credential(),
+            true,
+        )
     }
 
     /// Prepare and retain an exact invocation before starting any transport.

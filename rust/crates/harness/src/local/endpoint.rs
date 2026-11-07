@@ -79,7 +79,8 @@ impl Connection {
     }
 
     /// Select an existing descendant on the same authenticated session.
-    /// Local and remote connections share the original subtree credential.
+    /// Commands retain the original caller; a native host may enroll read-only
+    /// access to the selected child's private output on that same session.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
         if !self.root.contains(&agent) {
             return Err(Error::Unauthorized(

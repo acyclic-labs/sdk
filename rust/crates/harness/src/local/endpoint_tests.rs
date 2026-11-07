@@ -91,11 +91,27 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
             let selected = connection.select(child.clone()).await?;
             assert_eq!(selected.root(), &child);
+            let observation = selected.controls.observation_credential();
+            assert_ne!(observation, CREDENTIAL);
+            // The new read-only grant cannot become a command identity.
+            let observer_commands = AgentControls::new(
+                session.clone(),
+                observation,
+                acyclic_harness_client::AgentBinding::new(&selected.controls.binding_bytes())
+                    .map_err(exchange)?,
+            );
+            let root_request = observer_commands
+                .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(exchange)?)
+                .map_err(exchange)?;
+            assert!(matches!(
+                observer_commands.execute(&root_request).await,
+                Err(AgentExchangeError::Session(StreamError::AccessDenied))
+            ));
             // A selected frontend follows the child's private tool-output
             // resource as well as its conversation and status streams.
             let _changes = session
                 .subscribe(acyclic_stream::wire::SessionSubscription {
-                    credential: CREDENTIAL,
+                    credential: selected.controls.observation_credential(),
                     resume: Some(acyclic_stream::wire::SessionCursor::default()),
                     kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
                         acyclic_stream::wire::SessionFollow {

@@ -220,35 +220,17 @@ fn assembled(head: &AgentCall, bytes: &[u8]) -> bool {
 }
 
 fn success(reply: &AgentReply, command: &AgentCommand) {
+    if let AgentReply::Bound {
+        observation: Some(credential),
+        ..
+    } = reply
+    {
+        reject_invalid_base64(reply, command, "observation", credential);
+    }
     if let AgentReply::Content { data, .. } = reply {
         reply.content().expect("admitted content must decode");
         if !data.is_empty() {
-            let mut changed = json(reply);
-            // Preserve the original encoded length, file range and padding.
-            // Invalid alphabet alone must fail at admission, not at display.
-            let mut invalid = data.clone().into_bytes();
-            invalid[0] = b'!';
-            changed["data"] = String::from_utf8(invalid).unwrap().into();
-            let changed: AgentReply = serde_json::from_value(changed).unwrap();
-            // Replace the complete typed body, so content equal to a JSON key
-            // cannot accidentally mutate the key instead of its value.
-            let body = serde_json::to_vec(reply).unwrap();
-            let invalid = serde_json::to_vec(&changed).unwrap();
-            assert_eq!(body.len(), invalid.len());
-            let mut wire = encode_agent_reply(&Ok(reply.clone()), command).unwrap();
-            let start = wire
-                .windows(body.len())
-                .position(|part| part == body)
-                .unwrap();
-            wire[start..start + body.len()].copy_from_slice(&invalid);
-            assert!(
-                decode_agent_reply(&wire, command).is_err(),
-                "invalid base64 wire admitted"
-            );
-            assert!(
-                encode_agent_reply(&Ok(changed), command).is_err(),
-                "invalid base64 admitted"
-            );
+            reject_invalid_base64(reply, command, "data", data);
         }
     }
     let quiet = match (reply, command) {
@@ -274,6 +256,32 @@ fn success(reply: &AgentReply, command: &AgentCommand) {
     }
 }
 
+fn reject_invalid_base64(reply: &AgentReply, command: &AgentCommand, field: &str, encoded: &str) {
+    let mut changed = json(reply);
+    // Preserve length and padding, changing only the actual field's alphabet.
+    let mut invalid = encoded.as_bytes().to_vec();
+    invalid[0] = b'!';
+    changed[field] = String::from_utf8(invalid).unwrap().into();
+    let changed: AgentReply = serde_json::from_value(changed).unwrap();
+    let body = serde_json::to_vec(reply).unwrap();
+    let invalid = serde_json::to_vec(&changed).unwrap();
+    assert_eq!(body.len(), invalid.len());
+    let mut wire = encode_agent_reply(&Ok(reply.clone()), command).unwrap();
+    let start = wire
+        .windows(body.len())
+        .position(|part| part == body)
+        .unwrap();
+    wire[start..start + body.len()].copy_from_slice(&invalid);
+    assert!(
+        decode_agent_reply(&wire, command).is_err(),
+        "invalid base64 wire admitted"
+    );
+    assert!(
+        encode_agent_reply(&Ok(changed), command).is_err(),
+        "invalid base64 admitted"
+    );
+}
+
 /// Every positive input is emitted by the public SDK writer it exercises.
 pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
     let agent = AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
@@ -296,7 +304,18 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         (
             "bind",
             AgentCommand::Bind { agent: None },
-            AgentBinding::reply(&binding, "fs:/tools".into()),
+            AgentBinding::reply(&binding, "fs:/tools".into(), None),
+        ),
+        (
+            "bind-observation",
+            AgentCommand::Bind {
+                agent: Some(agent.clone()),
+            },
+            AgentBinding::reply(
+                &binding,
+                "fs:/tools".into(),
+                Some(&acyclic_stream::session::testing::credential()),
+            ),
         ),
         (
             "cancel",
