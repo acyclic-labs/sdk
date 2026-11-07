@@ -449,52 +449,16 @@ pub(super) fn spawn_closed_with_arguments(
         actions: std::mem::MaybeUninit::uninit(),
         attr_initialized: false,
         actions_initialized: false,
+        cleanup: [Some(actions_cleanup), Some(attr_cleanup)],
+        meter,
+        custody,
+        events,
     };
     let spawned = objects
         .initialize(meter)
-        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody, events));
-    // Retire objects in reverse construction order. Both actual
-    // destroys run even after cancellation or another cleanup failure.
-    let (actions_result, actions) = retire(
-        objects.actions_initialized.then_some(&mut objects.actions),
-        libc::posix_spawn_file_actions_destroy,
-        actions_cleanup,
-        meter,
-    );
-    let (attr_result, attributes) = retire(
-        objects.attr_initialized.then_some(&mut objects.attributes),
-        libc::posix_spawnattr_destroy,
-        attr_cleanup,
-        meter,
-    );
-    let retained = SpawnResources {
-        actions,
-        attributes,
-    };
-    if retained.pending() {
-        let owner = custody.get_or_insert_with(|| super::ProcessTree {
-            child: None,
-            native_child: None,
-            guard: Guard {
-                process_group: 0,
-                active: false,
-            },
-            output_taken: false,
-            cleanup_on_drop: false,
-            spawn_resources: SpawnResources::default(),
-            prepared_spawn: None,
-            custody: None,
-            #[cfg(target_os = "linux")]
-            exit_fd: None,
-            writer: Writer,
-            queued_stdin: None,
-            _events: events,
-            #[cfg(all(test, feature = "test-support", not(loom)))]
-            capture_armed: None,
-        });
-        owner.spawn_resources = retained;
-    }
-    spawned.and(actions_result).and(attr_result)
+        .and_then(|()| objects.spawn(program, arguments, environment, meter));
+    let retired = objects.retire();
+    spawned.and(retired)
 }
 
 fn spawn_status(status: libc::c_int) -> io::Result<()> {
@@ -506,14 +470,94 @@ fn spawn_status(status: libc::c_int) -> io::Result<()> {
 }
 
 /// One closed spawn's native objects; each initialized one must be destroyed.
-struct SpawnObjects {
+struct SpawnObjects<'a> {
     attributes: std::mem::MaybeUninit<libc::posix_spawnattr_t>,
     actions: std::mem::MaybeUninit<libc::posix_spawn_file_actions_t>,
     attr_initialized: bool,
     actions_initialized: bool,
+    cleanup: [Option<u64>; 2],
+    meter: &'a dyn crate::NativeReadMeter,
+    custody: &'a mut Option<super::ProcessTree>,
+    events: super::events::Events,
 }
 
-impl SpawnObjects {
+impl SpawnObjects<'_> {
+    fn retire(&mut self) -> io::Result<()> {
+        let mut result = Ok(());
+        // The existing delivery primitive completes the second owned cleanup
+        // even when the first callback unwinds. Tokens leave this owner before
+        // any callback, so its Drop cannot destroy or record an object twice.
+        let [actions_cleanup, attr_cleanup] = &mut self.cleanup;
+        let cleanup = [(true, actions_cleanup.take()), (false, attr_cleanup.take())];
+        crate::delivery::deliver(cleanup.into_iter(), |(actions, token)| {
+            let Some(token) = token else {
+                return;
+            };
+            let initialized = if actions {
+                self.actions_initialized
+            } else {
+                self.attr_initialized
+            };
+            if !initialized {
+                self.meter.cancel_cleanup_write(token);
+                return;
+            }
+            let mut retained = SpawnResources::default();
+            let destroyed = if actions {
+                let (destroyed, actions) = retire(
+                    &mut self.actions,
+                    &mut self.actions_initialized,
+                    libc::posix_spawn_file_actions_destroy,
+                );
+                retained.actions = actions;
+                destroyed
+            } else {
+                let (destroyed, attributes) = retire(
+                    &mut self.attributes,
+                    &mut self.attr_initialized,
+                    libc::posix_spawnattr_destroy,
+                );
+                retained.attributes = attributes;
+                destroyed
+            };
+            // Preserve a failed native destroy in the original caller's owner
+            // before its accounting callback can fail or unwind.
+            if retained.pending() {
+                let owner = self.custody.get_or_insert_with(|| super::ProcessTree {
+                    child: None,
+                    native_child: None,
+                    guard: Guard {
+                        process_group: 0,
+                        active: false,
+                    },
+                    output_taken: false,
+                    cleanup_on_drop: false,
+                    spawn_resources: SpawnResources::default(),
+                    prepared_spawn: None,
+                    custody: None,
+                    #[cfg(target_os = "linux")]
+                    exit_fd: None,
+                    writer: Writer,
+                    queued_stdin: None,
+                    _events: self.events,
+                    #[cfg(all(test, feature = "test-support", not(loom)))]
+                    capture_armed: None,
+                });
+                if let Some(actions) = retained.actions {
+                    owner.spawn_resources.actions = Some(actions);
+                }
+                if let Some(attributes) = retained.attributes {
+                    owner.spawn_resources.attributes = Some(attributes);
+                }
+            }
+            let recorded = self.meter.record_cleanup_write(token);
+            if result.is_ok() {
+                result = recorded.and(destroyed);
+            }
+        });
+        result
+    }
+
     fn initialize(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
         let flags = libc::c_short::try_from(libc::POSIX_SPAWN_SETPGROUP)
             .map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -564,13 +608,11 @@ impl SpawnObjects {
     }
 
     fn spawn(
-        &self,
+        &mut self,
         program: &std::ffi::CStr,
         arguments: &[*mut libc::c_char],
         environment: Option<*mut *mut libc::c_char>,
         meter: &dyn crate::NativeReadMeter,
-        custody: &mut Option<super::ProcessTree>,
-        events: super::events::Events,
     ) -> io::Result<()> {
         let mut pid = 0;
         let (result, recorded) =
@@ -590,7 +632,7 @@ impl SpawnObjects {
                     )
                 };
                 if status == 0 {
-                    *custody = Some(super::ProcessTree {
+                    *self.custody = Some(super::ProcessTree {
                         child: None,
                         native_child: Some(pid),
                         guard: Guard {
@@ -606,7 +648,7 @@ impl SpawnObjects {
                         exit_fd: None,
                         writer: Writer,
                         queued_stdin: None,
-                        _events: events,
+                        _events: self.events,
                         #[cfg(all(test, feature = "test-support", not(loom)))]
                         capture_armed: None,
                     });
@@ -618,24 +660,25 @@ impl SpawnObjects {
     }
 }
 
+impl Drop for SpawnObjects<'_> {
+    fn drop(&mut self) {
+        let _ = self.retire();
+    }
+}
+
 /// Destroys one initialized spawn object, returning it when the destroy fails.
 fn retire<T>(
-    object: Option<&mut std::mem::MaybeUninit<T>>,
+    object: &mut std::mem::MaybeUninit<T>,
+    initialized: &mut bool,
     destroy: unsafe extern "C" fn(*mut T) -> libc::c_int,
-    cleanup: u64,
-    meter: &dyn crate::NativeReadMeter,
 ) -> (io::Result<()>, Option<T>) {
-    let Some(object) = object else {
-        meter.cancel_cleanup_write(cleanup);
-        return (Ok(()), None);
-    };
-    let recorded = meter.record_cleanup_write(cleanup);
+    *initialized = false;
     // SAFETY: the caller passes only an initialized, not yet destroyed object.
     let status = unsafe { destroy(object.as_mut_ptr()) };
     // SAFETY: a failed destroy leaves the object initialized; this read moves
     // it to its retaining owner, and the frame's storage is not used again.
     let retained = (status != 0).then(|| unsafe { object.assume_init_read() });
-    (recorded.and_then(|()| spawn_status(status)), retained)
+    (spawn_status(status), retained)
 }
 
 impl Guard {
