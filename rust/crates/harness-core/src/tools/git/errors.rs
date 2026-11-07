@@ -28,7 +28,8 @@ pub(crate) fn compat_error<S: super::CommandStore>(error: GitCompatError<S::Stor
         | GitCompatError::NothingToCommit
         | GitCompatError::Contended
         | GitCompatError::TransitionPending(_)
-        | GitCompatError::StaleTransition => Error::Conflict(error.to_string()),
+        | GitCompatError::StaleTransition
+        | GitCompatError::RevisionExhausted => Error::Conflict(error.to_string()),
     }
 }
 
