@@ -53,7 +53,6 @@ const expected = [
   ".github\\workflows\\agent-host-qualification.yml:windows-2025",
   ".github\\workflows\\publish-crate.yml:ubuntu-24.04",
   ".github\\workflows\\publish-npm.yml:ubuntu-24.04",
-  ".github\\workflows\\readme-guard.yml:ubuntu-latest",
   ".github\\workflows\\release-acyclic.yml:ubuntu-24.04-arm",
   ".github\\workflows\\release-acyclic.yml:ubuntu-24.04-arm",
   ".github\\workflows\\release-acyclic.yml:macos-15",
