@@ -42,7 +42,7 @@ export class TerminalFrames {
 // Query errors are rendered in the status row, outside the task transcript.
 export function queryFailure(visible) {
   const notice = visible.slice(visible.lastIndexOf("\n") + 1).replace(/^✗ /, "");
-  return /^(?:storage failure:|Usage query ended:)/.test(notice) ? notice : undefined;
+  return /^(?:Filesystem query ended:|Usage query ended:)/.test(notice) ? notice : undefined;
 }
 function* failures(visible) {
   const notice = queryFailure(visible), status = visible.lastIndexOf("\n") + 1;

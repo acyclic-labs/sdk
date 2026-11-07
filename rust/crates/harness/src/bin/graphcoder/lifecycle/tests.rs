@@ -612,8 +612,6 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
 
     let runtime = acyclic_native_runtime::coordination_runtime()?;
     runtime.block_on(async {
-        for field in ["record", "capacity", "formatter"] {
-            for operation_error in [false, true] {
                 let (reader, original) = io::pipe()?;
                 let mut output = InheritedOutput::from_file(
                     original.as_fd().try_clone_to_owned()?.into(),
@@ -631,6 +629,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                     let Some(written) = written else { break };
                     assert_ne!(written?, 0);
                 }
+                drop(output);
                 // The old post-terminal summary would wait on this actual
                 // full pipe, even though the original result is already ready.
                 let old_writer = InheritedOutput::from_file(
@@ -644,6 +643,55 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                 .await;
                 drop(old_summary);
 
+                // Exercise the shipping text-error path and the original
+                // graceful owner against that same full, unread OS pipe.
+                let cause: Failure = Box::new(io::Error::from(io::ErrorKind::PermissionDenied));
+                let identity = std::ptr::from_ref(cause.as_ref());
+                let (terminate, signal) = tokio::sync::oneshot::channel();
+                let shutdown = async {
+                    signal.await.unwrap();
+                    Ok(143)
+                }
+                .boxed()
+                .shared();
+                let error_output = InheritedOutput::from_file(
+                    original.as_fd().try_clone_to_owned()?.into(),
+                )?;
+                let delivery_shutdown = shutdown.clone();
+                let failed_operation = async move {
+                    text_failure(error_output, cause.as_ref(), delivery_shutdown).await;
+                    Err(cause)
+                };
+                let error_report = WaitReport::default();
+                let mut failed_host = Box::pin(observe(
+                    &error_report,
+                    Ok(None),
+                    shutdown,
+                    true,
+                    failed_operation,
+                ));
+                poll_fn(|cx| {
+                    assert!(failed_host.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                terminate.send(()).unwrap();
+                let (result, _, disposition) = poll_fn(|cx| {
+                    let Poll::Ready(result) = failed_host.as_mut().poll(cx) else {
+                        panic!("text error output held graceful shutdown on an unread pipe")
+                    };
+                    Poll::Ready(result)
+                })
+                .await;
+                let retained = result.unwrap_err();
+                assert!(std::ptr::eq(identity, std::ptr::from_ref(retained.as_ref())));
+                assert!(matches!(disposition, Some(FailureReport::Incomplete(None))));
+
+        for field in ["record", "capacity", "formatter"] {
+            for operation_error in [false, true] {
+                let output = InheritedOutput::from_file(
+                    original.as_fd().try_clone_to_owned()?.into(),
+                )?;
                 let report = WaitReport::default();
                 let (subscriber, receiver) = subscriber(&report, Some("info".into()), || {
                     Ok(Some(vec![vec![0; 64].into_boxed_slice()]))
@@ -694,9 +742,9 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                     matches!(failure, Some(OutputFailure::Formatting)),
                     field == "formatter"
                 );
-                drop(reader);
             }
         }
+        drop(reader);
         Ok(())
     })
 }

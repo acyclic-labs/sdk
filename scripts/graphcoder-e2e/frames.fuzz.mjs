@@ -9,6 +9,7 @@ import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
 const corpus = JSON.parse(readFileSync(new URL("./fixtures/terminal-frames.json", import.meta.url), "utf8"));
 const bytes = Buffer.concat([Buffer.from(corpus.refused.stdout), Buffer.from(corpus.idle.stdout)]);
 const query = JSON.parse(readFileSync(new URL("./fixtures/live-terminal-query-refusal.json", import.meta.url), "utf8"));
+const command = JSON.parse(readFileSync(new URL("./fixtures/native-command-refusal.json", import.meta.url), "utf8"));
 // Refine the retained capture with the current native renderer's exact marker.
 // This is a source-derived mutation, not a newly captured native journey.
 const nativeView = readFileSync(new URL("../../rust/crates/harness/src/bin/graphcoder/view.rs", import.meta.url), "utf8");
@@ -16,8 +17,10 @@ const refusalFormat = /fn refusal\([^]*?Some\(format!\("([^"]*)"\)\)/.exec(nativ
 assert.ok(refusalFormat?.endsWith("{reason}"), "retain the native refusal renderer source join");
 const refusalPrefix = refusalFormat.slice(0, -"{reason}".length)
   .replace(/\\u\{([0-9a-f]+)\}/gi, (_, scalar) => String.fromCodePoint(parseInt(scalar, 16)));
-const usageFormat = /refusal\(format_args!\("([^"]*)"/.exec(nativeView)?.[1];
-assert.equal(usageFormat, "Usage query ended: {error}", "retain the native usage failure source join");
+const queryFormats = [...nativeView.matchAll(/refusal\(format_args!\("([^"]*query ended: \{error\})"/g)]
+  .map(match => match[1]);
+assert.deepEqual(queryFormats, ["Usage query ended: {error}", "Filesystem query ended: {error}"],
+  "retain both native query failure source joins");
 
 function admission(visible, text, kind, reason, schedule) {
   const history = new FailureHistory();
@@ -71,10 +74,11 @@ export async function fuzz(schedule) {
     assert.equal(history.unexpected(screenText(screen)), undefined,
       "negative control: observing only the final idle screen loses the original refusal");
     admission(refusedScreen, refusal, "task_failure", refusal.slice(refusal.indexOf(" failed: ") + 9), schedule);
+    const actionNotice = command.visible.slice(command.visible.lastIndexOf("\n") + 1);
+    admission(command.visible, actionNotice, "action_refusal", actionNotice.slice(refusalPrefix.length), schedule);
     const notice = query.visible.slice(query.visible.lastIndexOf("\n") + 1);
-    assert.equal(queryFailure(query.visible), notice);
-    admission(query.visible, notice, "query_failure", notice, schedule);
-    for (const reason of [notice, usageFormat.replace("{error}", notice)]) {
+    for (const format of queryFormats) {
+      const reason = format.replace("{error}", notice);
       const prefixed = refusalPrefix + reason;
       const current = query.visible.slice(0, -notice.length) + prefixed;
       assert.equal(queryFailure(current), reason);

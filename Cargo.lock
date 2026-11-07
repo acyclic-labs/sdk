@@ -1197,6 +1197,7 @@ dependencies = [
  "acyclic-plugin-identity",
  "acyclic-test-support",
  "blake3",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

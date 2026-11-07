@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "source_commit": "678518c280fb11d74c800f1fa9704d37cfe21fe4",
+  "case": "pty-slash",
+  "transcript_sha256": "00b2262df8d8f00a38d82f2e86d08544d0e66ec2c4ac6b96d0a6bcf84f65de5a",
+  "attribution": "Original shipping GraphCoder completed terminal frame; exact visible screen extracted from its original refusal diagnostic.",
+  "visible": "○ GraphCoder\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n┌●─────────────────────────────────────────────────────────────────────────────┐\n│/marke                                                                        │\n└──────────────────────────────────────────────────────────────────────────────┘\nestimated token charge: ? · in 0 · out 0 · cache read 0 · cache write 0 · reason\ning 0\n✗ storage failure: resource not found: Unknown command: /marke"
+}

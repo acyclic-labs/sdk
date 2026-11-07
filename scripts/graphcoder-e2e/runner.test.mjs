@@ -170,7 +170,7 @@ test("observed producer frame asserts captured content with one screen projectio
           id: "observed-frame", workspace: root,
           args: ["-e", "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
           onRequest() { return () => {}; },
-        }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
+        }, { actions: [{ when: { contains: ["storage failure: diff command:"] },
           assert: assertion, send: "finish\n" }] },
         result => { capture = result; });
         if (rejects) await assert.rejects(running, /step=assert observed terminal frame/);
