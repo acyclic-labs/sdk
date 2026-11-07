@@ -104,16 +104,21 @@ fn open_or_create(custody: SigningCustody<'_>) -> io::Result<Root> {
         return Ok(root);
     }
     let _creation = (!exclusive).then(creation_lock).transpose()?;
-    if let Some(root) = read(&entry)? {
+    if !exclusive && let Some(root) = read(&entry)? {
         return Ok(root);
     }
     let root = Zeroizing::new(new_key()?);
     if let Err(error) = entry.set_secret(&root[..]) {
-        // Only a no-replace store can lose a creation race; adopt its winner.
-        return match exclusive.then(|| read(&entry)).transpose()?.flatten() {
-            Some(winner) => Ok(winner),
-            None => Err(error::backend("write", error)),
-        };
+        // A visible root does not acknowledge publication's durability. Only
+        // an actual no-replace collision establishes a competing creator.
+        if exclusive
+            && matches!(&error, keyring::Error::PlatformFailure(source)
+                if source.downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists))
+        {
+            return read(&entry)?.ok_or_else(unavailable);
+        }
+        return Err(error::backend("write", error));
     }
     // Observe the stored value before any reference to it can be published.
     match read(&entry)? {
