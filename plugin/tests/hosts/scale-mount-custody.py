@@ -49,12 +49,24 @@ def main():
                                       'records': lease.mounts()}), flush=True)
         return original_run(argv, **kwargs)
 
+    def retire():
+        nonlocal lease, directory
+        active, lease = lease, None
+        if active is not None:
+            try:
+                active.retire()
+            finally:
+                active.close()
+        if directory is not None:
+            shutil.rmtree(directory)
+            directory = None
+
     def exceeded(small, large):
         nonlocal observed
         observed = original_exceeded(small, large)
         # Exhausted mount-fixture has closed its device; retire its actual
         # registration before the scenario removes any fixture directories.
-        lease.retire()
+        retire()
         return observed
 
     subprocess.run, scale.exceeded = run, exceeded
@@ -73,13 +85,7 @@ def main():
                           'qualified': True}), flush=True)
     finally:
         subprocess.run = original_run
-        if lease is not None:
-            try:
-                lease.retire()
-            finally:
-                lease.close()
-        if directory is not None:
-            shutil.rmtree(directory)
+        retire()
 
 
 if __name__ == '__main__':
