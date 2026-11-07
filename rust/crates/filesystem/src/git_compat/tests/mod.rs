@@ -34,37 +34,43 @@ impl TestExecutor {
 impl GitFilesystemExecutor for TestExecutor {
     type Error = TestExecutorError;
 
-    async fn validate_merge_resolution(
-        &self,
+    fn validate_merge_resolution<'a>(
+        &'a self,
         _operation: OperationId,
-        action: &GitFilesystemAction,
+        action: &'a GitFilesystemAction,
         tree: GitTreeRef,
-    ) -> Result<GitFilesystemResult, Self::Error> {
-        self.result
-            .as_ref()
-            .map(|_| GitFilesystemResult::Applied {
-                tree: Some(tree),
-                tracked_paths: match action {
-                    GitFilesystemAction::Join { tracked_paths, .. } => Some(tracked_paths.clone()),
-                    _ => None,
-                },
-            })
-            .map_err(|_| TestExecutorError)
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
+        Box::pin(std::future::ready(
+            self.result
+                .as_ref()
+                .map(|_| GitFilesystemResult::Applied {
+                    tree: Some(tree),
+                    tracked_paths: match action {
+                        GitFilesystemAction::Join { tracked_paths, .. } => {
+                            Some(tracked_paths.clone())
+                        }
+                        _ => None,
+                    },
+                })
+                .map_err(|_| TestExecutorError),
+        ))
     }
 
-    async fn execute(
-        &self,
+    fn execute<'a>(
+        &'a self,
         operation_id: OperationId,
-        _action: &GitFilesystemAction,
-    ) -> Result<GitFilesystemResult, Self::Error> {
+        _action: &'a GitFilesystemAction,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
         self.operations
             .lock()
             .expect("operation lock")
             .push(operation_id);
-        self.result
-            .as_ref()
-            .map(Clone::clone)
-            .map_err(|_| TestExecutorError)
+        Box::pin(std::future::ready(
+            self.result
+                .as_ref()
+                .map(Clone::clone)
+                .map_err(|_| TestExecutorError),
+        ))
     }
 }
 

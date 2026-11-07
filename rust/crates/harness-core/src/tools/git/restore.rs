@@ -1,12 +1,10 @@
 use super::*;
 
-impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
+impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     /// The generation a restore under `operation_id` already committed. A
     /// restore's paths and expected head derive from the live workspace, so
