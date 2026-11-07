@@ -97,6 +97,22 @@ fn billed_owner_intersection_visits_each_grant_linearly() {
                     "{repetitions} restrictions, {owners} actor owners: {} visits for {input_grants} grants",
                     visits.len()
                 );
+                // Measure the same public entry point outside the trace collector:
+                // recording visits owns its own Vec and is not admission work.
+                let mut measured_result = None;
+                let allocations = acyclic_test_support::measure(|| {
+                    measured_result = Some(capability.authorize(
+                        &trust,
+                        &request,
+                        PolicyDecision::Allow,
+                        Scope::Exact,
+                    ));
+                });
+                assert_eq!(measured_result, Some(result));
+                assert_eq!(
+                    allocations.count_total, 0,
+                    "{repetitions} restrictions, {owners} actor owners: temporary admission allocations {allocations:?}"
+                );
             }
         }
     }
