@@ -875,3 +875,70 @@ original `captures/` provenance. `negative-controls/mcp_stdio_bound.patch` remov
 the reader's decoder bound; replaying the same captured input must then fail the
 fragmentation oracle. The retained codec controls additionally reject a dropped
 bound publication and an ignored notification hiding a buffered response.
+The existing Harness `bounded_json` target also calls the shared typed decoder
+with borrowed `RawValue`, retaining its original byte/value/canonical relations.
+It checks admission, scratch release and caller refusal at each charge frontier.
+Malformed arbitrary inputs reach the typed entrance; an admitted writer buffer
+with one trailing value additionally exercises diagnostic admission and its
+caller refusal. The five retained inputs are finite regression operands, not
+captured provider responses or evidence of a coverage-guided campaign.
+
+`../crates/harness-fuzz/negative-controls/typed-json-ignore-admission.patch` and
+`typed-json-ignore-release.patch` retain the original admission/release controls.
+`typed-json-ignore-syntax-admission.patch` drops the actual diagnostic admission
+error. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs` from
+the repository root to require that last mutation to fail the unchanged semantic
+assertion, then restore production and run the same named corpus check. Syntax
+control qualification, owned typed-layout bounds, complete branches and platform
+composition remain separate obligations; this borrowed-document check establishes
+neither arbitrary schema completeness nor physical allocation bounds.
+
+The shared `bounded_json` relation checks borrowed typed admission before
+materializing a `serde_json::Value`. The retained `raw_large_exponent` and
+`raw_deep` inputs are authored JSON syntax operands: `1e400` and 129 nested
+arrays, respectively. They extend the five existing inputs without claiming
+external producer provenance. Byte/value/canonical comparisons remain within
+the independent Value materializer's accepted domain. All five existing charge
+refusal frontiers still share the same helper; the writer-derived syntax check
+retains its diagnostic-admission assertion.
+
+To check that the oracle detects accidental materialization of borrowed raw
+JSON, run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
+--raw-domain-prior <prior-oracle-revision>`. The same named corpus test runs the
+retained production mutation with the prior oracle, with the current oracle,
+and after exact restoration. A prior miss, current semantic failure and
+restored pass are required. This is finite domain conformance, not a complete
+branch report or coverage-guided campaign.
+
+Borrowed raw admission uses the actual layout when no value schema is
+supplied. It skips the raw subtree without converting its numeric tokens to
+floating-point values; explicit value-expansion schemas retain their original
+walk. `typed-json-reject-unknown-borrowed.patch` restores the old missing-schema
+refusal for the same retained raw operands. The existing nested-container
+allocation property also checks an out-of-range numeric token, retaining its
+physical skip-stack bound and zero-scratch negative control.
+
+Valid raw JSON can still exceed the declared zero-based depth bound. The same
+oracle counts unquoted structural depth after RawValue validates syntax and
+requires refusal beyond the bound, preserving admitted boundary documents and
+escaped structural characters inside strings. Three authored depth operands
+extend the seven retained inputs without replacing their bytes or provenance.
+Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs --depth-prior
+<prior-oracle-revision>` to require the old oracle's false failure, rejection of
+the actual depth-guard omission, and the exact restored ten-input positive.
+The existing malformed-input and valid-input paths now share one typed decode
+and scratch observation. No production decoder or input-size bound changes.
+
+The same property preserves a caller-owned Storage cause at all six charge
+frontiers. It also decodes an original writer's raw-member envelope as a Value,
+refuses inspection and then release, and requires the first cause plus complete
+scratch release. The existing writer buffer and shared scratch accounting are
+reused. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
+--first-cause-prior <prior-oracle-revision>` to check the prior oracle's miss,
+the actual stored-error omission, and the exact restored corpus. No input or
+test count is added.
+
+The retained native hidden-raw property crosses its 64-item limit with 65
+elements. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
+--hidden-items` to omit the actual final item guard, require the unchanged
+no-admission assertion to fail, and restore the original passing property.

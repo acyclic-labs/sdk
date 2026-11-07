@@ -8,7 +8,7 @@ zero allocator calls or bytes, and the exact completed-work receipt.
 From the repository root:
 
 ```sh
-python3 rust/proofs/qualify.py borrowed-budget
+node rust/proofs/qualify.mjs borrowed-budget
 ```
 
 The retained mutation changes that actual standalone completion branch to pass

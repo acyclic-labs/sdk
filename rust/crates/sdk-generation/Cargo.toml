@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 autotests = false
 name = "sdk-generation"
 version = "0.1.0"

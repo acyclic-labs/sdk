@@ -1,0 +1,18 @@
+diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/harness/src/local/agent_conversation.rs
+--- a/rust/crates/harness/src/local/agent_conversation.rs
++++ b/rust/crates/harness/src/local/agent_conversation.rs
+@@ -528,8 +528,8 @@
+     pub async fn observe(&self, from: Option<u64>) -> Result<super::Observer> {
+-        let (settled, statuses, _) = self.settlement().await?;
+-        super::Observer::open(
+-            &self.connection,
+-            from.unwrap_or(settled),
+-            statuses.saturating_sub(1),
+-        )
++        let from = match from {
++            Some(from) => from,
++            None => self.settled().await?,
++        };
++        let (_, statuses, _) = self.settlement().await?;
++        super::Observer::open(&self.connection, from, statuses.saturating_sub(1))
+     }

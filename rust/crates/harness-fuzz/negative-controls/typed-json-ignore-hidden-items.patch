@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-core/src/executor/json/admission.rs b/rust/crates/harness-core/src/executor/json/admission.rs
+--- a/rust/crates/harness-core/src/executor/json/admission.rs
++++ b/rust/crates/harness-core/src/executor/json/admission.rs
+@@ -525,12 +525,6 @@ fn finish(
+     origin: Origin,
+     code: Option<crate::wire::ErrorCode>,
+ ) -> Result<JsonValueShape> {
+-    if items
+-        .checked_add(counts.nodes)
+-        .is_none_or(|items| items > bounds.maximum_items)
+-    {
+-        return Err(boundary("JSON item limit exceeded", code));
+-    }
+     if counts.depth > bounds.maximum_depth.min(256) {
+         return Err(input_error(JsonInputError::Depth, code));
+     }

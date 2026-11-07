@@ -1267,6 +1267,7 @@ dependencies = [
  "prettyplease 0.3.0",
  "proptest",
  "prost",
+ "prost-reflect",
  "serde",
  "serde_json",
  "syn 3.0.9",

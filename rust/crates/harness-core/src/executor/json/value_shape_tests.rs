@@ -1,7 +1,6 @@
 #![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn hidden_raw_values_are_bounded_before_decode() {
     let raw = |payload: &str| {
@@ -15,7 +14,7 @@ fn hidden_raw_values_are_bounded_before_decode() {
         maximum_items: 2 * 1024 * 1024,
         maximum_depth: 256,
     };
-    let payload = format!("[{}0]", "0,".repeat(999_999));
+    let payload = format!("[{}0]", "0,".repeat(64));
     let frames = (0..6).fold("0".to_owned(), |payload, _| raw(&payload));
     let deep = raw(&format!("{}0{}", "[".repeat(1024), "]".repeat(1024)));
     for (document, bounds, maximum_inspected, expected_kind) in [

@@ -7,7 +7,7 @@ must allocate neither objects nor bytes. Changing the home again must retain
 every membership; repeated withdrawal must be idempotent and the final
 withdrawal must end interest.
 
-Run `python3 rust/proofs/qualify.py admission-rebind` from the repository root.
+Run `node rust/proofs/qualify.mjs admission-rebind` from the repository root.
 The kept patch inserts per-membership string allocation into the actual
 `bind_home` method. The unchanged allocation assertion must fail with
 `home rebinding allocated per pending membership`. A compile failure, empty
