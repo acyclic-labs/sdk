@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "public-settlement-retirement": [
+    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "public settlement retained its lost model producer", nativeHarness,
+  ],
   "runtime-completion-obligations": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
     "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",

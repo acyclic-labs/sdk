@@ -450,16 +450,7 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     assert_eq!(usage.totals().calls, 1);
     assert_eq!(usage.totals().completed, 0);
     let before = usage.totals().clone();
-    let waiting = async {
-        loop {
-            match events.next().await? {
-                super::super::Event::Turn(_) => {
-                    return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into()));
-                }
-                super::super::Event::Status(_) | super::super::Event::Output => {}
-            }
-        }
-    };
+    let waiting = client.settle("lost-producer", inbox, &mut events);
     tokio::pin!(waiting);
     assert!(
         futures::poll!(&mut waiting).is_pending(),
@@ -485,10 +476,10 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         "source loss changed the admitted projection"
     );
     // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
-    let observed = waiting.await;
+    let observed = futures::poll!(&mut waiting);
     assert!(
-        matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
-        "observation lost the runtime cause: {observed:?}"
+        matches!(&observed, std::task::Poll::Ready(Err(Error::Storage(reason))) if reason.contains("model producer closed")),
+        "public settlement retained its lost model producer: {observed:?}"
     );
     let hosted = harness.agents.get().unwrap();
     assert!(
