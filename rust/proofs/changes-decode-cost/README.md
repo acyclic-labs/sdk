@@ -1,7 +1,7 @@
 # Admitted change decoding cost
 
 ```sh
-python3 rust/proofs/qualify.py changes-decode-cost
+node rust/proofs/qualify.mjs changes-decode-cost
 ```
 
 The existing decoder property uses the actual v1 protocol golden and v2

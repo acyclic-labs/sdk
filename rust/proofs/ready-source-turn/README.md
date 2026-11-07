@@ -15,7 +15,7 @@ each owner turn polls exactly one provider, then an actual append resumes them.
 The original late-cancellation schedule is part of this same control: publication
 after a stale callback must still wake the parent and return its committed record.
 
-Run `python3 rust/proofs/qualify.py ready-source-turn`. The unchanged control must
+Run `node rust/proofs/qualify.mjs ready-source-turn`. The unchanged control must
 reject four retained mutations of the actual scheduler, then pass after exact
 source restoration:
 
@@ -41,7 +41,7 @@ provider's own requested work, wake-hint queue allocation, complete operation
 cost, all-platform acceptance and deployment topology remain separate obligations.
 The existing production-scheduler Loom publication/recheck models remain in place.
 
-`python3 rust/proofs/qualify.py ready-source-race` selects the existing production
+`node rust/proofs/qualify.mjs ready-source-race` selects the existing production
 Loom publication model. Two original removed-source callbacks publish during the
 replacement's provider poll while its actual `Gate` producer races publication.
 One callback has the replacement channel's stale generation. The retained parking

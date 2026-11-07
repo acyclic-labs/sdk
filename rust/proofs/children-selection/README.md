@@ -3,7 +3,7 @@
 Run from the repository root:
 
 ```sh
-python3 rust/proofs/qualify.py children-selection
+node rust/proofs/qualify.mjs children-selection
 ```
 
 The existing trusted-head/wire-budget control obtains pages from the public

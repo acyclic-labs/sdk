@@ -1,7 +1,7 @@
 # Partial change projection
 
 ```sh
-python3 rust/proofs/qualify.py partial-projection-cost
+node rust/proofs/qualify.mjs partial-projection-cost
 ```
 
 The existing production projection property retains the actual v1 protocol

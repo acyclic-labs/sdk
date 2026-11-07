@@ -1,7 +1,7 @@
 # Projection cost
 
 ```sh
-python3 rust/proofs/qualify.py projection-cost
+node rust/proofs/qualify.mjs projection-cost
 ```
 
 The retained production property uses the actual v1 protocol golden and v2

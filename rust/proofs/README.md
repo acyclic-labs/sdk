@@ -163,3 +163,8 @@ Streams' original retained slots and the shared boxed index to one radix
 selection loop. It challenges original comparison admission and retains
 prepared completion after cancellation; variable-width replay and whole-request
 cost remain open.
+Run `node rust/proofs/qualify.mjs conversation-observation` to challenge the
+native parent/child volume property with the original duplicate-settlement
+observation path, then restore the exact production source and rerun the same
+property. Both phases retain the original oracle bytes, source hashes and exact
+test-selection checks under `target/conversation-observation`.

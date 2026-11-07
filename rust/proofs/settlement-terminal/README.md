@@ -14,7 +14,7 @@ turns and original failure on usage, observation, commands and late clients.
 The same control now checks that raw settlement waits while the producer is
 live and returns its original error immediately after runtime completion.
 
-Run `python3 rust/proofs/qualify.py settlement-terminal` from the repository
+Run `node rust/proofs/qualify.mjs settlement-terminal` from the repository
 root. The kept mutation removes only the helper's completion join, preserving
 the real serving runtime and every assertion. The unchanged control must fail
 at `settlement bypassed the original runtime terminal event`; a timeout or

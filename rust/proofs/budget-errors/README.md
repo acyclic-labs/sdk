@@ -1,6 +1,6 @@
 # Exact budget refusals
 
-Run `python3 rust/proofs/qualify.py budget-errors` from the repository root.
+Run `node rust/proofs/qualify.mjs budget-errors` from the repository root.
 
 The existing 128-case property calls production `WorkCounters::verify_within`
 and compares the complete typed result with its independent ordered-field oracle.

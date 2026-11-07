@@ -1,7 +1,7 @@
 # Follow digest scratch ownership
 
 ```sh
-python3 rust/proofs/qualify.py follow-digest-cost
+node rust/proofs/qualify.mjs follow-digest-cost
 ```
 
 The existing signed-capability provider-hop control calls the production

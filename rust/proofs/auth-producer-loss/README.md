@@ -6,7 +6,7 @@ events. Its final case retains an original account entry and registers a pending
 account dependency. Dropping the follower must resolve that event immediately
 with `SourceClosed`, even though the retained account's own sender remains live.
 
-Run `python3 rust/proofs/qualify.py auth-producer-loss` from the repository root.
+Run `node rust/proofs/qualify.mjs auth-producer-loss` from the repository root.
 The kept production mutation captures the actual global watch sender inside its
 own dependency future. The unchanged oracle must reject the resulting `Pending`
 at `account wait retained its lost global producer`. This control detects the

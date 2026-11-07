@@ -10,7 +10,7 @@ execution guard while drain drives the accepted cleanup concurrently. Waiting
 for the entrant before driving cleanup would deadlock. Every scheduler boundary
 is released by that test's driver.
 
-Run `python3 rust/proofs/controlled-cleanup/run.py` from the repository root.
+Run `node rust/proofs/qualify.mjs controlled-cleanup` from the repository root.
 The retained `unscoped-claims.patch` restores direct runtime submission in the
 production owner. The unchanged assertion must reject that scope loss. The
 runner restores the exact source before checking the native output and three

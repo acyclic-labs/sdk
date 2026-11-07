@@ -1,7 +1,7 @@
 # Retained commit selection on original backing
 
 ```sh
-python3 rust/proofs/qualify.py retained-commit-index
+node rust/proofs/qualify.mjs retained-commit-index
 ```
 
 The shared `collections::radix::select` walks both the boxed `FixedIndex`

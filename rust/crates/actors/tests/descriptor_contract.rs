@@ -15,7 +15,10 @@ use acyclic_actors::FILE_DESCRIPTOR_SET;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, UnknownField, Value};
 
-const EXPECTED_ACTORS_DESCRIPTOR: &[u8] = include_bytes!("fixtures/actors/v1/actors-v1.bin");
+const EXPECTED_ACTORS_DESCRIPTOR: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../compatibility/descriptors/actors-v1.bin"
+));
 const BUF_ACTORS_DESCRIPTOR: &[u8] = include_bytes!("fixtures/actors/v1/actors-buf-v1.bin");
 const ADVERSARIAL_DESCRIPTOR: &[u8] =
     include_bytes!("fixtures/actors/v1/adversarial_unknown_option.bin");

@@ -1,7 +1,7 @@
 # Fixed-width source lookup
 
 ```sh
-python3 rust/proofs/qualify.py ready-source-index
+node rust/proofs/qualify.mjs ready-source-index
 ```
 
 The shared source scheduler uses `acyclic_collections::FixedIndex` for the

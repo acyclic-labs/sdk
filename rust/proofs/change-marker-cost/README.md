@@ -1,6 +1,6 @@
 # Change marker lookup cost
 
-Run `python3 rust/proofs/qualify.py change-marker-cost` from the repository root.
+Run `node rust/proofs/qualify.mjs change-marker-cost` from the repository root.
 The retained mutation repeats the actual marker lookup. The existing retained
 version and refusal property must reject its measured extra attribute probes,
 then pass after byte-identical restoration.
