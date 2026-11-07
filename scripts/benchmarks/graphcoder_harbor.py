@@ -52,8 +52,7 @@ class GraphCoder(BaseInstalledAgent):
             provider.write_text(json.dumps(self.provider_catalog) + "\n")
             await environment.upload_file(binary, self.binary)
             await environment.upload_file(provider, self.state + "/catalog.json")
-        # The uploaded bytes are the artifact already verified on this host.
-        await self.exec_as_root(environment, command="chmod 755 " + shlex.quote(self.binary))
+        await self.exec_as_root(environment, command=self.artifact.install_command(self.binary))
         if environment.default_user is not None:
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
                 str(environment.default_user), self.state]))

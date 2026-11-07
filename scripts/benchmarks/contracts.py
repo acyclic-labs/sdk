@@ -39,6 +39,16 @@ class Artifact:
             raise ValueError("select the regular Linux graphcoder build artifact")
         return cls(binary.read_bytes(), sha256, source_sha)
 
+    def install_command(self, destination: str) -> str:
+        """Verify the uploaded bytes before making the destination executable."""
+        path = shlex.quote(destination)
+        verify = f'test "$(sha256sum < {path})" = {shlex.quote(self.sha256 + "  -")}'
+        refusal = shlex.quote(
+            f"step=verify-uploaded-artifact: destination digest differs; "
+            f"recovery: re-upload the verified artifact, then run {verify}")
+        return (f"if ! {verify}; then printf '%s\\n' {refusal} >&2; exit 1; fi; "
+                f"chmod 755 {path}")
+
 
 def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int):
     """One explicit endpoint; no key, auth-file, or host-login option exists."""
