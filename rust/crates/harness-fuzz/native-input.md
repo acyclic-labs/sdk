@@ -49,3 +49,11 @@ python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary
 This named integration test uses the Cargo-built binary in its original source
 snapshot. Relocated artifact selection, installed host loops, other lifecycle
 branches and platform acceptance require their own evidence.
+
+The recorded Antigravity `PreInvocation` input must select `ToolBoundary`, the
+same shared capture operation used after tools. Its awaited native admission
+can therefore refuse a failed capture even when the host ignored an earlier
+`PostToolUse` failure. `native-input-agy-admission.patch` restores the former
+attach-only mapping; the unchanged `native_input` oracle must reject it.
+This checks routing and input preservation. Successful capture and native
+termination after a capture failure require the installed-host control too.
