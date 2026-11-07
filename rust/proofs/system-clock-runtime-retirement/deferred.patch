@@ -1,0 +1,14 @@
+--- a/rust/crates/actors/src/local/runtime/clock.rs
++++ b/rust/crates/actors/src/local/runtime/clock.rs
+@@ -44,9 +44,9 @@
+         {
+             // Capture the original clock producer before this future can move
+             // to another executor or outlive its creating scope.
+-            let alarm = (self.now_unix_ms() < deadline_unix_ms)
+-                .then(|| acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms));
+             Box::pin(async move {
++                let alarm = (SystemClock.now_unix_ms() < deadline_unix_ms)
++                    .then(|| acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms));
+                 if let Some(alarm) = alarm {
+                     alarm
+                         .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?
