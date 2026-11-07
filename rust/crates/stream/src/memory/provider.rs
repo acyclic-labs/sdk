@@ -266,30 +266,36 @@ fn head_at(
         .transpose()
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static PAGE_PATH_COPIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn namespace_page(
     index: &Index,
     lower: Option<&str>,
     parent: Option<&StreamPath>,
     limit: usize,
     out: &mut Vec<StreamPath>,
-) -> Result<(), StreamError> {
+) -> Result<bool, StreamError> {
     let Some(edge) = index else {
-        return Ok(());
+        return Ok(false);
     };
     if lower.is_none_or(|after| edge.name.text.as_str() > after) {
-        namespace_page(&edge.left, lower, parent, limit, out)?;
-        if out.len() == limit {
-            return Ok(());
+        if namespace_page(&edge.left, lower, parent, limit, out)? {
+            return Ok(true);
         }
+        if out.len() == limit {
+            return Ok(true);
+        }
+        #[cfg(test)]
+        PAGE_PATH_COPIES.with(|copies| copies.set(copies.get() + 1));
         out.push(StreamPath::new(parent.map_or_else(
             || edge.name.text.to_string(),
             |parent| format!("{}/{}", parent.as_str(), edge.name.text),
         ))?);
     }
-    if out.len() < limit {
-        namespace_page(&edge.right, lower, parent, limit, out)?;
-    }
-    Ok(())
+    namespace_page(&edge.right, lower, parent, limit, out)
 }
 
 fn projected_tail(
@@ -400,17 +406,17 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         .as_ref()
         .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
     let mut paths = Vec::new();
-    if let Some(children) = children {
+    let has_more = if let Some(children) = children {
         namespace_page(
             children,
             lower,
             request.parent.as_ref(),
-            request.limit as usize + 1,
+            request.limit as usize,
             &mut paths,
-        )?;
-    }
-    let has_more = paths.len() > request.limit as usize;
-    paths.truncate(request.limit as usize);
+        )?
+    } else {
+        false
+    };
     let next_after = if has_more {
         paths.last().cloned()
     } else {

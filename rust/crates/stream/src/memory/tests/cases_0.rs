@@ -614,7 +614,7 @@ proptest::proptest! {
     fn pages_neither_skip_nor_repeat(
         names in proptest::collection::btree_set("[a-c]{1,2}(/[a-c])?", 1..12),
         records in 1..40_usize,
-        limit in 1..6_u32,
+        limit in proptest::prop_oneof![1..6_u32, proptest::strategy::Just(crate::MAX_ITEMS as u32)],
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let provider = MemoryStream::default();
@@ -673,6 +673,8 @@ proptest::proptest! {
                 .collect();
             let (mut found, mut after, mut version) = (Vec::new(), None, None);
             loop {
+                let previous = after.clone();
+                PAGE_PATH_COPIES.with(|copies| copies.set(0));
                 let page = provider
                     .children_page(ChildrenPageRequest { tail_stream: None,
                         parent: Some(path("root")?),
@@ -682,6 +684,14 @@ proptest::proptest! {
                     })
                     .await?;
                 proptest::prop_assert!(page.children.len() <= limit as usize);
+                proptest::prop_assert_eq!(
+                    PAGE_PATH_COPIES.with(std::cell::Cell::get),
+                    page.children.len(),
+                );
+                if let Some(next) = &page.next_after {
+                    proptest::prop_assert_eq!(page.children.last().map(|child| &child.path), Some(next));
+                    proptest::prop_assert!(previous.as_ref().is_none_or(|previous| next > previous));
+                }
                 version = Some(page.hierarchy_version);
                 found.extend(page.children.into_iter().map(|child| child.path.to_string()));
                 after = page.next_after;
