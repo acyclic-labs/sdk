@@ -8,6 +8,8 @@ import test from "node:test";
 import fc from "fast-check";
 import { packageClosure } from "./package-closure.mjs";
 import { contractModules } from "./generate-contracts.mjs";
+import { createNativeProducer } from "./build-native-family.mjs";
+import { nativeFamily } from "./native-family.mjs";
 import ts from "typescript-parser";
 
 const source = readFileSync("scripts/package-closure.mjs", "utf8");
@@ -108,6 +110,12 @@ test("generated runtime bindings stay out of the source index", () => {
     if (/^typescript\/packages\/[^/]+\/(?:src\/|test\/)?generated\//.test(file)) {
       assert.ok(["typescript/packages/filesystem/generated/wasm/.npmignore", "typescript/packages/filesystem/generated/wasm/package.json"].includes(file), file);
     }
+  }
+});
+
+test("both native admission baselines equal the actual Rust generator", () => {
+  for (const family of ["actors", "stream"]) {
+    createNativeProducer(nativeFamily(family)).assertCurrentNativeFamily();
   }
 });
 

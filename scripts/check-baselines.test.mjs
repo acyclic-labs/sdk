@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkDescriptors } from "./check-baselines.mjs";
-import { createNativeProducer } from "./build-native-family.mjs";
-import { nativeFamily } from "./native-family.mjs";
 
 test("all complete regenerated descriptor closures preserve their pinned identities", () => {
   checkDescriptors();
@@ -30,11 +28,5 @@ test("descriptor checking rejects breaking changes to a secondary root and an im
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("both native admission baselines equal the actual Rust generator", () => {
-  for (const family of ["actors", "stream"]) {
-    createNativeProducer(nativeFamily(family)).assertCurrentNativeFamily();
   }
 });
