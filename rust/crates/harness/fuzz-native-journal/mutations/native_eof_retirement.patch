@@ -1,0 +1,56 @@
+diff --git a/rust/crates/harness/src/local/host_process/children/tools.rs b/rust/crates/harness/src/local/host_process/children/tools.rs
+index 3b84bbcc375..317140006ce 100644
+--- a/rust/crates/harness/src/local/host_process/children/tools.rs
++++ b/rust/crates/harness/src/local/host_process/children/tools.rs
+@@ -22,24 +22,30 @@ struct Coordination {
+     children: Option<NativeChildren>,
+ }
+ 
+-/// Serves `host`'s coordination tools on stdio until its client exits,
+-/// interrupting every running child before draining outstanding replies.
++/// Serves `host`'s coordination tools on stdio until its client exits, then
++/// interrupts every child still running.
+ pub fn serve(host: &str) -> Result<()> {
+     let mut coordination = Coordination {
+         host: host.into(),
+         children: None,
+     };
+-    ToolServer {
++    let served = ToolServer {
+         name: "acyclic-sessions",
+         version: env!("CARGO_PKG_VERSION"),
+         parked: WAITS,
+         frame_bytes: FRAME_BYTES,
+     }
+-    .serve(&mut coordination, std::io::stdin(), std::io::stdout())
+-    .map_err(|error| match error {
+-        ServeError::Io(error) => Error::Storage(error.to_string()),
+-        ServeError::Provider(error) => error,
+-    })
++    .serve(&mut coordination, std::io::stdin(), std::io::stdout());
++    let stopped = coordination
++        .children
++        .as_mut()
++        .map_or(Ok(()), NativeChildren::shutdown);
++    served
++        .map_err(|error| match error {
++            ServeError::Io(error) => Error::Storage(error.to_string()),
++            ServeError::Provider(error) => error,
++        })
++        .and(stopped)
+ }
+ 
+ impl ToolProvider for Coordination {
+@@ -103,12 +109,6 @@ impl ToolProvider for Coordination {
+         Ok(ToolCall::Answer(answer))
+     }
+ 
+-    fn closed(&mut self) -> Result<()> {
+-        self.children
+-            .as_mut()
+-            .map_or(Ok(()), NativeChildren::shutdown)
+-    }
+-
+     fn progress(
+         &mut self,
+         parked: &BTreeSet<String>,

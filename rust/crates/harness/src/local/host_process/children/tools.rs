@@ -22,30 +22,24 @@ struct Coordination {
     children: Option<NativeChildren>,
 }
 
-/// Serves `host`'s coordination tools on stdio until its client exits, then
-/// interrupts every child still running.
+/// Serves `host`'s coordination tools on stdio until its client exits,
+/// interrupting every running child before draining outstanding replies.
 pub fn serve(host: &str) -> Result<()> {
     let mut coordination = Coordination {
         host: host.into(),
         children: None,
     };
-    let served = ToolServer {
+    ToolServer {
         name: "acyclic-sessions",
         version: env!("CARGO_PKG_VERSION"),
         parked: WAITS,
         frame_bytes: FRAME_BYTES,
     }
-    .serve(&mut coordination, std::io::stdin(), std::io::stdout());
-    let stopped = coordination
-        .children
-        .as_mut()
-        .map_or(Ok(()), NativeChildren::shutdown);
-    served
-        .map_err(|error| match error {
-            ServeError::Io(error) => Error::Storage(error.to_string()),
-            ServeError::Provider(error) => error,
-        })
-        .and(stopped)
+    .serve(&mut coordination, std::io::stdin(), std::io::stdout())
+    .map_err(|error| match error {
+        ServeError::Io(error) => Error::Storage(error.to_string()),
+        ServeError::Provider(error) => error,
+    })
 }
 
 impl ToolProvider for Coordination {
@@ -107,6 +101,12 @@ impl ToolProvider for Coordination {
             _ => return Err(invalid("unknown coordination tool")),
         };
         Ok(ToolCall::Answer(answer))
+    }
+
+    fn closed(&mut self) -> Result<()> {
+        self.children
+            .as_mut()
+            .map_or(Ok(()), NativeChildren::shutdown)
     }
 
     fn progress(

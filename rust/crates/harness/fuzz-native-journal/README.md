@@ -234,3 +234,20 @@ restores the original error-as-withdrawal defect and must fail at
 forces actual directory scans and must fail at
 `named request observation scanned history`. These are component controls;
 original caller/owner cancellation and physical retirement remain separate.
+
+Native MCP input closure retires children before output drain through the shared
+provider close callback. The real owner control holds the reply writer, delivers
+EOF, and checks child process exit and original claim settlement before releasing
+the writer. It runs all three host adapters against the production workspace
+owner and actual shell-process custody; it does not qualify installed native
+CLIs. Each held write has one original release producer, including on a failed
+retirement observation. No timeout or periodic probe is used.
+
+```sh
+cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply -- --exact --nocapture
+```
+
+The retained `mutations/native_eof_retirement.patch` restores shutdown after
+serving returns instead of at provider close. The unchanged control must fail at
+`EOF left native children running before reply drain` and still release its
+original held writer.
