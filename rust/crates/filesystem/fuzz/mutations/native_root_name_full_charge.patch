@@ -1,7 +1,7 @@
 diff --git a/rust/crates/filesystem/src/native_host/work.rs b/rust/crates/filesystem/src/native_host/work.rs
 --- a/rust/crates/filesystem/src/native_host/work.rs
 +++ b/rust/crates/filesystem/src/native_host/work.rs
-@@ -123,8 +123,8 @@
+@@ -124,8 +124,8 @@
      operation: impl FnOnce() -> (T, WorkCounters),
  ) -> Result<T, DemandError> {
      work.admit(maximum)?;
@@ -12,3 +12,17 @@ diff --git a/rust/crates/filesystem/src/native_host/work.rs b/rust/crates/filesy
      Ok(result)
  }
  
+diff --git a/rust/crates/filesystem/src/materializer/reservation.rs b/rust/crates/filesystem/src/materializer/reservation.rs
+--- a/rust/crates/filesystem/src/materializer/reservation.rs
++++ b/rust/crates/filesystem/src/materializer/reservation.rs
+@@ -184,8 +184,8 @@
+         self.check_wait(wait)?;
+         let mut state = self.state.lock();
+         maximum.remaining(state.available()?)?;
+-        let (result, actual) = operation();
+-        self.finish(&mut state, actual, actual)?;
++        let (result, _actual) = operation();
++        self.finish(&mut state, maximum, maximum)?;
+         Ok(result)
+     }
+     #[cfg(any(test, feature = "native-watch"))]

@@ -208,6 +208,13 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         })
         .map_err(|error| self.work().runtime_error(error))
     }
+    fn with_admitted_work<T>(
+        &mut self,
+        maximum: WorkCounters,
+        operation: impl FnOnce() -> (T, WorkCounters),
+    ) -> Result<T, Self::Error> {
+        self.as_ref().with_admitted_work(maximum, None, operation)
+    }
     fn started_io(&mut self, actual: WorkCounters) -> Result<(), Self::Error> {
         if actual.allocation_operations != 0 || actual.peak_allocation_bytes != 0 {
             return Err(Self::Error::InvalidLayout);
