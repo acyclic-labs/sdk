@@ -1,0 +1,13 @@
+{
+  "provenance": {
+    "source": "0e6662b1b010bc0af016e275eb6118fc7e259dae",
+    "platform": "linux",
+    "executable_sha256": "0beafde0747cf7502afb5ab3200627995987ebc8adc9b987e37befa5f5f6a7e3",
+    "selector": "graphcoder --workspace WORKSPACE --host-workspace --host-state-directory STATE",
+    "capture_sha256": "12161ccc30386ed2d2298a19ff7c3f703ef235830c2bdafdd2aed143600f4b8c",
+    "projection": "Original stdout ready frame after ownership, descriptor publication and request watch installation"
+  },
+  "ready": {
+    "type": "workspace-owner-ready"
+  }
+}

@@ -107,17 +107,25 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         &original,
         &cancel,
     )?;
-    let result = candidate
-        .apply_authored_transaction_with_accounting(
-            crate::kernel::Owned {
-                value: input.0,
-                bytes: input.1.bytes(),
-                allocation: KernelOwnedAllocation::NativeOriginal(input.1),
-            },
-            &mut KernelAccounting::native(&original, &cancel),
-            &cancel,
-        )
-        .await?;
+    let mut accounting = KernelAccounting::native(&original, &cancel);
+    let applying = candidate.apply_authored_transaction_with_accounting(
+        crate::kernel::Owned {
+            value: input.0,
+            bytes: input.1.bytes(),
+            allocation: KernelOwnedAllocation::NativeOriginal(input.1),
+        },
+        &mut accounting,
+        &cancel,
+    );
+    // The caller owns input descriptors and its funded frame, not the compiler
+    // and mutation phases. The original descriptors fit within two KiB.
+    let caller_bytes = std::mem::size_of_val(&applying);
+    assert!(
+        caller_bytes <= 2 * 1024,
+        "authored caller retains {caller_bytes} bytes"
+    );
+    eprintln!("authored transaction caller: {caller_bytes} bytes");
+    let result = applying.await?;
     let expected = &result.value.created_file_ids;
     assert_eq!(expected.len(), 2);
     assert!(expected.iter().all(Option::is_some));

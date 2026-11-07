@@ -30,6 +30,12 @@ export function scratchDirectory(prefix, env = process.env, platform = process.p
   return mkdtempSync(join(canonical, prefix));
 }
 
+// Credential-free fixtures retain the OS launcher and its original process owner.
+export function nativeEnvironment(inherited = process.env) {
+  return Object.fromEntries(Object.entries(inherited)
+    .filter(([key]) => /^(PATH|SystemRoot|WINDIR|ComSpec|PATHEXT|E2E_PROCESS_HOST)$/i.test(key)));
+}
+
 // This same profile reaches the shipping program, PTY transport, host-test
 // supervisor, mock, Git and helper workers. Temporary files share its lease.
 export function environment(settings, inherited = process.env) {
@@ -49,14 +55,14 @@ export function environment(settings, inherited = process.env) {
   return env;
 }
 
-// Cross-language callers receive only the shared profile values, never this
-// process's inherited environment or credentials. They retain process custody.
+// Cross-language callers use the same native owner, OS launcher and isolated
+// profile as JavaScript fixtures. Unrelated inherited values stay outside it.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [mode, settings, ...extra] = process.argv.slice(2);
   try {
     assert.ok(mode === "profile" && settings && isAbsolute(settings) && !extra.length,
       "profile requires exactly one absolute settings directory");
-    console.log(JSON.stringify(environment(settings, {})));
+    console.log(JSON.stringify(environment(settings, nativeEnvironment())));
   } catch (error) {
     console.error(`scratch-profile step=admit-or-create failed: ${error.message}; `
       + "recovery command: node scripts/graphcoder-e2e/scratch.mjs profile ABSOLUTE_SETTINGS");

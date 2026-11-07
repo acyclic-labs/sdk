@@ -2,15 +2,13 @@ use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
     /// Reads one complete regular file within the caller's bound.
-    pub async fn read<W: crate::facade::FsWork>(
+    pub fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
         maximum_bytes: u64,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(("workspace read", maximum_bytes));
+    ) -> impl Future<Output = W::Output<acyclic_stream::OwnedBytes, WorkspaceError>> {
         read_selected(
             self,
             GenerationSelector::Head,
@@ -19,18 +17,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads one exact file range.
-    pub async fn read_range<W: crate::facade::FsWork>(
+    pub fn read_range<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
         length: u64,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError>> {
         read_range(
             self,
             GenerationSelector::Head,
@@ -40,28 +37,32 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads complete no-follow metadata for one path.
-    pub async fn stat<W: crate::facade::FsWork>(
+    pub fn stat<W: crate::facade::FsWork>(
         &self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<WorkspaceStat, WorkspaceError> {
-        stat(self, GenerationSelector::Head, path, work, cancellation).await
+    ) -> impl Future<Output = W::Output<WorkspaceStat, WorkspaceError>> {
+        stat(self, GenerationSelector::Head, path, work, cancellation)
     }
 
     /// Returns one authenticated bounded directory page and its result allocation.
-    pub async fn list_directory<W: crate::facade::FsWork>(
+    pub fn list_directory<W: crate::facade::FsWork>(
         &self,
         path: &str,
         after: Option<&LogicalName>,
         maximum_entries: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<(crate::kernel::DirectoryPage, crate::AuthorityAllocation), WorkspaceError> {
+    ) -> impl Future<
+        Output = W::Output<
+            (crate::kernel::DirectoryPage, crate::AuthorityAllocation),
+            WorkspaceError,
+        >,
+    > {
         list(
             self,
             GenerationSelector::Head,
@@ -71,23 +72,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             work,
             cancellation,
         )
-        .await
     }
 
     /// Reads one opaque symbolic-link target.
-    pub async fn read_symbolic_link<W: crate::facade::FsWork>(
+    pub fn read_symbolic_link<W: crate::facade::FsWork>(
         &self,
         path: &str,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError> {
-        read_link(self, GenerationSelector::Head, path, work, cancellation).await
+    ) -> impl Future<Output = W::Output<crate::kernel::OwnedSourceChunk, WorkspaceError>> {
+        read_link(self, GenerationSelector::Head, path, work, cancellation)
     }
 
     /// Plans clipped sparse spans without reading file bodies.
     /// Retains the output on the supplied original work; keep its allocation
     /// guard until the returned spans have been destroyed.
-    pub async fn plan_extents<W: crate::facade::FsWork>(
+    pub fn plan_extents<W: crate::facade::FsWork>(
         &self,
         path: &str,
         offset: u64,
@@ -95,7 +95,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         maximum_spans: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError> {
+    ) -> impl Future<Output = W::Output<(WorkspaceExtentPlan, crate::AuthorityAllocation), WorkspaceError>>
+    {
         plan(
             self,
             GenerationSelector::Head,
@@ -106,6 +107,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             work,
             cancellation,
         )
-        .await
     }
 }

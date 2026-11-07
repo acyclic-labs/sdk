@@ -404,6 +404,14 @@ async fn publications(
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
+        #[cfg(any(
+            feature = "local",
+            feature = "postgres",
+            all(
+                any(feature = "wasm", feature = "wasm-journal"),
+                target_arch = "wasm32"
+            )
+        ))]
         let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
@@ -523,7 +531,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     Ok(seeds)
 }
 
-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
     for (name, bytes) in futures::executor::block_on(seeds())? {
@@ -534,6 +542,7 @@ fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> 
             );
         }
     }
+    #[cfg(feature = "local")]
     for (name, command) in commands(None)? {
         let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
         assert!(

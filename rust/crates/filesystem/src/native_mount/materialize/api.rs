@@ -19,35 +19,45 @@ pub async fn materialize_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await
 }
 
-pub(super) async fn materialize_heap_future_on_receipt<F, E>(
+pub(super) fn materialize_heap_future_on_receipt<F, E>(
     create: impl FnOnce(GenerationReceipt) -> F,
     mut receipt: GenerationReceipt,
-) -> Result<OperationReceipt<MaterializationReceipt>, E>
+) -> impl Future<Output = Result<OperationReceipt<MaterializationReceipt>, E>>
 where
     F: Future<Output = Result<OperationReceipt<MaterializationReceipt>, E>>,
     E: From<MaterializeError>,
 {
-    // Retire the stack-safety box before releasing its allocation.
-    receipt
-        .custody
-        .grow((std::mem::size_of::<F>()) as u64)
-        .map_err(MaterializeError::from)
-        .map_err(E::from)?;
-    let custody = receipt
-        .custody
-        .split_off((std::mem::size_of::<F>()) as u64)
-        .map_err(MaterializeError::from)
-        .map_err(E::from)?;
-    let meter = receipt.custody.work().clone();
-    let mut future = in_heap(move || create(receipt));
-    let result = future.as_mut().await;
-    drop(future);
-    drop(custody);
-    let work = meter.receipt();
-    result.map(|mut receipt| {
-        receipt.work = work;
+    // All callers enter here inside their original first poll. Admission and
+    // construction finish before returning the polling handle, so that handle
+    // does not retain a second receipt or the concrete future's factory.
+    let admitted = (|| {
         receipt
-    })
+            .custody
+            .grow((std::mem::size_of::<F>()) as u64)
+            .map_err(MaterializeError::from)
+            .map_err(E::from)?;
+        let custody = receipt
+            .custody
+            .split_off((std::mem::size_of::<F>()) as u64)
+            .map_err(MaterializeError::from)
+            .map_err(E::from)?;
+        let meter = receipt.custody.work().clone();
+        let future = in_heap(move || create(receipt)).with_allocation(custody);
+        Ok::<_, E>((future, meter))
+    })();
+    match admitted {
+        Ok((mut future, meter)) => futures::future::Either::Left(async move {
+            let result = future.as_mut().await;
+            // OwnedFuture destroys the physical body before its funding.
+            drop(future);
+            let work = meter.receipt();
+            result.map(|mut receipt| {
+                receipt.work = work;
+                receipt
+            })
+        }),
+        Err(error) => futures::future::Either::Right(std::future::ready(Err(error))),
+    }
 }
 
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
@@ -140,13 +150,18 @@ pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObj
     {
         return Err(MaterializeError::InvalidOptions);
     }
-    materialize_source(
-        GenerationSource::Original(reader),
-        paths,
-        options,
-        mode,
+    materialize_heap_future_on_receipt(
+        move |receipt| {
+            materialize_source(
+                GenerationSource::Original(reader),
+                paths,
+                options,
+                mode,
+                receipt,
+                None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+            )
+        },
         receipt,
-        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
     )
     .await
 }
@@ -676,16 +691,25 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             maximum_extent_spans: options.maximum_extent_spans,
             transfer_bytes: options.transfer_bytes,
         };
-        let materialized = materialize_source(
-            GenerationSource::Standalone(checkout),
-            std::slice::from_ref(&path.0),
-            &materialize_options,
-            MaterializeMode::DurableOutput,
-            receipt,
-            None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
-        )
-        .await
-        .map(|_| ());
+        let materialized = {
+            let path = &path.0;
+            let options = &materialize_options;
+            materialize_heap_future_on_receipt(
+                move |receipt| {
+                    materialize_source(
+                        GenerationSource::Standalone(checkout),
+                        std::slice::from_ref(path),
+                        options,
+                        MaterializeMode::DurableOutput,
+                        receipt,
+                        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+                    )
+                },
+                receipt,
+            )
+            .await
+            .map(|_| ())
+        };
         drop(path);
         let prepared = PreparedRestore {
             stage_path: (materialize_options.destination, stage_allocation),

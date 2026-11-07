@@ -260,6 +260,17 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
 
 #[tokio::test]
 async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
+    fn future_bytes<F>(_: fn(crate::LocalHarnessConfig) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    // The real open entry owns configuration and phase pointers, not their bodies.
+    let opening_bytes = future_bytes(crate::local::open::open);
+    assert!(
+        opening_bytes <= 8192,
+        "local open retained a {opening_bytes}-byte phase frame"
+    );
+    eprintln!("local opening future: {opening_bytes} bytes");
+
     use acyclic_harness_client::{AgentCommand, AgentReply, encode_agent_reply};
 
     let directory = tempfile::tempdir().map_err(agent)?;

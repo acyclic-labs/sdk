@@ -293,18 +293,18 @@ impl Drop for HeapFutureRelease<'_> {
 
 /// Preserves the short-frame boundary while admitting its actual future body.
 /// The nested permit reserves the live box until the operation has completed.
-pub(crate) async fn in_heap_measured<F, T, E>(
+pub(crate) fn in_heap_measured<F, T, E>(
     create: impl FnOnce(crate::WorkBudget) -> F,
     budget: crate::WorkBudget,
     cancellation: &crate::CancellationToken,
     cancelled: E,
     observer: Option<HeapFutureObserver<'_>>,
-) -> crate::MeasuredResult<crate::OperationReceipt<T>, E>
+) -> impl Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>
 where
     F: Future<Output = crate::MeasuredResult<crate::OperationReceipt<T>, E>>,
     E: From<crate::WorkError>,
 {
-    in_heap_measured_with_error(create, budget, cancellation, cancelled, observer, E::from).await
+    in_heap_measured_with_error(create, budget, cancellation, cancelled, observer, E::from)
 }
 
 /// Maps internal admission errors through the same SDK error as the operation.

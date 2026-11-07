@@ -26,129 +26,133 @@ where
         &mut KernelAccounting<'_>,
     ) -> Result<(), E>,
 {
-    let owner = preparation.owner;
-    let closure_limits = preparation.limits;
-    let cache = preparation.cache;
-    let cancellation = preparation.cancellation;
-    let PublicationCallbacks {
-        before_publication,
-        dispatch,
-        prepare_roots,
-        batch_seal,
-    } = callbacks;
-    let prepared = match preparation.prepare(accounting, prepare_roots).await? {
-        preparation::Prepared::Complete(output) => return Ok(output),
-        preparation::Prepared::Ready(prepared) => prepared,
-    };
-    let preparation::PreparedGeneration {
-        mut candidate,
-        authentication,
-        append,
-        projection_fence,
-        publication_hold,
-    } = prepared;
-    let objects = owner.objects();
-    if matches!(
-        accounting,
-        KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }
-    ) {
-        let checked = before_publication(Some(accounting.remaining().map_err(E::from)?)).await;
-        accept_step(accounting, checked.map(|work| ((), work)))?;
-    }
-    cancellation
-        .check()
-        .map_err(crate::FsError::from)
-        .map_err(E::from)?;
-    let allowance = match accounting {
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => None,
-        _ => Some(accounting.remaining().map_err(E::from)?),
-    };
-    let changes = append.commit.publication.clone();
-    let (appended, authentication, published, _projection_fence, _publication_hold) =
-        if let Some(ticket) = candidate.ticket.as_mut() {
-            let publication = combiner::SubmittedPublication {
-                authentication,
-                custody: combiner::PublicationCustody {
-                    published: None,
+    let preparation = preparation.validate(accounting).map_err(E::from)?;
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {
+        let owner = preparation.0.owner;
+        let closure_limits = preparation.0.limits;
+        let cache = preparation.0.cache;
+        let cancellation = preparation.0.cancellation;
+        let PublicationCallbacks {
+            before_publication,
+            dispatch,
+            prepare_roots,
+            batch_seal,
+        } = callbacks;
+        let prepared = match preparation.prepare(accounting, prepare_roots).await? {
+            preparation::Prepared::Complete(output) => return Ok(output),
+            preparation::Prepared::Ready(prepared) => prepared,
+        };
+        let preparation::PreparedGeneration {
+            mut candidate,
+            authentication,
+            append,
+            projection_fence,
+            publication_hold,
+        } = prepared;
+        let objects = owner.objects();
+        if matches!(
+            accounting,
+            KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. }
+        ) {
+            let checked = before_publication(Some(accounting.remaining().map_err(E::from)?)).await;
+            accept_step(accounting, checked.map(|work| ((), work)))?;
+        }
+        cancellation
+            .check()
+            .map_err(crate::FsError::from)
+            .map_err(E::from)?;
+        let allowance = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { .. } => None,
+            _ => Some(accounting.remaining().map_err(E::from)?),
+        };
+        let changes = append.commit.publication.clone();
+        let (appended, authentication, published, _projection_fence, _publication_hold) =
+            if let Some(ticket) = candidate.ticket.as_mut() {
+                let publication = combiner::SubmittedPublication {
+                    authentication,
+                    custody: combiner::PublicationCustody {
+                        published: None,
+                        projection_fence,
+                        publication_hold,
+                    },
+                };
+                let result = ticket
+                    .submit(
+                        owner,
+                        append,
+                        batch_seal,
+                        publication,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(E::from);
+                if let Some(changes) = changes {
+                    changes.retire(accounting).map_err(E::from)?;
+                }
+                let (appended, publication) = result?;
+                (
+                    appended,
+                    publication.authentication,
+                    publication.custody.published,
+                    publication.custody.projection_fence,
+                    publication.custody.publication_hold,
+                )
+            } else {
+                // Non-combined dispatch retains the same guards on this original path.
+                let result = accept_step(accounting, dispatch(append, allowance).await);
+                if let Some(changes) = changes {
+                    changes.retire(accounting).map_err(E::from)?;
+                }
+                (
+                    result?,
+                    authentication,
+                    None,
                     projection_fence,
                     publication_hold,
-                },
+                )
             };
-            let result = ticket
-                .submit(
-                    owner,
-                    append,
-                    batch_seal,
-                    publication,
+        let mut output = (authentication.proof, authentication.guard);
+        let mut pending = authentication.pending;
+        if let AppendOutcome::AlreadyCommitted(record) = &appended {
+            let decoded = decode_publication_evidence_with_accounting(
+                &record.payload,
+                acyclic_stream::MAX_RECORD_BYTES as u64,
+                accounting,
+            )
+            .map_err(E::from)?;
+            let root = decoded.publication.generation_root;
+            if root != output.0.generation_id.object_id() {
+                drop(output);
+                let authenticated = authenticate::prove(
+                    objects,
+                    root,
+                    None,
+                    closure_limits,
+                    cache,
                     accounting,
                     cancellation,
                 )
                 .await
-                .map_err(E::from);
-            if let Some(changes) = changes {
-                changes.retire(accounting).map_err(E::from)?;
+                .map_err(E::from)?;
+                output = (authenticated.proof, authenticated.guard);
+                pending = authenticated.pending;
+                prepare_roots(&output.0.root, &mut output.1, accounting)?;
             }
-            let (appended, publication) = result?;
-            (
-                appended,
-                publication.authentication,
-                publication.custody.published,
-                publication.custody.projection_fence,
-                publication.custody.publication_hold,
-            )
-        } else {
-            // Non-combined dispatch retains the same guards on this original path.
-            let result = accept_step(accounting, dispatch(append, allowance).await);
-            if let Some(changes) = changes {
-                changes.retire(accounting).map_err(E::from)?;
-            }
-            (
-                result?,
-                authentication,
-                None,
-                projection_fence,
-                publication_hold,
-            )
-        };
-    let mut output = (authentication.proof, authentication.guard);
-    let mut pending = authentication.pending;
-    if let AppendOutcome::AlreadyCommitted(record) = &appended {
-        let decoded = decode_publication_evidence_with_accounting(
-            &record.payload,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            accounting,
-        )
-        .map_err(E::from)?;
-        let root = decoded.publication.generation_root;
-        if root != output.0.generation_id.object_id() {
-            drop(output);
-            let authenticated = authenticate::prove(
-                objects,
-                root,
-                None,
-                closure_limits,
-                cache,
-                accounting,
-                cancellation,
-            )
-            .await
-            .map_err(E::from)?;
-            output = (authenticated.proof, authenticated.guard);
-            pending = authenticated.pending;
-            prepare_roots(&output.0.root, &mut output.1, accounting)?;
         }
-    }
-    // Only a durable generation's proof may stand in for its closure later.
-    let published = published.or_else(|| pending.and_then(|pending| pending.publish(&appended)));
-    Ok(RetainedPublication {
-        receipt: PublicationReceipt {
-            proof: output.0,
-            outcome: appended,
-            work: accounting.spent(),
-        },
-        published,
-        allocation: output.1,
+        // Only a durable generation's proof may stand in for its closure later.
+        let published =
+            published.or_else(|| pending.and_then(|pending| pending.publish(&appended)));
+        Ok(RetainedPublication {
+            receipt: PublicationReceipt {
+                proof: output.0,
+                outcome: appended,
+                work: accounting.spent(),
+            },
+            published,
+            allocation: output.1,
+        })
     })
 }
 

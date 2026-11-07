@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
-import { environment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
+import { environment, nativeEnvironment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 
 const recovery = "Set ACYCLIC_TEST_BINARY to the admitted shipping executable; run node --test --test-reporter=tap --test-concurrency=1 plugin/tests/hosts/settings-publication.test.mjs";
 const binary = process.env.ACYCLIC_TEST_BINARY;
@@ -23,7 +23,7 @@ for (const host of ["claude-code", "pi"]) for (const selection of ["settings arg
       const profile = join(fixture, "settings with spaces");
       const settings = selection === "native profile" && host === "pi" ? join(profile, "extensions") : profile;
       mkdirSync(settings, { recursive: true });
-      const env = environment(home, { PATH: process.env.PATH ?? "", LANG: "C.UTF-8" });
+      const env = environment(home, { ...nativeEnvironment(), LANG: "C.UTF-8" });
       if (selection === "native profile") {
         env[host === "pi" ? "PI_CODING_AGENT_DIR" : "CLAUDE_CONFIG_DIR"] = profile;
         // A selected native profile owns configuration without a home lookup.
@@ -31,9 +31,6 @@ for (const host of ["claude-code", "pi"]) for (const selection of ["settings arg
         // before considering it; this input refuses both paths.
         delete env.HOME;
         delete env.USERPROFILE;
-      }
-      for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]) {
-        if (process.env[key]) env[key] = process.env[key];
       }
       const path = join(settings, host === "pi" ? "acyclic.ts" : "settings.json");
       if (selection === "native profile") {
