@@ -101,6 +101,14 @@ bench = false
 workspace = true
 
 [[bin]]
+name = "native_ascii_leaf"
+required-features = ["fuzz-targets"]
+path = "fuzz_targets/native_ascii_leaf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "encoder_work"
 required-features = ["fuzz-targets"]
 path = "fuzz_targets/encoder_work.rs"

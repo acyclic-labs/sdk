@@ -20,13 +20,17 @@ impl<T: PacketWorkers> Drop for Stop<'_, T> {
 /// All started workers are joined, including after partial spawn or panic.
 /// The caller retains its source, buffers and cancellation registration until
 /// this returns. No detached worker can turn an uncertain callback into drain.
-pub(super) fn run<T: PacketWorkers>(owner: &T, count: NonZeroU32) -> Result<(), NativeMountError> {
+pub(super) fn run<T: PacketWorkers>(
+    owner: &T,
+    count: NonZeroU32,
+    started: impl FnOnce(u32) -> Result<(), NativeMountError>,
+) -> Result<(), NativeMountError> {
     let _stop = Stop(owner);
     std::thread::scope(|scope| {
         // The private callers select fixed host/device worker counts. Keep
         // their handles in these stack frames rather than allocating another
         // vector after startup, when original cancellation may already hold.
-        let (result, panic) = spawn_and_join(scope, owner, 0, count.get());
+        let (result, panic) = spawn_and_join(scope, owner, 0, count.get(), started);
         if let Some(payload) = panic {
             std::panic::resume_unwind(payload);
         }
@@ -44,9 +48,16 @@ fn spawn_and_join<'scope, 'env, T: PacketWorkers>(
     owner: &'scope T,
     index: u32,
     count: u32,
+    started: impl FnOnce(u32) -> Result<(), NativeMountError>,
 ) -> Joined {
     if index == count {
-        return (Ok(()), None);
+        // Publish startup only after every physical thread was created. A
+        // retired startup observer must stop workers before their joins.
+        let result = started(index);
+        if result.is_err() {
+            owner.stop();
+        }
+        return (result, None);
     }
     let worker = match std::thread::Builder::new().spawn_scoped(scope, move || {
         let _stop = Stop(owner);
@@ -58,7 +69,7 @@ fn spawn_and_join<'scope, 'env, T: PacketWorkers>(
             return (Err(error.into()), None);
         }
     };
-    let (mut result, mut panic) = spawn_and_join(scope, owner, index + 1, count);
+    let (mut result, mut panic) = spawn_and_join(scope, owner, index + 1, count, started);
     match worker.join() {
         Ok(Ok(())) => {}
         Ok(Err(error)) if result.is_ok() => result = Err(error),

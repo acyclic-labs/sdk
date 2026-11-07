@@ -179,21 +179,15 @@ impl SharedFuseInstance {
         state.transport = Some(session.transport());
         views.set_notifier(notifier.clone());
         #[cfg(test)]
-        let lifetime = Arc::new(());
-        #[cfg(test)]
-        {
+        let session = {
+            let lifetime = Arc::new(());
             state.worker_lifetime = Arc::downgrade(&lifetime);
-        }
-        state.worker = Some(
-            std::thread::Builder::new()
-                .name("acyclic-fuse".to_owned())
-                .spawn(move || {
-                    let result = session.run();
-                    #[cfg(test)]
-                    drop(lifetime);
-                    result
-                })?,
-        );
+            let mut session = session;
+            session._worker_lifetime = Some(lifetime);
+            session
+        };
+        state.worker =
+            Some(session.start(std::thread::Builder::new().name("acyclic-fuse".to_owned()))?);
         #[cfg(test)]
         let worker_lifetime = state.worker_lifetime.clone();
         #[cfg(test)]

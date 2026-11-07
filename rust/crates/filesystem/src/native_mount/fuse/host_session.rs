@@ -21,6 +21,8 @@ pub(super) struct HostSession {
     buffers: PacketBufferPool,
     #[cfg(test)]
     capture: Option<Arc<super::tests::packets::Capture>>,
+    #[cfg(test)]
+    pub(super) _worker_lifetime: Option<Arc<()>>,
 }
 
 impl HostSession {
@@ -47,6 +49,8 @@ impl HostSession {
             buffers,
             #[cfg(test)]
             capture: super::tests::packets::Capture::current(),
+            #[cfg(test)]
+            _worker_lifetime: None,
         })
     }
 
@@ -73,11 +77,39 @@ impl HostSession {
         Ok(())
     }
 
-    pub(super) fn run(self) -> Result<(), NativeMountError> {
-        super::packet_workers::run(
-            &self,
-            std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS).ok_or(libc::EINVAL)?,
-        )
+    /// Startup owns the worker until all callback threads exist or have joined.
+    pub(super) fn start(
+        self,
+        builder: std::thread::Builder,
+    ) -> Result<std::thread::JoinHandle<Result<(), NativeMountError>>, NativeMountError> {
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        let worker = builder.spawn(move || {
+            super::packet_workers::run(
+                &self,
+                std::num::NonZeroU32::new(crate::native_mount::CALLBACK_THREADS)
+                    .ok_or(libc::EINVAL)?,
+                |_| {
+                    started
+                        .send(())
+                        .map_err(|_| NativeMountError::Lifecycle("FUSE startup observer retired"))
+                },
+            )
+        })?;
+        if ready.recv().is_ok() {
+            return Ok(worker);
+        }
+        // A partial spawn drops the producer. Recover the original failure
+        // only after every physical worker has relinquished its custody.
+        match worker.join() {
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(())) => Err(NativeMountError::Lifecycle(
+                "FUSE startup ended without completion",
+            )),
+            Err(panic) => Err(NativeMountError::DriverPanicked {
+                operation: "start FUSE callback workers",
+                panic: std::sync::Mutex::new(panic),
+            }),
+        }
     }
 
     fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
