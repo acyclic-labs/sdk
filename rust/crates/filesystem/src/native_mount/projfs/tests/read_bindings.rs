@@ -234,7 +234,6 @@ async fn mounted_replay(noop: bool, bypass: bool) -> Result<[bool; 3], Box<dyn s
 }
 
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn mounted_nested_fallback_negative_control_replays_self_notifications()
 -> Result<(), Box<dyn std::error::Error>> {
     let expected = [false, true, false];

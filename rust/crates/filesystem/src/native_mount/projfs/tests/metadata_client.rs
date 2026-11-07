@@ -24,7 +24,7 @@ pub(super) fn run(
             .arg(format!(
                 "{module}::external_metadata_only_change_survives_remount"
             ))
-            .args(["--exact", "--ignored", "--nocapture"])
+            .args(["--exact", "--nocapture"])
             .env(MODE, mode)
             .env(PATH, path)
             .stdin(acyclic_native_runtime::ProcessStdio::piped())
