@@ -9,6 +9,8 @@ writes remain in their forks until the owning parent merges them. Diff, merge
 and discard resolve the caller's child without borrowing another root's branch.
 Owners enter through production policy admission, ownership and recovery;
 the nested owner inherits its parent's admitted policy arguments.
+The shared diff dispatcher recognizes both the public child operand and the
+resolved canonical branch, so address resolution retains the inspection path.
 
 The retained inverse restores the actual native checkout-wide alias registration
 and command routing. The unchanged control must reject that production mutation
