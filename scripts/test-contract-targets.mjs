@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,15 +52,14 @@ test("contract command refusals retain original native diagnostics and terminal 
       assert.equal(error.cause.code, "ENOENT");
       assert.equal(error.cause.path, missing);
       assert.equal(error.executable, missing);
-      assert.match(error.message, /STEP_FAILED contract-(run|toolchain):.*recovery:/);
+      assert.match(error.message, /STEP_FAILED contract-(run|metadata):.*recovery:/);
       assert.match(String(error), /ENOENT/);
       return true;
     };
     assert.throws(() => runContractTarget(root, missing), retainsSpawnError);
     const report = {};
     assert.throws(() => buildContractTargets(root, [["unused", "bin", "unused"]], missing, report), retainsSpawnError);
-    assert.equal(report.phase, "toolchain");
-    assert.equal(typeof report.toolchain_ms, "number");
+    assert.equal(report.phase, "metadata");
   } finally {
     if (previousOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = previousOptions;
@@ -238,6 +238,12 @@ test("contract binaries use exact Cargo identities and current source/configurat
     // they neither invent compiler messages nor commission another build.
     const recorded = { metadata: undefined, messages: [] }, decode = JSON.parse;
     let binaries;
+    const starts = [], nativeSpawn = childProcess.spawnSync;
+    childProcess.spawnSync = (...args) => {
+      starts.push([args[0], args[1]]);
+      return nativeSpawn(...args);
+    };
+    syncBuiltinESMExports();
     JSON.parse = (text, ...args) => {
       const value = decode(text, ...args);
       if (value?.packages) recorded.metadata = text;
@@ -245,7 +251,14 @@ test("contract binaries use exact Cargo identities and current source/configurat
       return value;
     };
     try { binaries = build(); }
-    finally { JSON.parse = decode; }
+    finally {
+      JSON.parse = decode;
+      childProcess.spawnSync = nativeSpawn;
+      syncBuiltinESMExports();
+    }
+    // Count actual native starts while exercising Cargo freshness and output,
+    // rather than substituting a process response or timing a warm cache.
+    assert.deepEqual(starts.map(([executable, args]) => [executable, args[0]]), [[cargo, "metadata"], [cargo, "build"]]);
     assert.deepEqual(run(binaries), ["alpha:false:true", "beta:false:true"]);
     // --no-default-features disables selected packages' defaults; a dependency
     // keeps its defaults unless its dependency declaration disables them.
@@ -318,17 +331,6 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.throws(replay, error => error instanceof ContractTargetCollision && error.output === binaries[0]);
     put("artifacts.jsonl", recorded.messages[first].slice(0, -1));
     assert.throws(replay, error => error.cause instanceof SyntaxError && /STEP_FAILED contract-artifact:/.test(error.message));
-    const previousRustc = process.env.RUSTC;
-    try {
-      process.env.RUSTC = join(root, "missing-diagnostic-compiler");
-      emit(messages);
-      const refusedProbe = {};
-      assert.deepEqual(buildContractTargets(root, targets, process.execPath, refusedProbe), binaries);
-      assert.match(refusedProbe.rustc_error, /ENOENT/);
-    } finally {
-      if (previousRustc === undefined) delete process.env.RUSTC;
-      else process.env.RUSTC = previousRustc;
-    }
     put("compiler-refusal.jsonl", originalRefusal.stdout);
     put("build", `process.stdout.write(require("node:fs").readFileSync("compiler-refusal.jsonl")); process.exit(${originalRefusal.status});`);
     assert.throws(replay, error => error.stdout === originalRefusal.stdout && error.status === originalRefusal.status

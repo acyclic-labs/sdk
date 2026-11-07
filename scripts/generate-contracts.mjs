@@ -54,8 +54,8 @@ if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-
 // One build compiles every contract target from current Rust source; the
 // emitted executables are then run directly instead of one `cargo run` each.
 // Selected packages omit defaults; Cargo still unifies dependency features.
-/** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, cargo_version: string, rustc_version: string, rustc_error?: string, toolchain_ms: number, rustc_ms: number, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
-const report = { revision: 1, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, cargo_version: "", rustc_version: "", toolchain_ms: 0, rustc_ms: 0, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
+/** @type {{ revision: number, status: string, phase: string, mode: string, source_commit: string | null, run_id: string | null, metadata_ms: number, build_ms: number, artifacts: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[], generators: { name: string, execute_ms: number, render_compare_ms: number }[] }} */
+const report = { revision: 2, status: "incomplete", phase: "start", mode, source_commit: null, run_id: process.env.GITHUB_RUN_ID ?? null, metadata_ms: 0, build_ms: 0, artifacts: [], generators: [] };
 const started = performance.now();
 const saveReport = () => {
   if (!process.env.SDK_TEMP_DIR) return;
