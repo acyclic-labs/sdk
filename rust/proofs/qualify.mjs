@@ -15,6 +15,16 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "stream-error-admission": [
+    "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
+    "canonical failure writer output was refused", [],
+    { fuzz: { bin: "stream_error", corpus: "fuzz/corpus/stream_error", runs: 1024 } },
+  ],
+  "invocation-header-admission": [
+    "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
+    "captured actor invocation was refused", [],
+    { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
+  ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
     "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions",
@@ -119,10 +129,23 @@ if (claim === "--help" && extra.length === 0) {
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
-  const command = options.nextest
+  let fuzzTarget;
+  if (options.fuzz) {
+    const compiler = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+    fuzzTarget = compiler.stdout?.match(/^host: (\S+)$/m)?.[1];
+    if (compiler.error || compiler.status !== 0 || !fuzzTarget) {
+      console.error(`step=select native fuzz target; cause=${compiler.error?.message ?? compiler.stderr ?? "rustc host absent"}; recovery: rustc -vV; then node rust/proofs/qualify.mjs ${claim}`);
+      process.exit(2);
+    }
+  }
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+    "--target", fuzzTarget,
+    "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
+    `-artifact_prefix=target/${claim}/`];
+  const command = options.fuzz ? fuzzCommand(1) : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.positive
+  const positive = options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command;
@@ -144,6 +167,10 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.fuzz ? {
+            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
+              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
@@ -184,7 +211,10 @@ if (claim === "--help" && extra.length === 0) {
       if (applied.status !== 0) throw new Error(applied.output);
       step = "unchanged oracle rejects production mutation";
       const mutated = check(options.negativeLabel ?? "mutated");
-      require(mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
+      require(options.fuzz
+        ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(diagnostic)
+          && mutated.output.includes("ERROR: libFuzzer:")
+        : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
         && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
     } finally {
       writeFileSync(sourcePath, original);
@@ -193,9 +223,9 @@ if (claim === "--help" && extra.length === 0) {
     require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed";
-    require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
+    const completed = options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    require(restored.status === 0 && !restored.signal && completed.every(marker => restored.output.includes(marker)));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;
