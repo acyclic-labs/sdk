@@ -366,6 +366,17 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "ok: a run with these flags starts
 "
     );
+    // Readiness cannot enter a serving or remote conversation mode.
+    for flags in [
+        vec!["--host-workspace", "doctor"],
+        vec!["--endpoint", "http://127.0.0.1:1", "doctor"],
+    ] {
+        let refused = graphcoder(&fixture, &model.catalog, flags, "").await;
+        assert_eq!(refused.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains("doctor checks local startup"), "{stderr}");
+        assert!(stderr.contains("recovery:"), "{stderr}");
+    }
     // State nested in the checkout is the refusal opening meets, with its recovery.
     let nested = Fixture {
         workspace: fixture.workspace.clone(),

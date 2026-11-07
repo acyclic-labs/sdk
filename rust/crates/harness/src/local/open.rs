@@ -55,7 +55,11 @@ pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
     };
     let mut refusals = opening.host_refusals();
     let opened = if refusals.is_empty() {
-        opening.storage().await.map(drop)
+        let storage = opening.storage().await;
+        match storage {
+            Ok(storage) => opening.finish(storage).await.map(drop),
+            Err(error) => Err(error),
+        }
     } else {
         opening.checkout().map(drop)
     };

@@ -310,6 +310,18 @@ async fn a_directory_at_the_selected_plugins_entry_refuses_startup() -> Result<(
     let harness = open(directory.path(), &project).await?;
     write(&harness, "plugins.ts/child.ts", "export default {}; ").await?;
     drop(harness);
+    let refused = LocalHarness::doctor(
+        volume_config(directory.path(), project.clone(), text())?
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
+    .await;
+    assert!(matches!(
+        refused.as_slice(),
+        [Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            ..
+        }]
+    ));
     match open(directory.path(), &project).await {
         Err(Error::ToolRejected {
             code: crate::wire::ErrorCode::Invalid,
