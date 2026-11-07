@@ -688,6 +688,70 @@ async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
     Ok(())
 }
 
+/// Replacement admission follows physical retirement even when its caller
+/// disappears. Loss of the original producer wakes every waiter with an error.
+#[tokio::test]
+async fn replacement_view_waits_for_original_retirement_and_reports_producer_loss() -> Result<()> {
+    let mut fixture = Fixture::for_host("codex").await?;
+    for (reference, complete) in [("retired", true), ("lost", false)] {
+        fixture
+            .session(
+                reference,
+                SessionAction::Spawn {
+                    prompt: "work".into(),
+                },
+            )
+            .await?;
+        let child = agents::child(&fixture.parent, reference)?;
+        fixture
+            .owner
+            .native
+            .request(
+                &child,
+                OperationId::new(),
+                &Event::Control {
+                    control: Control::Archive,
+                },
+            )
+            .await?;
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *fixture.owner.retirement_gate.lock().map_err(storage)? = Some((entered, released));
+        let mut retirement = Box::pin(fixture.owner.retire_idle([child.clone()]));
+        tokio::select! {
+            result = &mut retirement => panic!("retirement completed before its original producer: {result:?}"),
+            result = entering => result.map_err(storage)?,
+        }
+        // Cancelling coordination must leave custody with the original job.
+        drop(retirement);
+        let mut first = Box::pin(fixture.owner.attach(&child));
+        let mut second = Box::pin(fixture.owner.attach(&child));
+        assert!(futures::poll!(&mut first).is_pending());
+        assert!(futures::poll!(&mut second).is_pending());
+        assert!(
+            matches!(fixture.owner.views()?.get(&child), Some(View::Retiring(_))),
+            "replacement attachment was admitted while its original view remained live"
+        );
+        release.send(complete).map_err(storage)?;
+        let (first, second) = tokio::join!(first, second);
+        if complete {
+            let first = first?;
+            let second = second?;
+            assert!(
+                Arc::ptr_eq(&first, &second),
+                "waiters opened separate views"
+            );
+            first.verify().await?;
+        } else {
+            for result in [first, second] {
+                assert!(matches!(result, Err(Error::Conflict(ref cause))
+                    if cause == "native view retirement producer lost"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn prompt(value: &Value) -> Result<SessionAction> {
     Ok(SessionAction::Reply {
         id: serde_json::from_value(value["id"].clone()).map_err(storage)?,
