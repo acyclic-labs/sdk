@@ -1,0 +1,11 @@
+--- a/scripts/verify-products.mjs
++++ b/scripts/verify-products.mjs
+@@ -19,7 +19,7 @@
+ 
+ export function buildManifest(bytes, source) {
+   const build = JSON.parse(bytes);
+-  if (build.format !== 1 || build.source !== source || build.dirty !== false
++  if (build.format !== 1 || build.dirty !== false
+       || !['graphcoder', 'acyclic'].every(name => /^[0-9a-f]{64}$/.test(build.hashes?.[name] ?? ''))) {
+     throw new Error('build identity differs from the committed release source');
+   }

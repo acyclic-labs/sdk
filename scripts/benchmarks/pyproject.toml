@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acyclic-graphcoder-harbor"
+version = "0.2.0"
+description = "Harbor installed-agent adapter for prebuilt GraphCoder releases"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = ["harbor==0.24.0"]
+
+[tool.setuptools.packages.find]
+include = ["acyclic_graphcoder_harbor*"]

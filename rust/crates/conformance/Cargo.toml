@@ -144,6 +144,7 @@ test = false
 required-features = ["client-session"]
 
 [dev-dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability", features = ["research"] }
 acyclic-test-support = { path = "../test-support" }
 divan.workspace = true
 tempfile = "3.27.0"

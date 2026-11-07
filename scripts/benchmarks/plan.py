@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
 
-from .contracts import Artifact, catalog, digest
+from .acyclic_graphcoder_harbor.contracts import Artifact, catalog, digest
 
 
 STAGES = {"tb2-20": ("terminal-bench@2.0", 89, 20),
@@ -67,7 +67,7 @@ def paired_plan(stage: str, dataset: dict, artifact: Artifact, binary_path: str,
         ("predictor-tb2-v1\0" + label + "\0" + task["name"]).encode()).digest())[:selected_count]
     task_configs = [{"git_url": dataset["git_url"], "git_commit_id": dataset["git_commit_id"],
                      "path": task["path"]} for task in tasks]
-    graphcoder = {"import_path": "scripts.benchmarks.graphcoder_harbor:GraphCoder",
+    graphcoder = {"import_path": "acyclic_graphcoder_harbor.graphcoder_harbor:GraphCoder",
                   "model_name": model, "kwargs": {
                       "graphcoder_binary": str(Path(binary_path).resolve()),
                       "graphcoder_sha256": artifact.sha256, "source_sha": artifact.source_sha,

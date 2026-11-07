@@ -17,6 +17,13 @@ pub struct OperationInterval {
     pub finished: Instant,
 }
 
+impl OperationInterval {
+    /// Preserve strict observation order before platform duration arithmetic.
+    pub fn elapsed(self) -> Result<Duration, IntervalError> {
+        ordered_duration(self.started, self.finished).ok_or(IntervalError::Reversed)
+    }
+}
+
 /// One research producer's original clock origin. The producer supplies a
 /// distinct domain for each origin. This identifies clocks, not operations;
 /// the original admission Binding remains the operation join authority.
@@ -111,8 +118,7 @@ impl IntervalOrigin {
     ) -> Result<IntervalCoordinates, IntervalError> {
         let started =
             ordered_duration(self.instant, interval.started).ok_or(IntervalError::BeforeOrigin)?;
-        let elapsed =
-            ordered_duration(interval.started, interval.finished).ok_or(IntervalError::Reversed)?;
+        let elapsed = interval.elapsed()?;
         Ok(IntervalCoordinates {
             domain: self.domain,
             started_ns: started.as_nanos(),

@@ -775,6 +775,16 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
 /// Accepted provider catalogs preserve capacities/defaults through the production parser.
 pub fn assert_catalog_invariants(input: &[u8]) {
     if let Ok(document) = crate::catalog_document::parse(input) {
+        let original: serde_json::Value = serde_json::from_slice(input).unwrap();
+        for (name, provider) in &document.providers {
+            assert_eq!(
+                original[name]
+                    .get("allow_http_host")
+                    .and_then(serde_json::Value::as_str),
+                provider.allow_http_host.as_deref(),
+                "catalog HTTP host grant changed at decode"
+            );
+        }
         let encoded = serde_json::to_vec(&document).unwrap();
         let replay = crate::catalog_document::parse(&encoded).unwrap();
         assert_eq!(document.default_model, replay.default_model);

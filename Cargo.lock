@@ -232,6 +232,7 @@ dependencies = [
  "acyclic-harness-providers",
  "acyclic-machines",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-objects",
  "acyclic-stream",
  "acyclic-test-support",

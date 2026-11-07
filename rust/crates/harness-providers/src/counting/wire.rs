@@ -37,8 +37,13 @@ pub enum TokenCountField {
     Count,
 }
 
-pub(crate) fn endpoint(base: &str, model: &str, spec: &TokenCounterSpec) -> Result<String> {
-    let mut base = crate::registry::validate_url(base)?;
+pub(crate) fn endpoint(
+    config: &crate::ProviderSpec,
+    model: &str,
+    spec: &TokenCounterSpec,
+) -> Result<String> {
+    let mut base =
+        crate::registry::validate_url(&config.base_url, config.allow_http_host.as_deref())?;
     let root = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&root);
     let mut path = spec.path.clone();

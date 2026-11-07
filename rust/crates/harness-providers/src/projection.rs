@@ -26,7 +26,10 @@ use serde_json::{Value, json};
 use wire::{Item, Message, Request};
 
 pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
-    let mut base = validate_url(&provider.config.base_url)?;
+    let mut base = validate_url(
+        &provider.config.base_url,
+        provider.config.allow_http_host.as_deref(),
+    )?;
     let path = format!("{}/", base.path().trim_end_matches('/'));
     base.set_path(&path);
     let suffix = match provider.config.adapter {

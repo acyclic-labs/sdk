@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from harbor.models.job.config import JobConfig
 from harbor.agents.installed.codex import Codex, CodexOptions
-from .graphcoder_harbor import GraphCoder
+from .acyclic_graphcoder_harbor.graphcoder_harbor import GraphCoder
 from . import test_contracts
 
 
@@ -77,9 +77,19 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "not installed"):
             await agent.run("hello", environment, None)
 
-    async def test_extra_environment_is_rejected_before_setup(self):
-        with self.assertRaisesRegex(ValueError, "inherited agent env"):
-            GraphCoder(**self.kwargs, extra_env={"FIXTURE_TOKEN": "not-a-real-key"})
+    async def test_proxy_environment_is_consumed_without_forwarding_provider_keys(self):
+        agent = GraphCoder(**self.kwargs, allow_http_host="172.17.0.1", extra_env={
+            "OPENAI_BASE_URL": "http://172.17.0.1:9999/t/trial/openai/v1",
+            "ACYCLIC_PROVIDER_AUTH_HEADER": "x-harbor-token",
+            "ACYCLIC_PROVIDER_AUTH_TOKEN": "generated-proxy-token",
+        })
+        self.assertEqual(agent.provider_catalog["benchmark"]["headers"],
+                         {"x-harbor-token": "generated-proxy-token"})
+        self.assertEqual(agent.provider_catalog["benchmark"]["allow_http_host"], "172.17.0.1")
+        self.assertFalse(agent.extra_env)
+        for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "FIXTURE_TOKEN"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "raw provider keys"):
+                GraphCoder(**self.kwargs, extra_env={name: "not-a-real-key"})
 
     async def test_comparator_projection_cannot_change_the_effective_model(self):
         fixture = test_contracts.BenchmarkContracts()

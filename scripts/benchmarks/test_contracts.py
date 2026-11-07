@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from .contracts import Artifact, catalog, run_command
+from .acyclic_graphcoder_harbor.contracts import Artifact, catalog, run_command
 from .bootstrap import verified_uv
 from .plan import STAGES, inventory, manifest, paired_plan
 
@@ -62,6 +62,12 @@ class BenchmarkContracts(unittest.TestCase):
                 catalog("openai/fixture", "http://localhost/v1", context, output)
         self.assertEqual(catalog("openai/fixture", "http://localhost/v1", 100, 10)
                          ["benchmark"]["authentication"], "optional")
+        for extra_env in ([], {"ACYCLIC_PROVIDER_AUTH_HEADER": "x-proxy-token"},
+                          {"ACYCLIC_PROVIDER_AUTH_TOKEN": "proxy-token"},
+                          {"ACYCLIC_PROVIDER_AUTH_HEADER": "authorization", "ACYCLIC_PROVIDER_AUTH_TOKEN": "proxy-token"},
+                          {"ACYCLIC_PROVIDER_AUTH_HEADER": "x-proxy-token", "ACYCLIC_PROVIDER_AUTH_TOKEN": "a\r\nb"}):
+            with self.subTest(extra_env=extra_env), self.assertRaises(ValueError):
+                catalog("openai/fixture", "http://localhost/v1", 100, 10, extra_env=extra_env)
 
     def test_bootstrap_rejects_unpinned_bytes_before_archive_parsing(self):
         with patch("scripts.benchmarks.bootstrap.zipfile.ZipFile",
@@ -150,6 +156,8 @@ class BenchmarkContracts(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", observed["env"])
             self.assertEqual(observed["env"]["CODEX_HOME"], str(state / "fixture-codex"))
             self.assertEqual(observed["env"]["PATH"], env["PATH"])
+            self.assertEqual(observed["env"].get("ACYCLIC_SIGNING_CUSTODY"), "private-file")
+            self.assertEqual(observed["env"]["ACYCLIC_SIGNING_CUSTODY_DIRECTORY"], str(state / "custody"))
             self.assertFalse((self.root / "ESCAPED").exists())
 
     def test_log_redirection_preserves_agent_failure_status(self):

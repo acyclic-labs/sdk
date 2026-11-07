@@ -11,8 +11,8 @@ fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
     let output = Command::new(if cfg!(windows) { "python" } else { "python3" })
         .args([
             "-c",
-            "import json; from scripts.benchmarks.contracts import catalog; \
-             print(json.dumps(catalog('public/fixture','http://127.0.0.1:9/v1',100,10)))",
+            "import json; from scripts.benchmarks.acyclic_graphcoder_harbor.contracts import catalog; \
+             print(json.dumps(catalog('public/fixture','http://172.17.0.1:9/t/trial/openai/v1',100,10,allow_http_host='172.17.0.1')))",
         ])
         .current_dir(root)
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -36,6 +36,69 @@ fn generated_benchmark_catalog_loads_and_old_incomplete_features_fail()
     assert!(!model.features.images);
     assert_eq!(model.capacity.context_tokens, 100);
     assert_eq!(model.capacity.output_tokens, Some(10));
+
+    let generated: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    for (host, base, count_path) in [
+        (None, "http://172.17.0.1:9/v1", "responses/input_tokens"),
+        (
+            Some("172.17.0.2"),
+            "http://172.17.0.1:9/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("*.example.test"),
+            "http://one.example.test/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://172.17.0.2:9/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://user@172.17.0.1:9/v1",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://172.17.0.1:9/v1?token=value",
+            "responses/input_tokens",
+        ),
+        (
+            Some("172.17.0.1"),
+            "http://172.17.0.1:9/v1",
+            "http://172.17.0.2:9/count",
+        ),
+    ] {
+        let mut invalid = generated.clone();
+        invalid["benchmark"]["allow_http_host"] = host.into();
+        invalid["benchmark"]["base_url"] = base.into();
+        invalid["benchmark"]["token_counter"]["path"] = count_path.into();
+        std::fs::write(file.path(), serde_json::to_vec(&invalid)?)?;
+        let mut candidate = Registry::new(Credentials::explicit(BTreeMap::new()))?;
+        assert!(
+            candidate.load_catalog(file.path()).is_err(),
+            "accepted {host:?} {base} {count_path}"
+        );
+    }
+    for base in [
+        "https://provider.example/v1",
+        "http://localhost:9/v1",
+        "http://127.0.0.1:9/v1",
+        "http://[::1]:9/v1",
+    ] {
+        let mut default = generated.clone();
+        default["benchmark"]
+            .as_object_mut()
+            .ok_or("missing provider")?
+            .remove("allow_http_host");
+        default["benchmark"]["base_url"] = base.into();
+        std::fs::write(file.path(), serde_json::to_vec(&default)?)?;
+        let mut candidate = Registry::new(Credentials::explicit(BTreeMap::new()))?;
+        candidate.load_catalog(file.path())?;
+        candidate.resolve("benchmark/fixture")?;
+    }
 
     // Preserve the exact old generator shape as a production-parser negative.
     let mut incomplete: serde_json::Value = serde_json::from_slice(&output.stdout)?;

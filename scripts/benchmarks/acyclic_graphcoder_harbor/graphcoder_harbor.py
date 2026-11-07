@@ -19,17 +19,17 @@ class GraphCoder(BaseInstalledAgent):
 
     def __init__(self, *args, graphcoder_binary: str, graphcoder_sha256: str,
                  source_sha: str, base_url: str, context_tokens: int,
-                 output_tokens: int, **kwargs):
+                 output_tokens: int, allow_http_host: str | None = None, **kwargs):
         self.artifact = Artifact.read(graphcoder_binary, graphcoder_sha256, source_sha)
         if kwargs.get("version") not in (None, source_sha):
             raise ValueError("GraphCoder version must be the artifact source SHA")
         kwargs["version"] = source_sha
+        extra_env = kwargs.pop("extra_env", None)
         super().__init__(*args, **kwargs)
-        if self.extra_env:
-            raise ValueError("GraphCoder benchmark execution accepts no inherited agent env")
         if self.mcp_servers or self.skills_dir:
             raise ValueError("this benchmark adapter does not project task MCP/skills")
-        self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens)
+        self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
+                                        allow_http_host=allow_http_host, extra_env=extra_env)
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
         self.binary = self.state + "/graphcoder"
         self._installed_environment = None
@@ -46,8 +46,8 @@ class GraphCoder(BaseInstalledAgent):
             "test -c /dev/fuse && test -r /dev/fuse && test -w /dev/fuse"
             " && command -v fusermount3 >/dev/null && command -v sha256sum >/dev/null"
             " && test \"$PWD\" != /"))
-        await self.exec_as_root(environment, command="mkdir -p " + shlex.join([
-            self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
+        await self.exec_as_root(environment, command="install -d -m 700 " + shlex.join([
+            self.state, self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
         with tempfile.TemporaryDirectory(prefix="graphcoder-artifact-") as temporary:
             root = Path(temporary)
             binary = root / "graphcoder"
@@ -59,7 +59,8 @@ class GraphCoder(BaseInstalledAgent):
         checksum = self.artifact.sha256 + "  " + self.binary + "\n"
         await self.exec_as_root(environment, command=(
             "printf %s " + shlex.quote(checksum) + " | sha256sum -c - && chmod 755 "
-            + shlex.quote(self.binary)))
+            + shlex.quote(self.binary) + " && chmod 600 "
+            + shlex.quote(self.state + "/catalog.json")))
         if environment.default_user is not None:
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
                 str(environment.default_user), self.state]))

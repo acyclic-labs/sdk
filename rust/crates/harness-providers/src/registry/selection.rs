@@ -118,7 +118,7 @@ pub(super) fn counts_input(
     }
     if config.token_counter.is_some() {
         let counter = crate::counting::specification(config, None)?;
-        return crate::counting::wire::endpoint(&config.base_url, model, counter).map(|_| ());
+        return crate::counting::wire::endpoint(config, model, counter).map(|_| ());
     }
     #[cfg(not(target_arch = "wasm32"))]
     if codex_route(config)

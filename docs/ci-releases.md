@@ -32,12 +32,62 @@ to actionlint explicitly, so a successful check includes shell validation.
 
 ## Coordinated release
 
+### Prebuilt Linux products
+
+The default **SDK Release** dispatch publishes prebuilt GraphCoder and plugin
+assets. Its single short job downloads the versioned draft, checks source,
+inventory and SHA256SUMS, then optionally publishes those same bytes. It never
+compiles a product, installs a Rust toolchain, or starts on pull requests.
+
+From one committed source, run the reproducible product builder for Linux x64
+and cross-compile arm64 on the same Linux host:
+
+```sh
+CARGO_TARGET_DIR=/absolute/products/x64 CARGO_BUILD_TARGET=x86_64-unknown-linux-gnu node scripts/build-product.mjs
+CARGO_TARGET_DIR=/absolute/products/arm64 CARGO_BUILD_TARGET=aarch64-unknown-linux-gnu \
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc node scripts/build-product.mjs
+node scripts/package-products.mjs /absolute/assets \
+  /absolute/products/x64/x86_64-unknown-linux-gnu/dist \
+  /absolute/products/arm64/aarch64-unknown-linux-gnu/dist
+```
+
+Install both Rust targets and the arm64 cross linker and target libraries before
+building. Cargo's final and intermediate directories share the selected output
+lifetime. Each build records its original source and executable digests;
+packaging refuses dirty or different sources, changed bytes, and wrong ELF
+architectures. The adapter's Python package version must equal the plugin version.
+Packaging uses GNU tar with fixed ownership, order and commit time.
+
+Upload the four versioned tarballs, PRODUCTS.json and SHA256SUMS to the matching
+draft, then dispatch from that exact version tag:
+
+```sh
+gh release create acyclic-v0.2.0 --repo acyclic-labs/sdk --target FULL_SOURCE_SHA --draft
+gh release upload acyclic-v0.2.0 /absolute/assets/* --repo acyclic-labs/sdk
+gh workflow run release.yml --repo acyclic-labs/sdk --ref acyclic-v0.2.0 \
+  -f version=0.2.0 -f prebuilt_products=true -f publish=true
+```
+
+Install the matching product release on Linux x64 or arm64 with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/acyclic-labs/sdk/acyclic-v0.2.0/scripts/install-products.sh | sh -s -- 0.2.0
+```
+
+The installer verifies each archive's SHA256SUMS entry before extraction. It puts
+GraphCoder in `~/.local/bin` and the complete plugin, including `bin/acyclic`, in
+`~/.local/share/acyclic-plugin`. Pass a second argument to select another prefix.
+The [Harbor adapter](../scripts/benchmarks/README.md) installs from the same tag
+with pip; it does not require a separate package registry.
+
+### SDK registry channels
+
 Commit the same version in all publishable npm, Cargo, and plugin manifests, then
 dispatch **SDK Release** (`release.yml`) from main with that version:
 
 ```sh
 gh workflow run release.yml --repo acyclic-labs/sdk --ref main \
-  -f version=0.2.0 -f publish=false
+  -f version=0.2.0 -f prebuilt_products=false -f publish=false
 ```
 
 `publish=false` runs the complete release graph without publishing. For the live

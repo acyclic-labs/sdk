@@ -9,6 +9,13 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("proxy environment loses its allow-list", "contracts.py",
+     'any(name not in allowed or not isinstance(value, str)',
+     'any(not isinstance(value, str)',
+     "test_harbor.HarborContracts.test_proxy_environment_is_consumed_without_forwarding_provider_keys"),
+    ("container signing custody selection omitted", "contracts.py",
+     '        "ACYCLIC_SIGNING_CUSTODY=private-file",\n', '',
+     "test_contracts.BenchmarkContracts.test_shell_metacharacters_roundtrip_as_prompt_data_and_env_is_empty"),
     ("comparator changes model identity", "plan.py",
      'if model.count("/") != 1:', 'if False:',
      "test_harbor.HarborContracts.test_comparator_projection_cannot_change_the_effective_model"),
@@ -47,9 +54,8 @@ def main():
         with tempfile.TemporaryDirectory(prefix="predictor-negative-") as temporary:
             package = Path(temporary) / "scripts" / "benchmarks"
             package.mkdir(parents=True)
-            for file in source.glob("*.py"):
-                shutil.copyfile(file, package / file.name)
-            target = package / filename
+            shutil.copytree(source, package, dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info", "build"))
+            target = package / ("acyclic_graphcoder_harbor" if filename in ("contracts.py", "graphcoder_harbor.py") else "") / filename
             text = target.read_text()
             if text.count(old) != 1:
                 raise RuntimeError("control no longer targets one production boundary: " + label)

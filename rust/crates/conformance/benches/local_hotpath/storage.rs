@@ -689,10 +689,11 @@ async fn actor_delivery(
                     wakes: 1,
                     ..Terms::default()
                 },
-                entered
-                    .at
-                    .checked_duration_since(started)
-                    .ok_or("handler entry preceded delivery")?,
+                acyclic_observability::OperationInterval {
+                    started,
+                    finished: entered.at,
+                }
+                .elapsed()?,
                 observed,
                 serde_json::json!({"actor": format!("{actor:?}"), "epoch": epoch, "subscription": INBOX, "sequence": inbox}),
             )?;

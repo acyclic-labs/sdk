@@ -10,6 +10,10 @@ on:
         description: Publish all channels after qualification; false validates without publication
         type: boolean
         default: false
+      prebuilt_products:
+        description: Publish prebuilt GraphCoder/plugin assets from the versioned draft without compiling
+        type: boolean
+        default: true
 permissions:
   contents: read
   actions: read
@@ -17,7 +21,41 @@ concurrency:
   group: sdk-release
   cancel-in-progress: false
 jobs:
+  products:
+    name: Publish prebuilt Linux products
+    if: inputs.prebuilt_products
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify and attach existing product assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_ASSET_DIR: ${{ runner.temp }}/products
+        run: |
+          set -euo pipefail
+          step=release-identity
+          trap 'printf "Release step failed: %s; recovery: rerun this workflow with the same version and prebuilt draft\n" "$step" >&2' ERR
+          node --input-type=module -e 'import {checkReleaseVersion} from "./scripts/release-source.mjs"; checkReleaseVersion(process.env.VERSION)'
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          step=download-prebuilt-assets
+          gh release download "acyclic-v$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$RELEASE_ASSET_DIR" \
+            --pattern "graphcoder-$VERSION-linux-*.tar.gz" \
+            --pattern "acyclic-plugin-$VERSION-linux-*.tar.gz" --pattern PRODUCTS.json --pattern SHA256SUMS
+          step=verify-original-products
+          node scripts/verify-products.mjs "$RELEASE_ASSET_DIR"
+          if [ "$PUBLISH" = true ]; then
+            step=publish-original-products
+            node scripts/publish-release-assets.mjs
+          fi
   source:
+    if: ${{ !inputs.prebuilt_products }}
     name: Freeze coordinated release source
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -126,7 +164,7 @@ jobs:
       - npm
       - cargo
       - publish
-    if: always()
+    if: ${{ always() && !inputs.prebuilt_products }}
     runs-on: ubuntu-24.04
     steps:
       - env:

@@ -52,7 +52,7 @@ impl fmt::Display for CustodyFailure {
         match self.cause {
             CustodyCause::InvalidPolicy => output.write_str("select ACYCLIC_SIGNING_CUSTODY=native or private-file; use an absolute ACYCLIC_SIGNING_CUSTODY_DIRECTORY only with private-file"),
             CustodyCause::MissingEntry | CustodyCause::InvalidStoredSeed => output.write_str("restore the original selected signing store and reopen the original state directory"),
-            _ => output.write_str("restore access to the selected signing store and reopen the original state directory; for a new private-file identity explicitly set ACYCLIC_SIGNING_CUSTODY=private-file"),
+            _ => output.write_str("restore access to the selected signing store and reopen the original state directory; for a new headless/container identity explicitly set ACYCLIC_SIGNING_CUSTODY=private-file and ACYCLIC_SIGNING_CUSTODY_DIRECTORY=/absolute/private/state-directory, then restart the original command; retain both settings with that state"),
         }
     }
 }

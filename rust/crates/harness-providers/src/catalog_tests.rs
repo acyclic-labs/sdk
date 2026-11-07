@@ -10,6 +10,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "http://127.0.0.1:1234/v1".into(),
+        allow_http_host: None,
         headers: BTreeMap::new(),
         token_counter: Some(crate::TokenCounterSpec {
             path: "count_tokens".into(),

@@ -133,6 +133,7 @@ fn interval_projection_refuses_foreign_origins_without_allocating()
         result = (|| -> Result<(), IntervalError> {
             let coordinates = origin.project(interval)?;
             assert_eq!((coordinates.started_ns, coordinates.finished_ns), (1, 3));
+            assert_eq!(interval.elapsed()?, Duration::from_nanos(2));
             assert_eq!(
                 IntervalOrigin {
                     instant: interval.finished,
@@ -140,6 +141,14 @@ fn interval_projection_refuses_foreign_origins_without_allocating()
                 }
                 .project(interval),
                 Err(IntervalError::BeforeOrigin)
+            );
+            assert_eq!(
+                OperationInterval {
+                    started: interval.finished,
+                    finished: interval.started,
+                }
+                .elapsed(),
+                Err(IntervalError::Reversed)
             );
             assert_eq!(
                 origin.project(OperationInterval {

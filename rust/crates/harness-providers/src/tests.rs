@@ -364,6 +364,7 @@ pub(super) fn provider_with(
             adapter,
             authentication: Authentication::ApiKey,
             base_url: base_url.into(),
+            allow_http_host: None,
             headers: BTreeMap::new(),
             models: BTreeMap::new(),
             token_counter: Some(crate::TokenCounterSpec {
@@ -662,6 +663,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         adapter: Adapter::Chat,
         authentication: Authentication::Optional,
         base_url: "https://example.test/v1".into(),
+        allow_http_host: None,
         headers: BTreeMap::new(),
         models: BTreeMap::from([(
             "org/model".into(),

@@ -20,7 +20,7 @@ production registry with empty explicit credentials, and rejects the old
 incomplete feature declaration. It never sends a request.
 
 Build the Linux GraphCoder artifact from the selected source commit with
-`cargo build --locked --release -p graphcoder`. Preserve its source commit and
+`node scripts/build-product.mjs`. Preserve its source commit and
 SHA256 digest with the plan; the artifact alone does not satisfy run readiness.
 
 Inventory an already available public dataset checkout at its immutable Git
@@ -70,8 +70,11 @@ The GraphCoder adapter verifies the Linux binary digest and captures those
 exact bytes before any upload, checks the digest again inside the environment,
 then runs the prompt through the task's native working directory. It uses
 fixture HOME/CODEX_HOME/settings, clears inherited process environment apart
-from the task PATH, and uploads only the binary and a public provider catalogue.
-It rejects configured agent environment variables and does not resolve a host
+from the task PATH, and uploads the binary and a private provider catalogue.
+It accepts only `OPENAI_BASE_URL` and the paired `ACYCLIC_PROVIDER_AUTH_HEADER`
+and `ACYCLIC_PROVIDER_AUTH_TOKEN` proxy settings in Harbor's `extra_env`.
+These become catalogue fields; they are absent from the launched environment.
+Raw provider keys and all other environment names are refused. It does not resolve a host
 login. Its stdout JSONL, stderr and artifact/source receipt remain in Harbor's
 agent logs. Nonzero exits propagate without a logging pipeline masking them.
 Successful setup grants execution only in that exact environment object; a
@@ -84,6 +87,27 @@ container readiness. The adapter never changes container privileges or task
 images. Native mount admission inside the actual task images still needs a
 credential-free qualification before a run. Loopback endpoint addresses refer
 to the task container, not the Linux host.
+
+Install the versioned adapter directly from this repository:
+
+```sh
+pip install "git+https://github.com/acyclic-labs/sdk@acyclic-v0.2.0#subdirectory=scripts/benchmarks"
+harbor run --agent-import-path acyclic_graphcoder_harbor.graphcoder_harbor:GraphCoder --help
+```
+
+Supply the adapter's explicit binary, digest, source, endpoint and model-capacity
+arguments through Harbor's agent kwargs. The adapter selects
+`ACYCLIC_SIGNING_CUSTODY=private-file` and a private `custody` directory within
+each trial's state before launching GraphCoder. Keep that directory with the
+state; it is the explicit [file custody policy](../../docs/signing-custody.md).
+This supports containers whose seccomp policy denies kernel-keyring access.
+
+HTTPS and loopback HTTP remain the provider defaults. For a container proxy
+at `http://172.17.0.1:8000/t/TOKEN/openai/v1`, explicitly pass
+`allow_http_host="172.17.0.1"` as an agent kwarg. This sets the same per-provider
+catalogue field used by native GraphCoder. It grants only that canonical host,
+without wildcards; it preserves the no-userinfo/query/fragment and same-origin
+token-counter rules. Proxy path tokens belong only in the private catalogue.
 
 Readiness also requires green-wide-main and three-platform receipts for the
 binary source, separately authorized credential-free model access for **both**

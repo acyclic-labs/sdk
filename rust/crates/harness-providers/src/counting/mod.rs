@@ -119,7 +119,7 @@ pub(crate) async fn count(
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let bytes = wire::body(generation, &provider.model.name, spec.adapter)?;
-        let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
+        let url = wire::endpoint(&provider.config, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
         Ok::<_, Error>((url, bytes, plan))
     }

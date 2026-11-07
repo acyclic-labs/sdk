@@ -1,0 +1,11 @@
+--- a/scripts/verify-products.mjs
++++ b/scripts/verify-products.mjs
+@@ -10,7 +10,7 @@
+   const expected = ['graphcoder', 'acyclic-plugin'].flatMap(product =>
+     ['linux-x64', 'linux-arm64'].map(platform => `${product}-${version}-${platform}.tar.gz`)).concat('PRODUCTS.json').sort();
+   const manifest = JSON.parse(bytes);
+-  if (manifest.format !== 1 || manifest.source !== source || manifest.version !== version
++  if (manifest.format !== 1 || manifest.version !== version
+       || JSON.stringify([...manifest.assets, 'PRODUCTS.json'].sort()) !== JSON.stringify(expected)) {
+     throw new Error('product identity or inventory differs from the selected release');
+   }

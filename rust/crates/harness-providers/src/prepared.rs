@@ -52,7 +52,7 @@ impl PreparedInput {
         )
         .await?;
         let exchange = HttpRequest {
-            url: counting::wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?,
+            url: counting::wire::endpoint(&provider.config, &provider.model.name, spec)?,
             headers: dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false),
             body: self.count.clone(),
         };

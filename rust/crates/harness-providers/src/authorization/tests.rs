@@ -86,7 +86,7 @@ impl CredentialResolver for Host {
 impl HttpTransport for Protected {
     fn send(&self, mut request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            if crate::registry::validate_url(&request.url)?
+            if crate::registry::validate_url(&request.url, None)?
                 .origin()
                 .ascii_serialization()
                 != self.origin

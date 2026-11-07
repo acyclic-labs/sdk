@@ -201,6 +201,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             adapter,
             authentication: Authentication::Optional,
             base_url: "https://recorded.invalid/v1".into(),
+            allow_http_host: None,
             headers: BTreeMap::new(),
             models: BTreeMap::from([(
                 "model".into(),

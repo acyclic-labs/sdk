@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-providers/src/registry.rs
++++ b/rust/crates/harness-providers/src/registry.rs
+@@ -214,7 +214,7 @@
+ pub(crate) fn validate_url(base: &str, allow_http_host: Option<&str>) -> Result<url::Url> {
+     let url = url::Url::parse(base).map_err(|_| invalid("invalid provider URL"))?;
+     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+-    let permitted = allow_http_host.is_some_and(|host| Some(host) == url.host_str());
++    let permitted = allow_http_host.is_some_and(|_| false);
+     if !(url.scheme() == "https" || (url.scheme() == "http" && (local || permitted)))
+         || url.host_str().is_none()
+         || !url.username().is_empty()
