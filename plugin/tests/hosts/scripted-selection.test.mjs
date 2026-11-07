@@ -9,7 +9,8 @@ test('framing admits only its CLI artifact without Codex or GraphCoder',()=>{
  assert.equal(scenario.selection,'managed:bounded-framing');
  assert.equal(scenario.args.length,2);
  assert.equal(scenario.args[1],process.execPath);
- assert.ok(scenario.args[0].endsWith('mcp-framing.py'));
+ assert.equal(scenario.program,process.execPath);
+ assert.ok(scenario.args[0].endsWith('mcp-framing.mjs'));
 });
 
 test('scale does not require Codex; managed sandbox scenarios refuse its absence',()=>{

@@ -235,7 +235,7 @@ The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
 ```sh
-python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
+node plugin/tests/hosts/mcp-framing.mjs ACYCLIC
 ```
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input

@@ -21,8 +21,8 @@ export function scriptedScenario(artifacts,codex,selection){
    'step=select scripted host scenario; recovery: select '+scriptedSelections.join('|'));
  const [kind,name]=selection.split(':');
  const binary=artifacts.artifacts.acyclic.path;
- if(name==='bounded-framing')return {name,selection,program:'python3',
-  args:[join(here,'mcp-framing.py'),binary],
+ if(name==='bounded-framing')return {name,selection,program:process.execPath,
+  args:[join(here,'mcp-framing.mjs'),binary],
   accepts:run=>JSON.parse(run.stdout).cases.length===21};
  const graphcoder=artifacts.artifacts.graphcoder.path;
  if(kind==='scale')return {name,selection,program:'python3',
