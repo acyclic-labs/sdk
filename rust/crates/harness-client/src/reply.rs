@@ -306,7 +306,8 @@ pub fn encode_agent_reply(
         reason,
     };
     let encoded_len = match &envelope.value {
-        Some(Value::Reply(bytes)) => encoded_agent_reply_size(bytes.len() as u64)? as usize,
+        Some(Value::Reply(bytes)) => usize::try_from(encoded_agent_reply_size(bytes.len() as u64)?)
+            .map_err(|_| CommandError::Capacity)?,
         _ => envelope.encoded_len(),
     };
     if encoded_len > MAX_AGENT_REPLY_BYTES {
@@ -611,8 +612,8 @@ fn validate_reply(
         }
         (AgentReply::History { items, next }, AgentCommand::History { page, .. }) => {
             if items
-                .windows(2)
-                .any(|pair| pair[1].conversation.checked_add(1) != Some(pair[0].conversation))
+                .array_windows::<2>()
+                .any(|[newer, older]| older.conversation.checked_add(1) != Some(newer.conversation))
             {
                 return Err(CommandError::Invalid);
             }
