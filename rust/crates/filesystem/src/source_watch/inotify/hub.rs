@@ -52,7 +52,7 @@ pub(super) enum Interest<'a> {
 pub(super) struct Hub {
     descriptor: OwnedFd,
     routes: Mutex<Routes>,
-    pending: Mutex<VecDeque<Arc<Shared>>>,
+    pending: Mutex<VecDeque<Pending>>,
     pending_changed: Condvar,
     next_subscriber: AtomicU64,
     /// Collector loss is permanent; registrations still belong to their watches.
@@ -71,6 +71,25 @@ struct Routes {
     descriptors: HashMap<i32, Route>,
     /// Watches that receive queue overflow records.
     subscribers: IndexMap<u64, Weak<Shared>>,
+}
+
+enum Pending {
+    Records(Arc<Shared>),
+    Lost(Arc<Shared>, Arc<io::Error>),
+}
+
+impl Pending {
+    fn deliver(self) {
+        match self {
+            Self::Records(watch) => watch.service(),
+            Self::Lost(watch, cause) => {
+                watch
+                    .delivery
+                    .report_failure(&io::Error::new(cause.kind(), cause).into());
+                watch.delivery.notify_lost();
+            }
+        }
+    }
 }
 
 /// Undelivered records routed to one watch.
@@ -525,7 +544,7 @@ impl Hub {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push_back(watch);
+            .push_back(Pending::Records(watch));
         self.pending_changed.notify_one();
     }
 
@@ -595,20 +614,23 @@ impl Hub {
             }
             subscribers
         };
-        // No route lock or service admission is held through notification.
-        // Loss settles delivery, while the existing owner retains all native
-        // registrations and cleanup credits until physical withdrawal.
-        for watch in subscribers {
-            watch
-                .delivery
-                .report_failure(&io::Error::new(cause.kind(), Arc::clone(cause)).into());
-            watch.delivery.notify_lost();
+        // A subscriber callback may block. Dispatch through the existing pool
+        // so it cannot hold the collector or another worker's notifications.
+        // This terminal job needs no read cursor or fresh work admission.
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            pending.extend(
+                subscribers
+                    .into_iter()
+                    .map(|watch| Pending::Lost(watch, Arc::clone(cause))),
+            );
         }
+        self.pending_changed.notify_all();
     }
 
     fn serve_forever(&'static self) {
         loop {
-            let watch = {
+            let pending = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
                 loop {
                     if let Some(watch) = pending.pop_front() {
@@ -620,7 +642,7 @@ impl Hub {
                         .unwrap_or_else(PoisonError::into_inner);
                 }
             };
-            watch.service();
+            pending.deliver();
         }
     }
 }
@@ -631,6 +653,16 @@ impl Drop for RouterEnded<'_> {
     fn drop(&mut self) {
         self.0.fail_all();
     }
+}
+
+#[cfg(test)]
+pub(super) fn collector_thread_id() -> io::Result<std::thread::ThreadId> {
+    ROUTER_THREAD
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|worker| worker.thread().id())
+        .ok_or_else(|| io::Error::other("source collector thread was not retained"))
 }
 
 #[cfg(test)]

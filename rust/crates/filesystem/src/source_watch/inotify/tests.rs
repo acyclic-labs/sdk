@@ -116,7 +116,8 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         let (waiting, entered) = std::sync::mpsc::channel();
         let (release, resume) = std::sync::mpsc::channel();
         struct StopDuringReport {
-            entered: std::sync::mpsc::Sender<bool>,
+            entered: std::sync::mpsc::Sender<std::thread::ThreadId>,
+            collector: std::thread::ThreadId,
             resume: Mutex<std::sync::mpsc::Receiver<()>>,
         }
         impl HostChangeSink for StopDuringReport {
@@ -131,20 +132,29 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
                 work.check()
             }
             fn delivery_failed(&self, _: &DemandError) {
-                let _ = self.entered.send(true);
-                let _ = self.resume.lock().unwrap().recv();
+                let current = std::thread::current().id();
+                let _ = self.entered.send(current);
+                // The synchronous-notification negative must return to the
+                // controller with a failing observation, never hang its join.
+                if current != self.collector {
+                    let _ = self.resume.lock().unwrap().recv();
+                }
             }
         }
+        let collector = hub::collector_thread_id()?;
         let (reporting, reported) = std::sync::mpsc::channel();
-        let ended = reporting.clone();
         let (release_report, resume_report) = std::sync::mpsc::channel();
         let racing = watcher_with_sink(
             &root,
             Arc::new(StopDuringReport {
                 entered: reporting,
+                collector,
                 resume: Mutex::new(resume_report),
             }),
         )?;
+        let (independent_lost, independent_observed) = std::sync::mpsc::channel();
+        let independent = watcher_with_sink(&root, Arc::new(Observed(independent_lost)))?;
+        let independent_cursor = independent.paused();
         let root = &root;
         let subscribing = scope.spawn(move || {
             BEFORE_SUBSCRIBE_LOCK.with(|hook| {
@@ -160,17 +170,21 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         // The subscription has started but has not acquired routes. A real
         // notification wakes the original collector, whose exit guard must
         // publish loss without either existing watch's read cursor.
-        let ending = scope.spawn(move || {
-            let result = hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""));
-            let _ = ended.send(false);
-            result
-        });
+        hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
         assert!(
-            reported.recv().map_err(io::Error::other)?,
+            hub::hub()?.drain().is_err(),
             "collector ended without publishing loss"
         );
-        // The original collector is inside the sink's failure report, outside
-        // all native locks. A simultaneous stop must already own its cause.
+        assert_ne!(
+            reported.recv().map_err(io::Error::other)?,
+            collector,
+            "collector ran a subscriber callback"
+        );
+        // A paused callback cannot prevent another pool worker from reporting
+        // loss, including for a watch whose original read cursor is held.
+        independent_observed.recv().map_err(io::Error::other)?;
+        // The original service worker is inside the sink's failure report,
+        // outside all native locks. Stop must already own its cause.
         let stopped = racing.stop_with_work(&mut crate::native_host::ordinary_work());
         assert!(
             matches!(stopped, Err(DemandError::Io(ref error))
@@ -179,12 +193,14 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         );
         assert!(racing.is_stopped());
         release_report.send(()).map_err(io::Error::other)?;
-        ending
-            .join()
-            .map_err(|_| io::Error::other("collector controller unwound"))??;
         racing
             .stop_with_work(&mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?;
+        drop(independent_cursor);
+        assert!(matches!(
+            independent.stop_with_work(&mut crate::native_host::ordinary_work()),
+            Err(DemandError::Io(ref error)) if error.kind() == io::ErrorKind::BrokenPipe
+        ));
         release.send(()).map_err(io::Error::other)?;
         let (result, subscribed) = subscribing
             .join()
@@ -206,7 +222,7 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         .and_then(|error| error.downcast_ref::<Arc<io::Error>>())
         .ok_or("late subscription lost the original collector cause")?;
     for (watch, bytes) in [&first, &second].into_iter().zip(retained) {
-        observations.try_recv()?;
+        observations.recv()?;
         assert!(!watch.delivery().is_exact());
         assert!(
             !watch.is_stopped(),

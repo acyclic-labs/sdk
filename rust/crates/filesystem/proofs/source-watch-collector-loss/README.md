@@ -9,7 +9,10 @@ subscription pauses immediately before the routes lock until the collector joins
 The property observes insertion itself, because later startup cleanup can refuse
 an incorrectly admitted subscription.
 
-A third subscription stops while its failure observer is paused. Cleanup must
+A third subscription stops while its failure observer is paused on a service
+worker. The collector must already have joined. A fourth subscription must
+receive loss through the other existing worker before the observer resumes,
+including while its own read cursor remains held. Cleanup must
 already return the saved collector cause, exactly once, even though notification
 has not returned. Outcome publication shares the existing subscription/withdrawal
 lock. Strong watch custody survives that lock so final destruction and observer
@@ -35,6 +38,7 @@ The retained mutations each change the production implementation:
 | `original-collector.patch` removes the actual exit guard | `collector ended without publishing loss` |
 | `check-before-lock.patch` moves admission before subscription custody | `collector loss admitted a subscription without a producer` |
 | `publication-after-notification.patch` restores reporting before retaining the cause | `cleanup erased collector loss during notification` |
+| `synchronous-notification.patch` invokes observers on the collector | `collector ran a subscriber callback` |
 
 For each patch, run the property between application and reversal. For example:
 
@@ -50,14 +54,23 @@ cargo test --locked -p acyclic-fs --lib source_watch::inotify::admission_tests::
 
 The mutated run must fail at its listed assertion, then restoration must pass.
 Compile failure, no selected test, and any other assertion are rejected evidence.
-If the exit guard is absent, joining the collector sends a completion event to the
-same observer channel, so the missing-publication control fails without a timer.
-Scoped channel senders disconnect before scoped joins on an early failure.
+If the exit guard is absent, joining the collector precedes a real drain that
+must reject the missing producer. The blocked observer reports the original
+thread identity; the synchronous-notification negative returns on that thread
+so the join produces a failing observation without hanging. Other observers
+wait on channel delivery, without readiness polling or timers. Scoped channel
+senders disconnect before scoped joins on an early failure.
 
 Subscriber iteration visits current dense entries rather than historical table
 capacity. Collector termination necessarily visits its live subscriptions; each
 subscription/withdrawal remains keyed. The terminal path adds one vector allocation
 holding one Arc per registered subscription (no growth reallocations), one second
 error wrapper per live subscription, and one failure-slot lock per live
-subscription. It adds no syscall, durability barrier, round trip or healthy-path
-work. This property does not prove worst-case constant time or allocation counts.
+subscription. Observer jobs use the existing service queue, one queue lock and
+one condition-variable broadcast for the terminal batch. No thread, read cursor,
+work admission, durability barrier, round trip or payload copy is added. An
+ordinary queue entry grows from one Arc to a tagged job (three pointer-sized
+words on 64-bit targets); ordinary scheduling retains its one queue lock and
+one notification. Terminal fanout is proportional to live subscribers, with
+constant work per queued notification, independent of historical subscriptions.
+This property does not prove worst-case constant time or allocation counts.

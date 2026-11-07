@@ -1,0 +1,21 @@
+--- a/rust/crates/filesystem/src/source_watch/inotify/hub.rs
++++ b/rust/crates/filesystem/src/source_watch/inotify/hub.rs
+@@ -617,15 +617,9 @@
+         // A subscriber callback may block. Dispatch through the existing pool
+         // so it cannot hold the collector or another worker's notifications.
+         // This terminal job needs no read cursor or fresh work admission.
+-        {
+-            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+-            pending.extend(
+-                subscribers
+-                    .into_iter()
+-                    .map(|watch| Pending::Lost(watch, Arc::clone(cause))),
+-            );
+-        }
+-        self.pending_changed.notify_all();
++        for watch in subscribers {
++            Pending::Lost(watch, Arc::clone(cause)).deliver();
++        }
+     }
+ 
+     fn serve_forever(&'static self) {

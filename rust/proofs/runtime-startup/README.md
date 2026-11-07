@@ -19,11 +19,52 @@ constructor's real `opaque.initialize` failure branch. The pointer remains
 validated, the original allocator supplies the refusal, and construction returns
 its original error. The property must reject the leaked engine bytes at
 `runtime allocation prefix`; a compiler error, signal or unrelated assertion is
-not this negative control. Restore the source before running the same property:
+not this negative control. Run the mutation and exact restoration in a subshell
+so a failed check still restores the source:
 
 ```sh
-git apply rust/proofs/runtime-startup/mutation.patch
-git apply -R rust/proofs/runtime-startup/mutation.patch
+(
+  set -eu
+  patch=rust/proofs/runtime-startup/mutation.patch
+  log=$(mktemp)
+  applied=false
+  restore() {
+    if "$applied"; then
+      git apply -R "$patch" || {
+        printf 'STEP_FAILED restoration; recovery: git apply -R "%s"\n' "$patch" >&2
+        return 1
+      }
+      applied=false
+    fi
+  }
+  trap 'restore && rm -f "$log"' EXIT
+  git apply "$patch" || {
+    printf 'STEP_FAILED mutation; recovery: git apply --check "%s"\n' "$patch" >&2
+    exit 1
+  }
+  applied=true
+  if cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  cat "$log"
+  restore
+  if [ "$status" -ne 101 ] || ! grep -F 'runtime allocation prefix' "$log" || ! grep -F 'test result: FAILED. 0 passed; 1 failed;' "$log"; then
+    printf 'STEP_FAILED startup negative control; recovery: cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
+    exit 1
+  fi
+  if cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture >"$log" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  cat "$log"
+  if [ "$status" -ne 0 ] || ! grep -F 'test result: ok. 1 passed; 0 failed;' "$log"; then
+    printf 'STEP_FAILED restored property; recovery: cargo test --locked -p acyclic-harness-core --features filesystem --lib executor::code_mode::allocator::tests::real_engine_releases_native_memory_and_preserves_ledger_refusal -- --exact --nocapture\n' >&2
+    exit 1
+  fi
+)
 ```
 
 This uses the production constructor and allocation accounting, with no
