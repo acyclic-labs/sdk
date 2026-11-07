@@ -60,10 +60,3 @@ fn derived_identities_are_version_five_and_never_nil() {
         "ffffffff-ffff-5fff-bfff-ffffffffffff"
     );
 }
-
-#[test]
-fn managed_oci_requires_an_immutable_digest() {
-    assert!(Image::oci("ghcr.io/acme/agent:latest").is_err());
-    assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "0".repeat(64))).is_err());
-    assert!(Image::oci(format!("ghcr.io/acme/agent@sha256:{}", "a".repeat(64))).is_ok());
-}

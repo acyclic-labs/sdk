@@ -1,5 +1,6 @@
-Run these checks on demand from this directory. This is an independent Cargo
-workspace; fuzzing and proofs have no CI or scheduled jobs.
+Unless stated otherwise, run these checks on demand from this directory.
+This is an independent Cargo workspace; fuzzing and proofs have no CI or
+scheduled jobs.
 
 The [shared format inventory](../../compatibility/FORMATS.md) tracks decoder
 versions, targets, goldens and remaining qualification boundaries. A listed source
@@ -217,15 +218,19 @@ Agent capture names include the shared record version. Previous captures and
 their provenance stay unchanged; waiting-status and checkpoint seeds retain
 both a retained action binding and an explicit absent binding for external hosts.
 
-The roster seed uses `Roster::new` and its retained canonical announcement. The
-same `harness_codecs` oracle compares original wire records, exact target
-positions and each owner's first attached device, including an offline first
+The roster seeds use `Roster::new`, its retained canonical announcement and the
+tuple writer over its original home and targets. Both named and positional JSON
+must reach the same `harness_codecs` oracle, which compares original wire records,
+exact target positions and each owner's first attached device, including an offline first
 device and complete maximum-width name and owner bytes. Cached positions cannot
 be supplied through JSON. The retained `roster-owner-position.patch` publishes
 the wrong owner position; the writer-corpus check below must refuse it. The
 `roster-deep-clone.patch` restores the original value storage; the retained
 `agent::targets::tests::admitted_roster_retains_exact_announcement_across_decode_and_changes`
-control must detect its clone allocations.
+control must detect its clone allocations. The retained
+`roster-positional-projection.patch` restores object-only input projection; the
+same writer-corpus check must fail on the accepted positional roster. Unknown
+map fields and extra sequence elements must both be refused.
 
 The shared agent oracle checks record version and checkpoint codec refusals
 before payload decoding. Record checks alter original writer output, including
@@ -703,6 +708,9 @@ ahead-of-provider mutation through the original authority's close event. This
 qualifies server admission independently of the client's final-status check;
 it does not establish remote replica or full source-branch coverage.
 
+Run all Machines checks below from the repository root (`cd ../..` from
+`rust/codec-fuzz`). This selects the SDK workspace and resolves the patch paths.
+
 The retained `mutations/machines-call-opening-producer-loss.patch` restores the
 original unguarded finite read before an operation watch opens its follow:
 
@@ -885,6 +893,137 @@ service reply and checks decoded cardinality before zip-based comparisons.
 guard to reject only missing replies; the unchanged property must reject its
 extra reply. The earlier count-guard control still covers missing members.
 This is a derived adversarial input, not an additional captured service packet.
+The existing `ids` target also exercises all four public Machines UUID identities
+through byte, text and serde admission and the generated protobuf writers. Its
+oracle checks exact width, non-nil admission and retention of every original bit.
+The gRPC width adapter delegates nil admission to the public identity core. Six
+retained public/UUID writer captures supply byte, text and JSON forms, including
+nil refusals; `corpus/SOURCES.tsv` retains their producers and hashes.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-identity-nil.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-identity-nil.patch
+```
+
+The unchanged property must reject the planted production nil acceptance at
+`wire identity admission must retain exactly sixteen non-nil original bytes`.
+After exact source restoration, require the same property to pass. Compiler
+failures do not qualify the control. Source coverage, instrumented campaigns and
+physical service/platform qualification remain separate obligations.
+
+The same property also checks `ImageDigest` byte and serde admission against
+exact width and nonzero original bits. Its original public writers supply the
+positive forms, and the zero-array writer supplies the refusal forms. Apply
+`negative-controls/machines-image-zero.patch` and require the unchanged property
+to fail at `public image digest admission must retain nonzero bits`, then restore
+the production source and require that property to pass.
+
+The same identity target checks `Image::oci` with arbitrary UTF-8 and grammar
+inputs derived from the retained digest bytes through the hexadecimal writer.
+It checks the original digest, last-separator selection, case equivalence and
+rejection of missing names, separators, invalid lengths and invalid hexadecimal
+text. These generated grammar inputs are not registry or service captures. The
+zero-digest corpus supplies refusal forms. This subsumes
+`managed_oci_requires_an_immutable_digest` without a separate example test.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-oci-name.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib contract::identity::resource_identity_tests::public_identity_admission_preserves_syntax_and_nonzero_bits -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-oci-name.patch
+```
+
+Require `OCI reference admission must reject a missing name`, then restore the
+original source and require the same property to pass. A compiler failure does
+not qualify this production mutation.
+
+The existing Machine result-page RPC property also supplies the simulator's
+original observations to the same `MachineState` semantic oracle. The public
+writer/reader must preserve every original field; arbitrary admitted packets
+must retain their own identity and reject a foreign caller identity.
+
+The Journal recovery property measures the original decoded completion handoff
+at three payload sizes. It checks zero allocation, original pointer identity,
+public recovery and duplicate admission without reentering physical work. Its
+retained control restores the original production clone; the unchanged property
+must fail at `recovery handoff must not allocate or copy the original decoded
+body`. Exact restoration must pass the same property. This measures the owned
+handoff; initial completion decoding still reads the full body.
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,local,test-support --lib provider::journal::tests::machines_call_recovery_transfers_original_decoded_body -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-recovery-clone.patch
+```
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-observation-state.patch
+cargo test --locked -p acyclic-machines --no-default-features --features grpc,test-support --lib grpc::tests::result_pages::machines_call_remote_pages_keep_original_cut_credit_and_observations -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-observation-state.patch
+```
+
+The planted Running-to-Suspended decoder change must fail at `original machine
+response must retain its producer observation`. Require the same property to
+pass after exact restoration. This binds the existing codec oracle to the
+original producer value; physical provider qualification remains separate.
+
+The same public-client property also reads original simulator list pages through
+the shared `MachinePage` serving conversion. Its one page admission oracle checks
+original observations, strict ordering, caller credit and continuation ownership;
+the protobuf and JSON fuzz targets share that oracle. Retained
+`negative-controls/machines-page-{credit,cursor,order}.patch` controls remove each
+production decoder guard in turn. Older captured pages retain their original
+provenance until their current descriptor selector binding is qualified.
+
+The lifecycle extension of that original-provider property also checks actual
+offline, online, suspended, waking and destroyed simulator observations through
+the public inspection client. The retained production decoder controls are
+`negative-controls/machines-observation-{offline,suspended,destroyed}.patch`.
+The literal Offline enum assertion is subsumed by these original-result checks;
+platform/lifecycle admission refusals and per-capability intent checks remain.
+
+Machine events now use one public serving conversion for both actual simulator
+stream output and semantic fuzzing. The retained
+`event_follow_retains_cursor_and_original_terminal_over_authenticated_rpc` check
+compares the client event with its original producer observation, including time
+and cursor, and retains terminal and dropped-producer progress checks. Production
+identity, sequence and timestamp defects are retained under
+`negative-controls/machines-event-{identity,sequence,time}.patch`.
+
+Checkpoint and operation observations use the shared contract and identity serving
+conversions. The existing
+`machines_call_remote_pages_keep_original_cut_credit_and_observations` property
+obtains both from the original simulator and compares the authenticated client
+responses with those observations. The same original packets reach the semantic
+oracle and each truncated prefix. Production checkpoint identity/time and
+operation identity/phase defects are retained under
+`negative-controls/machines-{checkpoint-identity,checkpoint-time,operation-identity,operation-phase}.patch`.
+This covers the original successful operation; other phases, retained corpus
+binding, instrumented coverage and physical provider qualification are separate.
+
+The existing `harness_codecs` target also exercises the production provisioning
+plan and settled binding decoders. Original records from
+`original_binding_positions_precede_allocation_and_recovery` reach that same
+oracle before their values are retained as corpus inputs. The oracle checks
+canonical encoding, target association and refusal of foreign source positions.
+The runtime control displaces only positions on original MemoryStream records;
+a displaced plan must refuse before allocation, and a displaced binding must
+refuse before recovery or inspection. Restoring the original envelope must
+return the original Machine without another allocation.
+
+Run this control from the repository root (`cd ../..` from `rust/codec-fuzz`):
+
+```sh
+git apply rust/codec-fuzz/negative-controls/machines-plan-position.patch
+cargo test --locked -p acyclic-harness-core --no-default-features --features machines,test-support,filesystem,wasm --lib machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery -- --exact --nocapture
+git apply -R rust/codec-fuzz/negative-controls/machines-plan-position.patch
+```
+
+The planted production guard admits a plan at `u64::MAX`; the shared oracle
+must reject that mutation at its source-position assertion. Require the same
+control to pass after exact restoration. This control does not establish
+instrumented branch coverage or distributed and physical provider guarantees.
+
 
 The `harness_codecs` target also compares the shared native MCP `BoundedCodec`
 and `JsonLineReader` on the same bytes under one-byte, fragmented and full reads,

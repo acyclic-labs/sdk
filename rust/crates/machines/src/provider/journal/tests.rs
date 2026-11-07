@@ -114,6 +114,69 @@ async fn original_journal()
 }
 
 #[tokio::test]
+async fn machines_call_recovery_transfers_original_decoded_body()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut machine, _, journal) = original_journal().await?;
+    // Vary the actual simulator outcome's endpoint before the original writer
+    // commits it. Stay within the original Streams record boundary, including
+    // the completion envelope. These size controls are not service captures.
+    let endpoint = machine.endpoints[0].uri.clone();
+    for bytes in [1 << 10, 1 << 13, acyclic_stream::MAX_RECORD_BYTES / 2] {
+        machine.endpoints[0].uri = endpoint.repeat(bytes / endpoint.len() + 1);
+        let key = IdempotencyKey::new();
+        let Admission::Original(publication) =
+            journal.begin(key, [9; 32], None, || Ok(|| {})).await?
+        else {
+            panic!("original completion must have its own admission");
+        };
+        journal
+            .finish(
+                key,
+                [9; 32],
+                publication,
+                &machine,
+                MutationOutcome::Created(machine.clone()),
+            )
+            .await?;
+        // This is the same read/fold and owned-result handoff as recover and
+        // duplicate begin. Retain the original allocation identity at that seam.
+        let original = journal.existing_call(&journal.call(key)?).await?;
+        let Some(MutationOutcome::Created(decoded)) = original.completed.as_ref() else {
+            panic!("original committed completion must decode");
+        };
+        let endpoints = decoded.endpoints.as_ptr();
+        let uri = decoded.endpoints[0].uri.as_ptr();
+        let mut transferred = None;
+        let handoff = acyclic_test_support::measure(|| transferred = Some(original.outcome(key)));
+        let MutationOutcome::Created(recovered) = transferred.expect("measured handoff ran")?
+        else {
+            panic!("recovery must retain the original outcome");
+        };
+        assert_eq!(
+            handoff.count_total, 0,
+            "recovery handoff must not allocate or copy the original decoded body"
+        );
+        assert_eq!(handoff.bytes_total, 0);
+        assert_eq!(
+            recovered.endpoints.as_ptr(),
+            endpoints,
+            "recovery must transfer the original decoded result allocation"
+        );
+        assert_eq!(recovered.endpoints[0].uri.as_ptr(), uri);
+        assert_eq!(recovered, machine);
+        assert_eq!(
+            journal.recover(key).await?,
+            MutationOutcome::Created(machine.clone())
+        );
+        assert!(matches!(
+            journal.begin::<fn()>(key, [9; 32], None, || panic!("accepted work cannot reenter")).await?,
+            Admission::Replay(MutationOutcome::Created(replayed)) if replayed == machine
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn machines_call_event_follow_keeps_original_subscription_and_owner_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mut machine, streams, journal) = original_journal().await?;

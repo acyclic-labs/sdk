@@ -1,0 +1,11 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -381,6 +381,6 @@
+     Ok(MachineEvent {
+         machine,
+-        sequence: value.sequence,
++        sequence: 1,
+         observed_at_unix_ms: value.observed_at_unix_ms,
+         fact,
+     })

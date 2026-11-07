@@ -220,44 +220,22 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     assert_eq!(rest.machines.len(), 1);
     assert_eq!(rest.machines[0].state, MachineState::Failed);
     assert_eq!(rest.next, None);
-    let last = reader
-        .page(
-            ResultCursor {
-                from: 1024,
-                ..cursor
-            },
-            NonZeroU32::new(64).unwrap(),
-        )
-        .await?;
-    assert_eq!(last.cursor.cut.operation, operation);
-    assert_eq!(last.cursor.cut.settlement, Settlement::Streams(settlement));
-    assert_eq!(last.cursor.from, 1024);
-    assert_eq!(last.machines.len(), 1);
-    assert_eq!(last.machines[0].state, MachineState::Failed);
-    assert_eq!(last.next, None);
-    let mut from = 0;
-    loop {
-        let page = reader
-            .page(
-                ResultCursor { from, ..cursor },
-                NonZeroU32::new(63).unwrap(),
-            )
-            .await?;
-        assert_eq!(page.cursor.from, from);
-        assert!(page.machines.len() <= 63);
-        for (index, machine) in page.machines.iter().enumerate() {
-            let sequence = from + u64::try_from(index)?;
-            let mut identity = [7; 32];
-            identity[..8].copy_from_slice(&sequence.to_le_bytes());
-            assert_eq!(machine.id, crate::MachineId::from_digest(identity));
-        }
-        from += u64::try_from(page.machines.len())?;
-        match page.next {
-            Some(next) => assert_eq!(next.from, from),
-            None => break,
-        }
+    assert_eq!(rest.cursor.cut.operation, operation);
+    assert_eq!(rest.cursor.cut.settlement, Settlement::Streams(settlement));
+    assert_eq!(rest.cursor.from, 1024);
+    // Check every original identity on the pages already read across the
+    // actual Streams chunk boundary. Arbitrary credit and continuation
+    // arithmetic are covered by result_cursor_preserves_owner_and_bounded_progress.
+    for (index, machine) in wide.machines.iter().chain(&rest.machines).enumerate() {
+        let mut identity = [7; 32];
+        identity[..8].copy_from_slice(&u64::try_from(index)?.to_le_bytes());
+        assert_eq!(machine.id, crate::MachineId::from_digest(identity));
     }
-    assert_eq!(from, count, "all original results must remain reachable");
+    assert_eq!(
+        u64::try_from(wide.machines.len() + rest.machines.len())?,
+        count,
+        "all original results must remain reachable"
+    );
     assert!(
         reader
             .page(
@@ -320,8 +298,8 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     assert_eq!(borrowed.machines.as_ptr(), wide.machines.as_ptr());
     assert_eq!(borrowed.machines.len(), 1);
     assert_eq!(borrowed.next.unwrap().from, 1);
-    // A whole-result clone fails the original-allocation oracle.
-    let copied = wide.machines.clone();
+    // Copying even this one-item page fails the original-allocation oracle.
+    let copied = borrowed.machines.to_vec();
     assert_ne!(copied.as_ptr(), borrowed.machines.as_ptr());
     let wrong_owner = ResultCursor {
         cut: ResultCut {
