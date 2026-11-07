@@ -348,3 +348,94 @@ fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestRe
     }
     Ok(())
 }
+
+/// The real dispatcher must return the original clock failure while both
+/// actors retain committed alarms, not rearm an already retired producer.
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[test]
+fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
+    let executor = acyclic_native_runtime::testing::seeded_runtime(72)?;
+    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(72);
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), root()?);
+    let runtime = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    let notifications = Arc::new(Notifications::default());
+    let waker = Waker::from(notifications.clone());
+    let (first, second) = executor.block_on(async {
+        tokio::time::pause();
+        schedule
+            .scope(async {
+                let first = spawn_with(
+                    &store,
+                    "retired-clock-first",
+                    &[b"set 18446744073709551615"],
+                )
+                .await?;
+                let second = spawn_with(
+                    &store,
+                    "retired-clock-second",
+                    &[b"set 18446744073709551615"],
+                )
+                .await?;
+                let armed = observe_while_running(
+                    serving.as_mut(),
+                    futures::future::try_join(
+                        state_after(&store, &first, |state| state.cursor("inbox") == Some(1)),
+                        state_after(&store, &second, |state| state.cursor("inbox") == Some(1)),
+                    ),
+                )
+                .await?;
+                for state in [&armed.0, &armed.1] {
+                    assert!(state.alarm().pending().is_some());
+                    assert_eq!(state.alarm().delivered_generation, None);
+                }
+                let tail = provider.tail(root()?).await?;
+                let (dispatcher_store, dispatcher_actor) = runtime.dispatcher_store()?;
+                observe_while_running(
+                    serving.as_mut(),
+                    state_after(&dispatcher_store, &dispatcher_actor, |state| {
+                        state
+                            .cursor("activation")
+                            .is_some_and(|cursor| cursor >= tail)
+                    }),
+                )
+                .await?;
+                let mut context = Context::from_waker(&waker);
+                assert!(serving.as_mut().poll(&mut context).is_pending());
+                Ok::<_, Box<dyn std::error::Error>>((first, second))
+            })
+            .await
+    })?;
+    notifications.0.store(0, Ordering::SeqCst);
+    drop(schedule);
+    assert!(
+        notifications.0.load(Ordering::SeqCst) > 0,
+        "original clock retirement did not wake the parked dispatcher"
+    );
+    let mut context = Context::from_waker(&waker);
+    let result = serving.as_mut().poll(&mut context);
+    let std::task::Poll::Ready(Err(Error::Clock(ClockError::Native(error)))) = result else {
+        panic!("dispatcher did not return its original retired clock failure");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(error.to_string().contains("step=wall-alarm-producer"));
+    // No actor alarm was delivered merely because its clock producer retired.
+    executor.block_on(async {
+        for address in [first, second] {
+            let state = store.load(&address).await?;
+            assert_eq!(
+                state
+                    .state()
+                    .and_then(|state| state.alarm().delivered_generation),
+                None
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
