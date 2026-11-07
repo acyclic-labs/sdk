@@ -465,25 +465,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
-        let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
-        let (future, _) = crate::heap_future::in_heap_admitted(
-            &mut frame,
-            |frame, bytes| frame.admit(bytes),
-            |frame| async move {
+        crate::heap_future::in_borrowed_frame!(
+            accounting,
+            |accounting| async move {
                 self.prepare_rebased_head_inner(
                     candidate_object,
                     maximum_conflicts,
                     certificate,
-                    frame.accounting(),
+                    accounting,
                     cancellation,
                 )
                 .await
             },
-        )?;
-        let mut future = future.erase_task();
-        let result = future.as_mut().await;
-        drop(future);
-        frame.finish(result)
+            erase_task
+        )
     }
 
     async fn prepare_rebased_head_inner(
@@ -607,25 +602,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
-        let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
-        let (future, _) = crate::heap_future::in_heap_admitted(
-            &mut frame,
-            |frame, bytes| frame.admit(bytes),
-            |frame| async move {
+        crate::heap_future::in_borrowed_frame!(
+            accounting,
+            |accounting| async move {
                 self.probe_rebase_head_inner(
                     candidate_object,
                     dependencies,
                     maximum_conflicts,
-                    frame.accounting(),
+                    accounting,
                     cancellation,
                 )
                 .await
             },
-        )?;
-        let mut future = future.erase_task();
-        let result = future.as_mut().await;
-        drop(future);
-        frame.finish(result)
+            erase_task
+        )
     }
 
     async fn probe_rebase_head_inner<'d>(

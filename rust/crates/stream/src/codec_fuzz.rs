@@ -548,7 +548,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     Ok(seeds)
 }
 
-#[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
     let seeds = futures::executor::block_on(seeds())?;
@@ -570,6 +570,7 @@ fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> 
             );
         }
     }
+    #[cfg(feature = "local")]
     for (name, command) in commands(None)? {
         let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
         assert!(

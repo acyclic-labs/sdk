@@ -35,6 +35,7 @@ pub(crate) fn source_is_terminal(mut error: &MountSourceError) -> bool {
         MountSourceError::NativeWork(error) => materialization_is_terminal(error),
         MountSourceError::WorkspaceCause(error) => workspace_is_terminal(error),
         MountSourceError::Filesystem(error) => filesystem_is_terminal(error),
+        MountSourceError::Demand(error) => demand_is_terminal(error),
         MountSourceError::NamespacePath(error) => matches!(
             error,
             crate::kernel::NamespacePathError::Work(_)
@@ -95,6 +96,8 @@ fn demand_is_terminal(error: &crate::DemandError) -> bool {
     use crate::DemandError as E;
     match error {
         E::Mount(error) => source_is_terminal(error),
+        #[cfg(feature = "native-watch")]
+        E::Observation(error) => !matches!(error.as_ref(), crate::watch::NativeWatchError::Io(_)),
         E::Io(_)
         | E::StaleSource
         | E::StaleVersion

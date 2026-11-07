@@ -11,6 +11,9 @@ mod checkpoint;
 #[doc(hidden)]
 pub mod codec_fuzz;
 mod commit;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod control_trace;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
 mod driver;

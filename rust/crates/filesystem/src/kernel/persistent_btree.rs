@@ -316,7 +316,7 @@ where
     marker: PhantomData<(F, M)>,
 }
 
-pub(crate) async fn apply_with_accounting<S, F, M>(
+pub(crate) fn apply_with_accounting<S, F, M>(
     store: &S,
     (root, expected_start, expected_end): (ObjectId, Option<&F::Key>, Option<&F::Key>),
     mutations: &[M],
@@ -324,7 +324,7 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<ObjectId>, crate::FsError>
+) -> impl Future<Output = Result<OperationReceipt<ObjectId>, crate::FsError>>
 where
     S: crate::AsyncObjectStore,
     F: Format,
@@ -339,7 +339,6 @@ where
         accounting,
         cancellation,
     )
-    .await
 }
 
 pub(crate) async fn apply_optional_root_with_accounting<S, F, M>(
@@ -368,6 +367,32 @@ where
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(copied)?;
+    // One funded traversal frame serves every page and every tree format.
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| apply_validated::<S, F, M>(
+        store,
+        (root, expected_start, expected_end),
+        mutations,
+        limits,
+        copied,
+        accounting,
+        cancellation,
+    ))
+}
+
+async fn apply_validated<S, F, M>(
+    store: &S,
+    (root, expected_start, expected_end): (Option<ObjectId>, Option<&F::Key>, Option<&F::Key>),
+    mutations: &[M],
+    limits: DecodeLimits,
+    copied: WorkCounters,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<ObjectId>, crate::FsError>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F>,
+{
     let mut ordered = Owned::allocate(mutations.len(), accounting)?;
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;

@@ -27,18 +27,13 @@ pub(super) struct PreparedGeneration {
     pub(super) publication_hold: crate::PublicationHold,
 }
 
-struct Unflushed {
-    candidate: combiner::Candidate,
-    authentication: authenticate::Authenticated,
-    commit: ProposedCommit,
-    proven_at: u64,
-}
+pub(super) struct ValidatedPreparation<'a, P>(pub(super) Preparation<'a, P>);
 
-impl<P: PublicationOwner> Preparation<'_, P> {
-    async fn candidate(
-        &mut self,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<combiner::Candidate, crate::FsError> {
+impl<'a, P: PublicationOwner> Preparation<'a, P> {
+    pub(super) fn validate(
+        self,
+        accounting: &KernelAccounting<'_>,
+    ) -> Result<ValidatedPreparation<'a, P>, crate::FsError> {
         let expected = volume_authority_id(self.request.volume_id);
         if self.request.authority_id != expected {
             return Err(PublicationError::AuthorityMismatch {
@@ -50,7 +45,16 @@ impl<P: PublicationOwner> Preparation<'_, P> {
         }
         self.cancellation.check()?;
         accounting.check()?;
-        if let Some(record) = self.resolved.as_ref() {
+        Ok(ValidatedPreparation(self))
+    }
+}
+
+impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
+    async fn candidate(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<combiner::Candidate, crate::FsError> {
+        if let Some(record) = self.0.resolved.as_ref() {
             let decoded = decode_publication_evidence_with_accounting(
                 &record.payload,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -58,18 +62,18 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             )?;
             return Ok(combiner::Candidate {
                 root: decoded.publication.generation_root,
-                expected: self.request.expected,
+                expected: self.0.request.expected,
                 predecessor: None,
                 ticket: None,
             });
         }
         combiner::prepare(
-            self.owner,
-            self.request,
-            &mut self.intent,
-            self.limits,
+            self.0.owner,
+            self.0.request,
+            &mut self.0.intent,
+            self.0.limits,
             accounting,
-            self.cancellation,
+            self.0.cancellation,
         )
         .await
     }
@@ -87,22 +91,22 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             prepared
         } else {
             authenticate::prove(
-                self.owner.objects(),
+                self.0.owner.objects(),
                 candidate.root,
                 candidate
                     .ticket
                     .as_ref()
                     .map(combiner::Ticket::authority_root),
-                self.limits,
-                self.cache,
+                self.0.limits,
+                self.0.cache,
                 accounting,
-                self.cancellation,
+                self.0.cancellation,
             )
             .await?
         };
-        if authenticated.proof.root.volume_id != self.request.volume_id {
+        if authenticated.proof.root.volume_id != self.0.request.volume_id {
             return Err(PublicationError::VolumeMismatch {
-                expected: self.request.volume_id,
+                expected: self.0.request.volume_id,
                 actual: authenticated.proof.root.volume_id,
             }
             .into());
@@ -124,28 +128,32 @@ impl<P: PublicationOwner> Preparation<'_, P> {
         ) -> Result<(), E>,
     {
         let candidate = self.candidate(accounting).await.map_err(E::from)?;
-        let proven_at = self.owner.objects().collection_sweeps();
+        let proven_at = self.0.owner.objects().collection_sweeps();
         let mut authentication = self
             .authenticate(&candidate, accounting)
             .await
             .map_err(E::from)?;
-        let fingerprint_permit = self.intent.fingerprint_permit.unwrap_or(self.intent.permit);
+        let fingerprint_permit = self
+            .0
+            .intent
+            .fingerprint_permit
+            .unwrap_or(self.0.intent.permit);
         let operation_context = permit_context(
-            self.intent.operation_context,
+            self.0.intent.operation_context,
             fingerprint_permit,
             accounting,
         )
         .map_err(E::from)?;
-        let commit = prepare_publication_commit(
-            self.request,
+        let mut commit = prepare_publication_commit(
+            self.0.request,
             Some(candidate.root),
             operation_context,
-            self.intent.original_evidence.take(),
+            self.0.intent.original_evidence.take(),
             accounting,
-            self.cancellation,
+            self.0.cancellation,
         )
         .map_err(E::from)?;
-        if let Some(resolved) = self.resolved.as_ref()
+        if let Some(resolved) = self.0.resolved.as_ref()
             && resolved.fingerprint != commit.fingerprint
         {
             return Ok(Prepared::Complete(RetainedPublication {
@@ -165,7 +173,7 @@ impl<P: PublicationOwner> Preparation<'_, P> {
             &mut authentication.guard,
             accounting,
         )?;
-        if let Some(resolved) = self.resolved.take() {
+        if let Some(resolved) = self.0.resolved.take() {
             let outcome = AppendOutcome::AlreadyCommitted(resolved);
             let published = authentication
                 .pending
@@ -180,96 +188,82 @@ impl<P: PublicationOwner> Preparation<'_, P> {
                 allocation: authentication.guard,
             }));
         }
-        self.flush(
-            Unflushed {
-                candidate,
-                authentication,
-                commit,
-                proven_at,
-            },
-            accounting,
-        )
-        .await
-        .map(Prepared::Ready)
-        .map_err(E::from)
-    }
-
-    async fn flush(
-        &self,
-        mut prepared: Unflushed,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<PreparedGeneration, crate::FsError> {
-        let objects = self.owner.objects();
-        let authority = self.owner.authority();
+        let objects = self.0.owner.objects();
+        let authority = self.0.owner.authority();
         let request = PublishGenerationRequest {
-            generation_root: prepared.candidate.root,
-            expected: prepared.candidate.expected,
-            ..self.request
+            generation_root: candidate.root,
+            expected: candidate.expected,
+            ..self.0.request
         };
-        prepared.commit.publication = if let Some(ticket) = prepared.candidate.ticket.as_ref() {
-            Some(ticket.changes(prepared.candidate.root)?)
+        commit.publication = if let Some(ticket) = candidate.ticket.as_ref() {
+            Some(ticket.changes(candidate.root).map_err(E::from)?)
         } else {
             crate::PublicationChanges::between(
                 objects,
                 authority,
                 crate::publication_changes::PublicationBasis {
                     request,
-                    predecessor: prepared.candidate.predecessor,
+                    predecessor: candidate.predecessor,
                 },
-                &prepared.authentication.proof.root,
+                &authentication.proof.root,
                 accounting,
-                self.cancellation,
+                self.0.cancellation,
             )
-            .await?
+            .await
+            .map_err(E::from)?
         };
         let (projection_fence, projected) = crate::access::projection::publication(
             authority.operation_claims(),
-            self.request.volume_id,
-        )?;
+            self.0.request.volume_id,
+        )
+        .map_err(E::from)?;
         if projected {
             projection::check(
                 objects,
                 authority,
                 projection::Candidate {
                     request,
-                    root: &prepared.authentication.proof.root,
+                    root: &authentication.proof.root,
                     lease: &projection_fence,
                 },
-                self.limits.decode,
+                self.0.limits.decode,
                 accounting,
-                self.cancellation,
+                self.0.cancellation,
             )
-            .await?;
+            .await
+            .map_err(E::from)?;
         }
         let scope = crate::PublicationScope {
-            objects: &prepared.authentication.proof.objects,
-            proven_at: prepared.proven_at,
+            objects: &authentication.proof.objects,
+            proven_at,
         };
-        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)?;
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting).map_err(E::from)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.is_native();
         let publication_hold = objects.flush_before_publish(scope, &mut work).await;
         drop(work);
-        let publication_hold = publication_hold.map_err(|error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return native_object_error(error);
-            }
-            crate::FsError::Object(error)
-        })?;
+        let publication_hold = publication_hold
+            .map_err(|error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if native {
+                    return native_object_error(error);
+                }
+                crate::FsError::Object(error)
+            })
+            .map_err(E::from)?;
         let append = GuardedAppend {
-            authority_id: self.request.authority_id,
-            epoch: self.request.epoch,
-            expected: prepared.candidate.expected,
-            commit: prepared.commit,
-            permit: self.intent.permit,
+            authority_id: self.0.request.authority_id,
+            epoch: self.0.request.epoch,
+            expected: candidate.expected,
+            commit,
+            permit: self.0.intent.permit,
         };
-        Ok(PreparedGeneration {
-            candidate: prepared.candidate,
-            authentication: prepared.authentication,
+        Ok(Prepared::Ready(PreparedGeneration {
+            candidate,
+            authentication,
             append,
             projection_fence,
             publication_hold,
-        })
+        }))
     }
 }

@@ -1047,6 +1047,7 @@ set /p payload=
 if not defined payload exit /b 3
 if not "%CD%"=="%CLAUDE_PROJECT_DIR%\nested" exit /b 4
 > "%CLAUDE_PROJECT_DIR%\hook-ran" echo %payload%
+1>&2 echo %payload%
 exit /b 2
 "#,
         "cmd",
@@ -1058,6 +1059,7 @@ exit /b 2
 test -n "$input" || exit 3
 test "$(pwd -P)" = "$(cd "$CLAUDE_PROJECT_DIR/nested" && pwd -P)" || exit 4
 printf '%s' "$input" > "$CLAUDE_PROJECT_DIR/hook-ran"
+printf '%s' "$input" >&2
 exit 2
 "#,
         "sh",
@@ -1076,11 +1078,9 @@ exit 2
                 .ok_or_else(|| Error::Invalid("fixture parent missing".into()))?,
         )
         .map_err(process_error)?;
-        std::fs::write(
-            path,
-            serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?,
-        )
-        .map_err(process_error)
+        let bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
+        crate::native_settings::codec_fuzz::check(&bytes)?;
+        std::fs::write(path, bytes).map_err(process_error)
     };
     write(
         &home,
@@ -1088,6 +1088,15 @@ exit 2
         &json!({"hooks":{"PreToolUse":[{"matcher":crate::tools::shell::PLATFORM.name,"hooks":[hook]}]}}),
     )?;
     let project = json!({"hooks":{"Stop":[{"hooks":[hook]}]}});
+    // Configuration input, not a fabricated command-output fixture: the second
+    // selector must refuse the whole import before publishing the first group.
+    crate::native_settings::codec_fuzz::check(
+        &serde_json::to_vec(&json!({"hooks":{"PreToolUse":[
+            {"matcher":"shell","hooks":[hook]},
+            {"matcher":"[","hooks":[hook]}
+        ]}}))
+        .map_err(|error| Error::Invalid(error.to_string()))?,
+    )?;
     for path in [
         ".claude/settings.json",
         ".claude/settings.local.json",
@@ -1095,9 +1104,11 @@ exit 2
     ] {
         write(&workspace, path, &project)?;
     }
-    std::fs::write(workspace.join(".codex/config.toml"), format!(
+    let toml = format!(
         "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = 'command'\ncommand = {command:?}\nshell = '{shell}'\n"
-    )).map_err(process_error)?;
+    );
+    crate::native_settings::codec_fuzz::check(toml.as_bytes())?;
+    std::fs::write(workspace.join(".codex/config.toml"), toml).map_err(process_error)?;
     let registry = registry()?;
     let hooks = NativeSettings::load(
         SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex")),
@@ -1127,9 +1138,16 @@ exit 2
         workspace.join("hook-ran").exists(),
         "script receives the project root and per-call cwd"
     );
-    let captured: Value =
-        serde_json::from_slice(&std::fs::read(workspace.join("hook-ran")).map_err(process_error)?)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+    let capture = |output: &HookOutput| -> Result<Value> {
+        let bytes = std::fs::read(workspace.join("hook-ran")).map_err(process_error)?;
+        assert_eq!(
+            output.blocked.as_deref(),
+            Some(std::str::from_utf8(&bytes).map_err(|error| Error::Invalid(error.to_string()))?),
+            "native hook lost its original refusal bytes"
+        );
+        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
+    };
+    let captured = capture(&output)?;
     assert_eq!(
         captured,
         json!({"tool_name":crate::tools::shell::PLATFORM.name, "session_id":"test", "hook_event_name":"PreToolUse", "cwd":cwd.to_string_lossy()})
@@ -1159,11 +1177,10 @@ exit 2
         4
     );
     let trusted_output = trusted
-        .run_commands(HookEvent::Stop, &json!({}), &registry, 65_536, |_, _, _| {
-            std::future::ready(Ok((Some(2), vec![], b"project guard".to_vec())))
-        })
+        .run(HookEvent::Stop, &workspace, &cwd, &input, &registry)
         .await?;
-    assert_eq!(trusted_output.blocked.as_deref(), Some("project guard"));
+    let captured = capture(&trusted_output)?;
+    assert_eq!(captured["hook_event_name"], "Stop");
     std::fs::remove_file(home.join(".claude/settings.json")).map_err(process_error)?;
     std::fs::create_dir(home.join(".claude/settings.json")).map_err(process_error)?;
     assert!(matches!(

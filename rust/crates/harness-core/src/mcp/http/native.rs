@@ -1,6 +1,6 @@
 //! Optional native HTTP I/O, without request replay or a second receipt journal.
 
-use super::{McpHttpProvider, McpHttpRequest, McpHttpResponse};
+use super::{McpHttpProvider, McpHttpRequest, McpHttpResponse, body::bounded};
 use crate::{Error, OperationId, Result};
 use acyclic_stream::BoxProviderFuture;
 use futures::StreamExt as _;
@@ -57,19 +57,13 @@ impl McpHttpProvider for NativeMcpHttpProvider {
                         .map_err(|e| Error::Invalid(e.to_string()))
                 })
                 .collect::<Result<_>>()?;
-            let mut received = 0_usize;
-            let body = response.bytes_stream().map(move |chunk| {
-                let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
-                received = received.saturating_add(chunk.len());
-                if received as u64 > u64::from(request.maximum_response_bytes) {
-                    return Err(Error::Indeterminate(operation));
-                }
-                Ok(chunk)
-            });
+            let body = response
+                .bytes_stream()
+                .map(move |chunk| chunk.map_err(|_| Error::Indeterminate(operation)));
             Ok(McpHttpResponse {
                 status,
                 headers,
-                body: Box::pin(body),
+                body: Box::pin(bounded(body, request.maximum_response_bytes, operation)),
             })
         })
     }

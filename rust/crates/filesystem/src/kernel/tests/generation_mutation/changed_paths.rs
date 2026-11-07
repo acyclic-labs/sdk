@@ -120,8 +120,15 @@ async fn verify(
             root,
         })
     });
-    let rows =
-        crate::workspace::complete_changed_paths(views, u32::MAX, &mut work, &cancel).await?;
+    let collection = crate::workspace::complete_changed_paths(views, u32::MAX, &mut work, &cancel);
+    let collection_bytes = std::mem::size_of_val(&collection);
+    // The caller retains endpoints and the funded owner, never the traversal.
+    assert!(
+        collection_bytes <= 1024,
+        "complete changed-path caller retains a {collection_bytes}-byte traversal frame"
+    );
+    eprintln!("complete changed-path caller: {collection_bytes} bytes");
+    let rows = collection.await?;
     assert_eq!(rows.value, expected.values().cloned().collect::<Vec<_>>());
     rows.retire(&mut work)?;
     work.standalone_parts()

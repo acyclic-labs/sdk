@@ -111,62 +111,65 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
         boundary: Option<&dyn crate::agent::ModelBoundary>,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (tail, records) = self
-            .model_records(journal, input.operation_id, step, ModelPurpose::Response)
-            .await?;
-        let mut retained = records.iter().filter_map(|record| match &record.event {
-            ExecutionEvent::ContextPrepared {
-                step: recorded,
-                projection,
-                ..
-            } if *recorded == step => Some(projection),
-            _ => None,
-        });
-        let first = retained.next();
-        if retained.next().is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "response projection was prepared more than once",
-            ));
-        }
-        let (projection, accounting, prepared) = match first {
-            None => {
-                if self.stock.reconciliation_only {
-                    return Err(Error::Indeterminate(input.operation_id));
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
+            let (tail, records) = self
+                .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                .await?;
+            let mut retained = records.iter().filter_map(|record| match &record.event {
+                ExecutionEvent::ContextPrepared {
+                    step: recorded,
+                    projection,
+                    ..
+                } if *recorded == step => Some(projection),
+                _ => None,
+            });
+            let first = retained.next();
+            if retained.next().is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "response projection was prepared more than once",
+                ));
+            }
+            let (projection, accounting, prepared) = match first {
+                None => {
+                    if self.stock.reconciliation_only {
+                        return Err(Error::Indeterminate(input.operation_id));
+                    }
+                    self.capture_response(journal, input, step, prior_messages, tail, boundary)
+                        .await?
                 }
-                self.capture_response(journal, input, step, prior_messages, tail, boundary)
-                    .await?
+                Some(reference) => {
+                    let (mut projection, prepared) =
+                        self.load_response_projection(journal, reference).await?;
+                    self.validate_response_request(&prepared)?;
+                    let accounting = projection.accounting.take();
+                    (projection, accounting, prepared)
+                }
+            };
+            if projection.checkpoint.is_some() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared context contains a later checkpoint",
+                ));
             }
-            Some(reference) => {
-                let (mut projection, prepared) =
-                    self.load_response_projection(journal, reference).await?;
-                self.validate_response_request(&prepared)?;
-                let accounting = projection.accounting.take();
-                (projection, accounting, prepared)
+            if projection.context.current_input_index.is_none() {
+                return Err(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "prepared response projection differs from its request",
+                ));
             }
-        };
-        if projection.checkpoint.is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared context contains a later checkpoint",
-            ));
-        }
-        if projection.context.current_input_index.is_none() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Storage,
-                "prepared response projection differs from its request",
-            ));
-        }
-        self.resolve_response_accounting(
-            journal,
-            (input, step, prior_messages),
-            (projection, accounting),
-            prepared,
-            &records,
-        )
+            self.resolve_response_accounting(
+                journal,
+                (input, step, prior_messages),
+                (projection, accounting),
+                prepared,
+                &records,
+            )
+            .await
+        })?
         .await
     }
 

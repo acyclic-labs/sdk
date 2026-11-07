@@ -1,5 +1,7 @@
 //! Original ordinary and instrumented suites share their real root bindings.
 #[cfg(not(loom))]
+mod agent_control_mapping;
+#[cfg(not(loom))]
 mod agent_model;
 #[cfg(all(not(loom), feature = "filesystem-local", feature = "native-execution"))]
 mod git_executor;
