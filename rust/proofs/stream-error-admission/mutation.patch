@@ -1,0 +1,11 @@
+--- a/rust/crates/stream/src/lib/error.rs
++++ b/rust/crates/stream/src/lib/error.rs
+@@ -141,7 +141,7 @@
+     /// Parses a code produced by [`Self::code`].
+     #[must_use]
+     pub fn from_code(code: &str) -> Option<Self> {
+-        Self::ALL.into_iter().find(|error| error.code() == code)
++        { let _ = code; None }
+     }
+ 
+     /// Decodes a Session channel's close code: one of [`Self::code`], an
