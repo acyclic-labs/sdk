@@ -96,8 +96,16 @@ impl MemoryStream {
         let mut state = self.state.write().await;
         let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
-        // The tree can grow up to the admitted replay limit while this completion is pending.
-        let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
+        // The requested key bounds both lookup and insertion even when other
+        // writers grow the original inventory before this completion settles.
+        let key_view = BinaryKey(request.idempotency_key.as_bytes());
+        let mut probes = self.reserve_replay_probes(
+            key_view
+                .lookup_examinations()
+                .and_then(|lookup| lookup.checked_add(key_view.insertion_examinations()?))
+                .and_then(|items| items.checked_add(16))
+                .ok_or(StreamError::Capacity)?,
+        )?;
         self.reserve_commit_index(&mut probes)?;
         let mut plan = self.plan_commit(&mut state, &request, &[], CommitId::default(), 0)?;
         let range = append_mut(&mut plan.result);
@@ -254,15 +262,20 @@ impl MemoryStream {
         ))?;
         let state = Arc::clone(&self.state);
         let revisions = Arc::clone(&self.revisions);
-        let mut probes = self.reserve_replay_probes(self.maximum_replay_height() + 8)?;
+        let mut probes = self.reserve_replay_probes(
+            BinaryKey(recovery_key.as_bytes())
+                .lookup_examinations()
+                .ok_or(StreamError::Capacity)?,
+        )?;
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_observed(
             &meter,
             crate::native::span!("acyclic.stream.inspect_idempotency"),
             async move {
                 let state = state.read().await;
-                let (stored, observed) =
-                    read.attempt(|| state.replay(recovery_key.as_bytes(), || probes.record(1)));
+                let (stored, observed) = read.attempt(|| {
+                    state.replay(recovery_key.as_bytes(), |items| probes.record(items))
+                });
                 let stored = stored?;
                 let mut observed = observed.err();
                 let result = (|| {
@@ -370,8 +383,8 @@ impl PreparedCommit {
         let state = self.provider.state.write().await;
         let (mut conflicts, output_claim) = self.conflicts;
         let result = async {
-            if let Some(stored) = state.replay(self.key.as_bytes(), || {
-                self.provider.record_replay_probe(&mut self.probes, 1);
+            if let Some(stored) = state.replay(self.key.as_bytes(), |items| {
+                self.provider.record_replay_probe(&mut self.probes, items);
                 Ok::<_, StreamError>(())
             })? {
                 if stored.digest != digest {

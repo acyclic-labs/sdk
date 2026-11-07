@@ -1,9 +1,7 @@
 /// One indefinitely retained snapshot entry.
 struct Retained {
     fact: RetainedFactRef,
-    replay_left: Option<usize>,
-    replay_right: Option<usize>,
-    replay_height: u8,
+    replay_branch: ReplayBranch,
     commit_branch: Option<CommitBranch>,
 }
 

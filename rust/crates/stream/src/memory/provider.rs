@@ -1021,7 +1021,7 @@ impl MemoryStream {
     ) -> crate::NativeStreamResult<Option<IdempotencyObservation>> {
         let state = self.state.read().await;
         let replay = inspect(&meter, || {
-            state.replay(key.as_bytes(), || meter.examine(1, 0))
+            state.replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;
         let output = match replay {
             Some(replay) => crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {

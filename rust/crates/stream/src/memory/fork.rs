@@ -15,8 +15,7 @@ impl MemoryStream {
             return Ok(Decision::Returned(result));
         }
         admit_replay(&state, self.limits)?;
-        let mut probes =
-            self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
+        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let forked_at = crate::preparation::fork_cut(
             &request,
             state.tail(&request.source),

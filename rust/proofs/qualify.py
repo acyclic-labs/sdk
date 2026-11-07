@@ -14,7 +14,7 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection', 'ready-source-index', 'retained-commit-index'])
+parser.add_argument("claim", choices=['retained-credit', 'settlement-terminal', 'admission-rebind', 'objects-empty-dispatch', 'auth-producer-loss', 'auth-generation', 'work-arithmetic', 'work-mixed', 'borrowed-budget', 'native-charge', 'budget-errors', 'ready-source-allocation', 'scalar-charge-cost', 'guest-refusal', 'trust-catchup', 'ready-source-turn', 'ready-source-race', 'projection-cost', 'changes-decode-cost', 'change-marker-cost', 'partial-projection-cost', 'projection-fuzz', 'default-projection-fuzz', 'follow-digest-cost', 'children-selection', 'ready-source-index', 'retained-commit-index', 'replay-index'])
 parser.add_argument("--instrumented", action="store_true",
                     help="challenge the actual projection fuzz target and explore 1000 inputs")
 arguments = parser.parse_args()
@@ -112,6 +112,12 @@ elif claim == "ready-source-race":
     test = "client_pool_loom::provider_source_publication_cannot_lose_its_wake"
     diagnostic = "provider source lost its publication wake"
     features = ["--no-default-features", "--features", "grpc,model-checking"]
+elif claim == "replay-index":
+    source = "rust/crates/collections/src/radix.rs"
+    crate = "acyclic-stream"
+    test = "memory::tests::replay_index::binary_replay_identity_and_work_follow_the_request_through_forks_and_recovery"
+    diagnostic = "binary replay lookup omitted original comparison admission"
+    features = []
 elif claim == "retained-commit-index":
     source = "rust/crates/stream/src/memory/commit_index.rs"
     crate = "acyclic-stream"
@@ -185,6 +191,19 @@ def run(label):
         wrapper = "loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"
         environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts" / wrapper)
     command = COMMAND
+    if claim == "replay-index" and label == "mutated-credit":
+        command = [*COMMAND[: -4],
+                   "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+                   *COMMAND[-3:]]
+    if claim == "replay-index" and label == "restored":
+        command = ["cargo", "test", "--locked", "-p", crate, "-p", "acyclic-collections",
+                   "--lib", "--", "--exact", "--nocapture", test,
+                   "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+                   "memory::tests::native::native_controls::descending_replay_keys_keep_copy_work_and_lookup_depth_bounded",
+                   "memory::tests::native::native_controls::prepared_replay_probe_credit_is_required_before_acceptance",
+                   "memory::tests::commit_index::every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations",
+                   "tests::adversarial_branches_have_a_fixed_key_width_bound_and_cancel_safe_retirement",
+                   "tests::refused_admission_never_constructs_or_publishes_and_preserves_prior_funding"]
     if claim == "retained-commit-index" and label == "restored":
         command = ["cargo", "test", "--locked", "-p", crate, "-p", "acyclic-collections",
                    "--lib", "--", "--exact", "--nocapture", test,
@@ -227,6 +246,12 @@ def main():
                 ("projection-fuzz", "mutation.patch") if claim == "default-projection-fuzz" else
                 (claim, "mutation.patch"))
     mutations = [(mutation, diagnostic)]
+    if claim == "replay-index":
+        mutations += [
+            (("replay-index", "terminal.patch"), "binary replay identity lost its original outcome"),
+            (("replay-index", "boundary.patch"), "binary replay lookup escaped the requested key width"),
+            (("replay-index", "credit.patch"), "reserved index examinations"),
+        ]
     if claim == "ready-source-turn":
         mutations += [
             (("ready-source-pending", "mutation.patch"), "owner turn polled unrelated pending providers"),
@@ -241,7 +266,10 @@ def main():
                     f"check {directory} mutation anchors")
             require(subprocess.run(["git", "apply", patch], cwd=ROOT).returncode == 0,
                     f"apply {directory} production mutation")
-            code, output = run("mutated" if index == 0 else f"mutated-{directory}")
+            label = ("mutated" if index == 0 else
+                     f"mutated-{Path(filename).stem}" if directory == "replay-index" else
+                     f"mutated-{directory}")
+            code, output = run(label)
             rejected = (code != 0 and "assertion failed: acyclic_stream::codec_fuzz::check(bytes)" in output
                         and "ERROR: libFuzzer:" in output if arguments.instrumented else
                         code == 101 and expected in output and "0 passed; 1 failed" in output)
@@ -254,7 +282,9 @@ def main():
     completed = (code == 0 and "DONE" in output and "1000 runs" in output
                  and "cov:" in output if arguments.instrumented else
                  code == 0 and ("2 passed; 0 failed" in output and "4 passed; 0 failed" in output
-                                if claim == "retained-commit-index" else "1 passed; 0 failed" in output))
+                                if claim == "retained-commit-index" else
+                                "2 passed; 0 failed" in output and "5 passed; 0 failed" in output
+                                if claim == "replay-index" else "1 passed; 0 failed" in output))
     require(completed,
             "restored original oracle completes")
 
