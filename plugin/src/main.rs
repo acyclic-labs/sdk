@@ -27,6 +27,15 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+    let selected = match args.as_slice() {
+        [selector, id, _, ..] if selector == "--task" => {
+            let task = parse_task(id)?;
+            args.drain(..2);
+            Some(task)
+        }
+        [selector, ..] if selector == "--task" => return Err("--task requires ID COMMAND".into()),
+        _ => None,
+    };
     let Some(command) = args.first().cloned() else {
         return help();
     };
@@ -43,13 +52,7 @@ fn run() -> Result<()> {
     if internal(&args)? {
         return Ok(());
     }
-    let task = if args.first().map(String::as_str) == Some("--task") {
-        if args.len() < 3 {
-            return Err("--task requires ID COMMAND".into());
-        }
-        let id = args.get(1).ok_or("--task requires ID COMMAND")?;
-        let task = parse_task(id)?;
-        args.drain(..2);
+    let task = if let Some(task) = selected {
         task
     } else if let Ok(task) = env::var("ACYCLIC_TASK") {
         parse_task(&task)?
