@@ -69,12 +69,9 @@ install_tool() {
     --strip-components="$strip" "$member"
 }
 
-# Runs Rust tests with the pinned cargo-nextest: one process per test, test
-# binaries in parallel, slow tests flagged, and per-test timings kept as JUnit
-# (.config/nextest.toml). Doctests and the serial live-mount suites stay on
-# cargo test.
-nextest() {
-  local target checksum status=0
+# Both Rust qualification and the real-tool policy control need this release.
+ensure_nextest() {
+  local target checksum
   if [[ "$(cargo-nextest nextest --version 2>/dev/null)" != "cargo-nextest 0.9.146 "* ]]; then
     case "$(uname -s):$(uname -m)" in
       Linux:x86_64)
@@ -91,12 +88,22 @@ nextest() {
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$target.tar.gz" \
       "$checksum" "$TOOLS_DIR/cargo/bin" cargo-nextest
   fi
+}
+
+# Runs Rust tests with the pinned cargo-nextest: one process per test, test
+# binaries in parallel, slow tests flagged, and per-test timings kept as JUnit
+# (.config/nextest.toml). Doctests and the serial live-mount suites stay on
+# cargo test.
+nextest() {
+  local status=0 profile=ci
+  if [[ "${1:-}" == --profile ]]; then profile="$2"; shift 2; fi
+  ensure_nextest
   # Rust drift tests consume ignored TypeScript authoring outputs. Generate them
   # with the existing Rust producer; these lanes do not require Bun or protoc JS.
   cargo run --locked -p acyclic-actors --example actors-http-routes -- \
     typescript/packages/actors/src/generated/actors-service.ts
-  cargo nextest run --profile ci "$@" || status=$?
-  mv -f -- "$target_dir/nextest/ci/junit.xml" "$observability/rust.xml" 2>/dev/null || true
+  cargo nextest run --profile "$profile" "$@" || status=$?
+  mv -f -- "$target_dir/nextest/$profile/junit.xml" "$observability/rust.xml" 2>/dev/null || true
   return "$status"
 }
 
@@ -199,6 +206,9 @@ harness_tests() {
 }
 
 case "$lane" in
+  full-cloud)
+    nextest --profile full-cloud --locked --all-features -p acyclic-fs -p acyclic-harness
+    ;;
   gate)
     node scripts/check-dev-build.mjs
     node scripts/check-build-boundaries.mjs
@@ -225,13 +235,24 @@ case "$lane" in
   mount-exclusion)
     bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2
     ;;
-  docs)
-    # Independent workspaces qualify alongside the root workspace.
-    cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
-    ;;
-  generation)
-    cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
-    node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
+  docs|generation)
+    corpus_output=$(mktemp -d "$SDK_TEMP_DIR/rustdoc-corpus.XXXXXX") || {
+      echo "STEP_FAILED create-rustdoc-corpus; recovery: bash scripts/qualify-ci.sh $lane" >&2
+      exit 2
+    }
+    cargo run --locked -p sdk-generation -- generate --root "$PWD" \
+      --output "$corpus_output" --version 0.2.0 --channel preview \
+      --execute-profiles --skip-scenarios || {
+      echo "STEP_FAILED produce-rustdoc-corpus; recovery: bash scripts/qualify-ci.sh $lane" >&2
+      exit 2
+    }
+    export SDK_DOCS_RUSTDOC_CORPUS="$corpus_output/.rustdoc"
+    export SDK_GENERATION_CORPUS_ROOT="$PWD"
+    export SDK_GENERATION_CORPUS_RUSTDOC="$SDK_DOCS_RUSTDOC_CORPUS"
+    cargo test --manifest-path "rust/crates/sdk-$lane/Cargo.toml" --locked
+    if [ "$lane" = generation ]; then
+      node --test rust/crates/sdk-generation/scripts/test-qualify-typescript-snippets.mjs
+    fi
     ;;
   preflight)
     head="$(git rev-parse HEAD)"
@@ -397,6 +418,8 @@ case "$lane" in
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
+    ensure_nextest
+    node --test scripts/full-cloud-qualification.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
     node scripts/test-verify-release-binary.mjs

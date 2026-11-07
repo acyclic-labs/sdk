@@ -10,14 +10,14 @@ pub fn compile_all(
 ) -> Result<(), Error> {
     let cargo = cargo_path.unwrap_or_else(|| Path::new("cargo"));
     for source in sources {
-        let output = scenario_command(root, source, cargo, false)
-            .run_output()
+        eprintln!("Compiling documentation scenario {}", source.scenario.id);
+        let status = scenario_command(root, source, cargo, false)
+            .run_status()
             .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
-        if !output.status.success() {
+        if !status.success() {
             return Err(Error::Invalid(format!(
                 "scenario {} failed to compile: {}",
-                source.scenario.id,
-                String::from_utf8_lossy(&output.stderr).trim()
+                source.scenario.id, status
             )));
         }
     }

@@ -22,7 +22,6 @@ use std::{
     path::{Path, PathBuf},
     process::{ChildStdin, ExitStatus},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 const SCENARIO: &str = "conformance scenario";
@@ -31,8 +30,6 @@ const CHILD: &str = "conformance child";
 const CHILD_REPLY: &str = "child reply";
 const FOLLOWUP: &str = "conformance follow-up";
 const WRITTEN: &str = "conformance write";
-/// How long the follow-up waits for the child before answering anyway.
-const CHILD_WAIT: Duration = Duration::from_secs(10);
 
 /// The binary every backend runs.
 fn executable() -> PathBuf {
@@ -110,22 +107,11 @@ type Outputs = std::collections::BTreeMap<String, String>;
 /// results it already held.
 type Step = (&'static str, usize);
 
-/// One scripted generation, sent once `after_child` holds if it is set.
-struct Reply {
-    events: String,
-    after_child: bool,
-}
-
 /// The scripted turns, told apart by their newest user message: the root's
 /// scenario turn calls shell, write and spawn, then answers; the child
 /// answers at once; the root acknowledges its child's report; the root's
-/// follow-up answers once the child ran.
-fn answer(
-    request: &Value,
-    steps: &Mutex<BTreeSet<Step>>,
-    outputs: &Mutex<Outputs>,
-    child: &tokio::sync::watch::Sender<bool>,
-) -> Reply {
+/// follow-up waits for the child's original completed reply, then answers.
+fn answer(request: &Value, steps: &Mutex<BTreeSet<Step>>, outputs: &Mutex<Outputs>) -> String {
     let input = request["input"].as_array().cloned().unwrap_or_default();
     for item in &input {
         if item["type"] == "function_call_output"
@@ -146,30 +132,26 @@ fn answer(
         .iter()
         .filter(|item| item["type"] == "function_call_output")
         .count();
-    let reply = |events| Reply {
-        events,
-        after_child: false,
-    };
     if prompt.contains(CHILD) {
         steps.lock().unwrap().insert(("child", results));
-        child.send_replace(true);
-        return reply(events(&[text(CHILD_REPLY)]));
+        return events(&[text(CHILD_REPLY)]);
     }
     // The root's report of its child's result, which carries the child's
     // reply. The child decides when it arrives, before or after the
     // follow-up, so it records no step.
     if prompt.contains(CHILD_REPLY) {
-        return reply(events(&[text("child noted")]));
+        return events(&[text("child noted")]);
     }
     if prompt.contains(FOLLOWUP) {
         steps.lock().unwrap().insert(("followup", results));
-        return Reply {
-            events: events(&[text("followup answer")]),
-            after_child: true,
-        };
+        return events(&[if results == 0 {
+            call("wait", "wait", &json!({"agents": ["child"]}))
+        } else {
+            text("followup answer")
+        }]);
     }
     steps.lock().unwrap().insert(("root", results));
-    reply(events(&[match results {
+    events(&[match results {
         0 => call(
             "shell",
             "shell",
@@ -182,7 +164,7 @@ fn answer(
             &json!({"task": CHILD, "name": "child", "role": "worker"}),
         ),
         _ => text("root answer"),
-    }]))
+    }])
 }
 
 /// The loopback Responses endpoint and its catalog.
@@ -200,7 +182,6 @@ async fn model(directory: &Path) -> Model {
     let recorded = Arc::clone(&steps);
     let outputs = Arc::new(Mutex::new(Outputs::new()));
     let seen = Arc::clone(&outputs);
-    let (child, ran) = tokio::sync::watch::channel(false);
     let app = Router::new()
         .route(
             "/count",
@@ -209,14 +190,8 @@ async fn model(directory: &Path) -> Model {
         .route(
             "/responses",
             post(move |Json(body): Json<Value>| {
-                let reply = answer(&body, &recorded, &seen, &child);
-                let mut ran = ran.clone();
-                async move {
-                    if reply.after_child {
-                        let _ = tokio::time::timeout(CHILD_WAIT, ran.wait_for(|ran| *ran)).await;
-                    }
-                    ([("content-type", "text/event-stream")], reply.events)
-                }
+                let reply = answer(&body, &recorded, &seen);
+                async move { ([("content-type", "text/event-stream")], reply) }
             }),
         );
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -617,8 +592,7 @@ async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) 
     second.answer("y\n");
     let (answer, stderr) = second.finish().await;
     assert!(stderr.contains("approve request"), "{stderr}");
-    // The spawned child runs once its parent's turn settled; the follow-up
-    // answers after it did.
+    // The original agent wait resumes only once the child's own reply settled.
     let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish().await;
     format!("{}\n{}", answer.trim(), followup.trim())
 }
@@ -641,14 +615,31 @@ impl Shape {
                 .unwrap_or_else(|| panic!("no {call} result: {outputs:?}"));
             serde_json::from_str(output).unwrap_or_else(|_| output.as_str().into())
         };
-        let pick = |value: &Value, pointers: &[&str]| -> Value {
-            pointers
-                .iter()
-                .map(|pointer| value.pointer(pointer).cloned().unwrap_or_default())
-                .collect()
-        };
+        // Publication projects a path and a version containing the original
+        // FileRef. Use its shared decoder, retaining descriptor checks rather
+        // than silently comparing nulls at the old canonical-result paths.
+        let written = parsed("write");
+        let file: acyclic_harness::conversation::FileRef = serde_json::from_str(
+            written["version"]
+                .as_str()
+                .expect("write supplied no version"),
+        )
+        .expect("write supplied no file reference");
+        assert_eq!(written["path"], file.path());
+        assert_eq!(file.path(), "conformance.txt");
+        file.descriptor()
+            .verify(WRITTEN.as_bytes(), &mut None)
+            .unwrap();
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
+        let waited = parsed("wait");
+        let settled = waited["settled"]
+            .as_array()
+            .expect("wait named no settlement");
+        assert_eq!(settled.len(), 1, "{waited}");
+        assert_eq!(settled[0]["agent"], spawned["agent"]);
+        let completed = json!([settled[0]["phase"], settled[0]["answer"], waited["running"]]);
+        assert_eq!(completed, json!(["idle", CHILD_REPLY, []]));
         let child: Vec<&str> = spawned["agent"]
             .as_str()
             .unwrap_or_else(|| panic!("spawn named no child: {spawned}"))
@@ -664,12 +655,12 @@ impl Shape {
         Self {
             answer: answer.trim().to_owned(),
             results: vec![
-                pick(&parsed("shell"), &["/exit_code", "/stdout"]),
-                pick(
-                    &parsed("write"),
-                    &["/file/descriptor", "/file/path", "/file/volume/class"],
-                ),
+                // The shared shell projects its exit and output as text to
+                // the model; structured file and child results remain JSON.
+                parsed("shell"),
+                json!([file.descriptor(), file.path(), file.volume().class()]),
                 child.into(),
+                completed,
             ],
             steps,
         }
@@ -679,16 +670,8 @@ impl Shape {
 #[tokio::test(flavor = "multi_thread")]
 async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     let directory = tempfile::tempdir().unwrap();
-    // The approver is the principal the endpoint credential authenticates,
-    // read from a minted credential rather than assumed.
-    let principal = {
-        let model = model(directory.path()).await;
-        let home = Home::new(directory.path(), "probe");
-        let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
-        let endpoint = served(&mut server).await;
-        server.kill().await;
-        endpoint["principal"].as_str().unwrap().to_owned()
-    };
+    // Every transport reaches the same LocalUser platform: it authenticates
+    // decisions as its one human, separately from the session principal.
     let policy = directory.path().join("policy.json");
     std::fs::write(
         &policy,
@@ -696,7 +679,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             {"kind": "rules", "principal": "policy:conformance",
              "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
              "fallback": "allow"},
-            {"kind": "human", "principal": principal},
+            {"kind": "human", "principal": acyclic_harness::approvals::HUMAN_APPROVER},
         ]}))
         .unwrap(),
     )
@@ -723,7 +706,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
                 &["serve", "127.0.0.1:0"],
             ));
             let endpoint = served(&mut server).await;
-            assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
                 url: endpoint["endpoint"].as_str().unwrap().to_owned(),
                 credential: endpoint["credential"].as_str().unwrap().to_owned(),
@@ -740,11 +722,25 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         }
         let steps = model.steps.lock().unwrap().clone();
         let outputs = model.outputs.lock().unwrap().clone();
+        // A real completed process without the original child reply is no
+        // success. Plant that omission in its actual retained tool result.
+        let mut missing = outputs.clone();
+        let mut waited: Value = serde_json::from_str(&missing["wait"]).unwrap();
+        waited["settled"][0]["answer"] = Value::Null;
+        missing.insert("wait".into(), waited.to_string());
+        assert!(
+            std::panic::catch_unwind(|| Shape::of(answer.clone(), &missing, steps.clone()))
+                .is_err()
+        );
         shapes.push((name, Shape::of(answer, &outputs, steps)));
     }
     let (_, local) = &shapes[0];
     assert_eq!(local.answer, "root answer\nfollowup answer");
-    assert_eq!(local.results[0], json!([0, "conformance-shell\n"]));
+    let newline = if cfg!(windows) { "\r\n" } else { "\n" };
+    assert_eq!(
+        local.results[0],
+        json!(format!("Exit code: 0\nconformance-shell{newline}"))
+    );
     assert_eq!(
         local.results[1][0]["byte_length"],
         WRITTEN.len(),
@@ -753,15 +749,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     );
     assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
     for (name, shape) in &shapes[1..] {
-        assert_eq!(shape.answer, local.answer, "{name} answered otherwise");
-        assert_eq!(shape.steps, local.steps, "{name} took other steps");
-        for (index, (theirs, ours)) in shape.results.iter().zip(&local.results).enumerate() {
-            assert_eq!(
-                theirs.to_string(),
-                ours.to_string(),
-                "{name} result {index}"
-            );
-        }
         assert_eq!(shape, local, "{name} committed another history");
     }
 }

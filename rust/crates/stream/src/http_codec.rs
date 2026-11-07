@@ -1,5 +1,5 @@
 //! Hosted Stream requests shared by native and browser clients.
-use crate::{MAX_COMMAND_BYTES, TOKEN_OPERATIONS, memory, wire, wire_codec};
+use crate::{MAX_COMMAND_BYTES, TokenOperation, memory, wire, wire_codec};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use prost::Message;
 use serde_json::{Value, json};
@@ -36,7 +36,7 @@ fn validate_token_request(request: &wire::CreateTokenRequest) -> Result {
             || grant
                 .operations
                 .iter()
-                .any(|operation| !TOKEN_OPERATIONS.contains(&operation.as_str()))
+                .any(|operation| operation.parse::<TokenOperation>().is_err())
         {
             return Err("invalid_argument");
         }

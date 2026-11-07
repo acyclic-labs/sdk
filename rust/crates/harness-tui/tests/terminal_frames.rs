@@ -448,14 +448,14 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
     }
 }
 
-/// Real terminal cost per page-scroll frame (every row repainted): `cargo test --release -p acyclic-harness-tui
-/// --features tui --test terminal_frames -- --exact real_terminal_frame_cost --ignored --nocapture`.
+/// Full-page repaint and region scrolling share one native terminal owner.
+/// The old per-command path must fail the same submission oracle.
 #[test]
-#[ignore = "real terminal measurement, not an assertion"]
 fn real_terminal_frame_cost() -> io::Result<()> {
-    const FRAMES: usize = 200;
-    let mut report = Vec::new();
-    // A process owns one terminal lifecycle; both paths share it.
+    use std::fmt::Write as _;
+
+    const FRAMES: usize = 2;
+    let mut report = String::new();
     let (mut output, _guard) = real_terminal()?;
     for size in [Size::new(120, 40), Size::new(240, 70)] {
         let viewport = TerminalOptions {
@@ -465,43 +465,54 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             let calls = Rc::default();
             let bytes = Rc::default();
             let device = Calls(&mut output, Rc::clone(&calls), Rc::clone(&bytes));
-            let before = device_io();
-            let start = std::time::Instant::now();
+            let mut old = None;
+            let mut new = None;
             if per_command {
                 let mut terminal =
                     Terminal::with_options(CrosstermBackend::new(device), viewport.clone())?;
-                for offset in 0..FRAMES {
-                    terminal.draw(scrolled(offset * usize::from(size.height)))?;
-                }
+                terminal.draw(scrolled(0))?;
+                old = Some(terminal);
             } else {
                 let mut terminal = FrameTerminal::new(device, size)?;
-                for offset in 0..FRAMES {
+                terminal.draw(size, scrolled(0))?;
+                new = Some(terminal);
+            }
+            calls.set(0);
+            let before = device_io();
+            for offset in 1..=FRAMES {
+                if let Some(terminal) = old.as_mut() {
+                    terminal.draw(scrolled(offset * usize::from(size.height)))?;
+                }
+                if let Some(terminal) = new.as_mut() {
                     terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
                 }
             }
-            let elapsed = start.elapsed();
-            let after = device_io();
-            let frames = f64::from(u32::try_from(FRAMES).unwrap_or(u32::MAX));
-            let per_frame =
-                |count: u64| f64::from(u32::try_from(count).unwrap_or(u32::MAX)) / frames;
-            report.push(format!(
-                "{} {}x{} {}: {:.0} bytes/frame, {:.1} submissions/frame, {:.1} device writes/frame, {:.2} full-queue waits/frame, {:.1} us/frame",
+            let writes = device_io().writes - before.writes;
+            if per_command {
+                let calls = calls.get();
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        regions::one_native_submission(calls, writes, FRAMES, false);
+                    })
+                    .is_err(),
+                    "the old per-command path must fail the native submission oracle"
+                );
+            } else {
+                regions::one_native_submission(calls.get(), writes, FRAMES, false);
+            }
+            writeln!(
+                report,
+                "{} {}x{} per_command={per_command} frames={FRAMES} submissions={} writes={writes}",
                 std::env::consts::OS,
                 size.width,
                 size.height,
-                if per_command { "per-command" } else { "frame" },
-                per_frame(bytes.get()),
-                per_frame(calls.get()),
-                per_frame(after.writes - before.writes),
-                per_frame(after.waits - before.waits),
-                elapsed.as_secs_f64() * 1e6 / frames
-            ));
+                calls.get()
+            )
+            .unwrap();
         }
     }
-    for line in report {
-        eprintln!("{line}");
-    }
-    Ok(())
+    regions::native_region_cost(&mut output, &mut report)?;
+    regions::publish_report(&report)
 }
 
 /// A frame far beyond any realistic screen (16 MiB) reaches the real console:

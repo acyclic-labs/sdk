@@ -138,11 +138,12 @@ public static class TerminalSignalConPty {
         Exception drainFailure=null,failure=null;
         bool drained=false;
         var draining=new ManualResetEvent(scenario!="blocked");
-        string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" -Scenario "+scenario;
+        bool frameCost=scenario=="frames";
+        string recovery="; recovery: pwsh -File scripts/test-terminal-signals.ps1 -Binary \""+binary+"\" "+(frameCost?"-FrameRegions":"-Scenario "+scenario);
         try {
             Require(CreatePipe(out ir,out iw,IntPtr.Zero,0),"input pipe");
             Require(CreatePipe(out orr,out ow,IntPtr.Zero,0),"output pipe");
-            Require(CreatePseudoConsole(new Coord{x=(short)(scenario=="regions"?100:80),y=(short)(scenario=="regions"?40:24)},ir,ow,0,out console)==0,"CreatePseudoConsole");
+            Require(CreatePseudoConsole(new Coord{x=(short)(frameCost?100:80),y=(short)(frameCost?40:24)},ir,ow,0,out console)==0,"CreatePseudoConsole");
             IntPtr size=IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
             attributes=Marshal.AllocHGlobal(size);
@@ -152,7 +153,7 @@ public static class TerminalSignalConPty {
             IntPtr parentInput=GetStdHandle(-10),parentOutput=GetStdHandle(-11),parentError=GetStdHandle(-12);
             try {
                 Require(SetStdHandle(-10,IntPtr.Zero)&&SetStdHandle(-11,IntPtr.Zero)&&SetStdHandle(-12,IntPtr.Zero),"clear inherited handles");
-                string test=scenario=="regions"?"regions::real_terminal_region_cost --ignored":"term::windows::tests::windows_lifecycle_child";
+                string test=frameCost?"real_terminal_frame_cost":"term::windows::tests::windows_lifecycle_child";
                 Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact "+test+" --nocapture"),
                     IntPtr.Zero,IntPtr.Zero,false,0x80000|4,IntPtr.Zero,Path.GetDirectoryName(binary),ref startup,out process),"ConPTY child");
             } finally {
@@ -168,10 +169,10 @@ public static class TerminalSignalConPty {
             });
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
-            if(scenario=="regions") {
-                Require(WaitForSingleObject(process.process,10000)==0,"region measurement child deadline");
-                uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"region measurement child exit");
-                Require(File.Exists(report),"physical region report");
+            if(frameCost) {
+                Require(WaitForSingleObject(process.process,10000)==0,"native frame cost child deadline"+recovery);
+                uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"native frame cost child exit"+recovery);
+                Require(File.Exists(report),"native frame cost assertion report"+recovery);
                 Console.Write(File.ReadAllText(report));
                 return;
             }
@@ -260,7 +261,7 @@ $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 $previousRegionReport = $env:ACYCLIC_TERMINAL_REGION_REPORT
 try {
-    $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('regions') } else { @('break','close','blocked','input-close') }
+    $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('frames') } else { @('break','close','blocked','input-close') }
     foreach ($scenario in $scenarios) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report

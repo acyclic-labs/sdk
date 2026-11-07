@@ -77,6 +77,31 @@ Full TypeScript generation subsequently projects the metadata into
 `actors-service.ts`. Rust qualification generates these files before its workspace
 tests; drift checks only compare and never rewrite their inputs.
 
+The `full-cloud` nextest profile exercises live Filesystem and Actors handlers.
+Portable profiles leave these cases to this capability profile. List its cases with:
+
+```sh
+cargo nextest list --profile full-cloud --locked --all-features \
+  -p acyclic-fs -p acyclic-harness
+```
+
+On Linux, build the Cloud checkout's binaries with
+`node ops/local/e2e.mjs --build-only`. Run each listed case against a fresh
+topology with the qualification entry below. Set absolute paths for
+`CLOUD_SOURCE`, `CLOUD_BINARIES` and an existing `SDK_ARTIFACT_DIR` directory:
+
+```sh
+export CLOUD_SOURCE CLOUD_BINARIES SDK_ARTIFACT_DIR
+cargo nextest run --profile full-cloud --locked --all-features \
+  -p acyclic-fs -p acyclic-harness
+```
+
+The profile wraps every selected case with the shared local Cloud producer,
+retaining service results under a fresh directory for each case.
+The producer supplies `ACYCLIC_LOCAL_CLOUD`; selecting a case without its
+endpoints fails. Each case needs fresh service state: the lifecycle oracle
+migrates the deployment that the delivery oracle expects at its first revision.
+
 The `dev` and `test` profiles use LLVM, panic unwinding and line tables for
 backtraces. The independent `acyclic-fs-wire` and `acyclic-plugin-identity` crates
 build at `opt-level = 0`; other crates retain `opt-level = 1` because their

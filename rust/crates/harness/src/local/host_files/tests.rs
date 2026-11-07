@@ -1264,9 +1264,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .await
         .map_err(storage)?
         .map_err(storage)?;
-    let Delivery::Reply(Ok(committed)) = committed else {
+    let Delivery::Reply(committed) = committed else {
         panic!("the actual owner must publish its committed result");
     };
+    let committed = committed?;
     let _: crate::agent::AgentPath =
         serde_json::from_value(committed["task"].clone()).map_err(storage)?;
     assert!(Path::new(committed["cwd"].as_str().expect("committed workspace path")).is_absolute());
@@ -1295,9 +1296,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .await
             .map_err(storage)?
             .map_err(storage)?;
-    let Delivery::Reply(Ok(recovered)) = recovered else {
+    let Delivery::Reply(recovered) = recovered else {
         panic!("the original reply producer must survive idle watch re-admission");
     };
+    let recovered = recovered?;
     assert_eq!(recovered, committed);
     assert_eq!(std::fs::read_dir(&status).map_err(storage)?.count(), 0);
     drop(readmitted);
@@ -1317,12 +1319,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     let (delivery, response) = mpsc::sync_channel(1);
     let late = connected.wait(operation, delivery)?;
     connected.shared.published(operation);
-    let Delivery::Reply(Ok(recovered)) = response
+    let Delivery::Reply(recovered) = response
         .try_recv()
         .expect("committed reply is immediately available")
     else {
         panic!("withdrawal must not replace an available committed outcome");
     };
+    let recovered = recovered?;
     assert_eq!(recovered, committed);
     assert_eq!(
         std::fs::read(&replacement).map_err(storage)?,

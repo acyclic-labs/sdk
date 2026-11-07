@@ -1,8 +1,8 @@
 [package]
-license.workspace = true
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [package.metadata]
@@ -87,6 +87,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
+oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-arguments = ["core", "acyclic-harness-core/filesystem"]
@@ -104,6 +105,8 @@ native-execution = []
 
 [dependencies]
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
+ed25519-dalek = { version = "3.0.0", optional = true }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-harness-core = { path = "../harness-core", default-features = false, features = ["hooks", "test-support"], optional = true }
 acyclic-native-runtime = { path = "../native-runtime", optional = true }
 harness-mock-model = { path = "../harness-mock-model" }
@@ -377,6 +380,14 @@ bench = false
 name = "config_policy"
 path = "fuzz_targets/config_policy.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oidc"
+path = "fuzz_targets/oidc.rs"
+required-features = ["oidc"]
 test = false
 doc = false
 bench = false

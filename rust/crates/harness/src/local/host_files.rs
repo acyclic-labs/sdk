@@ -1036,8 +1036,13 @@ impl Served {
                 return Ok(());
             }
             Tracked::Answered(cause) => {
-                let withdrawal =
-                    remove_held_projection(status, Path::new(&format!("{operation}.json")));
+                // This disposable reply has no durable state to retire.
+                let withdrawal = status
+                    .remove_file(
+                        Path::new(&format!("{operation}.json")),
+                        acyclic_fs::NativeDurability::Visibility,
+                    )
+                    .map_err(native_file_error);
                 match withdrawal {
                     Ok(()) | Err(Error::NotFound(_)) => {}
                     Err(error) => {
@@ -1069,6 +1074,8 @@ impl Served {
     }
 
     /// Publishes one dispatch's immutable reply unless it was withdrawn.
+    /// Dispatch owns effect durability; this disposable reply only needs
+    /// atomic visibility. Losing it cannot withdraw the original request.
     fn answer(
         &mut self,
         status: &acyclic_fs::HeldRoot,
@@ -1093,7 +1100,7 @@ impl Served {
         match status.publish_immutable(
             Path::new(&format!("{operation}.json")),
             &bytes,
-            acyclic_fs::NativeDurability::Durable,
+            acyclic_fs::NativeDurability::Visibility,
         ) {
             Ok(()) => {}
             // The immutable publisher observed different existing bytes.
