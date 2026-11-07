@@ -240,14 +240,20 @@ fn batch_container<T>(
     Ok((values, bytes, allocation))
 }
 
-pub(super) fn batch_in_heap<'a, 'borrow, 'accounting, 'observer, F: Future>(
+pub(super) fn batch_in_heap<'a, 'borrow, 'accounting, 'observer, F>(
     frame: &'a mut crate::heap_future::AdmittedFrame<'borrow, KernelAccounting<'accounting>>,
     owner: Option<&'observer crate::kernel::ProofDataCustody>,
     create: impl FnOnce(&'a mut KernelAccounting<'accounting>) -> F,
 ) -> Result<
-    crate::heap_future::OwnedFuture<F, crate::heap_future::FrameObservation<'observer>>,
+    crate::heap_future::OwnedFuture<
+        crate::heap_future::TaskFuture<'a, F::Output>,
+        crate::heap_future::FrameObservation<'observer>,
+    >,
     FsError,
-> {
+>
+where
+    F: Future + acyclic_stream::ProviderTask + 'a,
+{
     #[cfg(not(target_arch = "wasm32"))]
     let owner = if frame.accounting().native_work().is_some() {
         None
@@ -263,7 +269,9 @@ pub(super) fn batch_in_heap<'a, 'borrow, 'accounting, 'observer, F: Future>(
         },
         |frame| create(frame.accounting()),
     )?;
-    Ok(future.with_allocation(observation))
+    // Erase the original admitted allocation so both single and batched reads
+    // stop propagating provider state into every persistent-tree caller.
+    Ok(future.with_allocation(observation).erase_task())
 }
 impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
     pub(crate) fn next_with_accounting(
