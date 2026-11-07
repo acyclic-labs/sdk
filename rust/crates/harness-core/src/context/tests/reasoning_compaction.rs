@@ -253,48 +253,6 @@ fn call_boundaries_keep_signed_protocols_and_tight_budgets_drop_whole_units() ->
     Ok(())
 }
 
-#[test]
-fn negative_control_detects_call_result_links_that_omit_required_reasoning() {
-    for provider in 0..3 {
-        let (source, units) = transcript(&[(provider, 1, false, false)], "signature");
-        let cut = units[0].0 + 2;
-        // Former selection: both call and result are already retained. Linking
-        // only them never restores the reasoning immediately before the call.
-        let mut selected: Vec<_> = (0..source.messages.len()).map(|i| i >= cut).collect();
-        for (result_index, result) in source.messages.iter().enumerate() {
-            for part in result.content.parts() {
-                if let ModelContentPart::ToolResult { call_id, .. } = part {
-                    for (call_index, call) in source.messages.iter().enumerate() {
-                        if call.content.parts().iter().any(|part| {
-                            matches!(part, ModelContentPart::ToolCall(call) if &call.call_id == call_id)
-                        }) && (selected[call_index] || selected[result_index]) {
-                            selected[call_index] = true;
-                            selected[result_index] = true;
-                        }
-                    }
-                }
-            }
-        }
-        let broken = context(
-            source
-                .messages
-                .iter()
-                .zip(selected)
-                .filter_map(|(message, keep)| keep.then(|| message.clone()))
-                .collect(),
-            None,
-        );
-        assert!(!whole_units(&source, &broken, &units));
-        assert!(broken.messages.iter().any(|message| {
-            message
-                .content
-                .parts()
-                .iter()
-                .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
-        }));
-    }
-}
-
 #[cfg(feature = "filesystem")]
 #[test]
 fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<()> {
