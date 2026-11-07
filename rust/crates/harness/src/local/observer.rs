@@ -43,6 +43,10 @@ pub struct Observer {
 }
 
 impl Observer {
+    pub(super) fn belongs_to(&self, connection: &Connection) -> bool {
+        std::sync::Arc::ptr_eq(&self.connection.controls, &connection.controls)
+    }
+
     /// Observes `connection`'s root from conversation sequence `from` and
     /// status sequence `status_from` on.
     pub(super) fn open(connection: &Connection, from: u64, status_from: u64) -> Result<Self> {

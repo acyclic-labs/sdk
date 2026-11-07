@@ -1,0 +1,12 @@
+diff --git a/rust/crates/actors/src/local/runtime.rs b/rust/crates/actors/src/local/runtime.rs
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -441,7 +441,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
+             .map_err(|_| Error::CompletionStopped)?;
+         receive
+             .await
+-            .map_err(|_| Error::CompletionStopped)?
++            .unwrap_or(Ok(()))
+             .map_err(Error::CompletionFailed)
+     }
+ 
