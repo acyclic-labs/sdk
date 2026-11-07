@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "failed-input-fairness": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+    "failed input starved another ready subscription", [],
+    { positive: [
+      "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+      "local::runtime::tests::retry::an_unchanged_guard_refusal_settles_instead_of_retrying_forever",
+    ] },
+  ],
   "seeded-runtime-configuration": [
     "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
     "seeded_runtime_requires_explicit_executor_configuration",
