@@ -359,3 +359,63 @@ fn renewed_allowance_restricts_only_what_each_action_bills() {
         assert!(!prefix_rule(&covered, action), "{action}");
     }
 }
+
+#[test]
+fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
+    let action = "execution/actor-turn";
+    let actor = owned_execution(action, "actors/a");
+    let worker = owned_execution(action, "workers/b");
+    let attributes = RecordAttributes::default();
+    let usage = limits(None);
+    let request = Request {
+        target: Target::Resource {
+            action,
+            resource: "execution:/work",
+        },
+        audience: "workers:/app",
+        holder: None,
+        now_unix_seconds: 2,
+        keys: &[],
+        attributes: &attributes,
+        usage: &usage,
+        cpu_millis: 1,
+        memory_bytes: 0,
+    };
+    let allowed =
+        |blocks: &[Block]| permits(blocks, &request, PolicyDecision::Allow, Scope::Exact).is_ok();
+    for (survivor, admitted) in [(actor.clone(), true), (worker.clone(), false)] {
+        let restricted = append(
+            &chain(vec![actor.clone(), worker.clone()]),
+            granting(vec![survivor]),
+        )
+        .expect("an execution grant may be excluded");
+        let billed = append(&restricted, allowance(&["actors"])).expect("a product allowance");
+        assert_eq!(allowed(&billed), admitted, "excluded grants cannot pay");
+    }
+    let mut exhausted_actor = actor.clone();
+    let GrantKind::Execution(grant) = &mut exhausted_actor.kind else {
+        unreachable!();
+    };
+    grant.cpu_millis = Some(0);
+    let billed = append(
+        &chain(vec![exhausted_actor, worker.clone()]),
+        allowance(&["actors"]),
+    )
+    .expect("a product allowance with a resource-limited grant");
+    assert!(
+        !allowed(&billed),
+        "an ineligible execution grant cannot pay"
+    );
+
+    let mut disjoint = chain(vec![actor, worker]);
+    disjoint.push(Block {
+        certificates: None,
+        caveats: vec![allowance(&["actors"]), allowance(&["workers"])],
+        next_public_key: vec![6; 32],
+    });
+    assert!(valid_chain(&disjoint));
+    assert!(
+        !allowed(&disjoint),
+        "separate allowances cannot select different execution owners"
+    );
+}
