@@ -1,5 +1,9 @@
 use super::historical;
 
+/// Check admitted Git layout against shallow, malformed and extra records.
+///
+/// # Panics
+/// Panics if the admitted result violates the independent contract checks.
 pub fn check_input(bytes: &[u8]) -> Result<&str, String> {
     let result = historical::graft_path(bytes);
     if std::str::from_utf8(bytes).is_err() {
