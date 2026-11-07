@@ -57,16 +57,8 @@ async fn files<P: acyclic_harness::store::JournalProvider>(
     stream: Arc<P>,
     cases: &[(PathBuf, Value, Value)],
 ) -> TestResult {
-    row(
-        &format!("memory/{name}"),
-        Fs::memory(),
-        stream.clone(),
-        cases,
-    )
-    .await?;
     let directory = tempfile::tempdir()?;
     let local = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;
-    row(&format!("disk/{name}"), local, stream.clone(), cases).await?;
     // Remote authority and local Objects are independently bound. Public remote
     // Objects batches and an Actors host are separate, explicit qualification gaps.
     let authority = loopback(Arc::new(MemoryStream::default())).await?;
@@ -76,13 +68,21 @@ async fn files<P: acyclic_harness::store::JournalProvider>(
         LogicalObjectStore::new(objects),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
-    row(
-        &format!("grpc-authority/{name}"),
-        remote_authority,
-        stream,
-        cases,
-    )
-    .await
+    // Every scenario admits a distinct AgentId and OperationId through the
+    // original executor path, so provider rows have no ordering dependency.
+    // Join every row before releasing its filesystem or loopback server, even
+    // when another row reports an error.
+    let memory_name = format!("memory/{name}");
+    let disk_name = format!("disk/{name}");
+    let remote_name = format!("grpc-authority/{name}");
+    let results = futures::join!(
+        row(&memory_name, Fs::memory(), stream.clone(), cases),
+        row(&disk_name, local, stream.clone(), cases),
+        row(&remote_name, remote_authority, stream, cases),
+    );
+    results.0?;
+    results.1?;
+    results.2
 }
 
 #[tokio::test]
