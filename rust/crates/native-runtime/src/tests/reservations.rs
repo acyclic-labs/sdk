@@ -191,12 +191,19 @@ fn shrinking_allocation_commits_custody_before_refund_callback() -> io::Result<(
             );
             let custody = allocation.bytes();
             let charged = observed.memory.load(Ordering::Acquire);
-            drop(allocation);
+            let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drop(allocation);
+            }));
             let final_charge = observed.memory.load(Ordering::Acquire);
-            if custody != retained as u64 || charged != retained as u64 || final_charge != 0 {
-                violations.push((name, retained, custody, charged, final_charge));
+            let returns = returned.load(Ordering::Acquire);
+            if custody != retained as u64
+                || charged != retained as u64
+                || final_charge != 0
+                || retired.is_err()
+                || returns != 2
+            {
+                violations.push((name, retained, custody, charged, final_charge, returns));
             }
-            assert_eq!(returned.load(Ordering::Acquire), 2);
         }
     }
     assert!(
