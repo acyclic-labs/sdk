@@ -107,6 +107,27 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 observer_commands.execute(&root_request).await,
                 Err(AgentExchangeError::Session(StreamError::AccessDenied))
             ));
+            for all in [false, true] {
+                let selection = acyclic_harness_client::AgentSelection::new(child.clone(), 0, 0);
+                let observer = if all {
+                    selected.controls.observe_all(selection)
+                } else {
+                    selected.controls.observe(selection)
+                }
+                .map_err(exchange)?;
+                let controls = observer.controls(
+                    acyclic_harness_client::AgentBinding::new(&selected.controls.binding_bytes())
+                        .map_err(exchange)?,
+                );
+                assert_eq!(controls.observation_credential(), observation);
+                let request = controls
+                    .prepare(PreparedCommand::new(&AgentCommand::Root {}).map_err(exchange)?)
+                    .map_err(exchange)?;
+                assert!(matches!(
+                    controls.execute(&request).await.map_err(exchange)?,
+                    AgentReply::Root { .. }
+                ));
+            }
             // A selected frontend follows the child's private tool-output
             // resource as well as its conversation and status streams.
             let _changes = session
