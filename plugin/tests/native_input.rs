@@ -1,5 +1,6 @@
 //! Native stdin failures must stop at the installed command boundary.
 use super::binary;
+use acyclic_harness::agent::{AgentId, AgentPath};
 use acyclic_native_runtime::{
     CaptureSchedule, ProcessCommand, ProcessInput, ProcessStdio, ProcessTree,
 };
@@ -23,10 +24,17 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
         .expect_err("selected stdin must refuse an OS read")
         .to_string();
     let executable = binary::acyclic();
+    let task = AgentPath::root(&AgentId::from_bytes([1; 16])).to_string();
     for args in [
         &["__workspace"][..],
         &["__install-package"][..],
         &["__hook", "codex", "Stop"][..],
+        &["fs", "--help"][..],
+        &["fs", "-h"][..],
+        &["fs", "help"][..],
+        &["--task", task.as_str(), "fs", "--help"][..],
+        &["--task", task.as_str(), "fs", "-h"][..],
+        &["--task", task.as_str(), "fs", "help"][..],
     ] {
         let mut command = ProcessCommand::new(&executable);
         command
@@ -63,7 +71,15 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             process.is_reaped(),
             "native stdin refusal must retire its process"
         );
-        if args[0] == "__hook" {
+        if args.contains(&"fs") {
+            assert!(output.status.success(), "help must not require a workspace");
+            assert!(output.stderr.is_empty());
+            let help = std::str::from_utf8(&output.stdout)?;
+            let descriptor = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("filesystem tool descriptor absent")?;
+            assert!(help.contains(descriptor.description));
+        } else if args[0] == "__hook" {
             assert!(output.status.success());
             assert!(output.stderr.is_empty());
             let answer: serde_json::Value = serde_json::from_slice(&output.stdout)?;

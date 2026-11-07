@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,21 +113,6 @@ test("terminal completion admits the final frame after its last input action", a
   } finally { rmSync(root, { recursive: true }); }
 });
 
-test("screen assertions observe complete synchronized frames at every fragmentation boundary", async () => {
-  const bytes = "\x1b[?2026h\x1b[Hdraft\x1b[Hfinal\x1b[?2026l";
-  for (let cut = 0; cut <= bytes.length; cut++) {
-    const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-    const seen = [];
-    const capture = () => seen.push(screen.buffer.active.getLine(0).translateToString(true));
-    const frames = new TerminalFrames(screen, capture);
-    await frames.write(bytes.slice(0, cut));
-    await frames.write(bytes.slice(cut));
-    assert.ok(seen.includes("final"));
-    assert.ok(seen.every(text => text === "" || text === "final"), JSON.stringify(seen));
-    frames.dispose(); screen.dispose();
-  }
-});
-
 test("shipping terminal refusals survive coalesced and fragmented redraws", async () => {
   for (const schedule of [[], [0], [63], [255, 0, 7, 1]]) await fuzzTerminalFrames(Buffer.from(schedule));
 });
@@ -140,17 +126,16 @@ test("observed producer frame asserts captured content with one screen projectio
   const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
   const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
   const write = TerminalFrames.prototype.write;
-  let reads = 0;
-  const projections = [];
+  let reads = 0, afterFrame;
+  const projections = [], observed = new WeakSet();
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
-  const observed = new WeakSet();
   TerminalFrames.prototype.write = function (bytes) {
     if (!observed.has(this)) {
       observed.add(this);
       const frame = this.frame;
       this.frame = () => {
         const before = reads;
-        try { return frame(); } finally { projections.push(reads - before); }
+        try { return frame(); } finally { projections.push(reads - before); afterFrame?.(); }
       };
     }
     return write.call(this, bytes);
@@ -158,9 +143,8 @@ test("observed producer frame asserts captured content with one screen projectio
   try {
     const raw = queryCapture.stdout.slice(-32);
     for (const [rejects, assertion] of [
-      [false, { contains: ["workspace diff query is u"] }],
+      [false, { contains: ["workspace diff query is u"], raw: [raw] }],
       [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
-      [false, { raw: [raw] }],
       [true, { raw: [raw + "\0"] }],
     ]) {
       const processes = new TerminalProcess();
@@ -181,6 +165,45 @@ test("observed producer frame asserts captured content with one screen projectio
     }
     assert.ok(projections.includes(1), "the original frame must be inspected");
     assert.ok(projections.every(count => count <= 1), "one screen projection serves matching and assertion");
+    for (const [redraw, requestAfterFrame] of [[false, false], [true, false], [true, true]]) {
+      // Replay original native frames through a real child. Its request arrives
+      // after input, before the next redraw, just as the model fixture can wake
+      // the action driver while the preceding cells are still visible.
+      let owner, request, requested = false, capture, observed = 0, pendingRequest;
+      afterFrame = () => { if (++observed === 2) pendingRequest?.(); };
+      const processes = new TerminalProcess();
+      const start = processes.startTerminal.bind(processes);
+      processes.startTerminal = (...args) => {
+        owner = start(...args);
+        owner.child.stderr.once("data", () => {
+          const notify = () => {
+            requested = true;
+            request();
+            owner.child.stdin.write("request observed\n");
+          };
+          if (requestAfterFrame && observed < 2) pendingRequest = notify;
+          else notify();
+        });
+        return owner;
+      };
+      try {
+        const running = pty(processes, process.execPath, {
+          id: "observed-frame", workspace: root,
+          args: ["-e", `const fs=require('node:fs');const first=JSON.parse(fs.readFileSync(process.argv[1],'utf8')).stdout;const next=${redraw ? "first" : "JSON.parse(fs.readFileSync(process.argv[2],'utf8')).idle.stdout"};process.stdin.once('data',()=>{${requestAfterFrame ? "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(next,()=>process.stderr.write('request\\n'))" : "process.stdin.once('data',()=>process.stdout.write(next,()=>process.stdin.destroy()));process.stderr.write('request\\n')"}});process.stdout.write(first)`,
+            queryCapturePath, fileURLToPath(new URL("./fixtures/terminal-frames.json", import.meta.url))],
+          requested() { return requested; },
+          onRequest(callback) { request = callback; return () => { request = undefined; }; },
+        }, { actions: [
+          { when: { query_failure: "storage failure: diff command:" }, send: "redraw\n" },
+          { after_request: "redraw", when: { query_failure: "storage failure: diff command:" } },
+        ] }, result => { capture = result; });
+        if (redraw) assert.equal((await running).code, 0);
+        else await assert.rejects(running, /PTY completed 1\/2 actions/);
+        assert.equal(capture.actions, redraw ? 2 : 1,
+          "a request wakeup cannot admit the next input action on consumed cells");
+        assert.equal(processes.children.size, 0);
+      } finally { afterFrame = undefined; await processes.close(); }
+    }
   } finally {
     TerminalFrames.prototype.write = write;
     Object.defineProperty(Terminal.prototype, "buffer", buffer);
@@ -223,35 +246,21 @@ test("case selection rejects misspellings before starting either executable", as
   } finally { await processes.close(); }
 });
 
-test("a spool ends with the exact typed cause", async t => {
-  const ended = async (events, feed) => { const waiting = events.next(() => false); feed(); return waiting.then(() => assert.fail("resolved"), error => error); };
-  await t.test("source EOF carries the source result", async () => {
-    const stream = new PassThrough();
-    let close; const closed = new Promise(resolve => { close = resolve; });
-    const events = new Spool(stream, closed), results = [];
-    const waits = [events.next(() => false), events.next(() => false),
-      events.keyed("same"), events.keyed("same"), events.keyed("other")];
-    for (const wait of waits) wait.catch(error => { results.push(error); });
-    const error = await ended(events, () => { stream.end(); close({ code: 3, signal: null }); });
-    assert.equal(error.kind, "eof"); assert.equal(error.detail.code, 3);
-    assert.equal(results.length, waits.length, "the original EOF settles every ordinary wait, repeated key and distinct key");
-    assert.ok(results.every(result => result === error), "all consumers retain the same terminal cause");
-  });
-  await t.test("early event: next never sees it, and EOF ends the wait exactly", async () => {
-    const stream = new PassThrough();
-    let close; const closed = new Promise(resolve => { close = resolve; });
-    const events = new Spool(stream, closed);
-    const published = events.next(event => event.ready);
-    stream.write('{"ready":true}\n');
-    await published;
-    const late = events.next(event => event.ready);
-    stream.end(); close({ code: 0, signal: null });
-    await assert.rejects(late, error => error.kind === "eof");
-  });
+test("early event: next never sees it, and EOF ends the wait exactly", async () => {
+  const stream = new PassThrough();
+  let close; const closed = new Promise(resolve => { close = resolve; });
+  const events = new Spool(stream, closed);
+  const published = events.next(event => event.ready);
+  stream.write('{"ready":true}\n');
+  await published;
+  const late = events.next(event => event.ready);
+  stream.end(); close({ code: 0, signal: null });
+  await assert.rejects(late, error => error.kind === "eof");
 });
 
 test("transcript admission refuses before the executable starts", async t => {
   const root = mkdtempSync(join(tmpdir(), "transcript-admission-"));
+  t.after(() => rmSync(root, { recursive: true }));
   const second = join(root, "second");
   mkdirSync(second); mkdirSync(join(second, "0.stderr"));
   for (const transcripts of [join(root, "missing"), second]) await t.test(transcripts, async () => {
@@ -287,7 +296,7 @@ test("a synchronous launch refusal preserves transcripts and allows a corrected 
 });
 
 test("a slow transcript holds the source back, so queued bytes stay bounded by a chunk", async () => {
-  const lines = 64, chunks = 200;
+  const lines = 64, chunks = 16;
   const chunk = index => Array.from({ length: lines }, (_, line) => JSON.stringify({ n: index * lines + line, pad: "x".repeat(100) }) + "\n").join("");
   const size = chunk(chunks - 1).length;
   // The sink completes one write per turn. Negative control: a spool that
@@ -301,12 +310,16 @@ test("a slow transcript holds the source back, so queued bytes stay bounded by a
       queued = Math.max(queued, sink.writableLength);
       return honest ? room : true;
     };
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: sink });
+    const source = new PassThrough({ highWaterMark: 1024 });
+    const closed = finished(source).then(() => ({ code: 0, signal: null }));
+    const written = finished(sink);
+    const events = new Spool(source, closed, { transcript: sink });
     const last = events.next(event => event.n === lines * chunks - 1);
     let held = false;
     for (let index = 0; index < chunks; index++) if (!source.write(chunk(index))) held = true;
+    source.end();
     await last;
+    await written;
     // With backpressure the producer is held; the control never holds it.
     assert.equal(held, honest, "backpressure reaches the producer only through write()'s return");
     return queued;

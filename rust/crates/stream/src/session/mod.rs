@@ -91,10 +91,11 @@ pub struct Limits {
     /// Maximum unsent encoded data bytes.
     pub pending_bytes: usize,
 }
+const DEFAULT_CHANNELS: usize = 16_384;
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            channels: 16_384,
+            channels: DEFAULT_CHANNELS,
             pending_frames: crate::MAX_ITEMS,
             pending_bytes: crate::MAX_COMMAND_BYTES,
         }

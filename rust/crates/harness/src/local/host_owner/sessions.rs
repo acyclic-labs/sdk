@@ -67,11 +67,14 @@ fn prompt_bound(prompt: &str) -> Result<()> {
 }
 
 /// The native resume id an event names: a Codex thread, a Claude Code
-/// session or a Pi session header.
+/// session, a Pi session header, an OpenCode session or an Antigravity conversation.
 fn native_session_id(event: &Value) -> Option<&str> {
     event
         .get("thread_id")
         .or_else(|| event.get("session_id"))
+        .or_else(|| event.get("sessionID"))
+        .or_else(|| event.get("conversation_id"))
+        .or_else(|| event.pointer("/result/conversation_id"))
         .or_else(|| {
             (event.get("type").and_then(Value::as_str) == Some("session"))
                 .then(|| event.get("id"))
@@ -118,8 +121,8 @@ impl HostWorkspaceOwner {
         action: SessionAction,
         next: bool,
     ) -> Result<Value> {
-        self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
+        self.attach(parent).await?;
         if let SessionAction::Spawn { prompt } = &action {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;
@@ -173,7 +176,7 @@ impl HostWorkspaceOwner {
                 if self.native.session(&child).await?.1.control == Control::Archive
                     && control != Control::Archive
                 {
-                    return Err(Error::Conflict("native session is archived".into()));
+                    return Err(Error::Conflict(agents::ARCHIVED.into()));
                 }
                 self.native
                     .request(&child, operation, &Event::Control { control })

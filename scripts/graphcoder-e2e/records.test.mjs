@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import test, { after } from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordedRequests, requests, subset, toolResults } from "./assertions.mjs";
@@ -22,6 +22,7 @@ test("captured argument refusal cannot qualify a successful child conversation",
 });
 
 const directory = mkdtempSync(join(tmpdir(), "e2e-records-"));
+after(() => rmSync(directory, { recursive: true }));
 let files = 0;
 // The records file appears only while the history is read, as when the mock
 // appends a record and then publishes its event: reading the file before the

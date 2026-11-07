@@ -96,7 +96,7 @@ impl Observer {
         .map_err(storage)?;
         client
             .open_resource(wire::SessionSubscription {
-                credential: super::endpoint::CREDENTIAL,
+                credential: connection.controls.observation_credential(),
                 filter: None,
                 channel: None,
                 resume: Some(match projection {
