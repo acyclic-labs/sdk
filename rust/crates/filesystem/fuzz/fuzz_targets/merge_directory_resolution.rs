@@ -33,6 +33,10 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         include_bytes!("../corpus/merge_directory_resolution/resolution-take-ours-v1").as_slice(),
         include_bytes!("../corpus/merge_directory_resolution/resolution-take-theirs-v1").as_slice(),
         include_bytes!("../corpus/merge_directory_resolution/resolution-remove-v1").as_slice(),
+        include_bytes!("../corpus/merge_directory_resolution/resolution-text-accepted-v1")
+            .as_slice(),
+        include_bytes!("../corpus/merge_directory_resolution/resolution-text-refused-v1")
+            .as_slice(),
     ] {
         acyclic_fs::workspace::check_captured_merge_resolution(trace);
     }
