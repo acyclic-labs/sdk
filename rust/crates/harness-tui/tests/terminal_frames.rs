@@ -454,6 +454,41 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 fn real_terminal_frame_cost() -> io::Result<()> {
     use std::fmt::Write as _;
 
+    #[cfg(windows)]
+    if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
+        // Ordinary test processes have no console. The existing host owns the
+        // ConPTY and re-enters this exact test with its original report path.
+        let hosted = || -> io::Result<()> {
+            let owner = tempfile::tempdir()?;
+            let scripts = owner.path().join("scripts");
+            std::fs::create_dir(&scripts)?;
+            let script = scripts.join("test-terminal-signals.ps1");
+            std::fs::write(
+                &script,
+                include_str!("../../../../scripts/test-terminal-signals.ps1"),
+            )?;
+            let status = std::process::Command::new("pwsh")
+                .args(["-NoProfile", "-File"])
+                .arg(script)
+                .arg("-Binary")
+                .arg(std::env::current_exe()?)
+                .arg("-FrameRegions")
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!("ConPTY host exited: {status}")));
+            }
+            Ok(())
+        };
+        return hosted().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+                ),
+            )
+        });
+    }
+
     const FRAMES: usize = 2;
     let mut report = String::new();
     let (mut output, _guard) = real_terminal()?;
