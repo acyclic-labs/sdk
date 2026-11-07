@@ -406,7 +406,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// selected text bytes, with one commit per page and no per-file barriers.
     /// A false `complete` result always permits another page, including an empty
     /// page whose entire allowance was consumed by excluded conflicts.
-    /// Rendering and the staging commit use the preview's original cancellation.
+    /// Rendering and the staging commit spend the preview's original budget
+    /// and use its original cancellation, without resetting credit per page.
     pub async fn write_page(
         &mut self,
         section: MergeDirectorySection,
@@ -606,18 +607,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 )
                 .await?;
         }
-        match transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                permit,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-                publication_ready,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-        {
+        let committed = {
+            let mut accounting = self.preview.accounting()?;
+            transaction
+                .commit_with_accounting(permit, &mut accounting, cancellation)
+                .await?
+        };
+        match committed {
             TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
             TransactionCommit::Conflict { .. } => return Err(WorkspaceError::StaleGeneration),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => {
