@@ -106,7 +106,7 @@ struct Inner {
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
-    /// Last committed input; scheduling position only, never a consumed cursor.
+    /// Last completed attempt; scheduling position only, never a consumed cursor.
     last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
@@ -774,6 +774,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         continue;
                     }
                     Err(error) => {
+                        if subscription.is_some() {
+                            inner.last_input = subscription;
+                        }
                         inner.observed = None;
                         return Err(error);
                     }
@@ -937,47 +940,54 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let mut publication = match result {
-                Ok(transition) => {
-                    if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                        > limits.checkpoint_bytes()
-                    {
-                        return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+            // Preparation failures and submission failures finish the same attempt.
+            // Keep its scheduling position pinned only while a guard is retried
+            // or an uncertain publication retains its original input.
+            let publication = (|| -> Result<PreparedPublish, Error> {
+                let mut publication = match result {
+                    Ok(transition) => {
+                        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                            > limits.checkpoint_bytes()
+                        {
+                            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+                        }
+                        self.store.prepare_publish(
+                            &snapshot,
+                            epoch,
+                            &trigger,
+                            record.as_ref(),
+                            transition,
+                            key(&snapshot, "publish")?,
+                        )?
                     }
-                    self.store.prepare_publish(
-                        &snapshot,
-                        epoch,
-                        &trigger,
-                        record.as_ref(),
-                        transition,
-                        key(&snapshot, "publish")?,
-                    )?
-                }
-                Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
-                    let Some(publication) = self.store.prepare_invocation_failure(
-                        &snapshot,
-                        epoch,
-                        &trigger,
-                        record.as_ref(),
-                        &failure,
-                        key(&snapshot, "publish")?,
-                    )?
-                    else {
-                        return Err(Error::Handler(failure));
-                    };
-                    publication
-                }
-                Err(error) => return Err(error),
-            };
-            publication.require(self.handler.publication_conditions())?;
-            // Fairness advances only when the selected input commits. A guard
-            // refusal must recompute that input rather than alternate between
-            // subscriptions whose distinct stale guards never change.
+                    Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
+                        let Some(publication) = self.store.prepare_invocation_failure(
+                            &snapshot,
+                            epoch,
+                            &trigger,
+                            record.as_ref(),
+                            &failure,
+                            key(&snapshot, "publish")?,
+                        )?
+                        else {
+                            return Err(Error::Handler(failure));
+                        };
+                        publication
+                    }
+                    Err(error) => return Err(error),
+                };
+                publication.require(self.handler.publication_conditions())?;
+                Ok(publication)
+            })();
             let subscription = match trigger {
                 Trigger::Record { subscription, .. } => Some(subscription),
                 Trigger::Alarm { .. } => None,
             };
-            match self.submit_delivery(&snapshot, publication).await {
+            let (submitted, result) = match publication {
+                Ok(publication) => (true, self.submit_delivery(&snapshot, publication).await),
+                Err(error) => (false, Err(error)),
+            };
+            match result {
                 Ok(observed) => {
                     if subscription.is_some() {
                         inner.last_input = subscription;
@@ -996,9 +1006,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Err(Error::Stream(source));
                 }
                 Err(error) => {
-                    // Settlement can fail after a successful commit. Reopen the
-                    // actual state next time instead of rerunning its handler.
-                    inner.observed = None;
+                    if subscription.is_some() {
+                        inner.last_input = subscription;
+                    }
+                    // Only submission can fail after a successful commit.
+                    // Preparation failures retain their unchanged original cut.
+                    if submitted {
+                        inner.observed = None;
+                    }
                     return Err(error);
                 }
             }

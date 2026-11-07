@@ -1,0 +1,22 @@
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -774,9 +774,6 @@
+                         continue;
+                     }
+                     Err(error) => {
+-                        if subscription.is_some() {
+-                            inner.last_input = subscription;
+-                        }
+                         inner.observed = None;
+                         return Err(error);
+                     }
+@@ -1006,9 +1003,6 @@
+                     return Err(Error::Stream(source));
+                 }
+                 Err(error) => {
+-                    if subscription.is_some() {
+-                        inner.last_input = subscription;
+-                    }
+                     // Only submission can fail after a successful commit.
+                     // Preparation failures retain their unchanged original cut.
+                     if submitted {
