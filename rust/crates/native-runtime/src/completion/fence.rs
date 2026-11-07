@@ -53,8 +53,11 @@ impl OperationFence {
             drop(state);
             self.complete();
         } else {
-            state.successor = None;
-            state.skipped_successor = Some(Arc::clone(self));
+            let retired = state.successor.take();
+            let skipped = state.skipped_successor.replace(Arc::clone(self));
+            drop(state);
+            drop(skipped);
+            drop(retired);
         }
     }
 

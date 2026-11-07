@@ -1,0 +1,18 @@
+diff --git b/rust/crates/native-runtime/src/completion/fence.rs a/rust/crates/native-runtime/src/completion/fence.rs
+index 67ba3f1d515..10e36dc5122 100644
+--- b/rust/crates/native-runtime/src/completion/fence.rs
++++ a/rust/crates/native-runtime/src/completion/fence.rs
+@@ -53,11 +53,8 @@ impl OperationFence {
+             drop(state);
+             self.complete();
+         } else {
+-            let retired = state.successor.take();
+-            let skipped = state.skipped_successor.replace(Arc::clone(self));
+-            drop(state);
+-            drop(skipped);
+-            drop(retired);
++            state.successor = None;
++            state.skipped_successor = Some(Arc::clone(self));
+         }
+     }
+ 

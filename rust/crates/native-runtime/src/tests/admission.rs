@@ -255,6 +255,108 @@ fn tally(entered: &mut [usize; 2], fixture: usize) {
     }
 }
 
+#[test]
+fn cancelled_file_successor_links_before_observer_retirement() -> io::Result<()> {
+    struct Release(Gate);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+    struct Retired {
+        predecessor: Weak<OperationFence>,
+        retired: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            panic!("unpublished file successor was woken");
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+            let predecessor = self.predecessor.upgrade().expect("original predecessor");
+            assert!(
+                predecessor.state.try_lock().is_ok(),
+                "cancelled file observer retired under predecessor lock"
+            );
+            if self.panic {
+                std::panic::panic_any("cancelled file observer retirement panic");
+            }
+        }
+    }
+    let _defer = InlineBlocking::defer();
+    initialize_native_io_services()?;
+    for panic in [false, true] {
+        let file =
+            NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
+        let gate = Gate::new();
+        let release = Release(gate.clone());
+        let (started, entered) = mpsc::sync_channel(1);
+        let mut first = file.control_async(
+            move |_, _| {
+                started.send(()).map_err(io::Error::other)?;
+                gate.wait();
+                Ok(())
+            },
+            None,
+        )?;
+        let wake = completion_waker();
+        let mut context = Context::from_waker(&wake);
+        assert!(Pin::new(&mut first).poll(&mut context).is_pending());
+        entered.recv().map_err(io::Error::other)?;
+        let predecessor = first.completion.as_ref().expect("original file fence");
+        let retired = Arc::new(AtomicBool::new(false));
+        let observer = Waker::from(Arc::new(Retired {
+            predecessor: Arc::downgrade(predecessor),
+            retired: retired.clone(),
+            panic,
+        }));
+        let mut second = file.set_len_async(99, None)?;
+        assert!(
+            Pin::new(&mut second)
+                .poll(&mut Context::from_waker(&observer))
+                .is_pending()
+        );
+        let mut third = file.set_len_async(37, None)?;
+        assert!(Pin::new(&mut third).poll(&mut context).is_pending());
+        drop(observer);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(second)));
+        let original = predecessor.state.lock().map_err(|_| {
+            io::Error::other("cancelled file observer poisoned original predecessor")
+        })?;
+        assert!(
+            original.skipped_successor.as_ref().is_some_and(|fence| {
+                third
+                    .predecessor
+                    .as_ref()
+                    .is_some_and(|next| Arc::ptr_eq(fence, next))
+            }),
+            "cancelled file successor lost its original completion link"
+        );
+        drop(original);
+        if panic {
+            let Err(payload) = result else {
+                panic!("cancelled file observer panic missing");
+            };
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"cancelled file observer retirement panic")
+            );
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert_eq!(file.as_file().metadata()?.len(), 0);
+        drop(release);
+        complete(first)?;
+        complete(third)?;
+        assert_eq!(file.as_file().metadata()?.len(), 37);
+    }
+    Ok(())
+}
+
 /// Negative control for the shared-pool hazard that `exclusive_threads`
 /// rules out. Forced order: two fixtures that each occupy every worker of the
 /// global host pool interleave their submissions, as concurrent tests do.
