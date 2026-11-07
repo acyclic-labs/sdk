@@ -654,11 +654,11 @@ pub fn create_named_pipe(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt as _;
     let name = std::ffi::CString::new(path.as_os_str().as_bytes())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
-    // SAFETY: `name` is a NUL-terminated path that outlives the call.
     #[allow(
         unsafe_code,
         reason = "FFI: POSIX mkfifo is not wrapped on every Unix host"
     )]
+    // SAFETY: `name` is a NUL-terminated path that outlives the call.
     let result = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
     if result == 0 {
         Ok(())
