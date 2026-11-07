@@ -33,6 +33,15 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "settlement-retired-source": [
+    "rust/crates/harness/src/local/observer.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "settlement retained a retired status source", nativeHarness,
+    { mutations: [
+      { patch: "rust/proofs/settlement-retired-source/status.patch", label: "retired-status", diagnostic: "settlement retained a retired status source" },
+      { patch: "rust/proofs/settlement-retired-source/conversation.patch", label: "retired-conversation", diagnostic: "settlement retained a retired conversation source" },
+    ] },
+  ],
   "inbox-producer-admission": [
     "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
     "agent_model::runtime::reply_waits_require_original_committed_requests",

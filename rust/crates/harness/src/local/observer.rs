@@ -43,8 +43,12 @@ pub struct Observer {
 }
 
 impl Observer {
+    /// Settlement needs both original required follows, including pending
+    /// opens. A terminal view alone no longer owns a producing event.
     pub(super) fn belongs_to(&self, connection: &Connection) -> bool {
         std::sync::Arc::ptr_eq(&self.connection.controls, &connection.controls)
+            && self.client.session().is_following(&self.conversation)
+            && self.client.session().is_following(&self.status)
     }
 
     /// Observes `connection`'s root from conversation sequence `from` and
