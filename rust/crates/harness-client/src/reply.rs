@@ -78,7 +78,7 @@ pub enum AgentReply {
         /// The newly published direct child.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
-        /// Original admission of the child's initial input.
+        /// Parent inbox receipt for the committed spawn request.
         delivery: Delivered,
     },
     /// A single direct-child page, with an opaque exclusive continuation.
@@ -104,9 +104,9 @@ pub enum AgentReply {
     },
     /// A single authorized pending-approval page.
     Approvals {
-        /// Undecided actions authorized for this reader.
+        /// The pending action authorized for this reader, if any.
         items: Vec<PendingApproval>,
-        /// Opaque exclusive continuation, or the end of this listing.
+        /// Always `None`; the pending-action view has no continuation.
         next: Option<String>,
     },
     /// The committed reply to one accepted message.
@@ -198,7 +198,7 @@ pub enum AgentControlFailure {
     Refused {
         /// Stable classification supplied by the host.
         code: String,
-        /// Original host diagnostic, bounded at a character boundary.
+        /// Original host diagnostic, bounded when decoding a wire reply.
         reason: String,
     },
     /// The exact original request; presentation must not replace this with prose.
