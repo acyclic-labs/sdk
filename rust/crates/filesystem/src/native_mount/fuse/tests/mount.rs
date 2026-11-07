@@ -441,6 +441,7 @@ impl MountFilesystem for GatedSource {
         view_stamp_with_meter(work: &crate::NativeMaterializationWork) -> Result<Option<ViewStamp>, MountSourceError>;
         binding_epoch_with_meter(work: &crate::NativeMaterializationWork) -> Result<Option<u64>, MountSourceError>;
         unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
+        binding_unchanged_since_with_meter(path: &MountPath, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
         reported_unchanged_since_with_meter(path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
         shutdown_with_meter(work: &crate::NativeMaterializationWork) -> Result<crate::MountSourceRetirement, MountSourceError>;
         shutdown_with_cleanup_wait(wait: &crate::CancellationToken) -> Result<crate::MountSourceRetirement, MountSourceError>;
