@@ -38,7 +38,29 @@ The retained 731 bytes are unchanged writer output, SHA-256
 
 These witnesses cover admission of the plan, clean and non-text conflict
 schemas, with binary, deletion, entry-kind and directory-mode conflicts. They do not cover
-user-authored resolutions, restart, upgrades or remote serving.
+restart, upgrades or remote serving.
+
+## Accepted merge resolutions
+
+The three `merge_directory_resolution/resolution-*-v1` traces were captured on
+Linux x86_64 at source `4cee52c6ac89460a72223a6bbec2c6ab5f1e8fed`, using the same
+`capture_merge_directory` command above. The example writes each caller proposal
+into the durable staging volume, pins that generation, and calls the public
+`MergeDirectory::resolution` with the original conflict key. It then records the
+original conflict, unchanged proposal bytes read from that generation, and the
+actual accepted `MergeResolution`. These are public admission traces, not wire
+frames or a second semantic model.
+
+| Trace | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `resolution-take-ours-v1` | 774 | `73294db0232306c2f29d700efdab57b2e59a255a10e3865e57eec2d77b798957` |
+| `resolution-take-theirs-v1` | 784 | `40a8dc208246e780144667317d5d6ab00f2a11c394700dbf4cec7e073dd08df8` |
+| `resolution-remove-v1` | 591 | `ed1a88b7a5099b301f72ecff8319c35d6143e5efb7fbd9876d420b32283306ef` |
+
+The decoder is checked against these accepted outputs unconditionally. Raw fuzz
+inputs remain untrusted and never supply their own expected resolution. Plain
+text proposals take a separate public route and are not covered by these JSON
+traces. Restart, upgrades and remote serving remain outside this capture.
 
 ## Session subtree
 

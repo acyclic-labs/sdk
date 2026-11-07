@@ -147,6 +147,18 @@ fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
     serde_json::from_slice(bytes).map_err(WorkspaceError::engine)
 }
 
+/// Replays original public admission output through the shipped decoder.
+/// The trace retains the conflict, exact caller bytes and accepted resolution.
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub fn check_captured_merge_resolution(trace: &[u8]) {
+    let (conflict, bytes, expected): (crate::ConflictView, Vec<u8>, MergeResolution) =
+        serde_json::from_slice(trace).expect("captured public merge resolution trace");
+    let actual =
+        decode_resolution(&bytes, &conflict).expect("captured public merge resolution was refused");
+    assert_eq!(actual, expected, "captured public merge resolution changed");
+}
+
 /// Exercises the shipped resolution decoder and admission against arbitrary
 /// domain conflicts and raw user documents, including malformed JSON bytes.
 #[cfg(any(test, feature = "fuzzing"))]

@@ -33,6 +33,8 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/merge-directory-admission/admission.patch", label: "writer-output-refused", diagnostic: "captured merge-directory writer output was refused" },
         { patch: "rust/proofs/merge-directory-admission/version.patch", label: "future-version-admitted", diagnostic: "unsupported merge file version accepted by the shipped decoder" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-refusal.patch", label: "caller-resolution-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-side.patch", label: "caller-side-substituted", diagnostic: "captured public merge resolution changed" },
       ],
     },
   ],
@@ -342,6 +344,10 @@ if (claim === "--help" && extra.length === 0) {
     }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
+    if (options.fuzz) {
+      const coverage = result.output.match(/^#.*\bcov:.*$/gm)?.at(-1);
+      if (coverage) console.log(coverage);
+    }
     return result;
   }
   try {
