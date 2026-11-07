@@ -83,7 +83,7 @@ negative() {
   fi
   rm "$log"
 }
-negative unordered-alarm-time.patch acyclic-native-runtime "$alarm" 'alarm clock cut stranded or prematurely delivered an owner'
+negative unordered-alarm-time.patch acyclic-native-runtime "$alarm" 'alarm clock cut lost its next producer deadline'
 negative retained-cancelled-alarm.patch acyclic-native-runtime "$alarm" 'alarm clock cut stranded or prematurely delivered an owner'
 negative stranded-clock-endpoint.patch acyclic-native-runtime "$alarm" 'alarm clock cut stranded or prematurely delivered an owner'
 negative live-population-scan.patch acyclic-native-runtime "$alarm" 'alarm clock cut scanned live owners'
