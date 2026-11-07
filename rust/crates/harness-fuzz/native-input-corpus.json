@@ -1,5 +1,5 @@
 {
-  "provenance": "Seven caller byte inputs, 96 original SDK serializer captures (36 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes.",
+  "provenance": "Seven caller byte inputs, 97 original SDK serializer captures (37 native actions and 60 command actions), and original libFuzzer campaign discoveries. Caller inputs, not external tool output or transport frames. Catalog inputs are the original shipped commands.json and caller mutations serialized by the existing native-input oracle; prior inputs retain their original hashes.",
   "qualification": {
     "source_commit": "ad8386bea8d18f062d4dab5d23e3db59630bc663",
     "source_tree": "6524f84769f5a00496bc78b3103e54b3a34fcc2a",
@@ -421,7 +421,8 @@
     "object": "93de8bc3e711c7d5d8c5c95149099bfaefdb3829590807ea86f87083bd1fda6e",
     "partial": "b0099d11d07ec318328beb00f4e5019ed830cff0c7f18960b05101745b769223",
     "task-invalid": "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824",
-    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c"
+    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
+    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0"
   },
   "prior_qualifications": [
     {
@@ -544,27 +545,77 @@
     "scope": "Production catalog admission from the shipping catalog and derived caller bytes in the existing native-input target. This is not complete branch coverage, full binary dispatch, owner effects, lifecycle, typed receiver or other-platform acceptance."
   },
   "binary_stdin_qualification": {
-  "result": "pass",
-  "source_commit": "6fb608543d9655ba71660cc4297a84837ab9f387",
-  "source_tree": "d95b22b8034c6cf5cbbe3e41b89b45d1c3acce22",
-  "source_content_sha256": "8bbc667129bedeccb9ef15f34193b1eeaf95c78d39109ad2d3552eb08df29996",
-  "source_sha256": {
-    "plugin/tests/native_input.rs": "86b78cc7df539131260ab77cbc339a65c0eef70f79b0d891a6803ee00ef93db5",
-    "plugin/tests/main.rs": "b0c944dbc2f69034d473ea1ab2afb7a58118ee8122f6b89896ec32681bf1071c",
-    "plugin/src/input.rs": "16457cff25395cd5ce57a0d63152b5834706f2068c0bae7ace0ff986710c3182",
-    "plugin/src/main.rs": "b1441af526abcbd55c8c66d6e11defe1e28edd831a3686835a966928de82e5bc",
-    "plugin/tests/support/binary.rs": "e972c7d311f8775732e512bd1444b4eb4eebe7dd27c89971bdc8fbabf686c2a2",
-    "rust/crates/harness-fuzz/graphcoder-args-control.py": "22fe866ff5c111592be6fc47264f47282f6ad88884530ad16fb9ef6e3c65b34c"
+    "result": "pass",
+    "source_commit": "6fb608543d9655ba71660cc4297a84837ab9f387",
+    "source_tree": "d95b22b8034c6cf5cbbe3e41b89b45d1c3acce22",
+    "source_content_sha256": "8bbc667129bedeccb9ef15f34193b1eeaf95c78d39109ad2d3552eb08df29996",
+    "source_sha256": {
+      "plugin/tests/native_input.rs": "86b78cc7df539131260ab77cbc339a65c0eef70f79b0d891a6803ee00ef93db5",
+      "plugin/tests/main.rs": "b0c944dbc2f69034d473ea1ab2afb7a58118ee8122f6b89896ec32681bf1071c",
+      "plugin/src/input.rs": "16457cff25395cd5ce57a0d63152b5834706f2068c0bae7ace0ff986710c3182",
+      "plugin/src/main.rs": "b1441af526abcbd55c8c66d6e11defe1e28edd831a3686835a966928de82e5bc",
+      "plugin/tests/support/binary.rs": "e972c7d311f8775732e512bd1444b4eb4eebe7dd27c89971bdc8fbabf686c2a2",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "22fe866ff5c111592be6fc47264f47282f6ad88884530ad16fb9ef6e3c65b34c"
+    },
+    "platform": "Linux x86_64",
+    "test": "native_input::native_stdin_failures_stop_before_workspace_effects",
+    "command": "python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary --runs 0",
+    "negative_control": "Actual read_to_end error propagation omitted; unchanged original OS-cause assertion failed with EOF instead of the original directory read error.",
+    "restoration": "Exact input.rs source restored before the same named binary test passed.",
+    "selected_tests": 1,
+    "unselected_tests": 4,
+    "test_seconds": 0.007,
+    "selected_binary_wall_seconds": 0.008,
+    "scope": "Real acyclic binary in the original Cargo source snapshot, three native stdin entry points, original OS cause, process retirement and absence of workspace/settings effects. Unix directory read error avoids standard input EBADF-to-EOF conversion. The earlier write-only Unix fixture failed restoration and is unqualified. No relocated selector, installed host loop, lifecycle or Windows/macOS qualification."
   },
-  "platform": "Linux x86_64",
-  "test": "native_input::native_stdin_failures_stop_before_workspace_effects",
-  "command": "python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary --runs 0",
-  "negative_control": "Actual read_to_end error propagation omitted; unchanged original OS-cause assertion failed with EOF instead of the original directory read error.",
-  "restoration": "Exact input.rs source restored before the same named binary test passed.",
-  "selected_tests": 1,
-  "unselected_tests": 4,
-  "test_seconds": 0.007,
-  "selected_binary_wall_seconds": 0.008,
-  "scope": "Real acyclic binary in the original Cargo source snapshot, three native stdin entry points, original OS cause, process retirement and absence of workspace/settings effects. Unix directory read error avoids standard input EBADF-to-EOF conversion. The earlier write-only Unix fixture failed restoration and is unqualified. No relocated selector, installed host loop, lifecycle or Windows/macOS qualification."
-}
+  "request_envelope_qualification": {
+    "source_commit": "acce6c4d25a54aaeae3272770ad5886356f36ca4",
+    "source_tree": "cae85d9ae987ac77545c1d827f7f572048c5143e",
+    "admitted_tree": "525a40c9e5e5868817a7710b16e654df438c7f4c",
+    "source_sha256": {
+      "plugin/src/input.rs": "37a51ca36de8cbbca66a7a183a7b2cfeb71ab664d49039cbfd1d7149d3fad159",
+      "plugin/src/main.rs": "fd40b9b54872fd6621185ad38ca1a069205116c8344eb4072ad01ce2ab9fa469",
+      "plugin/tests/native_input.rs": "8c60b35c7ad5375bbbee0e49316d6b0b2a91274c6db185c5d24c816c3ac11f7f",
+      "rust/crates/harness/src/local/host_owner.rs": "9ec1b040668480a45632164b8a2af44bdb6aee50cec6b0bec233c8dce08a7309",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input.rs": "78f52ad914c72282cd821d14dec8e73982464cbfede0c909a898811f62c9b739",
+      "rust/crates/harness-fuzz/fuzz_targets/native_input/actions.rs": "e5acd62a4a7a969e97f3e26f89e2cf61a006b7bbc0559e5adea9ca5e3858d48e",
+      "rust/crates/harness-fuzz/graphcoder-args-control.py": "39ed5df852acb9e8bafa59f4f720624cd1f319cb09550839511d6b453879f99a",
+      "rust/crates/harness-fuzz/Cargo.toml": "1634493895f32e65688aec82ad77c49189b10833e4353fd0f3a89c48758979d2"
+    },
+    "snapshot_note": "The admitted snapshot also contained Python bytecode from a syntax check; the production and oracle sources are the listed commit blobs.",
+    "result": "pass",
+    "platform": "Linux x86_64",
+    "negative_controls": [
+      "Actual byte-bound guard omitted: unchanged hook over-bound refusal assertion fails",
+      "Actual HostAction deny_unknown_fields omitted: unchanged strict-admission assertion fails",
+      "Actual stdin read-error propagation omitted: unchanged real-binary original-cause assertion fails",
+      "Actual __workspace call selects the hook frame bound: unchanged real-binary workspace-client assertion fails"
+    ],
+    "restored_corpus": {
+      "prior_files_unchanged": 388,
+      "features": 16128,
+      "seconds": 2,
+      "instrumented_edges": 7891,
+      "toolchain": "nightly-2026-07-01",
+      "prior_bytes_unchanged": 51186,
+      "new_units": 0,
+      "retained_bytes": 116884,
+      "executions": 389,
+      "retained_files": 389
+    },
+    "serialized_completion": {
+      "sha256": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
+      "source": "Production HostAction serializer invoked by the existing native_input target",
+      "file": "action-36",
+      "bytes": 65698
+    },
+    "restored_binary": {
+      "seconds": 0.009,
+      "passed": 1,
+      "unselected": 3,
+      "test": "native_input::native_stdin_failures_stop_before_workspace_effects"
+    },
+    "scope": "One production reader through original OS pipe EOF, bounded hook frames and unbounded request JSON. The real CLI retains original read failures for three entry points and admits the serialized workspace envelope to the original client refusal in an unowned workspace. Session settlement, complete source branch coverage and Windows/macOS remain unqualified.",
+    "source_content_sha256": "c001c136805fcef29a0c3b865f9a3bee319b9b1287cb5a9cc6d275e4a8d82a68"
+  }
 }
