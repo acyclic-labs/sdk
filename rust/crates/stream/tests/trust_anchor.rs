@@ -290,10 +290,14 @@ async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
     );
     wake.0.store(false, Ordering::SeqCst);
     follower.close(FenceCause::Shutdown);
-    assert!(wake.0.load(Ordering::SeqCst));
+    assert!(
+        wake.0.load(Ordering::SeqCst),
+        "closed follower left its original anchor wait parked"
+    );
     assert_eq!(
         step(run.as_mut(), &wake),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable)),
+        "closed follower did not end its original anchor wait"
     );
     assert_eq!(
         *follower.state().borrow(),

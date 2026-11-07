@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/trust_feed.rs b/rust/crates/stream/src/trust_feed.rs
+--- a/rust/crates/stream/src/trust_feed.rs
++++ b/rust/crates/stream/src/trust_feed.rs
+@@ -427,7 +427,8 @@ async fn apply_environment(
+             Err::<(), _>(StreamError::Unavailable)
+         };
+         let changed = core::pin::pin!(changed);
+-        let closed = core::pin::pin!(closed);
++        let _closed = core::pin::pin!(closed);
++        let closed = core::pin::pin!(future::pending::<Result<(), StreamError>>());
+         let result = match future::select(closed, changed).await {
+             Either::Left((result, _)) | Either::Right((result, _)) => result,
+         };

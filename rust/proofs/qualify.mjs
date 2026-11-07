@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "trust-fenced-close-progress": [
+    "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
+    "trust_anchor::closing_a_fenced_environment_ends_its_original_anchor_wait",
+    "closed follower left its original anchor wait parked", ["--features", "test-support"],
+    { target: ["--test", "main"], patchPath: "rust/proofs/trust-fenced-close-progress/mutation.patch", negativeLabel: "omitted-original-follower-close-observation" },
+  ],
   "local-ready-snapshot-allocation": [
     "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
     "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
