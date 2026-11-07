@@ -15,6 +15,21 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "inbox-producer-admission": [
+    "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
+    "agent_model::runtime::reply_waits_require_original_committed_requests",
+    "reply wait admitted an absent or mismatched original input",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"], positiveCommand: [
+      "nextest", "run", "--locked", "-p", "acyclic-harness-core",
+      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
+      "--no-tests=fail", "--retries", "0",
+    ], completed: ["3 tests run: 3 passed"], mutations: [
+      { patch: "rust/proofs/inbox-producer-admission/mutation.patch", label: "uncommitted-reply", diagnostic: "reply wait admitted an absent or mismatched original input" },
+      { source: "rust/crates/harness-core/src/agent/host.rs", patch: "rust/proofs/inbox-producer-admission/spawn.patch", label: "uncommitted-spawn", diagnostic: "spawn wait admitted an absent or non-spawn original input" },
+    ] },
+  ],
   "public-pause-retirement": [
     "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
@@ -161,7 +176,8 @@ if (claim === "--help" && extra.length === 0) {
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
+  const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
+  const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -208,10 +224,11 @@ if (claim === "--help" && extra.length === 0) {
     return result;
   }
   try {
-    const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
     for (const mutation of mutations) {
+      const mutationSourcePath = new URL(mutation.source ?? source, new URL("../../", import.meta.url));
+      const original = readFileSync(mutationSourcePath);
       step = `check mutation anchors: ${mutation.patch}`;
       const anchor = run("git", ["apply", "--check", mutation.patch]);
       if (anchor.status !== 0) throw new Error(anchor.output);
@@ -224,10 +241,10 @@ if (claim === "--help" && extra.length === 0) {
         require(mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
           && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
       } finally {
-        writeFileSync(sourcePath, original);
+        writeFileSync(mutationSourcePath, original);
       }
       step = "restore exact original source";
-      require(readFileSync(sourcePath).equals(original));
+      require(readFileSync(mutationSourcePath).equals(original));
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);

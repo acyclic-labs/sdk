@@ -54,7 +54,7 @@ async fn append(provider: &MemoryStream, path: &AgentPath, records: Vec<Vec<u8>>
 }
 
 #[tokio::test]
-async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
+async fn committed_reply_search_respects_identity_and_fork_base() -> Result {
     let provider = MemoryStream::default();
     let root = create(&provider, id(1)).await?;
     let approval = TurnInput::ApprovalRequested {
@@ -76,10 +76,6 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
     .await?;
     let mut state = AgentState::adopted(root.clone(), &super::adopted(id(1))).expect("adopts");
     state.conversation_tail = 3;
-    state.queued.push_back(Queued {
-        inbox: 5,
-        input: message("m5")?,
-    });
     let provider = &provider;
     let ask = move |state: AgentState, name: &'static str, inbox: u64| async move {
         reply(provider, &state, 7, &intent(name), inbox).await
@@ -102,38 +98,9 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
             Err(Error::Conflict(_))
         ));
     }
-    assert_eq!(ask(state.clone(), "m5", 5).await?, Reply::Pending);
-    assert_eq!(state.settled_before(7), 5);
-    assert_eq!(ask(state.clone(), "m8", 8).await?, Reply::Pending);
     // m2 was consumed without an entry: a cancel cleared it.
     assert_eq!(ask(state.clone(), "m2", 2).await?, Reply::Dropped);
     assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Dropped);
-    // Another prompt's running turn leaves a dropped prompt dropped.
-    state.turn = Some(Progress {
-        inbox: 7,
-        checkpoint: Vec::new(),
-    });
-    assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Dropped);
-    state.turn = Some(Progress {
-        inbox: 6,
-        checkpoint: Vec::new(),
-    });
-    assert_eq!(ask(state.clone(), "m6", 6).await?, Reply::Pending);
-    state.queued.clear();
-    assert_eq!(
-        state.settled_before(7),
-        6,
-        "a consumed paused turn is still pending"
-    );
-    state.turn = None;
-    state.overflow = Some(4);
-    assert_eq!(
-        state.settled_before(7),
-        4,
-        "unloaded inputs retain the original frontier"
-    );
-    state.overflow = None;
-    assert_eq!(state.settled_before(7), 7);
 
     // A forked agent searches only its own entries above the inherited base.
     let forked = create(provider, id(2)).await?;

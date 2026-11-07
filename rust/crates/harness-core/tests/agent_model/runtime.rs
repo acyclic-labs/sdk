@@ -54,7 +54,7 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 
 #[tokio::test]
 async fn same_phase_settlement_advances_the_actor_without_appending_status() -> Result {
-    use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
+    use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let provider = Arc::new(MemoryStream::default());
     let within = ActorReference::new(b"account", b"agents", b"owner")?;
@@ -1060,9 +1060,9 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     Ok(())
 }
 
-#[tokio::test]
-async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
-    let provider = Arc::new(MemoryStream::default());
+async fn pending_request_host<P: acyclic_harness_core::store::JournalProvider + 'static>(
+    provider: Arc<P>,
+) -> Result<(AgentHost<P>, AgentPath, u64)> {
     let host = AgentHost::new(
         provider,
         Spawner(AtomicUsize::new(1)),
@@ -1073,6 +1073,59 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
+    let message = InboxRecord::Message(Message {
+        from: user(),
+        id: intent("message"),
+        body: Box::new(super::driver::file("message")?),
+        attachments: None,
+    });
+    let Delivered::Committed { inbox: message_at } = host.send(&root, &user(), &message).await?
+    else {
+        return Err("message was not committed".into());
+    };
+    assert_eq!(
+        host.reply(&root, &intent("message"), message_at).await?,
+        Reply::Pending
+    );
+    for (id, at) in [
+        (intent("other"), message_at),
+        (intent("message"), message_at + 1),
+        (intent("message"), u64::MAX),
+    ] {
+        assert!(
+            matches!(host.reply(&root, &id, at).await, Err(Error::Conflict(_))),
+            "reply wait admitted an absent or mismatched original input"
+        );
+    }
+    Ok((host, root, message_at))
+}
+
+#[tokio::test]
+async fn reply_waits_require_original_committed_requests() -> Result {
+    #[cfg(feature = "filesystem-local")]
+    {
+        let directory = Arc::new(tempfile::tempdir()?);
+        let provider = acyclic_stream::LocalStream::open_with_ownership_anchor(
+            directory.path(),
+            Default::default(),
+            acyclic_native_runtime::OwnershipAnchor::new(directory.clone()),
+        )
+        .await?;
+        let _ = pending_request_host(Arc::new(provider)).await?;
+    }
+    let (host, root, message_at) = pending_request_host(Arc::new(MemoryStream::default())).await?;
+    for at in [message_at, message_at + 1] {
+        let (spawn, _) = requested_child(&root, at)?;
+        let waiting = host.spawned(&root, at, &spawn);
+        tokio::pin!(waiting);
+        assert!(
+            matches!(
+                futures::poll!(&mut waiting),
+                std::task::Poll::Ready(Err(Error::Conflict(_)))
+            ),
+            "spawn wait admitted an absent or non-spawn original input"
+        );
+    }
     let request = InboxRecord::Spawn(SpawnRequest {
         profile: acyclic_harness_core::agent::CreationConfig {
             context: acyclic_harness_core::agent::SpawnContext::Fork,
@@ -1115,6 +1168,32 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         }
     );
     assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+    let Delivered::Committed { inbox: child_inbox } = host.send(&child, &user(), &request).await?
+    else {
+        return Err("descendant spawn request was not committed".into());
+    };
+    let (descendant_spawn, descendant) = requested_child(&child, child_inbox)?;
+    let waiting = host.spawned(&child, child_inbox, &descendant_spawn);
+    tokio::pin!(waiting);
+    assert!(futures::poll!(&mut waiting).is_pending());
+    assert!(host.runtime().drain().await.is_empty());
+    let outcome = match futures::poll!(&mut waiting) {
+        std::task::Poll::Ready(result) => result?,
+        std::task::Poll::Pending => {
+            return Err("committed descendant spawn retained its wait".into());
+        }
+    };
+    assert_eq!(
+        outcome,
+        SpawnOutcome::Spawned {
+            child: descendant.clone()
+        }
+    );
+    assert_eq!(host.state(&descendant).await?.parent.as_ref(), Some(&child));
+    assert_eq!(
+        host.reply(&root, &intent("message"), message_at).await?,
+        Reply::Dropped
+    );
     assert!(matches!(
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
