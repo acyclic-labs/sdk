@@ -8,10 +8,13 @@ fn registration_cancellation_retires_original_waker_outside_registry() -> io::Re
 
     struct Retired {
         dropped: Arc<AtomicBool>,
+        woken: Arc<AtomicBool>,
         panic: bool,
     }
     impl Wake for Retired {
-        fn wake(self: Arc<Self>) {}
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Release);
+        }
     }
     impl Drop for Retired {
         fn drop(&mut self) {
@@ -30,8 +33,10 @@ fn registration_cancellation_retires_original_waker_outside_registry() -> io::Re
         let mut observation = descriptor_readiness(reader.as_fd(), DescriptorInterest::Readable)?;
         let hub = observation.wait.first.as_ref().unwrap().hub;
         let dropped = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicBool::new(false));
         let waker = Waker::from(Arc::new(Retired {
             dropped: Arc::clone(&dropped),
+            woken: Arc::clone(&woken),
             panic,
         }));
         assert!(
@@ -51,6 +56,10 @@ fn registration_cancellation_retires_original_waker_outside_registry() -> io::Re
         assert!(
             !hub.registry.is_poisoned(),
             "original registration destroyed its waker under the registry lock"
+        );
+        assert!(
+            !woken.load(Ordering::Acquire),
+            "cancelled observer was woken"
         );
         if panic {
             assert_eq!(

@@ -4,10 +4,13 @@ use super::*;
 fn cancelled_original_driver_retires_observer_outside_completion_lock() -> io::Result<()> {
     struct Observer {
         dropped: Arc<AtomicBool>,
+        woken: Arc<AtomicBool>,
         panic: bool,
     }
     impl Wake for Observer {
-        fn wake(self: Arc<Self>) {}
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Release);
+        }
     }
     impl Drop for Observer {
         fn drop(&mut self) {
@@ -24,8 +27,10 @@ fn cancelled_original_driver_retires_observer_outside_completion_lock() -> io::R
         let (mut observation, producer) = NativeCompletion::<usize>::from_driver(&meter)?;
         let original = Arc::clone(observation.state.as_ref().unwrap());
         let dropped = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicBool::new(false));
         let waker = Waker::from(Arc::new(Observer {
             dropped: Arc::clone(&dropped),
+            woken: Arc::clone(&woken),
             panic,
         }));
         assert!(
@@ -42,6 +47,10 @@ fn cancelled_original_driver_retires_observer_outside_completion_lock() -> io::R
         assert!(
             original.try_lock().is_ok(),
             "original observer was destroyed under the completion lock"
+        );
+        assert!(
+            !woken.load(Ordering::Acquire),
+            "cancelled observer was woken"
         );
         if panic {
             assert_eq!(
