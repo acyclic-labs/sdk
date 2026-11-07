@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "call-dependent-resource": [
+    "rust/crates/stream/src/session/resources.rs", "acyclic-stream",
+    "session::tests::calls::dependent_resources_keep_original_call_grants_and_live_trust",
+    "dependent scope escaped its original declared boundary", [],
+    {
+      mutations: [
+        { patch: "rust/proofs/call-dependent-resource/scope.patch", label: "discarded-dependent-resource-boundary", diagnostic: "dependent scope escaped its original declared boundary" },
+        { patch: "rust/proofs/call-dependent-resource/credential.patch", label: "detached-original-current-credential", diagnostic: "dependent resource detached from the original credential renewal" },
+        { patch: "rust/proofs/call-dependent-resource/policy.patch", label: "discarded-dependent-owner-policy", diagnostic: "dependent disclosure ignored the owner's current policy" },
+      ],
+    },
+  ],
   "trust-fenced-close-progress": [
     "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
     "trust_anchor::closing_a_fenced_environment_ends_its_original_anchor_wait",
