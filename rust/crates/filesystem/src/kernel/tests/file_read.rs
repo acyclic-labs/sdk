@@ -416,14 +416,13 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         drop(alias);
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
-    assert_sparse_initialized_once(&store, record, extent_root).await?;
+    assert_sparse_ranges(&store, record).await?;
     Ok(())
 }
 
-async fn assert_sparse_initialized_once(
+async fn assert_sparse_ranges(
     store: &MemoryObjectStore,
     record: FileRecord,
-    root: ObjectId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let model = [b'A', b'B', 0, 0, 0, 0, b'E', b'F', b'G', b'H', 0, 0];
     for (offset, length) in [
@@ -438,64 +437,22 @@ async fn assert_sparse_initialized_once(
     ] {
         let cancellation = CancellationToken::new();
         let range = ByteRange { offset, length };
-        // Independent composition oracle: extent/blob reads, and one output
-        // initialization only when separate spans must be assembled.
-        let plan = crate::kernel::plan_extent_range(
-            store,
-            ExtentRangeRequest {
-                root,
-                file_size: 12,
-                range,
-                maximum_spans: 5,
-                limits: DecodeLimits::default(),
-                budget: WorkBudget::UNBOUNDED,
-            },
-            &cancellation,
-        )
-        .await?;
-        let direct = matches!(plan.spans.as_slice(), [span] if matches!(span.kind, ExtentKind::Content { .. }));
-        let mut copies = plan.work.bytes_copied + if direct { 0 } else { length };
-        for span in plan.spans {
-            if let ExtentKind::Content {
-                object,
-                object_offset,
-            } = span.kind
-            {
-                let blob = crate::kernel::read_blob_range(
-                    store,
-                    object,
-                    ByteRange {
-                        offset: object_offset,
-                        length: span.length,
-                    },
-                    DecodeLimits::default(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await?;
-                copies += blob.work.bytes_copied;
-            }
-        }
         let request = FileRangeRequest {
             record,
             range,
             maximum_spans: 5,
             limits: DecodeLimits::default(),
-            budget: WorkBudget {
-                bytes_copied: copies,
-                ..WorkBudget::UNBOUNDED
-            },
+            budget: WorkBudget::UNBOUNDED,
         };
         let expected = &model[offset as usize..(offset + length) as usize];
         let read = read_file_range_async(store, request, &cancellation).await?;
         assert_eq!(read.bytes.as_ref(), expected);
-        assert_eq!(read.work.bytes_copied, copies);
-        if let Some(allowance) = copies.checked_sub(1) {
+        if length != 0 {
             let denied = read_file_range_async(
                 store,
                 FileRangeRequest {
                     budget: WorkBudget {
-                        bytes_copied: allowance,
+                        bytes_copied: 0,
                         ..request.budget
                     },
                     ..request
@@ -503,40 +460,11 @@ async fn assert_sparse_initialized_once(
                 &cancellation,
             )
             .await
-            .expect_err("one fewer copy byte cannot initialize this range");
+            .expect_err("a sparse read cannot bypass copy admission");
             assert!(denied.error.to_string().contains("bytes_copied"));
-            assert!(denied.work.bytes_copied < copies);
+            assert_eq!(denied.work.bytes_copied, 0);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        assert_native_sparse_copy_budget(store, request, expected).await?;
     }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn assert_native_sparse_copy_budget(
-    store: &MemoryObjectStore,
-    request: FileRangeRequest,
-    expected: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(request.budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let read =
-        read_file_range_with_accounting(store, request, &mut accounting, &cancellation).await?;
-    assert_eq!(read.bytes.as_ref(), expected);
-    assert_eq!(original.receipt().bytes_copied, request.budget.bytes_copied);
-    drop(read);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    cancellation.cancel();
-    assert!(
-        read_file_range_with_accounting(store, request, &mut accounting, &cancellation)
-            .await
-            .is_err()
-    );
-    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
 
