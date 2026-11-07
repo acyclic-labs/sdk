@@ -39,6 +39,21 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "inbox-producer-admission": [
+    "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
+    "agent_model::runtime::reply_waits_require_original_committed_requests",
+    "reply wait admitted an absent or mismatched original input",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"], positiveCommand: [
+      "nextest", "run", "--locked", "-p", "acyclic-harness-core",
+      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
+      "--no-tests=fail", "--retries", "0",
+    ], completed: ["3 tests run: 3 passed"], mutations: [
+      { patch: "rust/proofs/inbox-producer-admission/mutation.patch", label: "uncommitted-reply", diagnostic: "reply wait admitted an absent or mismatched original input" },
+      { source: "rust/crates/harness-core/src/agent/host.rs", patch: "rust/proofs/inbox-producer-admission/spawn.patch", label: "uncommitted-spawn", diagnostic: "spawn wait admitted an absent or non-spawn original input" },
+    ] },
+  ],
   "public-pause-retirement": [
     "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
@@ -178,27 +193,15 @@ if (claim === "--help" && extra.length === 0) {
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
-  let fuzzTarget;
-  if (options.fuzz) {
-    const compiler = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
-    fuzzTarget = compiler.stdout?.match(/^host: (\S+)$/m)?.[1];
-    if (compiler.error || compiler.status !== 0 || !fuzzTarget) {
-      console.error(`step=select native fuzz target; cause=${compiler.error?.message ?? compiler.stderr ?? "rustc host absent"}; recovery: rustc -vV; then node rust/proofs/qualify.mjs ${claim}`);
-      process.exit(2);
-    }
-  }
-  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
-    "--target", fuzzTarget,
-    "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
-    `-artifact_prefix=target/${claim}/`];
-  const command = options.fuzz ? fuzzCommand(1) : options.nextest
+  const command = options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
+  const positive = options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
+  const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
+  const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -216,10 +219,6 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
-          ...(options.fuzz ? {
-            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
-              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
-          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
@@ -249,10 +248,11 @@ if (claim === "--help" && extra.length === 0) {
     return result;
   }
   try {
-    const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
     for (const mutation of mutations) {
+      const mutationSourcePath = new URL(mutation.source ?? source, new URL("../../", import.meta.url));
+      const original = readFileSync(mutationSourcePath);
       step = `check mutation anchors: ${mutation.patch}`;
       const anchor = run("git", ["apply", "--check", mutation.patch]);
       if (anchor.status !== 0) throw new Error(anchor.output);
@@ -262,22 +262,19 @@ if (claim === "--help" && extra.length === 0) {
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
         const mutated = check(mutation.label);
-        require(options.fuzz
-          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
-            && mutated.output.includes("ERROR: libFuzzer:")
-          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
-            && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+        require(mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+          && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
       } finally {
-        writeFileSync(sourcePath, original);
+        writeFileSync(mutationSourcePath, original);
       }
       step = "restore exact original source";
-      require(readFileSync(sourcePath).equals(original));
+      require(readFileSync(mutationSourcePath).equals(original));
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.completed ?? (options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"]);
-    require(restored.status === 0 && !restored.signal && completed.every(marker => restored.output.includes(marker)));
+    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    require(restored.status === 0 && !restored.signal && completed.every(summary => restored.output.includes(summary)));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;

@@ -516,8 +516,8 @@ impl Conversation {
     /// inbox sequence `inbox`: its settled entry, pending, or dropped.
     ///
     /// # Errors
-    /// Session, host or decoding failures, and an entry at `inbox` that
-    /// settled another request.
+    /// Session, host or decoding failures, an entry at `inbox` that settled
+    /// another request, or a pending request without a matching committed input.
     pub async fn reply(&self, id: &str, inbox: u64) -> Result<Reply> {
         match self
             .connection
