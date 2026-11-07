@@ -573,12 +573,11 @@ impl StockExecution<'_> {
                 let event = event?;
                 #[cfg(feature = "research")]
                 clock.observe(&event);
-                let latency_ns = matches!(event, ModelEvent::Completed { .. })
-                    .then(|| clock.elapsed_ns())
-                    .flatten();
-                let completed_at = matches!(event, ModelEvent::Completed { .. })
-                    .then(|| clock.completed_at())
-                    .flatten();
+                let (latency_ns, completed_at) = if matches!(event, ModelEvent::Completed { .. }) {
+                    (clock.elapsed_ns(), clock.completed_at())
+                } else {
+                    (None, None)
+                };
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
