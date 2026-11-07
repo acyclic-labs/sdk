@@ -572,6 +572,12 @@ const claims = {
     "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
     "CompletionFailed(Conflict)", [],
   ],
+  "seeded-runtime-configuration": [
+    "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
+    "seeded_runtime_requires_explicit_executor_configuration",
+    "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
+    { target: ["--test", "seeded_runtime"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
