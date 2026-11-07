@@ -30,9 +30,15 @@ regular file and a directory at the same original binding. The retained 905
 bytes are unchanged writer output, SHA-256
 `5fda6e169af209a8e58166648bcd529511fd3bc1b95b1fe0e012d1f7e5b1f42e`.
 
+`mode-v1` was captured with the same command on Linux x86_64 at source
+`69d66eea15271f4edaa15d6dad33cff3a37300c2`. Divergent directory metadata on the
+original nested forks produced a Mode conflict through the canonical publisher.
+The retained 731 bytes are unchanged writer output, SHA-256
+`40f8958f6f61d1b1be01d9a156c0a14ab13b253e438b91d6874c4eadd9a92f84`.
+
 These witnesses cover admission of the plan, clean and non-text conflict
-schemas, with binary, deletion and entry-kind conflicts. They do not cover
-user-authored resolutions, metadata conflicts, restart, upgrades or remote serving.
+schemas, with binary, deletion, entry-kind and directory-mode conflicts. They do not cover
+user-authored resolutions, restart, upgrades or remote serving.
 
 ## Session subtree
 
