@@ -187,7 +187,11 @@ impl Opening {
         Ok((directory, checkout))
     }
 
-    async fn storage(&self) -> Result<Storage> {
+    fn storage(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<Storage>> {
+        Box::pin(self.initialize_storage())
+    }
+
+    async fn initialize_storage(&self) -> Result<Storage> {
         acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
@@ -360,7 +364,14 @@ impl Opening {
         }
     }
 
-    async fn finish(self, opened: Storage) -> Result<LocalHarness> {
+    fn finish(
+        self,
+        opened: Storage,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Result<LocalHarness>> {
+        Box::pin(self.assemble(opened))
+    }
+
+    async fn assemble(self, opened: Storage) -> Result<LocalHarness> {
         let Storage {
             issuer,
             owner,

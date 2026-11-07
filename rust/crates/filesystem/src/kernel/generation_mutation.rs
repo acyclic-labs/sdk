@@ -201,6 +201,33 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
 > {
     accounting.check()?;
     preflight_generation_mutations(&operations, config)?;
+    crate::heap_future::in_borrowed_frame!(accounting, |accounting| {
+        apply_generation_mutations_validated(
+            store,
+            generation,
+            operations,
+            config,
+            accounting,
+            cancellation,
+        )
+    })
+}
+
+async fn apply_generation_mutations_validated<S: AsyncObjectStore>(
+    store: &S,
+    generation: &GenerationRoot,
+    operations: Vec<Mutation>,
+    config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<
+    (
+        GenerationMutationReceipt,
+        Vec<Mutation>,
+        KernelOwnedAllocation,
+    ),
+    crate::FsError,
+> {
     let (plan, plan_allocation) =
         MutationPlan::compile_with_accounting(operations, config.limits, accounting)?;
     let plan = Owned {
@@ -2256,6 +2283,9 @@ fn preflight_generation_mutations(
     config: VolumeConfig,
 ) -> Result<(), crate::FsError> {
     config.validate().map_err(GenerationMutationError::from)?;
+    if operations.is_empty() {
+        return Err(GenerationMutationError::Plan(MutationPlanError::Empty).into());
+    }
     let mut endpoints = 0_u32;
     for operation in operations {
         if let Some([first, second]) = operation.paths() {

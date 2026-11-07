@@ -259,11 +259,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     pub(super) async fn apply_authored_transaction_input_with_accounting(
         &mut self,
-        mut input: AuthoredTransactionInput<'_>,
+        input: AuthoredTransactionInput<'_>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::kernel::Owned<AuthoredTransactionResult>, FsError> {
-        use crate::kernel::{Owned, split_allocation};
         accounting.check()?;
         let maximum = usize::try_from(self.volume.config.limits.maximum_mutations_per_batch)
             .unwrap_or(usize::MAX);
@@ -280,6 +279,26 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if count > maximum {
             return Err(FsError::TooManyPendingMutations);
         }
+        crate::heap_future::in_borrowed_frame!(
+            accounting,
+            |accounting| self.apply_authored_transaction_validated(
+                input,
+                count,
+                accounting,
+                cancellation
+            ),
+            erase_task
+        )
+    }
+
+    async fn apply_authored_transaction_validated(
+        &mut self,
+        mut input: AuthoredTransactionInput<'_>,
+        count: usize,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::Owned<AuthoredTransactionResult>, FsError> {
+        use crate::kernel::{Owned, split_allocation};
         let mut operations = Owned::<Vec<Mutation>>::allocate(count, accounting)?;
         let length = input.mutations().len();
         let mut created = Owned::<Vec<Option<FileId>>>::allocate(length, accounting)?;

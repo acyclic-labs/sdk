@@ -1,0 +1,1 @@
+{"hooks":{"PreToolUse":[{"matcher":"shell","hooks":[{"type":"command","command":"guard"}]},{"matcher":"[","hooks":[{"type":"command","command":"guard"}]}]}}

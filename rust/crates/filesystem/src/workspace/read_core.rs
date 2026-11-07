@@ -53,6 +53,10 @@ pub(super) async fn read_selected<
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if matches!(selector, GenerationSelector::Head) {
+        acyclic_test_support::differential::record(("workspace read", maximum_bytes));
+    }
     let mut accounting = work.accounting(cancellation);
     let result = async {
         let mut scope = accounting.allocation_scope()?;

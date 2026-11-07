@@ -13,6 +13,9 @@ use std::{
 
 #[path = "agent_model/awaiting.rs"]
 mod awaiting;
+#[cfg(feature = "test-support")]
+#[path = "agent_model/control_trace.rs"]
+mod control_trace;
 #[path = "agent_model/corpus.rs"]
 mod corpus;
 #[path = "agent_model/driver.rs"]
@@ -1240,6 +1243,13 @@ async fn a_driver_effect_no_record_can_carry_fails_the_turn_instead_of_wedging_i
 /// once, and a timeout resumes it however few settled.
 #[tokio::test]
 async fn a_quorum_wait_resumes_once_on_its_condition_or_its_deadline() -> Result {
+    #[cfg(feature = "test-support")]
+    return control_trace::quorum(quorum_wait()).await;
+    #[cfg(not(feature = "test-support"))]
+    quorum_wait().await
+}
+
+async fn quorum_wait() -> Result {
     let root = AgentPath::root(&id(1));
     let children: BTreeSet<AgentPath> = (2..5)
         .map(|byte| root.child(&id(byte)))
