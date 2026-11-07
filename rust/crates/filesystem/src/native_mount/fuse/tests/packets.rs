@@ -53,6 +53,111 @@ fn recorded_kernel_packets_replay_without_mounting() -> Result<(), Box<dyn std::
 }
 
 #[test]
+fn exhausted_file_handles_never_reissue_a_released_identity()
+-> Result<(), Box<dyn std::error::Error>> {
+    let capture: KernelCapture = serde_json::from_str(include_str!(
+        "../../../../fixtures/fuse/linux-kernel-packets.json"
+    ))?;
+    let (source, _) = shared_sources(posix_config())?;
+    seed(&source)?;
+    let work = fuse_fixture_work();
+    let core = projection_core(
+        Arc::new(source),
+        crate::WorkBudget::UNBOUNDED,
+        work.cancellation(),
+    )?;
+    let _active = NativeMountWorkScope::new(&core, &work)?;
+    let protocol = PacketSession::new(
+        PacketRouter::Single(FuseProjection {
+            core: Arc::clone(&core),
+        }),
+        MAXIMUM_WRITE,
+        std::num::NonZeroU32::new(4096).ok_or("nonzero packet page size")?,
+    )?;
+    let capacity = 4096 + OUTPUT_HEADER;
+    let mut buffers = super::super::packet_buffers::PacketBuffers::new(capacity, &work)?;
+    // Replay actual kernel frames. Only the inode and returned handle are
+    // rebound to this projection; the protocol bodies come from the capture.
+    let mut publish = |opcode, inode, handle: Option<u64>| {
+        let packet = capture
+            .packets
+            .iter()
+            .find(|packet| {
+                PacketRequest::parse(&packet.request).is_ok_and(|request| request.opcode == opcode)
+            })
+            .ok_or("recorded real kernel packet missing")?;
+        let mut bytes = packet.request.clone();
+        if let Some(handle) = handle {
+            bytes[super::super::packet::INPUT_HEADER..][..8].copy_from_slice(&handle.to_ne_bytes());
+        }
+        let mut request =
+            PacketRequest::parse(&bytes).map_err(std::io::Error::from_raw_os_error)?;
+        request.inode = inode;
+        let response = super::super::packet_buffers::PacketBuffers::output_for(
+            &mut buffers.output,
+            &request,
+            capacity,
+        )?;
+        let mut reply = Vec::new();
+        protocol
+            .publish(&request, response, |actual| {
+                reply.extend_from_slice(actual.contiguous().ok_or(libc::EPROTO)?);
+                Ok(())
+            })
+            .map_err(super::super::packet_dispatch::PacketFailure::into_native_error)?;
+        Ok::<_, Box<dyn std::error::Error>>(reply)
+    };
+    publish(26, 0, None)?;
+    let lookup = publish(1, ROOT_INODE, None)?;
+    let inode = PacketInput::new(&lookup[OUTPUT_HEADER..])
+        .u64()
+        .map_err(std::io::Error::from_raw_os_error)?;
+    // Seed the real issuer at its boundary, then drive the shipped packet path.
+    core.state_to_finish().next_handle = u64::MAX - 1;
+    let opened = publish(14, inode, None)?;
+    let retained = PacketInput::new(&opened[OUTPUT_HEADER..])
+        .u64()
+        .map_err(std::io::Error::from_raw_os_error)?;
+    assert_eq!(retained, u64::MAX - 1);
+    let mut refused = Vec::new();
+    let mut issued = Vec::new();
+    for _ in 0..2 {
+        let reply = publish(14, inode, None)?;
+        let mut input = PacketInput::new(&reply);
+        input.u32().map_err(std::io::Error::from_raw_os_error)?;
+        let errno = input.u32().map_err(std::io::Error::from_raw_os_error)? as i32;
+        refused.push(errno);
+        if errno == 0 {
+            let handle = PacketInput::new(&reply[OUTPUT_HEADER..])
+                .u64()
+                .map_err(std::io::Error::from_raw_os_error)?;
+            issued.push(handle);
+            // Physical publication of the recorded RELEASE completes before
+            // the next OPEN, so reuse cannot be hidden by an asynchronous close.
+            publish(18, inode, Some(handle))?;
+        }
+        let read = publish(15, inode, Some(retained))?;
+        assert_eq!(&read[OUTPUT_HEADER..], b"before");
+    }
+    eprintln!("EXHAUSTED_HANDLE_ISSUANCE issued={issued:?}");
+    assert_eq!(
+        refused,
+        [-libc::EMFILE; 2],
+        "exhaustion is terminal after release"
+    );
+    publish(18, inode, Some(retained))?;
+    assert!(core.state_to_finish().files.is_empty());
+    let reply = publish(14, inode, None)?;
+    let mut input = PacketInput::new(&reply);
+    input.u32().map_err(std::io::Error::from_raw_os_error)?;
+    assert_eq!(
+        input.u32().map_err(std::io::Error::from_raw_os_error)? as i32,
+        -libc::EMFILE
+    );
+    Ok(())
+}
+
+#[test]
 fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let capture: KernelCapture = serde_json::from_str(include_str!(

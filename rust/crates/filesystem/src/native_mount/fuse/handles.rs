@@ -66,9 +66,7 @@ impl ProjectionState {
         work.charge(Items.delta(1))?;
         let file_id = lookup.node.file_id;
         let handle = self.next_handle;
-        if self.files.contains_key(&handle) {
-            return Err(libc::EMFILE.into());
-        }
+        let next_handle = handle.checked_add(1).ok_or(libc::EMFILE)?;
         let admitted = self.admissible(source, path, Some(file_id), stamp, work)?;
         let previous = self
             .by_inode
@@ -97,7 +95,7 @@ impl ProjectionState {
             hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
         }
         entry.cached_content = Some(opened_version);
-        self.next_handle = self.next_handle.saturating_add(1).max(1);
+        self.next_handle = next_handle;
         self.files.insert(
             handle,
             FileHandle {
