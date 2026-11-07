@@ -29,18 +29,17 @@ fn scene(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
     }
 }
 
-/// Native kernel/device cost, paired with the independently initialized old
-/// terminal. Run in ConPTY on Windows and a drained kernel PTY on Unix.
-#[test]
-fn real_terminal_region_cost() -> io::Result<()> {
+/// Share the process's native terminal owner with the full-frame contract.
+pub(super) fn native_region_cost(
+    output: &mut acyclic_harness_tui::term::Output,
+    report: &mut String,
+) -> io::Result<()> {
     let size = Size::new(100, 40);
     let area = Rect::new(0, 0, size.width, size.height);
-    let (mut output, _custody) = real_terminal()?;
     assert!(
         output.supports_scroll_regions(),
         "native profile must enable the measured path"
     );
-    let mut report = String::new();
     // Keep even the intentionally unbuffered old Windows path below the suite
     // ceiling. Cell-work properties independently cover 4000/8000-cell screens.
     for frames in [2, 4] {
@@ -48,7 +47,7 @@ fn real_terminal_region_cost() -> io::Result<()> {
             output.write_all(b"\x1b[0m\x1b[r\x1b[2J")?;
             let calls = Rc::new(Count::new(0));
             let bytes = Rc::new(Count::new(0));
-            let device = Calls(&mut output, Rc::clone(&calls), Rc::clone(&bytes));
+            let device = Calls(&mut *output, Rc::clone(&calls), Rc::clone(&bytes));
             let mut old = None;
             let mut new = None;
             if path == "per-command" {
@@ -112,7 +111,7 @@ fn real_terminal_region_cost() -> io::Result<()> {
             }
         }
     }
-    publish_report(&report)
+    Ok(())
 }
 
 pub(super) fn publish_report(report: &str) -> io::Result<()> {
