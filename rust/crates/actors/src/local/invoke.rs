@@ -416,7 +416,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         // A changed host guard is a refusal, never a guest result. Keep the
         // original delivery unapplied, including explicit failure preparation.
         if matches!(outcome, Some(Err(GuestError::PreconditionChanged))) {
-            return Err(Error::PreconditionChanged);
+            return Err(Error::PreconditionChanged(Vec::new()));
         }
         let invocation = delivered
             .map(Invocation::decode_bound)

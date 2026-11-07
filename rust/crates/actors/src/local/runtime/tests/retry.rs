@@ -102,3 +102,148 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
     );
     Ok(())
 }
+
+/// How a composed participant refuses: a stale guard the commit rejects
+/// identically each time, or a refusal while sealing that names no change.
+#[derive(Clone, Copy)]
+enum Refusal {
+    StaleGuard,
+    Sealing,
+}
+
+struct Guard {
+    refusal: Refusal,
+    seals: Arc<AtomicUsize>,
+}
+
+impl crate::guest::Composition for Guard {
+    fn seal<'a>(&'a mut self, mut request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
+        Box::pin(async move {
+            self.seals.fetch_add(1, Ordering::SeqCst);
+            match self.refusal {
+                // The guard stream holds one record: this can never hold.
+                Refusal::StaleGuard => request.conditions.push(CommitCondition::Tail {
+                    path: StreamPath::new("guard")
+                        .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))?,
+                    expected: 0,
+                }),
+                Refusal::Sealing => return Err(crate::guest::GuestError::PreconditionChanged),
+            }
+            Ok(request)
+        })
+    }
+
+    fn revalidate(&self, _: &[acyclic_stream::CommitConflict]) -> bool {
+        true
+    }
+
+    fn settle<'a>(
+        self: Box<Self>,
+        _: Result<&'a acyclic_stream::CommitOutcome, &'a StreamError>,
+    ) -> GuestFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl crate::guest::Composer for Guard {
+    fn open(
+        &self,
+        _: &ActorReference,
+        _: Option<&Checkpoint>,
+        _: Option<&acyclic_stream::Record>,
+        _: &Checkpoint,
+        _: &crate::guest::Participant,
+    ) -> Result<Box<dyn crate::guest::Composition>, crate::guest::GuestError> {
+        Ok(Box::new(Guard {
+            refusal: self.refusal,
+            seals: Arc::clone(&self.seals),
+        }))
+    }
+}
+
+/// Joins a participant to every transition of the package.
+struct Joined(Package);
+
+impl Handler for Joined {
+    fn manifest(&self) -> &Manifest {
+        self.0.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        Box::pin(async move {
+            let mut transition = self.0.on_record(delivery, checkpoint, cancellation).await?;
+            transition.participant = Some(crate::guest::Participant {
+                kind: "guard".into(),
+                plan: Bytes::new(),
+            });
+            Ok(transition)
+        })
+    }
+}
+
+/// Every delivery attempt touches storage, so it must append to the journal
+/// or wait on an event. A composed-guard refusal is retried only on evidence
+/// of an external change; the identical refusal again settles as a named
+/// failure, with the input unconsumed and nothing published.
+///
+/// Negative control: retrying every refusal recomputed the same delivery
+/// against the same unchanged guard forever, a storage loop with no journal
+/// progress that never reached the idle boundary.
+#[tokio::test]
+async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> TestResult {
+    for refusal in [Refusal::StaleGuard, Refusal::Sealing] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let address = spawn_with(&store, "guarded", &[b"emit"]).await?;
+        let guard = StreamPath::new("guard")?;
+        let mut held = PreparedPublish::foreign(key("guard")?);
+        held.join(Effect {
+            conditions: vec![CommitCondition::Absent {
+                path: guard.clone(),
+            }],
+            mutation: CommitMutation::Append {
+                path: guard,
+                records: vec![Bytes::from_static(b"held").into()],
+            },
+        })?;
+        store.submit(held).await?;
+        let seals = Arc::new(AtomicUsize::new(0));
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?).with_composer(Arc::new(Guard {
+                refusal,
+                seals: Arc::clone(&seals),
+            })),
+            Arc::new(Joined(Package::new()?)),
+            Arc::new(SystemClock),
+        );
+        let reported = AtomicUsize::new(0);
+        let mut serving = Box::pin(runtime.run(|actor, error| {
+            assert_eq!(actor, &address);
+            assert!(matches!(error, Error::PreconditionUnchanged), "{error}");
+            reported.fetch_add(1, Ordering::SeqCst);
+        }));
+        let completed = observe_while_running(serving.as_mut(), async {
+            Ok::<_, Box<dyn std::error::Error>>(runtime.complete().await)
+        })
+        .await?;
+        assert!(
+            matches!(completed, Err(Error::CompletionFailed(_))),
+            "{completed:?}"
+        );
+        // The first refusal is retried once; its identical repeat is final.
+        assert_eq!(seals.load(Ordering::SeqCst), 2);
+        assert_eq!(reported.load(Ordering::SeqCst), 1);
+        assert!(records(&*provider, "out/guarded").await?.is_empty());
+        let state = store.load(&address).await?;
+        assert_eq!(
+            state.state().and_then(|state| state.cursor("inbox")),
+            Some(0)
+        );
+    }
+    Ok(())
+}
