@@ -131,8 +131,13 @@ impl Args {
             || self.event_cursor.is_some()
             || self.output_schema.is_some()
             || self.output.is_some();
+        // `doctor` takes a run's exact flags; its output flags are inert.
         if event_options
-            && (self.host_workspace || !matches!(self.command, None | Some(Command::Exec { .. })))
+            && (self.host_workspace
+                || !matches!(
+                    self.command,
+                    None | Some(Command::Exec { .. } | Command::Doctor)
+                ))
         {
             return Err(
                 "output projection: requires an execution; recovery: graphcoder --output-format jsonl exec 'TASK'",
