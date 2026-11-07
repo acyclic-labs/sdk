@@ -10,19 +10,19 @@ test("headless selection owns no terminal dependency and PTY imports require it"
   const root = await mkdtemp(join(tmpdir(), "headless-dependencies-"));
   const processes = new Processes();
   try {
-    await Promise.all(["graphcoder-e2e", "graphcoder-pty"].map(name =>
-      cp(fileURLToPath(new URL(`../${name}`, import.meta.url)), join(root, name), {
+    await Promise.all(["scripts/graphcoder-e2e", "scripts/graphcoder-pty", "typescript/packages/sdk/native", "plugin/tests/hosts"].map(path =>
+      cp(fileURLToPath(new URL(`../../${path}`, import.meta.url)), join(root, path), {
         recursive: true, filter: path => !["node_modules", "__pycache__"].includes(basename(path)),
       })));
     // Negative control: the dependency is genuinely absent, and a real PTY
     // import must fail instead of silently substituting a different renderer.
     const terminal = await processes.run(process.execPath, ["--input-type=module", "-e",
-      `await import(${JSON.stringify(pathToFileURL(join(root, "graphcoder-e2e/pty.mjs")).href)})`]);
+      `await import(${JSON.stringify(pathToFileURL(join(root, "scripts/graphcoder-e2e/pty.mjs")).href)})`]);
     assert.equal(terminal.code, 1);
     assert.match(terminal.stderr, /ERR_MODULE_NOT_FOUND/);
     assert.match(terminal.stderr, /@xterm\/headless/);
 
-    const headless = await processes.run(process.execPath, [join(root, "graphcoder-e2e/run.mjs"),
+    const headless = await processes.run(process.execPath, [join(root, "scripts/graphcoder-e2e/run.mjs"),
       "missing-binary", "missing-mock", "misspelled-case"]);
     assert.equal(headless.code, 1);
     assert.match(headless.stderr, /unknown case misspelled-case/);
