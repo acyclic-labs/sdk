@@ -82,13 +82,13 @@ different container or a failed reinstall cannot reuse that authority.
 
 The environment must provide the binary's runtime libraries and a task working
 directory other than `/`. Native FUSE mounts additionally need a usable
-`/dev/fuse`, `fusermount3` and mount authority; without them, GraphCoder's
-`--workspace-mounting physical` runs with no device or capability (see
-`NATIVE_MOUNT_QUALIFICATION.md`). Host Docker/FUSE availability alone does not prove
-container readiness. The adapter never changes container privileges or task
-images. The adapter leaves workspace admission to the binary: its default
-`auto` selection reports a physical view when native mounting is unavailable.
-Native mount guarantees inside the actual task images still need a
+`/dev/fuse` (`--device /dev/fuse`), mount authority (`--cap-add SYS_ADMIN`, or a
+setuid-root `fusermount3` outside `no_new_privs`) and an AppArmor profile that
+allows the mount; without them, GraphCoder's `--workspace-mounting physical`
+runs with no device or capability (see `NATIVE_MOUNT_QUALIFICATION.md`). Setup
+runs `graphcoder doctor` with the run's exact flags: it lists every startup
+refusal at once, each with its recovery. The adapter never changes container
+privileges or task images. Native mount admission inside the actual task images still needs a
 credential-free qualification before a run. Loopback endpoint addresses refer
 to the task container, not the Linux host.
 

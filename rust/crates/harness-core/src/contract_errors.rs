@@ -179,10 +179,12 @@ pub enum Error {
     #[error("unsupported capability: {0}")]
     Unsupported(String),
     /// A tool requires a native view whose host device or driver is missing.
-    #[error("native mount unavailable: {device}")]
+    #[error("native mount unavailable: {device}: {reason}")]
     MountUnavailable {
         /// Missing host mount device or driver.
         device: &'static str,
+        /// The probe's exact refusal and its recovery.
+        reason: &'static str,
     },
     /// The request is malformed.
     #[error("invalid request: {0}")]

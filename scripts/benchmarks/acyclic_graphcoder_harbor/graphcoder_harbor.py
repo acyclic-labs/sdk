@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
-from .contracts import Artifact, catalog, run_command
+from .contracts import Artifact, catalog, doctor_command, run_command
 
 
 class GraphCoder(BaseInstalledAgent):
@@ -41,10 +41,6 @@ class GraphCoder(BaseInstalledAgent):
     async def install(self, environment):
         self._installed_environment = None
         # The binary owns workspace admission and its physical/native choice.
-        # The adapter requires only the artifact transport tools and task cwd.
-        await self.exec_as_agent(environment, command=(
-            "command -v sha256sum >/dev/null"
-            " && test \"$PWD\" != /"))
         await self.exec_as_root(environment, command="install -d -m 700 " + shlex.join([
             self.state, self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
         with tempfile.TemporaryDirectory(prefix="graphcoder-artifact-") as temporary:
@@ -55,10 +51,9 @@ class GraphCoder(BaseInstalledAgent):
             provider.write_text(json.dumps(self.provider_catalog) + "\n")
             await environment.upload_file(binary, self.binary)
             await environment.upload_file(provider, self.state + "/catalog.json")
-        checksum = self.artifact.sha256 + "  " + self.binary + "\n"
+        # The uploaded bytes are the artifact already verified on this host.
         await self.exec_as_root(environment, command=(
-            "printf %s " + shlex.quote(checksum) + " | sha256sum -c - && chmod 755 "
-            + shlex.quote(self.binary) + " && chmod 600 "
+            "chmod 755 " + shlex.quote(self.binary) + " && chmod 600 "
             + shlex.quote(self.state + "/catalog.json")))
         if environment.default_user is not None:
             await self.exec_as_root(environment, command="chown -R " + shlex.join([
@@ -67,6 +62,9 @@ class GraphCoder(BaseInstalledAgent):
         await self.exec_as_agent(environment, command=shlex.join([
             "env", "-i", "PATH=/usr/bin:/bin", "HOME=" + self.state + "/home",
             "CODEX_HOME=" + self.state + "/fixture-codex", self.binary, "--version"]))
+        # GraphCoder's own startup checks list every missing prerequisite at once.
+        await self.exec_as_agent(environment, command=doctor_command(
+            self.binary, self.state, self.model_name))
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,

@@ -147,7 +147,7 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
         .shared();
         let operation = async {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-17", completion).await?;
-            Ok(0)
+            Ok(())
         };
         let host = async {
             let mut owner = BufReader::new(owner);
@@ -180,7 +180,13 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );
-        assert_eq!(result.unwrap(), 143);
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<acyclic_harness::completion::Exit>()
+                .map(|exit| exit.code().get()),
+            Some(143)
+        );
         diagnostic.unwrap();
         assert!(producer.is_closed());
         assert!(report.snapshot().is_empty());
@@ -353,7 +359,7 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
         drop(producer);
         let operation = async {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-18", completion).await?;
-            Ok(0)
+            Ok(())
         };
         let (result, _, _failure_report) = observe(
             &report,
@@ -470,7 +476,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     stopped.await.unwrap();
                     completion.await??;
                 }
-                Ok(0)
+                Ok(())
             };
             let original = observe(&report, Ok(Some(port)), shutdown, true, operation);
             let mut host = Box::pin(diagnostics(original, Some((receiver, writer))));
@@ -580,7 +586,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     io::ErrorKind::BrokenPipe
                 );
             } else {
-                assert_eq!(result.unwrap(), 0);
+                result.unwrap();
             }
             assert!(retired.load(Ordering::Acquire));
             assert!(report.snapshot().is_empty());
@@ -660,7 +666,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                     if operation_error {
                         Err(Box::new(io::Error::from(io::ErrorKind::PermissionDenied)) as Failure)
                     } else {
-                        Ok(19)
+                        Ok(())
                     }
                 };
                 let original = observe(
@@ -688,7 +694,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                         io::ErrorKind::PermissionDenied
                     );
                 } else {
-                    assert_eq!(result.unwrap(), 19);
+                    result.unwrap();
                 }
                 assert_eq!(
                     matches!(failure, Some(OutputFailure::Formatting)),
@@ -729,7 +735,7 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
                 stopped.await.unwrap();
                 retiring.await.unwrap();
                 cleaned.set(true);
-                Ok(0)
+                Ok(())
             };
             let controller = async {
                 terminate.send(()).unwrap();
@@ -739,7 +745,7 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
                 observe(&report, Ok(Some(port)), shutdown, true, operation),
                 controller
             );
-            assert_eq!(result.unwrap(), 0);
+            result.unwrap();
             assert!(cleaned.get());
             if let Err(error) = diagnostic {
                 assert!(matches!(
@@ -786,7 +792,7 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
         .shared();
         let operation = async {
             completion.as_mut().await??;
-            Ok(0)
+            Ok(())
         };
         // Retain an additional live primitive so the real acknowledgement
         // exceeds the channel credit. Reading its prefix leaves it blocked.
@@ -816,7 +822,13 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );
-        assert_eq!(result.unwrap(), 143);
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<acyclic_harness::completion::Exit>()
+                .map(|exit| exit.code().get()),
+            Some(143)
+        );
         assert_eq!(diagnostic.unwrap_err().kind(), io::ErrorKind::Interrupted);
         release.send(()).unwrap();
         completion.await.unwrap().unwrap();
