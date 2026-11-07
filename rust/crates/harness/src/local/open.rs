@@ -128,14 +128,18 @@ impl Opening {
             crate::context::CompactionPolicy::Disabled
         };
         #[cfg(any(test, feature = "native-execution"))]
-        let native_mounts = passive
-            || tools
-                .get(crate::tools::shell::PLATFORM.name, None, None)?
-                .is_some();
+        let shell = tools
+            .get(crate::tools::shell::PLATFORM.name, None, None)?
+            .is_some();
         #[cfg(any(test, feature = "native-execution"))]
-        if native_mounts && !passive {
+        if shell && !passive {
             checkout_tools::shell::executable()?;
         }
+        // Physical mounting runs commands in plain directories and captures
+        // their effects from userspace, so it projects no native volume.
+        #[cfg(any(test, feature = "native-execution"))]
+        let native_mounts =
+            (passive || shell) && config.workspace_mounting == WorkspaceMounting::Native;
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,
@@ -334,6 +338,7 @@ impl Opening {
             directory,
             operation: workspace::attach_operation(owner.task),
             native_mounts: self.native_mounts,
+            mounting: self.config.workspace_mounting,
             authority: Some((issuer, owner.agent)),
         };
         let workspace = match &self.config.project {

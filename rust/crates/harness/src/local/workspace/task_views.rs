@@ -58,6 +58,72 @@ impl LocalWorkspace {
             .map_err(storage)
     }
 
+    /// The physical counterpart of [`Self::mount_task_source`]: `view`'s
+    /// complete visible tree as a plain directory below the checkout's
+    /// reserved view root, needing no native provider. Its first binding
+    /// materializes the view through the canonical exact-tree and
+    /// materialization engines; every later binding reuses the directory,
+    /// whose effects capture reconciles like the checkout's own.
+    async fn physical_task_source(&self, view: &workspace::View) -> Result<PathBuf> {
+        let parent = self
+            .held_task_mount_root()?
+            .create_directories(
+                Path::new(super::PHYSICAL_VIEW_ROOT),
+                acyclic_fs::NativeDurability::Durable,
+            )
+            .map_err(storage)?;
+        let name: String = view
+            .workspace()
+            .id()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let path = parent.path().join(name);
+        if !path.try_exists().map_err(storage)? {
+            let cancellation = CancellationToken::new();
+            // Promote every lazily inherited entry first, so the
+            // materialized bytes are the view's own exact generation.
+            let generation = view
+                .exactify(
+                    "/",
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    &mut WorkBudget::UNBOUNDED.accounting(&cancellation),
+                )
+                .await
+                .map_err(storage)?;
+            let staging = super::bootstrap::staging(parent.path())?;
+            super::bootstrap::initialize(
+                async {
+                    generation
+                        .materialize(
+                            ["/"].into_iter(),
+                            &acyclic_fs::MaterializeOptions::native(&staging),
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                        .map_err(storage)?;
+                    Ok(())
+                },
+                || {
+                    acyclic_native_runtime::durable_rename(
+                        &staging,
+                        &path,
+                        acyclic_native_runtime::RenameMode::NoReplace,
+                        None,
+                    )
+                },
+                || {
+                    acyclic_native_runtime::remove_child_directory(parent.path(), &staging)
+                        .map_err(storage)
+                },
+            )
+            .await?;
+        }
+        std::fs::canonicalize(&path).map_err(storage)
+    }
+
     // Child admission and tools share this boundary over native mount setup.
     pub(in crate::local) fn mount_task_view<'a>(
         &'a self,
@@ -90,6 +156,7 @@ impl LocalWorkspace {
                 task_view_admission: Arc::clone(&self.task_view_admission),
                 view,
                 mounted: None,
+                mounting: self.mounting,
                 identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
                 filesystem: self.filesystem.clone(),
                 store: self.store.clone(),
@@ -98,11 +165,20 @@ impl LocalWorkspace {
             let (active, pending) = workspace.selected_view().await?;
             let selected = active.as_ref().unwrap_or_else(|| workspace.view());
             let initial_view = selected.workspace().id();
-            let mounted = workspace.mount_task_source(selected).await?;
-            workspace.path = mounted.path().to_path_buf();
+            // A physical view stays unmounted: its commands, file tools and
+            // capture take the checkout's plain-directory path.
+            match self.mounting {
+                WorkspaceMounting::Native => {
+                    let mounted = workspace.mount_task_source(selected).await?;
+                    workspace.path = mounted.path().to_path_buf();
+                    workspace.mounted = Some(mounted);
+                }
+                WorkspaceMounting::Physical => {
+                    workspace.path = workspace.physical_task_source(selected).await?;
+                }
+            }
             workspace.identity =
                 acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
-            workspace.mounted = Some(mounted);
             workspace.mounts = workspace
                 .mounts_at_from(&workspace.path, Some(&self.mounts))
                 .await?;
@@ -198,6 +274,7 @@ impl LocalWorkspace {
             task_view_admission: Arc::clone(&self.task_view_admission),
             view,
             mounted: Some(mounted),
+            mounting: self.mounting,
             filesystem: self.filesystem.clone(),
             store: self.store.clone(),
             mount_authority: self.mount_authority.clone(),

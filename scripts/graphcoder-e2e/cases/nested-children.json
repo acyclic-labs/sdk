@@ -11,5 +11,6 @@
     {"when":{"user":"NESTED_ROOT"},"text":["NESTED_ROOT_DONE"]}
   ]},
   "inputs":[{"mode":"headless","text":"NESTED_ROOT","answer":"NESTED_ROOT_DONE"}],
-  "assert":{"requests":7,"tool_contains":["NESTED_LEAF_DONE","NESTED_WORKER_DONE"]}
+  "assert":{"requests":7,"tool_contains":["NESTED_LEAF_DONE","NESTED_WORKER_DONE"]},
+  "physical": true
 }
