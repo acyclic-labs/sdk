@@ -1,5 +1,6 @@
 use super::{
-    File, ITEM, NativeHostWork, Path, WorkCounters, buffer, copy_work, fs, io, wide_units, win,
+    File, ITEM, NativeHostWork, Path, WorkCounters, buffer, copy_work, fs, io, items, wide_units,
+    win,
 };
 use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
 
