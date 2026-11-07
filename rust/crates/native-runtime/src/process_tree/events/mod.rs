@@ -647,7 +647,7 @@ impl Drop for Registration<'_> {
             return;
         }
         let mut registry = self.hub.registry();
-        registry.remove(self.token);
+        let retired = registry.remove(self.token);
         #[cfg(unix)]
         if let Some(source) = self.source
             && let std::collections::hash_map::Entry::Occupied(entry) =
@@ -656,6 +656,10 @@ impl Drop for Registration<'_> {
         {
             entry.remove();
         }
+        // The last signal owner can destroy an arbitrary stored waker. Retire
+        // it after releasing the lifecycle lock, just like native delivery.
+        drop(registry);
+        drop(retired);
         // The guard drops before the native field's destructor. A late native
         // callback can only post its original token, never a borrowed entry.
     }

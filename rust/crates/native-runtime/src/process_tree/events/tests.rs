@@ -3,6 +3,74 @@ use std::time::Duration;
 
 #[cfg(unix)]
 #[test]
+fn registration_cancellation_retires_original_waker_outside_registry() -> io::Result<()> {
+    use std::os::fd::AsFd as _;
+
+    struct Retired {
+        dropped: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl Wake for Retired {
+        fn wake(self: Arc<Self>) {}
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+            if self.panic {
+                std::panic::panic_any("original registration waker retirement");
+            }
+        }
+    }
+
+    for panic in [false, true] {
+        // Keep the original peer open and empty. Its real native producer
+        // cannot consume readiness before the observation is cancelled.
+        let (reader, _writer) = std::os::unix::net::UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        let mut observation = descriptor_readiness(reader.as_fd(), DescriptorInterest::Readable)?;
+        let hub = observation.wait.first.as_ref().unwrap().hub;
+        let dropped = Arc::new(AtomicBool::new(false));
+        let waker = Waker::from(Arc::new(Retired {
+            dropped: Arc::clone(&dropped),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut observation)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(observation)));
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "original waker was retained"
+        );
+        // A panic in a destructor poisons exactly the mutexes held by its
+        // original thread. Other native producers cannot race this oracle,
+        // and the original inverse fails without entering a blocking wait.
+        assert!(
+            !hub.registry.is_poisoned(),
+            "original registration destroyed its waker under the registry lock"
+        );
+        if panic {
+            assert_eq!(
+                retired.unwrap_err().downcast_ref::<&str>(),
+                Some(&"original registration waker retirement")
+            );
+        } else {
+            assert!(retired.is_ok());
+        }
+        // Both ordinary cancellation and callback unwind release the source
+        // claim before a new public observation uses the original descriptor.
+        drop(descriptor_readiness(
+            reader.as_fd(),
+            DescriptorInterest::Readable,
+        )?);
+    }
+    Ok(())
+}
+#[cfg(unix)]
+#[test]
 fn native_producer_retains_original_consumer_panic() -> io::Result<()> {
     use std::io::Write as _;
     use std::os::fd::AsFd as _;
