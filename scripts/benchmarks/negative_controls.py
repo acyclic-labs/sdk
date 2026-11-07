@@ -9,6 +9,15 @@ from pathlib import Path
 
 
 CONTROLS = [
+    ("task skills omitted from volume", "graphcoder_harbor.py",
+     "if self.skills_dir:", "if False:",
+     "test_harbor.HarborContracts.test_task_skills_are_native_volume_files_and_copy_failure_revokes_execution"),
+    ("task skills capability omitted", "graphcoder_harbor.py",
+     "AgentCapabilities(skills=True)", "AgentCapabilities(skills=False)",
+     "test_harbor.HarborContracts.test_task_skills_are_native_volume_files_and_copy_failure_revokes_execution"),
+    ("task skills copy failure ignored", "graphcoder_harbor.py",
+     '+ " .agents/skills/"))', '+ " .agents/skills/ || true"))',
+     "test_harbor.HarborContracts.test_task_skills_are_native_volume_files_and_copy_failure_revokes_execution"),
     ("proxy environment loses its allow-list", "contracts.py",
      'any(name not in allowed or not isinstance(value, str)',
      'any(not isinstance(value, str)',

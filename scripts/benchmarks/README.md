@@ -80,6 +80,11 @@ agent logs. Nonzero exits propagate without a logging pipeline masking them.
 Successful setup grants execution only in that exact environment object; a
 different container or a failed reinstall cannot reuse that authority.
 
+Task-provided skills are copied, including hidden support files, into the task's
+`.agents/skills` directory before GraphCoder captures its workspace volume.
+The adapter declares Harbor's skills capability; missing or unreadable sources
+fail setup and revoke execution authority.
+
 The environment must provide the binary's runtime libraries and a task working
 directory other than `/`. Native FUSE mounts additionally need a usable
 `/dev/fuse` (`--device /dev/fuse`), mount authority (`--cap-add SYS_ADMIN`, or a

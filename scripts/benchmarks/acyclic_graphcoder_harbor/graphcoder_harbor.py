@@ -7,11 +7,14 @@ import uuid
 from pathlib import Path
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
+from harbor.agents.capabilities import AgentCapabilities
 from .contracts import Artifact, catalog, doctor_command, run_command
 
 
 class GraphCoder(BaseInstalledAgent):
     """Harbor 0.24 installed-agent interface, with no optional execution path."""
+
+    capabilities = AgentCapabilities(skills=True)
 
     @staticmethod
     def name() -> str:
@@ -26,8 +29,8 @@ class GraphCoder(BaseInstalledAgent):
         kwargs["version"] = source_sha
         extra_env = kwargs.pop("extra_env", None)
         super().__init__(*args, **kwargs)
-        if self.mcp_servers or self.skills_dir:
-            raise ValueError("this benchmark adapter does not project task MCP/skills")
+        if self.mcp_servers:
+            raise ValueError("this benchmark adapter does not project task MCP")
         self.provider_catalog = catalog(self.model_name, base_url, context_tokens, output_tokens,
                                         allow_http_host=allow_http_host, extra_env=extra_env)
         self.state = "/installed-agent/graphcoder-" + uuid.uuid4().hex
@@ -65,6 +68,12 @@ class GraphCoder(BaseInstalledAgent):
         # GraphCoder's own startup checks list every missing prerequisite at once.
         await self.exec_as_agent(environment, command=doctor_command(
             self.binary, self.state, self.model_name))
+        if self.skills_dir:
+            # Harbor supplies an environment path. Capture its contents through
+            # the harness's ordinary project-skill discovery and volume checkout.
+            await self.exec_as_agent(environment, command=(
+                "mkdir -p .agents/skills && cp -R -- "
+                + shlex.quote(self.skills_dir.rstrip("/") + "/.") + " .agents/skills/"))
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,
