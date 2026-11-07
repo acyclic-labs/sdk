@@ -237,9 +237,10 @@ where
         Ok(self.authored.capture_retired()
             && self
                 .cursors
-                .entries
+                .state
                 .lock()
                 .map_err(|_| MountSourceError::Stale)?
+                .entries
                 .is_empty()
             && self
                 .source_watch
