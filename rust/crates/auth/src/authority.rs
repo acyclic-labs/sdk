@@ -355,15 +355,36 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
                     && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
     })
 }
-// An allowance limits spend on the products it covers and admits no other.
-fn allowance_covers(allowance: &Allowance, target: Target<'_>) -> bool {
+// An allowance limits spend on the billing products it covers and admits no
+// other billed work. The action catalog says what each action bills: unmetered
+// actions (billing, secrets) are never restricted by a product list, and an
+// execution bills the product its leaf grant's signed usage owner names.
+fn allowance_covers(allowance: &Allowance, target: Target<'_>, leaf: &GrantSet) -> bool {
+    use crate::action::Metering;
+    let covers = |product: &str| allowance.products.iter().any(|p| p == product);
     allowance.products.is_empty()
         || match target {
-            Target::Resource { action, .. } => action
-                .split_once('/')
-                .is_some_and(|(product, _)| allowance.products.iter().any(|p| p == product)),
+            Target::Resource { action, resource } => {
+                match action
+                    .split_once('/')
+                    .and_then(|(product, _)| crate::action::metering(product))
+                {
+                    Some(Metering::Unmetered) => true,
+                    Some(Metering::Billed(product)) => covers(product),
+                    Some(Metering::UsageOwner) => leaf.grants.iter().any(|g| {
+                        matches!(&g.kind, GrantKind::Execution(g)
+                            if g.grant.actions.iter().any(|a| a == action)
+                                && resource_matches(&g.grant.resource, resource)
+                                && g.usage_owner
+                                    .as_deref()
+                                    .and_then(|owner| owner.split_once('/'))
+                                    .is_some_and(|(product, _)| covers(product)))
+                    }),
+                    None => false,
+                }
+            }
             Target::Context => true,
-            _ => false,
+            Target::Websocket(_) => false,
         }
 }
 
@@ -565,7 +586,7 @@ fn permits_canonical<const CURRENT: bool>(
             CaveatKind::Allowance(signed) => {
                 (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
                     && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
-                    && allowance_covers(&signed.allowance, r.target)
+                    && allowance_covers(&signed.allowance, r.target, &leaf.key.grants)
             }
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })
