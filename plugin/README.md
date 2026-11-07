@@ -74,14 +74,18 @@ restoring it to `process.env`. This event stays within trusted host extensions;
 it is not a model-visible tool or a guest command environment.
 
 The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
-`resume`. Each takes a parent-local `reference`; spawn/send/resume also take a
-`prompt`. They use the same child request, inbox, control, status, delivered
+`resume`. Spawn takes a parent-local `reference`; existing children can also be
+addressed by their full canonical AgentPath. Only the child's immediate parent
+can coordinate it. Spawn/send/resume also take a `prompt`. They use the same
+child request, inbox, control, status, delivered
 and result files as GraphCoder. Spawn and send return the prompt's committed
 `id` and `inbox`; wait answers through the harness's shared committed reply
 once that prompt's turn settles, is dropped, or can no longer run.
 Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
-Archive freezes the shared child reference permanently.
+Archive freezes the shared child reference permanently, including replay of its
+original spawn prompt. Spawn a new reference for further work. A child returns
+its result to its parent; the parent merges that child's changes.
 
 Capture happens at native turn/session boundaries and child process exit.
 Failed or cancelled native tools leave their filesystem state capturable;

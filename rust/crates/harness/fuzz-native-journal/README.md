@@ -61,6 +61,18 @@ original diagnostic that copied the entire rejected input. Each must fail
 the unchanged oracle at its corresponding assertion; none is a compiler
 failure control.
 
+The real-owner control
+`local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership`
+uses the production owner and native process custody for all three host adapters.
+Local names and canonical paths retain one live process, replay retains the
+original prompt, cancellation physically retires that process, and archived
+sessions refuse spawn and send, including exact prompt replay. It also requires
+the parent's merge authority and rejects parent and grandchild coordination.
+The kept `mutations/native_child_canonical_alias.patch` removes canonical routing;
+`mutations/native_archived_prompt.patch` removes the prompt admission guard.
+Each restores its production defect and fails the same control. The native
+process is a shell fixture; this does not establish installed host CLI behavior.
+
 The native ready-queue control
 `local::host_process::children::framing::only_fired_registrations_reach_the_ready_queue`
 uses the same production-queue oracle as `native_readiness`: arbitrary
