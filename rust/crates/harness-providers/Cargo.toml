@@ -9,9 +9,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Streaming model providers for the acyclic harness"
 
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [features]
 research = ["acyclic-harness-core/research"]
 endpoint-presets = []

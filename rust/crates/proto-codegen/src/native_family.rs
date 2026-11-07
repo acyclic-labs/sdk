@@ -81,7 +81,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     let wasm_libraries: Vec<_> = wasm_owner
         .targets
         .iter()
-        .filter(|t| t.crate_types.contains(&CrateType::CDyLib))
+        .filter(|t| t.is_lib() || t.is_rlib() || t.is_cdylib())
         .collect();
     if wasm_libraries.len() != 1
         || napi
@@ -89,9 +89,9 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
             .iter()
             .any(|f| !wasm_owner.features.contains_key(f))
     {
-        return Err("WASM owner must declare one cdylib and its selected features".into());
+        return Err("WASM owner must declare one library and its selected features".into());
     }
-    let wasm_library = wasm_libraries.first().ok_or("WASM cdylib is missing")?;
+    let wasm_library = wasm_libraries.first().ok_or("WASM library is missing")?;
     if napi.wasm_output_name.is_empty()
         || !napi
             .wasm_output_name
