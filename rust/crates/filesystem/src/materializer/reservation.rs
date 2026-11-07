@@ -172,6 +172,22 @@ impl NativeWorkReservation {
             recorded
         })
     }
+    /// Performs bounded local work under this original reservation's custody.
+    /// The operation must not re-enter the reservation or its original ledger.
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn with_admitted_work<T>(
+        &self,
+        maximum: WorkCounters,
+        wait: Option<&crate::CancellationToken>,
+        operation: impl FnOnce() -> (T, WorkCounters),
+    ) -> Result<T, NativeTreeMaterializationError> {
+        self.check_wait(wait)?;
+        let mut state = self.state.lock();
+        maximum.remaining(state.available()?)?;
+        let (result, actual) = operation();
+        self.finish(&mut state, actual, actual)?;
+        Ok(result)
+    }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn partition_work(
         &self,

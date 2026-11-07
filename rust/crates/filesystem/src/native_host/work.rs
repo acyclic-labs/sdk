@@ -65,7 +65,8 @@ pub(crate) trait NativeHostWork {
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     /// Admits a bounded local operation and records its actual work while the
-    /// original ledger is exclusively held. The operation must not re-enter it.
+    /// original ledger or reserved credit is held exclusively. The operation
+    /// must not re-enter that owner.
     fn with_admitted_work<T>(
         &mut self,
         maximum: WorkCounters,
