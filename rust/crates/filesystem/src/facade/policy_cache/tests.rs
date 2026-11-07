@@ -132,9 +132,7 @@ async fn shared_policy_bytes_have_cache_custody_independent_of_invocation_ledger
     // policy ownership. LogicalObjectStore independently retains decoded pages
     // under the reading invocation's native custody (402 bytes in this fixture).
     let owner = Fs::new(
-        crate::distributed::StreamAuthorityStore::new(Arc::new(
-            acyclic_stream::MemoryStream::default(),
-        )),
+        crate::MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
         crate::MemoryObjectStore::default(),
         EmbeddedCapabilities::MEMORY,
     )

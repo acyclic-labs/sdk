@@ -154,7 +154,7 @@ type Workspace = crate::Workspace<crate::MemoryAuthorityBackend, Arc<Objects>>;
 async fn fixture() -> Result<(Workspace, Arc<Objects>), Box<dyn std::error::Error>> {
     let objects = Arc::new(Objects::default());
     let filesystem = crate::Fs::new(
-        crate::StreamAuthorityStore::new(Arc::new(acyclic_stream::MemoryStream::default())),
+        crate::MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
         objects.clone(),
         crate::EmbeddedCapabilities::MEMORY,
     );

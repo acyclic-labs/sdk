@@ -302,7 +302,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
 #[tokio::test]
 async fn independent_owners_use_durable_frontiers_and_recover_original_operations() -> TestResult {
     let cancel = CancellationToken::new();
-    let authority = Arc::new(crate::StreamAuthorityStore::new(Arc::new(
+    let authority = Arc::new(crate::MemoryAuthorityBackend::new(Arc::new(
         acyclic_stream::MemoryStream::default(),
     )));
     let objects = Arc::new(crate::MemoryObjectStore::default());

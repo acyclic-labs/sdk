@@ -14,7 +14,7 @@ type Space =
 async fn fixture() -> Result<(
     acyclic_fs::MemoryFs,
     Space,
-    Arc<acyclic_stream::MemoryStream>,
+    Arc<dyn acyclic_fs::AuthorityProvider>,
 )> {
     let fs = Fs::memory();
     let workspace = fs

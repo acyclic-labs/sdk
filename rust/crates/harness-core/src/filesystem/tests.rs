@@ -152,7 +152,7 @@ impl acyclic_fs::ObjectSealer for AssociatedObjects {
 async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
     for sealed in [false, true] {
         let filesystem = Fs::new(
-            acyclic_fs::distributed::StreamAuthorityStore::new(Arc::new(
+            acyclic_fs::MemoryAuthorityBackend::new(Arc::new(
                 acyclic_stream::MemoryStream::default(),
             )),
             acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
