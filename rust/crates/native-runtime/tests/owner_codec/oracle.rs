@@ -10,25 +10,27 @@ fn encode(plain: &[u8]) -> io::Result<Vec<u8>> {
 }
 
 fn refused(bytes: &[u8], maximum: u64) {
-    assert!(
-        decode_with::<(), io::Error>(bytes, maximum, None, |_| panic!("corrupt record decoded"))
-            .is_err()
-    );
+    let copied = std::cell::Cell::new(false);
+    let result = decode_with::<(), io::Error>(bytes, maximum, None, |_| {
+        copied.set(true);
+        Ok(())
+    });
+    assert!(!copied.get(), "corrupt record decoded");
+    assert!(result.is_err());
 }
 
 /// Arbitrary wire plus checksum-valid current-owner outputs. Every fuzz input
 /// uses bounded writer work; no prefix or corruption scan is in this hot path.
-pub fn check(bytes: &[u8]) {
+pub fn check(bytes: &[u8]) -> io::Result<()> {
     let _ = decode_with::<_, io::Error>(bytes, MAXIMUM, None, |plain| Ok(plain.to_vec()));
     // A long fixed marker detects plaintext publication without mistaking a
     // short arbitrary input's incidental ciphertext bytes for disclosure.
     let mut plain = MARKER.to_vec();
     plain.extend_from_slice(&bytes[..bytes.len().min(4096 - MARKER.len())]);
-    let mut record = encode(&plain).expect("original owner writer refused its bounded input");
+    let mut record = encode(&plain)?;
     #[cfg(windows)]
     assert!(!record.windows(MARKER.len()).any(|window| window == MARKER));
-    let decoded = decode_with::<_, io::Error>(&record, MAXIMUM, None, |plain| Ok(plain.to_vec()))
-        .expect("original owner output did not decode");
+    let decoded = decode_with::<_, io::Error>(&record, MAXIMUM, None, |plain| Ok(plain.to_vec()))?;
     assert_eq!(decoded, plain, "owner payload changed");
 
     let choice = usize::from(u16::from_le_bytes(std::array::from_fn(|i| {
@@ -42,33 +44,37 @@ pub fn check(bytes: &[u8]) {
     refused(&record, record.len() as u64 - 1);
 
     let maximum = (choice % 40) as u64;
-    assert!(
-        encode_with::<(), io::Error>(b"", maximum, None, |_| {
-            panic!("unadmitted envelope copied")
-        })
-        .is_err()
-    );
+    let copied = std::cell::Cell::new(false);
+    let result = encode_with::<(), io::Error>(b"", maximum, None, |_| {
+        copied.set(true);
+        Ok(())
+    });
+    assert!(!copied.get(), "unadmitted envelope copied");
+    assert!(result.is_err());
     let error = decode_with::<(), io::Error>(&record, MAXIMUM, None, |_| {
         Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "original owner copy refused",
         ))
     })
-    .unwrap_err();
+    .err()
+    .ok_or_else(|| io::Error::other("owner decoder lost its original copy refusal"))?;
     assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(error.to_string(), "original owner copy refused");
+    Ok(())
 }
 
 /// Exhaust retained seed boundaries only during ordinary replay and capture.
 #[cfg(not(fuzzing))]
-pub fn check_retained(bytes: &[u8]) {
-    check(bytes);
+pub fn check_retained(bytes: &[u8]) -> io::Result<()> {
+    check(bytes)?;
     for index in 0..bytes.len() {
         let mut changed = bytes.to_vec();
         changed[index] ^= 1;
         refused(&changed, MAXIMUM);
         refused(&bytes[..index], MAXIMUM);
     }
+    Ok(())
 }
 
 /// These are deliberately nonsecret SDK inputs, never real owner credentials.

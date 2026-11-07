@@ -53,7 +53,7 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                 };
                 let lifecycle = Arc::new(std::sync::atomic::AtomicU8::new(0));
                 let (produced, production) = oneshot::channel();
-                let task = runtime.block_on(schedule.scope(async {
+                let (task,) = runtime.block_on(schedule.scope(async {
                     let active = Context::current().unwrap().accept("task");
                     let producer = Producer {
                         schedule: schedule.clone(),
@@ -65,7 +65,7 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                         let _ = produced.send(());
                         output
                     };
-                    if native {
+                    let task = if native {
                         TaskHandle::native(Some(active), future)
                     } else {
                         schedule
@@ -74,7 +74,8 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                             .as_ref()
                             .unwrap()
                             .spawn_owned(Some(active), future)
-                    }
+                    };
+                    (task,)
                 }));
                 let task = if detached {
                     drop(task);
@@ -108,14 +109,14 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             Schedule::seeded(83)
         };
         let lifecycle = Arc::new(std::sync::atomic::AtomicU8::new(0));
-        let task = runtime.block_on(schedule.scope(async {
+        let (task,) = runtime.block_on(schedule.scope(async {
             let active = Context::current().unwrap().accept("task");
             let future = Producer {
                 schedule: schedule.clone(),
                 panic: false,
                 lifecycle: lifecycle.clone(),
             };
-            if native {
+            let task = if native {
                 TaskHandle::native(Some(active), future)
             } else {
                 schedule
@@ -124,7 +125,8 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
                     .as_ref()
                     .unwrap()
                     .spawn_owned(Some(active), future)
-            }
+            };
+            (task,)
         }));
         task.abort();
         if let Some(executor) = &schedule.0.executor {

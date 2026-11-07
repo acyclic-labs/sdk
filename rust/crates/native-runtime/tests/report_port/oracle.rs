@@ -7,19 +7,19 @@ const GENERATION: &str = "0123456789abcdef0123456789abcdef";
 type Decoded = Option<(String, String, u64)>;
 type Observation = Result<Decoded, (io::ErrorKind, String)>;
 
-async fn channels() -> (
+async fn channels() -> io::Result<(
     impl AsyncRead + AsyncWrite + Unpin + Send,
     impl AsyncRead + AsyncWrite + Unpin + Send,
-) {
+)> {
     #[cfg(unix)]
     {
-        let (owner, child) = std::os::unix::net::UnixStream::pair().unwrap();
-        owner.set_nonblocking(true).unwrap();
-        child.set_nonblocking(true).unwrap();
-        (
-            tokio::net::UnixStream::from_std(owner).unwrap(),
-            tokio::net::UnixStream::from_std(child).unwrap(),
-        )
+        let (owner, child) = std::os::unix::net::UnixStream::pair()?;
+        owner.set_nonblocking(true)?;
+        child.set_nonblocking(true)?;
+        Ok((
+            tokio::net::UnixStream::from_std(owner)?,
+            tokio::net::UnixStream::from_std(child)?,
+        ))
     }
     #[cfg(windows)]
     {
@@ -33,38 +33,41 @@ async fn channels() -> (
         );
         let child = ServerOptions::new()
             .first_pipe_instance(true)
-            .create(&name)
-            .unwrap();
-        let owner = ClientOptions::new().open(&name).unwrap();
-        child.connect().await.unwrap();
-        (owner, child)
+            .create(&name)?;
+        let owner = ClientOptions::new().open(&name)?;
+        child.connect().await?;
+        Ok((owner, child))
     }
 }
 
-async fn observe(input: &[u8], chunk: usize, ready: bool) -> Observation {
-    let (mut owner, child) = channels().await;
-    let mut port = ReportPort::new(GENERATION.into(), child).unwrap();
+async fn observe(input: &[u8], chunk: usize, ready: bool) -> io::Result<Observation> {
+    let (mut owner, child) = channels().await?;
+    let mut port = ReportPort::new(GENERATION.into(), child)?;
     let write = async move {
         if ready {
             let mut line = String::new();
-            BufReader::new(&mut owner)
-                .read_line(&mut line)
-                .await
-                .unwrap();
-            let announcement: serde_json::Value = serde_json::from_str(&line).unwrap();
+            BufReader::new(&mut owner).read_line(&mut line).await?;
+            let announcement: serde_json::Value = serde_json::from_str(&line)?;
             assert_eq!(announcement["ready"], true);
             assert_eq!(announcement["generation"], GENERATION);
         }
         for bytes in input.chunks(chunk) {
-            owner.write_all(bytes).await.unwrap();
+            owner.write_all(bytes).await?;
         }
         drop(owner);
+        Ok::<(), io::Error>(())
     };
     let read = async {
         if ready {
-            port.ready().await.unwrap();
+            port.ready().await?;
             assert_eq!(
-                port.ready().await.unwrap_err().kind(),
+                port.ready()
+                    .await
+                    .err()
+                    .ok_or_else(|| io::Error::other(
+                        "report port repeated its original readiness announcement"
+                    ))?
+                    .kind(),
                 io::ErrorKind::AlreadyExists,
                 "report port repeated its original readiness announcement"
             );
@@ -86,38 +89,45 @@ async fn observe(input: &[u8], chunk: usize, ready: bool) -> Observation {
             matches!(port.request().await, Err(error) if error.kind() == io::ErrorKind::AlreadyExists),
             "report decoder readmitted its consumed request"
         );
-        observed
+        Ok(observed)
     };
     tokio::pin!(write, read);
     tokio::select! {
         // A decoded line consumes the port even when input remains unread.
         // Retire that input producer with the original request observer.
         observed = &mut read => observed,
-        () = &mut write => read.await,
+        result = &mut write => { result?; read.await },
     }
 }
 
 /// The original writer closes its endpoint, including after a partial frame.
 /// Every read has this same-path EOF producer, without a timer. Native streams
 /// may coalesce writes: this varies write boundaries, without assuming reads.
-pub fn check(input: &[u8]) {
+pub fn check(input: &[u8]) -> io::Result<()> {
     if input.len() > 4096 {
-        return;
+        return Ok(());
     }
-    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    let runtime = RUNTIME.get_or_init(|| acyclic_native_runtime::coordination_runtime().unwrap());
+    static RUNTIME: std::sync::OnceLock<io::Result<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    let runtime = RUNTIME
+        .get_or_init(acyclic_native_runtime::coordination_runtime)
+        .as_ref()
+        .map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
     runtime.block_on(async {
-        let whole = observe(input, input.len().max(1), false).await;
+        let whole = observe(input, input.len().max(1), false).await?;
         assert_eq!(
             whole,
-            observe(input, 17, true).await,
+            observe(input, 17, true).await?,
             "ready report port changed its original request outcome"
         );
         if let Ok(Some((request, generation, _))) = &whole {
             for identity in [request, generation] {
                 assert_eq!(
                     identity,
-                    &format!("{:032x}", u128::from_str_radix(identity, 16).unwrap()),
+                    &format!(
+                        "{:032x}",
+                        u128::from_str_radix(identity, 16).map_err(io::Error::other)?
+                    ),
                     "report decoder admitted a noncanonical identity"
                 );
             }
@@ -135,15 +145,15 @@ pub fn check(input: &[u8]) {
                 let start = input
                     .windows(identity.len())
                     .position(|bytes| bytes == identity.as_bytes())
-                    .unwrap();
+                    .ok_or_else(|| io::Error::other("captured writer lost its identity"))?;
                 let letter = identity
                     .bytes()
                     .position(|byte| byte.is_ascii_lowercase())
-                    .unwrap();
+                    .ok_or_else(|| io::Error::other("captured writer identity has no letter"))?;
                 let mut noncanonical = input.to_vec();
                 noncanonical[start + letter].make_ascii_uppercase();
                 assert!(
-                    observe(&noncanonical, 1, false).await.is_err(),
+                    observe(&noncanonical, 1, false).await?.is_err(),
                     "report decoder admitted a noncanonical identity"
                 );
             }
@@ -151,9 +161,10 @@ pub fn check(input: &[u8]) {
         for chunk in [1, 17] {
             assert_eq!(
                 whole,
-                observe(input, chunk, false).await,
+                observe(input, chunk, false).await?,
                 "report decoder changed its original result across native write boundaries"
             );
         }
-    });
+        Ok(())
+    })
 }

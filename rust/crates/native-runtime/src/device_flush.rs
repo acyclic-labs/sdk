@@ -719,14 +719,23 @@ mod tests {
 
     impl Arrivals {
         pub(super) fn arrive(&self) {
-            *self.count.lock().unwrap() += 1;
+            *self
+                .count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             self.changed.notify_all();
         }
 
         fn wait_for(&self, count: usize) {
-            let mut arrived = self.count.lock().unwrap();
+            let mut arrived = self
+                .count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             while *arrived < count {
-                arrived = self.changed.wait(arrived).unwrap();
+                arrived = self
+                    .changed
+                    .wait(arrived)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
     }
