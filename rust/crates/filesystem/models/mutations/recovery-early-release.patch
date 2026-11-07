@@ -1,0 +1,13 @@
+--- a/rust/crates/filesystem/src/native_mount/recovery.rs
++++ b/rust/crates/filesystem/src/native_mount/recovery.rs
+@@ -774,6 +774,10 @@
+                 // Only preservation may settle the retained target's flushes.
+                 return Err(NativeMountError::ControlPending);
+             }
++            self.guard
++                .as_mut()
++                .ok_or(NativeMountError::ControlPending)?
++                .release(&mut &*work)?;
+             if !self.driver_step_complete {
+                 recover_driver_with_work(&mut self.control, destination, remove_destination, work)?;
+                 if self.control.controls_pending() {
