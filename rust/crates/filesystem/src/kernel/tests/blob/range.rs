@@ -212,10 +212,8 @@ async fn blob_batch_retains_completed_write_on_withdrawal_and_producer_loss()
     for finish in [Finish::Withdraw, Finish::LoseProducer, Finish::Complete] {
         let inner = std::sync::Arc::new(MemoryObjectStore::default());
         let (release, receiver) = tokio::sync::oneshot::channel();
-        let store = crate::test_support::PausedStore {
-            inner: std::sync::Arc::clone(&inner),
-            release: std::sync::Mutex::new(Some(receiver)),
-        };
+        let store =
+            crate::test_support::PausedStore::new(std::sync::Arc::clone(&inner), Some(receiver));
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
             backend_write_operations: 1,

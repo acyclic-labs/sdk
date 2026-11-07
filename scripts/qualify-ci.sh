@@ -207,6 +207,9 @@ case "$lane" in
     node scripts/check-hermetic-clippy.mjs
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
+    # Stream Loom models are crate-private; only a cfg(loom) build compiles them.
+    RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" \
+      cargo check --locked -p acyclic-stream --features local,model-checking --lib
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
