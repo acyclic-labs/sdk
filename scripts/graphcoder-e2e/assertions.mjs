@@ -86,10 +86,14 @@ export function subset(actual, expected) {
 // Both provider records and PostToolUse carry the original ToolResult value.
 // A completed call may still be a refusal; only explicit case expectations
 // admit one, regardless of the enclosing process's successful exit.
+// Every recorded tool failure as the executor renders it to the model
+// (`ToolFailureKind::message`, optionally followed by a classified cause).
+const TOOL_FAILURE = /^tool (execution failed|output violated its pinned schema|result projection was rejected|result artifact could not be published|is not available|arguments violated the input schema|was interrupted before its outcome was recorded)(?:$|[:;( ])/;
+
 function toolFailure(error, expectedErrors, recovery, caseId) {
   if (error === undefined || error === null) return;
   const encoded = JSON.stringify(error);
-  assert.ok(expectedErrors?.some(text => encoded.includes(text)),
+  assert.ok(expectedErrors?.some(text => typeof text === "string" && text.length !== 0 && encoded.includes(text)),
     `step=admit tool outcome: unexpected tool error ${encoded}; recovery=${recovery}${caseId === undefined ? "" : ` ${caseId}`}`);
 }
 
@@ -102,7 +106,7 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
       toolFailure(child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
     if (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0))
       toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
-  } else if (typeof value === "string" && value.startsWith("tool execution failed: "))
+  } else if (typeof value === "string" && (TOOL_FAILURE.test(value) || value.startsWith("tool executor rejected the admitted call (")))
     toolFailure(value, expectedErrors, recovery, caseId);
 }
 

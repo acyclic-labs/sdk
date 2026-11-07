@@ -75,6 +75,7 @@ export async function pty(processes, binary, fixture, input, capture) {
           error.code = "command_unavailable";
           throw error;
         }
+        if (!frames.available()) return;
         if (action.after_request && !fixture.requested(action.after_request)) return;
         if (!matches(screen, raw, action.when, visible)) return;
         if (action.assert) assert.ok(matches(screen, raw, action.assert, visible),
@@ -83,6 +84,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
         index++;
+        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         if (action.prompt !== undefined) {
           command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
