@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "ready-waker-custody": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "dispatcher observer retirement retained the ready index lock", [],
+    { mutations: [
+      { patch: "rust/proofs/ready-waker-custody/poll.patch", label: "poll-ready-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+      { patch: "rust/proofs/ready-waker-custody/listen.patch", label: "listen-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+    ] },
+  ],
   "settlement-retired-source": [
     "rust/crates/harness/src/local/observer.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
