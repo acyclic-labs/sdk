@@ -441,6 +441,110 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
     Ok(())
 }
 
+#[test]
+fn prepared_worker_retirement_ends_original_completion_without_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::task::{Context, Poll, Wake, Waker};
+
+    #[derive(Default)]
+    struct CompletionWake(std::sync::atomic::AtomicUsize);
+    impl Wake for CompletionWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let directory = tempfile::tempdir()?;
+    let setup = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let provider = setup.block_on(LocalStream::open(
+        directory.path(),
+        LocalStreamLimits::default(),
+    ))?;
+    let mut request = setup.block_on(prepared_fixture(&provider))?;
+    let target = StreamPath::new("prepared/target")?;
+    let mut path = target.clone();
+    for name in ["prepared/child", "prepared/grandchild"] {
+        let destination = StreamPath::new(name)?;
+        setup.block_on(provider.fork(ForkRequest {
+            source: path,
+            destination: destination.clone(),
+            at_tail: Some(1),
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        }))?;
+        path = destination;
+    }
+    for condition in &mut request.conditions {
+        if let crate::CommitCondition::Tail { path: selected, .. } = condition
+            && *selected == target
+        {
+            *selected = path.clone();
+        }
+    }
+    let [crate::CommitMutation::Append { path: selected, .. }] = request.mutations.as_mut_slice()
+    else {
+        return Err("prepared fixture changed its canonical mutation".into());
+    };
+    *selected = path.clone();
+    let producer = tokio::runtime::Builder::new_current_thread().build()?;
+    let meter = Arc::new(Meter::local());
+    let packet =
+        producer.block_on(provider.native_prepare_commit(request, 64, meter.original()))??;
+    let (packet, guard) = packet.into_parts();
+    let mut completion = packet.finish(OwnedBytes::from_static(b"unpublished").into());
+    let observed = Arc::new(CompletionWake::default());
+    let wake = Waker::from(observed.clone());
+    // The current-thread runtime has returned its root without polling the
+    // newly spawned worker. Poll only the public completion, never its worker.
+    let pending = {
+        let _entered = producer.enter();
+        std::pin::Pin::new(&mut completion)
+            .poll(&mut Context::from_waker(&wake))
+            .is_pending()
+    };
+    drop(producer);
+    let result = {
+        let _entered = setup.enter();
+        std::pin::Pin::new(&mut completion).poll(&mut Context::from_waker(Waker::noop()))
+    };
+    drop(completion);
+    drop(guard);
+    assert!(pending, "prepared worker ran before its execution cut");
+    assert!(
+        observed.0.load(Ordering::SeqCst) > 0,
+        "retired prepared producer did not wake its original completion"
+    );
+    let original_cancelled = match &result {
+        Poll::Ready(Err(error)) => {
+            let cause: &(dyn std::error::Error + 'static) = error;
+            std::iter::successors(Some(cause), |cause| cause.source()).any(|cause| {
+                cause
+                    .downcast_ref::<tokio::task::JoinError>()
+                    .is_some_and(tokio::task::JoinError::is_cancelled)
+            })
+        }
+        _ => false,
+    };
+    assert!(
+        original_cancelled,
+        "retired prepared producer left its original completion parked or replaced its cause"
+    );
+    drop(result);
+    assert_eq!(setup.block_on(provider.tail(path.clone()))?, 1);
+    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+    assert!(provider.failure().is_none());
+    drop(provider);
+    meter.assert_refunded();
+    let reopened = setup.block_on(LocalStream::open(
+        directory.path(),
+        LocalStreamLimits::default(),
+    ))?;
+    assert_eq!(setup.block_on(reopened.tail(path))?, 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
 -> Result<(), Box<dyn std::error::Error>> {

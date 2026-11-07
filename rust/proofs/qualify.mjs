@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-prepared-producer-loss": [
+    "rust/crates/stream/src/local/prepared_commit.rs", "acyclic-stream",
+    "local::tests::native::prepared_worker_retirement_ends_original_completion_without_publication",
+    "retired prepared producer left its original completion parked or replaced its cause", ["--no-default-features", "--features", "local"],
+    {
+      patchPath: "rust/proofs/local-prepared-producer-loss/mutation.patch",
+      negativeLabel: "discarded-original-prepared-producer-error",
+    },
+  ],
   "local-snapshot-producer-loss": [
     "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
     "local::tests::wakeups::executor_retirement_ends_forked_follows_before_publication_unlocks",
