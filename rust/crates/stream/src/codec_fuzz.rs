@@ -404,6 +404,9 @@ async fn publications(
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
+        // Journal admission exists only with a journal backend; the memory
+        // provider still admits every command on write.
+        #[cfg(feature = "local")]
         let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
