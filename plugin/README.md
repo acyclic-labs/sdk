@@ -67,6 +67,9 @@ The coordination tools are `spawn`, `send`, `wait`, `cancel`, `archive` and
 and result files as GraphCoder. Spawn and send return the prompt's committed
 `id` and `inbox`; wait answers through the harness's shared committed reply
 once that prompt's turn settles, is dropped, or can no longer run.
+Conversation content and native event logs may be returned as a `FileRef`.
+This is an object reference to bytes in the named volume. Resolve it through
+that volume when needed, preserving lazy access to large content and logs.
 Cancel stops and reaps the native child process tree before capturing partial
 writes. Resume re-launches the saved native session in the recreated view.
 Archive freezes the shared child reference permanently.
