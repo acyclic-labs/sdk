@@ -8,6 +8,166 @@ use acyclic_stream::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The published credential is exercised over the ordinary server transport,
+/// including direct primitive reads rather than only actor command replies.
+#[cfg(feature = "serve")]
+#[tokio::test]
+async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots() -> Result<()> {
+    use crate::agent::AgentRecord as _;
+    use acyclic_harness_client::ReadTarget;
+    use acyclic_stream::{ChildrenPageRequest, FollowRequest};
+    use futures::StreamExt as _;
+
+    let directory = tempfile::tempdir().map_err(exchange)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let config = volume_config(directory.path(), project, provider)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(exchange)?;
+    let (ready, endpoint) = tokio::sync::oneshot::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let serving = tokio::spawn(crate::server::serve(
+        listener,
+        crate::server::ServerConfig::new(config),
+        move |endpoint| {
+            let credential = endpoint
+                .observation
+                .as_ref()
+                .map(|observation| observation.credential.clone());
+            let _ = ready.send((endpoint.endpoint.clone(), credential));
+        },
+        async move {
+            let _ = stopped.await;
+        },
+    ));
+    let checked = async {
+        let (endpoint, credential) = endpoint.await.map_err(exchange)?;
+        let credential = credential
+            .ok_or_else(|| Error::Unauthorized("server published no credential".into()))?;
+        let remote = acyclic_stream::grpc::Client::connect_loopback(&endpoint, &credential)
+            .await
+            .map_err(exchange)?;
+        let session = remote.session_client().map_err(exchange)?;
+        let connection = Connection::bind(
+            session.clone(),
+            acyclic_auth::credential::capability_from_text(&credential).map_err(exchange)?,
+            None,
+        )
+        .await?;
+        let root = connection.root().clone();
+        let mut parent = root.clone();
+        for intent in ["child", "grandchild"] {
+            let AgentReply::Spawned { agent: child, .. } = connection
+                .execute(&AgentCommand::Spawn {
+                    parent: parent.clone(),
+                    id: crate::agent::IntentId::try_from(intent).map_err(exchange)?,
+                    brief: crate::model::ModelContent::Text("answer".into()),
+                    role: "worker".into(),
+                })
+                .await?
+            else {
+                return Err(Error::Conflict("spawn returned no child".into()));
+            };
+            let page = session
+                .children_page(
+                    ChildrenPageRequest {
+                        parent: Some(parent.children().map_err(exchange)?),
+                        after: None,
+                        hierarchy_version: None,
+                        limit: 1,
+                        tail_stream: None,
+                    },
+                    CREDENTIAL,
+                )
+                .await
+                .map_err(exchange)?;
+            assert_eq!(page.children.len(), 1);
+            assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
+            // The first status is committed with adoption. No model reply or
+            // scheduler delay is needed to make this follow readable.
+            let mut status = acyclic_stream::records_only(
+                session
+                    .follow(FollowRequest::new(child.status().map_err(exchange)?, 0))
+                    .await
+                    .map_err(exchange)?,
+            );
+            loop {
+                let record = status
+                    .next()
+                    .await
+                    .ok_or_else(|| Error::Conflict("child status ended".into()))?
+                    .map_err(exchange)?;
+                if crate::agent::StatusRecord::decode(&record.value)
+                    .map_err(exchange)?
+                    .conversation
+                    > 0
+                {
+                    break;
+                }
+            }
+            let selected = connection.select(child.clone()).await?;
+            assert_eq!(selected.root(), &child);
+            // The entry and its immutable output are read through the same
+            // public surfaces that retain native transcript references.
+            let mut conversation = acyclic_stream::records_only(
+                session
+                    .follow(FollowRequest::new(
+                        child.conversation().map_err(exchange)?,
+                        0,
+                    ))
+                    .await
+                    .map_err(exchange)?,
+            );
+            let record = conversation
+                .next()
+                .await
+                .ok_or_else(|| Error::Conflict("child conversation ended".into()))?
+                .map_err(exchange)?;
+            let entry = crate::agent::ConversationEntry::decode(&record.value).map_err(exchange)?;
+            assert!(matches!(
+                selected
+                    .execute(&AgentCommand::Read {
+                        agent: child.clone(),
+                        target: ReadTarget::File { file: entry.output },
+                        offset: 0,
+                    })
+                    .await?,
+                AgentReply::Content { .. }
+            ));
+            parent = child;
+        }
+        let foreign = crate::agent::AgentPath::root(&crate::agent::AgentId::from_bytes([255; 16]));
+        assert!(matches!(
+            session
+                .follow(FollowRequest::new(foreign.status().map_err(exchange)?, 0))
+                .await,
+            Err(StreamError::AccessDenied)
+        ));
+        assert!(matches!(
+            session
+                .children_page(
+                    ChildrenPageRequest {
+                        parent: Some(foreign.children().map_err(exchange)?),
+                        after: None,
+                        hierarchy_version: None,
+                        limit: 1,
+                        tail_stream: None,
+                    },
+                    CREDENTIAL
+                )
+                .await,
+            Err(StreamError::AccessDenied)
+        ));
+        assert!(connection.select(foreign).await.is_err());
+        Ok(())
+    }
+    .await;
+    let _ = stop.send(());
+    serving.await.map_err(exchange)??;
+    checked
+}
+
 struct Cut(AtomicBool);
 impl PersistenceCut for Cut {
     fn admit(&self) -> bool {
