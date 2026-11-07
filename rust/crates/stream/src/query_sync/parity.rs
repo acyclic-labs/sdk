@@ -245,6 +245,62 @@ pub(crate) fn watch_progress() {
             ));
             drop(changed);
 
+            // Each pending future owns its registration. Remove a nonfinal
+            // entry, replace the moved entry's waker, then cancel both peers.
+            let mut second = sender.subscribe();
+            let mut third = sender.subscribe();
+            let cancelled_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let second_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let third_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let cancelled_wake = Waker::from(Arc::clone(&cancelled_flag));
+            let second_wake = Waker::from(Arc::clone(&second_flag));
+            let third_wake = Waker::from(Arc::clone(&third_flag));
+            let mut cancelled = Box::pin(receiver.changed());
+            let mut second_changed = Box::pin(second.changed());
+            let mut third_changed = Box::pin(third.changed());
+            assert!(
+                cancelled
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&cancelled_wake))
+                    .is_pending()
+            );
+            assert!(
+                second_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&second_wake))
+                    .is_pending()
+            );
+            assert!(
+                third_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&third_wake))
+                    .is_pending()
+            );
+            drop(cancelled);
+            assert_eq!(
+                Arc::strong_count(&cancelled_flag),
+                2,
+                "cancelled watch wait retained its observer"
+            );
+            assert!(
+                third_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&second_wake))
+                    .is_pending()
+            );
+            assert_eq!(
+                Arc::strong_count(&third_flag),
+                2,
+                "watch repoll retained its previous observer"
+            );
+            drop(second_changed);
+            drop(third_changed);
+            assert_eq!(
+                Arc::strong_count(&second_flag),
+                2,
+                "cancelled watch peers retained their observer"
+            );
+
             // Cancelling a pending future must leave the next wait usable.
             let mut cancelled = Box::pin(receiver.changed());
             assert!(cancelled.as_mut().poll(&mut cx).is_pending());
@@ -252,6 +308,12 @@ pub(crate) fn watch_progress() {
             let mut changed = Box::pin(receiver.changed());
             assert!(changed.as_mut().poll(&mut cx).is_pending());
             sender.send_replace(7);
+            assert!(
+                !cancelled_flag.0.load(Ordering::SeqCst)
+                    && !second_flag.0.load(Ordering::SeqCst)
+                    && !third_flag.0.load(Ordering::SeqCst),
+                "publication woke a cancelled watch wait"
+            );
             assert!(
                 flag.0.swap(false, Ordering::SeqCst),
                 "replacement lost wake"

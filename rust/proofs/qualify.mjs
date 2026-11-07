@@ -29,6 +29,9 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/conditional-watch-parity/mutation.patch", label: "mutated", diagnostic: "unmodified watch publication woke a parked reader" },
         { patch: "rust/proofs/conditional-watch-parity/owner.patch", label: "nonfinal-publisher-drop", diagnostic: "nonfinal watch publisher drop woke a parked reader" },
+        { patch: "rust/proofs/conditional-watch-parity/cancellation.patch", label: "cancelled-registration", diagnostic: "cancelled watch wait retained its observer" },
+        { patch: "rust/proofs/conditional-watch-parity/replacement.patch", label: "replaced-observer", diagnostic: "watch repoll retained its previous observer" },
+        { patch: "rust/proofs/conditional-watch-parity/moved.patch", label: "moved-registration", diagnostic: "watch repoll retained its previous observer" },
       ],
     },
   ],

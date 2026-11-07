@@ -5,7 +5,7 @@ diff --git a/rust/crates/stream/src/query_sync/watch.rs b/rust/crates/stream/src
                  .write()
                  .unwrap_or_else(std::sync::PoisonError::into_inner);
              if !update(&mut value.data) {
-+                value.waiters.iter().for_each(|waiter| waiter.wake_by_ref());
++                value.waiters.iter().for_each(|waiter| waiter.wake.wake_by_ref());
                  return false;
              }
              value.version = value.version.wrapping_add(1);
