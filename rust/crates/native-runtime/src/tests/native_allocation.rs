@@ -207,7 +207,7 @@ fn retired_waiter_keeps_full_funding_until_the_last_notifier_drops() -> io::Resu
         );
         let mut admission = AdmissionState::new();
         if queued {
-            admission.register_existing(&node, Waker::noop());
+            drop(admission.register_existing(&node, Waker::noop().clone()));
         }
         let retained = Arc::clone(&node);
         wake_capacity_waiter(admission.retire_owner(&node));
@@ -234,7 +234,7 @@ fn retired_waiter_does_not_retain_neighbor_allocations() -> io::Result<()> {
     let last = capacity_waiter(Some(prepay_capacity_waiter(&meter)?));
     let funded = observed.memory.load(Ordering::Acquire) / 3;
     for node in [&first, &retained, &last] {
-        admission.register_existing(node, Waker::noop());
+        drop(admission.register_existing(node, Waker::noop().clone()));
     }
     let retired = acyclic_test_support::measure(|| {
         wake_capacity_waiter(admission.retire_owner(&retained));
