@@ -1,9 +1,13 @@
-use super::sync::{Arc, Mutex};
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+use super::sync::Arc;
+use super::sync::Mutex;
 use crate::StreamError;
 use std::{
     collections::VecDeque,
-    future::poll_fn,
-    task::{Context, Poll, Waker},
+    task::{Context, Waker},
 };
 
 pub(crate) struct Signal<T> {
@@ -13,10 +17,18 @@ pub(crate) struct Signal<T> {
 }
 
 /// The original release observation follows the backing's final owner.
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) struct Guard<T> {
     sender: Arc<Signal<T>>,
     value: Option<T>,
 }
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 impl<T> Guard<T> {
     pub(crate) fn new(sender: Arc<Signal<T>>, value: T) -> Self {
         Self {
@@ -25,6 +37,10 @@ impl<T> Guard<T> {
         }
     }
 }
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 impl<T> Drop for Guard<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
@@ -81,7 +97,15 @@ impl<T> Signal<T> {
     pub(crate) fn pending(&self) -> usize {
         self.state.lock().unwrap().0.len()
     }
-    pub(crate) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
+}
+
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+impl<T> Signal<T> {
+    pub(crate) fn poll(&self, cx: &mut Context<'_>) -> std::task::Poll<Result<T, StreamError>> {
+        use std::task::Poll;
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
@@ -96,6 +120,6 @@ impl<T> Signal<T> {
         Poll::Pending
     }
     pub(crate) async fn next(&self) -> Result<T, StreamError> {
-        poll_fn(|cx| self.poll(cx)).await
+        std::future::poll_fn(|cx| self.poll(cx)).await
     }
 }

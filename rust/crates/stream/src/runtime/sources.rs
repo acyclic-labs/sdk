@@ -100,7 +100,15 @@ impl<S> SourceIndex<S> {
 mod tests;
 pub(crate) const OPENING: usize = 0;
 pub(crate) const ALL: usize = 1;
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) const LATEST: usize = 2;
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) const EITHER: usize = 3;
 
 pub(crate) struct Wake {
@@ -218,6 +226,10 @@ impl<S: Stream + Unpin> ReadySources<S> {
         self.entries.is_empty()
     }
 
+    #[cfg(any(
+        all(feature = "session", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn insert(
         &mut self,
         identity: wire::SessionChannel,
@@ -257,6 +269,11 @@ impl<S: Stream + Unpin> ReadySources<S> {
         );
         self.enqueue(identity.channel_id);
     }
+    #[cfg(any(
+        test,
+        all(feature = "session", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn mode(&mut self, id: u64, mode: Option<usize>) {
         if self.entries.get(&id).is_none_or(|entry| entry.mode == mode) {
             return;
@@ -361,6 +378,10 @@ impl<S: Stream + Unpin> ReadySources<S> {
         }
         None
     }
+    #[cfg(any(
+        all(feature = "session", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn next_with_control(
         &mut self,
         control: &mut Self,

@@ -301,6 +301,10 @@ impl WhenAbsent {
             _ => Err(StreamError::InvalidArgument),
         }
     }
+    #[cfg(any(
+        all(feature = "session", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn to_wire(self) -> i32 {
         match self {
             Self::NotFound => 0,
