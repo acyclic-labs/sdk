@@ -576,7 +576,11 @@ const claims = {
     "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
     "seeded_runtime_requires_explicit_executor_configuration",
     "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
-    { target: ["--test", "seeded_runtime"] },
+    {
+      target: ["--test", "seeded_runtime"],
+      // This claim exercises refusal when Tokio's unstable seed API is absent.
+      env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
+    },
   ],
   "native-hook-ownership": [
     "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
@@ -1249,6 +1253,7 @@ if (claim === "--help" && extra.length === 0) {
   process.exitCode = 2;
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
+  const environment = { ...process.env, ...options.env };
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
@@ -1295,11 +1300,11 @@ if (claim === "--help" && extra.length === 0) {
         cwd: instrumented && program === "cargo" ? fileURLToPath(new URL("rust/codec-fuzz/", new URL("../../", import.meta.url))) : root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
-          ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...environment, PROPTEST_RNG_SEED: environment.PROPTEST_RNG_SEED ?? "1697",
           ...(options.fuzz ? {
             // RUSTFLAGS replaces Cargo configuration, including replay's Tokio support.
-            RUSTFLAGS: `${process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
-              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
+            RUSTFLAGS: `${environment.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? environment.RUSTFLAGS
+              : `${environment.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
           } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
