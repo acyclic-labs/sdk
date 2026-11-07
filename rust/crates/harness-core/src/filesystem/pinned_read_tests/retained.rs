@@ -444,11 +444,13 @@ fn publications_reuse_the_retained_generation_through_every_entry() -> Result<()
                 r.object_probes,
                 r.page_reads,
                 r.items_examined,
-                r.bytes_copied,
                 r.allocation_operations,
             ]
         };
-        let work_saving = std::array::from_fn::<_, 7, _>(|index| {
+        // Relocation depends on each independently initialized allocator.
+        // Physical allocation savings and the required read are checked above
+        // and below; whole-mutation copy totals are not a read-work oracle.
+        let work_saving = std::array::from_fn::<_, 6, _>(|index| {
             work(before.0.2)[index]
                 .checked_sub(work(after.0.2)[index])
                 .expect("reuse added work")

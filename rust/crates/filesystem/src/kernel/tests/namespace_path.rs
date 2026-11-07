@@ -193,6 +193,13 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 .map(|name| name.as_bytes().as_ptr());
             let parent_encoded_bytes = path.encoded_bytes();
             let bytes = path.retained_bytes();
+            let components = path.components().as_ptr();
+            let component_backing = bytes
+                - path
+                    .components()
+                    .iter()
+                    .map(|name| name.retained_bytes() as u64)
+                    .sum::<u64>();
             let before = accounting.spent();
             let path = NamespacePath::child_from_owned(
                 crate::kernel::Owned::new(path, allocation, bytes),
@@ -208,6 +215,12 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
             assert_eq!(
                 accounting.spent().bytes_copied - before.bytes_copied,
                 name.as_bytes().len() as u64
+                    + if components == path.value.components().as_ptr() {
+                        0
+                    } else {
+                        component_backing
+                    },
+                "copy work includes the allocator's actual component relocation"
             );
             let expected_bytes =
                 parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;

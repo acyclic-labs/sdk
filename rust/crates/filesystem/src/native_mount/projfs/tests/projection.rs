@@ -282,7 +282,9 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 source.create_file(&name, FileMetadata::default(), None, &work)?;
                 source.write_range(&name, 0, Bytes::from_static(b"old"))?;
             }
-            let (_root, destination, mut session) = mount_source(&source)?;
+            let (_root, destination, mut session) = mount_source(&source).map_err(|error| {
+                format!("mount held entry, link={link}, {replacement:?}: {error}")
+            })?;
             let projected = destination.join("name");
             let mut released_at = 0;
             super::metadata::client::run("held-entry", &projected, || {
@@ -341,6 +343,9 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 );
                 released_at = state.releases;
                 Ok(())
+            })
+            .map_err(|error| {
+                format!("hold and change entry, link={link}, {replacement:?}: {error}")
             })?;
             let settled = session.revalidate(&work);
             settled.map_err(|error| {
@@ -374,7 +379,9 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                     assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
                 }
             }
-            session.stop()?;
+            session.stop().map_err(|error| {
+                format!("stop settled entry, link={link}, {replacement:?}: {error}")
+            })?;
         }
     }
     Ok(())
