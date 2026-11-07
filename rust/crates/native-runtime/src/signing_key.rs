@@ -272,6 +272,36 @@ use fixture::creation_lock;
 mod tests {
     use super::*;
 
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn private_root_creation_preserves_the_original_publication_failure() -> io::Result<()> {
+        use crate::testing::{DurableFault, Schedule};
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        for fault in [DurableFault::Before, DurableFault::After] {
+            let root = tempfile::tempdir()?;
+            let directory = root.path().join("custody");
+            let (schedule, _) = Schedule::seeded(71);
+            // The original file sync is followed by the no-replace rename.
+            schedule.cut_at(1, fault);
+            let failure = runtime
+                .block_on(schedule.scope(async {
+                    SigningKeyReference::create(SigningCustody::PrivateFile(&directory))
+                }))
+                .expect_err("a visible root cannot acknowledge failed publication");
+            let cause = failure
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<CustodyFailure>())
+                .expect("publication retains its typed custody failure");
+            assert_eq!(cause.operation, "write");
+            assert_eq!(directory.join(ROOT).is_file(), fault == DurableFault::After);
+            let original = schedule.storage_fault().expect("the physical cut ran");
+            assert_eq!(original.operation, "namespace:rename");
+            assert_eq!(original.ordinal, 1);
+            assert_eq!(original.fault, fault);
+        }
+        Ok(())
+    }
+
     /// Growth guard: owners in any number of fresh state directories share one
     /// entry per store. The former per-owner protocol added one entry each.
     #[test]
@@ -325,7 +355,11 @@ mod tests {
                     .collect::<Vec<_>>();
                 workers
                     .into_iter()
-                    .map(|worker| worker.join().map_err(|_| io::Error::other("creator panicked"))?)
+                    .map(|worker| {
+                        worker
+                            .join()
+                            .map_err(|_| io::Error::other("creator panicked"))?
+                    })
                     .collect::<io::Result<Vec<_>>>()
             })?;
             for reference in references {
@@ -351,7 +385,10 @@ mod tests {
         assert_ne!(reference.v1.0, *stored, "the reference carries the root");
         assert_ne!(reference.v1.0, *seed, "the reference carries the seed");
         let other = root.path().join("other");
-        for wrong in [SigningCustody::Configured, SigningCustody::PrivateFile(&other)] {
+        for wrong in [
+            SigningCustody::Configured,
+            SigningCustody::PrivateFile(&other),
+        ] {
             assert!(
                 reference
                     .with_seed(wrong, |_| panic!("custody fell back to another store"))
@@ -374,7 +411,10 @@ mod tests {
                 .is_err()
         );
         assert!(read(&entry)?.is_none());
-        assert!(SigningKeyReference::create(SigningCustody::PrivateFile(Path::new("relative"))).is_err());
+        assert!(
+            SigningKeyReference::create(SigningCustody::PrivateFile(Path::new("relative")))
+                .is_err()
+        );
         Ok(())
     }
 }
