@@ -1,5 +1,13 @@
 experimental = ["setup-scripts"]
 
+[test-groups.linux-guest]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "linux")'
+filter = 'test(=native_mount::fuse::tests::guest::standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete) | test(=virtiofs::standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete)'
+test-group = "linux-guest"
+
 # The transport models execute the packaged TypeScript and WASM implementation.
 # Prepare its ignored artifacts once, before any selected model starts.
 [scripts.setup.stream-typescript]
