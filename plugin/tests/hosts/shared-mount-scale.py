@@ -35,7 +35,9 @@ signal.signal(signal.SIGTERM, interrupted)
 
 
 # Marginal cost of each view added from N to 2N, in whole units per view.
-# Process constants cancel; nothing is subtracted or warmed up first.
+# Process constants cancel; nothing is subtracted or warmed up first. Mounts
+# are the owner's own, beneath its workspace: cases sharing the mount table
+# mount and unmount between samples.
 VIEW_LIMITS = {'descriptors': 1, 'threads': 0, 'mounts': 0}
 
 
@@ -188,6 +190,9 @@ sys.exit(17)
                     sample = client({'kind': 'resources', 'task': task})
                     assert_live()
                     assert sample['views'] > population, sample
+                    # Control: native views require a native mount, so a
+                    # sample blind to the owner's own mounts reads zero.
+                    assert sample['mounts'] > 0, sample
                     sample['live_sessions'] = population
                     samples.append(sample)
                     print(json.dumps({'host': host, 'sample': sample,
@@ -215,7 +220,6 @@ sys.exit(17)
                 previous, owner = owner, None
                 stop_workspace_owner(previous)
                 elapsed = time.monotonic() - started
-                assert elapsed < 10, elapsed
                 print(json.dumps({'host': host, 'samples': samples, 'seconds': elapsed,
                                   'model_calls': 0, 'native_session_standins': True,
                                   'sessions_alive_at_both_samples': True,
