@@ -82,11 +82,11 @@ mod unix_path;
 #[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
-#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
-#[doc(hidden)]
-pub use open::check_prepared_ascii_leaf;
 pub use open::file_transfer;
 pub(crate) use open::*;
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub use open::{check_native_root_name_prefix, check_prepared_ascii_leaf};
 mod mutation;
 pub(crate) use mutation::*;
 mod leaf;
