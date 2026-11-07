@@ -15,6 +15,27 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "independent-terminal-observers": [
+    "rust/crates/stream/src/operation_claim/termination.rs", "acyclic-stream",
+    "pending::tests::commit_custody_keeps_exact_results_and_terminates_on_producer_loss",
+    "retained pending observer blocked another observer's retirement", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/independent-terminal-observers/mutation.patch", label: "pending-observer-relay", diagnostic: "retained pending observer blocked another observer's retirement" },
+        {
+          patch: "rust/proofs/independent-terminal-observers/mutation.patch", label: "operation-observer-relay",
+          diagnostic: "retained operation observer blocked another observer's retirement",
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib",
+            "operation_claim::termination::tests::independent_observers_survive_replacement_and_cancellation", "--", "--exact", "--nocapture"],
+        },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "pending::tests::commit_custody_keeps_exact_results_and_terminates_on_producer_loss",
+        "operation_claim::termination::tests::independent_observers_survive_replacement_and_cancellation",
+        "operation_claim::termination::tests::forgotten_producer_is_terminated_when_its_provider_owner_drops"],
+      completed: ["3 passed; 0 failed"],
+    },
+  ],
   "execution-allowance-grant": [
     "rust/crates/auth/src/authority.rs", "acyclic-auth",
     "narrowing::execution_allowances_require_one_eligible_grant",
