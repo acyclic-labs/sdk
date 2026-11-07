@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::mount_probe::same_mount;
 use super::*;
 use crate::native_mount::NativeMountRecoveryOwner;
@@ -119,6 +120,7 @@ fn arbitration_unmount(destination: &CStr) -> std::io::Result<()> {
     super::teardown_error::retirement_result(status, dissent)
 }
 
+#[cfg(test)]
 pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {
     // No operation may target a changed kernel identity. The destination
     // fence excludes a replacing SDK owner until terminal completion.
@@ -134,6 +136,7 @@ pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMount
     verify_detached(mount)
 }
 
+#[cfg(test)]
 fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
     if mount_table()?
         .iter()
