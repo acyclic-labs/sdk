@@ -50,7 +50,7 @@ impl Simulated {
     pub(crate) fn poll(&self, now: u64, cx: &mut Context<'_>) {
         let mut driver = Driver {
             index: &self.index,
-            due: Vec::new().into_iter(),
+            due: None,
         };
         {
             let mut timer = self.timer.lock().unwrap_or_else(PoisonError::into_inner);
@@ -64,10 +64,11 @@ impl Simulated {
             }
         }
         let (due, next) = locked(&self.index).take_due(now);
-        driver.due = due.into_iter();
-        for fire in driver.due.by_ref() {
+        driver.due = Some(due.into_entries(|_| {}));
+        crate::delivery::deliver(driver.due.iter_mut().flatten(), |entry| {
+            let fire = entry.into_parts().1;
             fire(Ok(()));
-        }
+        });
         let mut timer = self.timer.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(until) = next.and_then(|deadline| {
             Instant::now().checked_add(std::time::Duration::from_millis(
