@@ -5,7 +5,22 @@ diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/
      /// Wall time at live provider dispatch, in Unix nanoseconds, with the
      /// shared wall clock's millisecond resolution. Unknown after recovery or
      /// when that observation cannot be represented as u64 nanoseconds.
-+    #[serde(skip_deserializing)]
++    #[serde(default, deserialize_with = "discard_usage_time")]
      pub started_at: Option<u64>,
      /// Wall time when the terminal provider event arrived, before its commit.
      /// Same units and resolution as started_at. Clock corrections can put this
+@@ -157,6 +158,14 @@ pub struct ModelUsageRecord {
+     pub cache: Option<ModelCacheObservation>,
+ }
+ 
++fn discard_usage_time<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
++where
++    D: serde::Deserializer<'de>,
++{
++    let _ = <Option<u64> as serde::Deserialize<'de>>::deserialize(deserializer)?;
++    Ok(None)
++}
++
+ /// Borrowed identity shared by original-request and original-usage readers.
+ /// Unknown fields retain their absence; completion measurements are excluded.
+ #[derive(PartialEq)]
