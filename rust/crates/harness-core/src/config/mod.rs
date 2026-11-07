@@ -12,6 +12,10 @@
 //! instruction budget, and the result must be plain data. A result or a
 //! failure is cached under the digest of everything it read. The most recent
 //! evaluation is reused without retaining a history of settings stacks.
+//! [`prepare`] retains the loader's original reads and scripts, including
+//! missing imports and semantic failures, so another evaluation of that cut
+//! needs no module reads or parsing. Its input identity describes evaluation;
+//! the caller retains authorization, generation and publication ownership.
 pub mod policy;
 mod types;
 
@@ -23,7 +27,9 @@ pub use types::{
 #[cfg(not(target_arch = "wasm32"))]
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
-pub use evaluate::{Evaluated, Surface, Tree, compose, evaluate};
+pub use evaluate::{
+    Evaluated, Evaluation, ModuleRead, Prepared, Surface, Tree, compose, evaluate, prepare,
+};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
 #[doc(hidden)]

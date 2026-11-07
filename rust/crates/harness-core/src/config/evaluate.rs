@@ -11,7 +11,7 @@ use std::sync::{
 };
 
 /// The evaluator's identity: a change to its semantics changes every key.
-const VERSION: &str = "acyclic.harness.config.v2";
+const VERSION: &str = "acyclic.harness.config.v3";
 
 /// Interrupt polls (QuickJS polls every ten thousand instructions)
 /// before a settings module stops. It is deterministic, so a module passes
@@ -50,6 +50,9 @@ pub struct Evaluated {
     pub digest: [u8; 32],
 }
 
+mod prepared;
+pub use prepared::{Evaluation, ModuleRead, Prepared, prepare};
+
 /// Evaluates the module at `path` holding `source`, with `base` as the value
 /// below it. Imports resolve in `tree`. A throw, an exhausted budget, an
 /// import outside the tree, a cycle, a missing `export default` or a result
@@ -72,43 +75,10 @@ async fn evaluate_cached(
     surface: Surface,
     cache: &Cache,
 ) -> Result<Evaluated> {
-    let invalid = |reason: String| Error::Invalid(format!("{path}: {reason}"));
-    let modules = closure(path, source, tree).await?.map_err(invalid)?;
-    let mut digest = blake3::Hasher::new_derive_key(VERSION);
-    for (name, module) in &modules {
-        digest.update(&(name.len() as u64).to_be_bytes());
-        digest.update(name.as_bytes());
-        digest.update(&module.digest);
-    }
-    let digest: [u8; 32] = digest.finalize().into();
-    let base = crate::contract::canonical_json_bytes(base)?;
-    let mut key = blake3::Hasher::new_derive_key(VERSION);
-    key.update(&digest);
-    key.update(&[u8::from(surface == Surface::Data)]);
-    key.update(&base);
-    let key: [u8; 32] = key.finalize().into();
-    let cached = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|(cached_key, _)| cached_key == &key)
-        .map(|(_, outcome)| outcome.clone());
-    let outcome = match cached {
-        Some(outcome) => outcome,
-        None => {
-            let outcome = run(&modules, &base, surface).map(Arc::new);
-            *cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, outcome.clone()));
-            outcome
-        }
-    };
-    let (value, form) = outcome.map_err(invalid)?.as_ref().clone();
-    Ok(Evaluated {
-        value,
-        form,
-        digest,
-    })
+    prepared::prepare_inner(path, source, tree)
+        .await?
+        .evaluate_cached(base, surface, cache)?
+        .into_result()
 }
 
 /// Folds the copies of a settings entry point over `layers` (lowest first)
@@ -151,66 +121,10 @@ fn cache() -> &'static Cache {
 struct Module {
     script: String,
     imports: Vec<String>,
-    digest: [u8; 32],
-}
-
-/// The module at `path` and everything it imports statically, each after
-/// the modules it imports (the engine links a module as it is declared), so
-/// the root is last. A read error is the outer error; an unusable closure is
-/// the inner one.
-async fn closure(
-    path: &str,
-    source: &[u8],
-    tree: &dyn Tree,
-) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
-    let mut modules = BTreeMap::new();
-    match strip(path, source) {
-        Ok(module) => modules.insert(path.to_owned(), (module, true)),
-        Err(error) => return Ok(Err(error)),
-    };
-    // The retained module records whether its dependency walk is still active.
-    // A completed shared dependency is reused without scanning the active path.
-    let mut stack = vec![(path.to_owned(), 0_usize)];
-    let mut order = Vec::new();
-    while let Some((current, index)) = stack.last_mut() {
-        let Some(next) = modules[current.as_str()].0.imports.get(*index) else {
-            if let Some((_, active)) = modules.get_mut(current.as_str()) {
-                *active = false;
-            }
-            order.push(std::mem::take(current));
-            stack.pop();
-            continue;
-        };
-        *index += 1;
-        #[cfg(any(test, feature = "test-support"))]
-        model::dependency_checked();
-        if let Some((_, active)) = modules.get(next) {
-            if *active {
-                return Ok(Err(format!("import cycle through {next}")));
-            }
-            continue;
-        }
-        let next = next.clone();
-        let Some(bytes) = tree.read(&next).await? else {
-            return Ok(Err(format!(
-                "{current} imports {next}, which no layer holds"
-            )));
-        };
-        match strip(&next, &bytes) {
-            Ok(module) => modules.insert(next.clone(), (module, true)),
-            Err(error) => return Ok(Err(error)),
-        };
-        stack.push((next, 0));
-    }
-    Ok(Ok(order
-        .into_iter()
-        .filter_map(|name| modules.remove(&name).map(|(module, _)| (name, module)))
-        .collect()))
 }
 
 /// `path`'s source as a JavaScript module and its resolved static imports.
 fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
-    let digest = blake3::hash(source).into();
     let text = std::str::from_utf8(source).map_err(|_| format!("{path} is not UTF-8"))?;
     if path.ends_with(".json") {
         serde_json::from_str::<serde::de::IgnoredAny>(text)
@@ -221,7 +135,6 @@ fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
                 serde_json::to_string(text).map_err(|error| error.to_string())?
             ),
             imports: Vec::new(),
-            digest,
         });
     }
     let source_type = if path.ends_with(".ts") {
@@ -277,11 +190,7 @@ fn strip(path: &str, source: &[u8]) -> std::result::Result<Module, String> {
             .collect::<std::result::Result<Vec<_>, _>>()?
     };
     imports.sort();
-    Ok(Module {
-        script,
-        imports,
-        digest,
-    })
+    Ok(Module { script, imports })
 }
 
 /// The name QuickJS gives `specifier` imported from `importer`: a leading
