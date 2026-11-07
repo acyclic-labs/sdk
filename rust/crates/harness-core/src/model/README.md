@@ -10,6 +10,8 @@ The retained projection property compares complete output bytes and authenticati
 traces with an independent baseline. It checks original custody retirement and
 equal original work/allocation deltas for equal history increments. The generated
 private-index property remains while other journal consumers use that index.
+Exact custody transfer traces belong to the shared encoding and retained-allocation
+properties; projection checks the original ledger's final retained bytes.
 
 The retained production mutation restores a prefix visit before each result:
 
