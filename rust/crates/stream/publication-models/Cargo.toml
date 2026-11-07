@@ -6,6 +6,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../../auth" }
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 loom = { version = "0.7.2", features = ["futures"] }
 futures = "0.3.31"
@@ -18,7 +19,7 @@ path = "publication.rs"
 required-features = ["model-checking"]
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("serde", "wasm"))'] }
 
 [features]
 model-checking = []
