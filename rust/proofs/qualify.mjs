@@ -19,6 +19,11 @@ const claims = {
     "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
     "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
     "wall clock retained a retired Tokio timer driver", [],
+    { mutations: [
+      { patch: "rust/proofs/system-clock-runtime-retirement/mutation.patch", label: "retired-runtime-driver", diagnostic: "wall clock retained a retired Tokio timer driver" },
+      { patch: "rust/proofs/system-clock-runtime-retirement/deferred.patch", label: "deferred-clock-capture", diagnostic: "wall clock escaped its original producer before first poll" },
+      { source: "rust/crates/native-runtime/src/wall_alarm/wait.rs", patch: "rust/proofs/system-clock-runtime-retirement/failure.patch", label: "masked-native-failure", diagnostic: "wall clock did not report original producer retirement" },
+    ] },
   ],
   "ready-alarm-progress": [
     "rust/crates/actors/src/local/ready.rs", "acyclic-actors",

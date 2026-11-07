@@ -39,6 +39,18 @@ mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
+
+/// Builds the single-threaded runtime for an independently replayable world.
+///
+/// The seed controls Tokio's randomized `select!` order, including dependencies.
+/// Replay also requires the same Tokio, dependency and compiler versions.
+pub fn seeded_runtime(seed: u64) -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+        .enable_all()
+        .build()
+}
+
 #[cfg(test)]
 thread_local! {
     static FORGET_HOST_CONTEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
