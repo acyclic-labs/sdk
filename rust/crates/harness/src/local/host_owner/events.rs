@@ -165,7 +165,7 @@ impl HostWorkspaceOwner {
             ));
         }
         first.verify().await?;
-        self.location(agent)
+        Ok(json!({"task":agent,"cwd":first.host_cwd()}))
     }
 }
 
