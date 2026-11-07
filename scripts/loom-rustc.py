@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Apply cfg(loom) to opted-in workspace crates, preserving upstream runtimes."""
-import subprocess
+import os
 import sys
 
 
@@ -12,12 +12,8 @@ def compiler_args(args):
 
 if __name__ == "__main__":
     try:
-        status = subprocess.call(compiler_args(sys.argv[1:]))
-        if status:
-            print("STEP_FAILED loom-rustc: compiler failed; recovery: correct the "
-                  "compiler diagnostics, then rerun node scripts/qualify-mcp-loom.mjs --gate",
-                  file=sys.stderr)
-        sys.exit(status)
+        args = compiler_args(sys.argv[1:])
+        os.execvp(args[0], args)
     except OSError as error:
         sys.exit(f"STEP_FAILED loom-rustc: {error}; recovery: restore the Rust toolchain "
                  "and rerun node scripts/qualify-mcp-loom.mjs --gate")
