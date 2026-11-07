@@ -1,11 +1,11 @@
 diff --git a/rust/crates/harness/src/local/host_owner/agents.rs b/rust/crates/harness/src/local/host_owner/agents.rs
-index ed48f51ad3b..8dfca4c5abf 100644
+index 6d44180b589..35725834386 100644
 --- a/rust/crates/harness/src/local/host_owner/agents.rs
 +++ b/rust/crates/harness/src/local/host_owner/agents.rs
 @@ -532,18 +532,6 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
  
  /// Spawned session `reference` of `parent`: the spawn intent names it.
- pub(in crate::local) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
+ pub(crate) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
 -    if reference.contains('/') {
 -        let child = AgentPath::try_from(reference.to_owned()).map_err(|_| {
 -            Error::Invalid("reference must be a local child name or a canonical AgentPath".into())
