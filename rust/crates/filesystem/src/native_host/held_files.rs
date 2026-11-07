@@ -2,6 +2,7 @@
 //! to a held directory handle, so replacing the root's path never redirects
 //! one.
 use super::*;
+#[cfg(any(test, feature = "native-mount"))]
 use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;

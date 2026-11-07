@@ -13,7 +13,6 @@ use crate::storage::{
     AppendOutcome, AuthorityStoreError, GuardedAppend, ObjectId, ObjectKind, PublicationPermit,
 };
 use acyclic_stream::ProviderTask;
-use bytes::Bytes;
 use thiserror::Error;
 
 mod owner;

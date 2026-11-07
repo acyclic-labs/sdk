@@ -15,6 +15,7 @@ pub(super) fn decode_publication_gate(
     Ok(Some(ReservedPublication::decode(reserved)?.operation))
 }
 
+#[cfg(test)]
 pub(super) fn stream_key(
     domain: &[u8],
     identity: &[u8],

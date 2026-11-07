@@ -45,7 +45,9 @@ mod merge;
 mod metadata;
 pub(crate) use metadata::read_file_metadata_with_accounting;
 mod references;
-pub(crate) use references::{visit_object_references, visit_record_references};
+pub(crate) use references::visit_object_references;
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
 mod path_access;
