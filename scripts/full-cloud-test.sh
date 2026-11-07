@@ -14,6 +14,10 @@ result=$(mktemp -d "$SDK_ARTIFACT_DIR/full-cloud.XXXXXX") || {
 }
 # Nextest supplies this exact test binary and its arguments. The shared producer
 # owns readiness, endpoint injection and teardown for this one fresh topology.
-exec node "$(dirname -- "${BASH_SOURCE[0]}")/local-cloud.mjs" \
+node "$(dirname -- "${BASH_SOURCE[0]}")/local-cloud.mjs" \
   --cloud "$CLOUD_SOURCE" --binaries "$CLOUD_BINARIES" \
-  --out "$result/topology" --topology full -- "$@"
+  --out "$result/topology" --topology full -- "$@" || {
+  status=$?
+  echo "STEP_FAILED qualify-full-cloud-case: status=$status; recovery: $recovery" >&2
+  exit "$status"
+}
