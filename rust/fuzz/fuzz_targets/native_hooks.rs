@@ -7,6 +7,27 @@ use acyclic_harness::host_hooks::{
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
+    assert!(
+        check_codex_version(include_str!(
+            "../../crates/harness/fixtures/hosts/codex-0.164.0.stdout"
+        ))
+        .is_ok(),
+        "captured supported Codex version was refused"
+    );
+    assert!(
+        check_codex_version(include_str!(
+            "../../crates/harness/fixtures/hosts/codex-0.146.0.stdout"
+        ))
+        .is_err(),
+        "captured obsolete Codex version was admitted"
+    );
+    for (event, groups) in claude_hooks("acyclic") {
+        assert_eq!(
+            claude_hook_executable(event, &groups[0]).as_deref(),
+            Some("acyclic"),
+            "native hook writer output was refused"
+        );
+    }
     let Ok(text) = std::str::from_utf8(data) else {
         return;
     };

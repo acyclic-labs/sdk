@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-hook-admission": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "native hook writer output was refused", [],
+    {
+      fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/native-hook-admission/version-refusal.patch", label: "supported-version-refused", diagnostic: "captured supported Codex version was refused" },
+        { patch: "rust/proofs/native-hook-admission/version-admission.patch", label: "obsolete-version-admitted", diagnostic: "captured obsolete Codex version was admitted" },
+        { patch: "rust/proofs/native-hook-admission/ownership.patch", label: "writer-ownership-refused", diagnostic: "native hook writer output was refused" },
+      ],
+    },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
@@ -202,25 +214,28 @@ if (claim === "--help" && extra.length === 0) {
   try {
     const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
-    step = "check mutation anchors";
-    const anchor = run("git", ["apply", "--check", patch]);
-    if (anchor.status !== 0) throw new Error(anchor.output);
-    try {
-      step = "apply production mutation";
-      const applied = run("git", ["apply", patch]);
-      if (applied.status !== 0) throw new Error(applied.output);
-      step = "unchanged oracle rejects production mutation";
-      const mutated = check(options.negativeLabel ?? "mutated");
-      require(options.fuzz
-        ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(diagnostic)
-          && mutated.output.includes("ERROR: libFuzzer:")
-        : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
-        && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
-    } finally {
-      writeFileSync(sourcePath, original);
+    const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
+    for (const mutation of mutations) {
+      step = `check mutation anchors: ${mutation.patch}`;
+      const anchor = run("git", ["apply", "--check", mutation.patch]);
+      if (anchor.status !== 0) throw new Error(anchor.output);
+      try {
+        step = `apply production mutation: ${mutation.patch}`;
+        const applied = run("git", ["apply", mutation.patch]);
+        if (applied.status !== 0) throw new Error(applied.output);
+        step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+        const mutated = check(mutation.label);
+        require(options.fuzz
+          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && mutated.output.includes("ERROR: libFuzzer:")
+          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+          && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+      } finally {
+        writeFileSync(sourcePath, original);
+      }
+      step = "restore exact original source";
+      require(readFileSync(sourcePath).equals(original));
     }
-    step = "restore exact original source";
-    require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
     const completed = options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
