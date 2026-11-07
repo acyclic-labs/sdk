@@ -31,6 +31,28 @@ impl CallTarget {
 pub struct CallAuthorization(pub(super) ResourceAuthorization);
 
 impl CallAuthorization {
+    /// Bind a dependent product action to an exact resource or canonical
+    /// subtree. This creates no grant: every disclosure must still call the
+    /// returned authorization with the entry's facts and current owner policy.
+    /// It shares the original call's current credential and rechecks both
+    /// targets against current trust, including after suspension or renewal.
+    /// The call owner must also retain its own current product-policy fence.
+    pub fn dependent_resource(
+        &self,
+        resource: acyclic_auth::contract::ResourcePattern,
+        action: &'static str,
+    ) -> Result<ResourceAuthorization, StreamError> {
+        let prefix = resource.prefix;
+        let target = CallTarget::new(resource.name, action)?;
+        Ok(self.0.dependent(
+            acyclic_auth::contract::ResourcePattern {
+                name: target.resource,
+                prefix,
+            },
+            target.action,
+        ))
+    }
+
     /// Authorize an account-owned target using the same current verified
     /// credential for both the certified account and resource grant checks.
     /// A namespace grant cannot confer access to another account's target.
@@ -46,7 +68,7 @@ impl CallAuthorization {
             return Err(StreamError::AccessDenied);
         }
         self.0
-            .authorize_account(resource, keys, attributes, policy, Some(account))
+            .authorize_in_account(account, resource, keys, attributes, policy)
     }
 
     /// Issuer-attested identity used by the owning host's input staging/control.

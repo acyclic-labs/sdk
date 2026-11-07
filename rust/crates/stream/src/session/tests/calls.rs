@@ -13,6 +13,251 @@ struct InputCalls {
     action: &'static str,
 }
 
+struct DependentCalls {
+    admitted: tokio::sync::mpsc::UnboundedSender<(CallAuthorization, oneshot::Sender<Bytes>)>,
+}
+
+impl CallProvider for DependentCalls {
+    fn target(&self, _: &[u8]) -> Result<CallTarget, StreamError> {
+        CallTarget::new("actors:/fixture".into(), "actors/invoke")
+    }
+
+    fn call(
+        &self,
+        _: Bytes,
+        authorization: CallAuthorization,
+    ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
+        let admitted = self.admitted.clone();
+        Box::pin(async move {
+            let (answer, reply) = oneshot::channel();
+            admitted
+                .send((authorization, answer))
+                .map_err(|_| StreamError::Unavailable)?;
+            reply.await.map_err(|_| StreamError::Unavailable)
+        })
+    }
+}
+
+#[tokio::test]
+async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestResult {
+    use acyclic_auth::{authority::PolicyDecision, contract::*};
+    let state = authority::tests::State::new();
+    let authority = Arc::new(authority::tests::authority(state.clone()));
+    let grants = vec![
+        ResourceGrant {
+            resource: ResourcePattern {
+                name: "actors:/fixture".into(),
+                prefix: false,
+            },
+            actions: vec!["actors/invoke".into()],
+        },
+        ResourceGrant {
+            resource: ResourcePattern {
+                name: "fs:/volume".into(),
+                prefix: true,
+            },
+            actions: vec!["fs/read".into()],
+        },
+    ];
+    let credential = testing::credential_with_grants(grants.clone());
+    let renewed = acyclic_auth::testing::root(|block| {
+        if let Some(key) = block
+            .certificates
+            .as_mut()
+            .and_then(|chain| chain.keys.first_mut())
+        {
+            key.key.grants = GrantSet {
+                grants: grants
+                    .iter()
+                    .cloned()
+                    .map(|grant| Grant {
+                        kind: GrantKind::Resource(grant),
+                    })
+                    .collect(),
+            };
+        }
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Label("renewed dependent call".into()),
+        });
+    });
+    let (admitted, mut calls) = tokio::sync::mpsc::unbounded_channel();
+    let client = Client::in_process_with_products(
+        Arc::new(MemoryStream::default()),
+        authority,
+        None,
+        Arc::new(DependentCalls { admitted }),
+        Arc::new(crate::runtime::PlatformExecutor),
+        None,
+    );
+    client.register_credential(0, credential)?;
+    let invocation = Bytes::from_static(b"dependent resource query");
+    let reply = client.actor_call_chunks(&invocation, 0, 128).await?;
+    let mut reply = core::pin::pin!(reply);
+    let (original, answer) = calls.recv().await.ok_or("call did not dispatch")?;
+    let dependency = original.dependent_resource(
+        ResourcePattern {
+            name: "fs:/volume/visible".into(),
+            prefix: true,
+        },
+        "fs/read",
+    )?;
+    assert!(Arc::ptr_eq(&original.0.current()?, &dependency.current()?));
+    let attributes = RecordAttributes::try_new(vec![])?;
+    for prefix in [false, true] {
+        let selected = original.dependent_resource(
+            ResourcePattern {
+                name: "fs:/volume/visible".into(),
+                prefix,
+            },
+            "fs/read",
+        )?;
+        let indexed = selected.filter_paths("fs:/volume", &crate::FollowFilter::default());
+        assert!(
+            indexed.is_ok(),
+            "dependent index ignored its declared action"
+        );
+        let indexed = indexed?;
+        for (key, expected) in [
+            (b"visible".as_slice(), true),
+            (b"visible/file", prefix),
+            (b"visible-neighbor", false),
+        ] {
+            assert_eq!(
+                indexed.matches(&crate::RecordHeaders::new(
+                    vec![key.to_vec().into()],
+                    vec![]
+                )?),
+                expected,
+                "dependent index broadened its declared exact resource"
+            );
+        }
+    }
+    let current = original.0.current()?;
+    let account = current.account_id()?;
+    dependency.authorize_in_account(
+        account.as_bytes(),
+        "fs:/volume/visible/file",
+        &[],
+        &attributes,
+        PolicyDecision::Allow,
+    )?;
+    for resource in ["fs:/volume/visible-neighbor", "fs:/volume/hidden/file"] {
+        assert_eq!(
+            dependency.authorize(resource, &[], &attributes, PolicyDecision::Allow),
+            Err(StreamError::AccessDenied),
+            "dependent scope escaped its original declared boundary"
+        );
+    }
+    assert_eq!(
+        original.authorize(
+            "fs:/volume/visible/file",
+            &[],
+            &attributes,
+            PolicyDecision::Allow,
+        ),
+        Err(StreamError::AccessDenied)
+    );
+    assert_eq!(
+        dependency.authorize_in_account(
+            b"other account",
+            "fs:/volume/visible/file",
+            &[],
+            &attributes,
+            PolicyDecision::Allow,
+        ),
+        Err(StreamError::AccessDenied)
+    );
+    assert_eq!(
+        dependency.authorize(
+            "fs:/volume/visible/file",
+            &[],
+            &attributes,
+            PolicyDecision::Deny,
+        ),
+        Err(StreamError::AccessDenied),
+        "dependent disclosure ignored the owner's current policy"
+    );
+    let listed = original.dependent_resource(
+        ResourcePattern {
+            name: "fs:/volume/visible".into(),
+            prefix: true,
+        },
+        "fs/list",
+    )?;
+    assert_eq!(
+        listed.authorize(
+            "fs:/volume/visible",
+            &[],
+            &attributes,
+            PolicyDecision::Allow
+        ),
+        Err(StreamError::AccessDenied),
+        "dependent action was replaced by the host's broader authority"
+    );
+    // A second admitted call is an ordered protocol barrier after renewal.
+    // The first provider is still suspended on its original result event.
+    let previous = dependency.current()?;
+    client.register_credential(0, renewed.into())?;
+    let barrier = client.actor_call_chunks(&invocation, 0, 128).await?;
+    let mut barrier = core::pin::pin!(barrier);
+    let (renewed, completed) = calls
+        .recv()
+        .await
+        .ok_or("renewal barrier did not dispatch")?;
+    assert!(
+        !Arc::ptr_eq(&previous, &dependency.current()?),
+        "dependent resource detached from the original credential renewal"
+    );
+    assert!(Arc::ptr_eq(&renewed.0.current()?, &dependency.current()?));
+    completed
+        .send(Bytes::from_static(b"renewed"))
+        .map_err(|_| "renewed producer was lost")?;
+    assert_eq!(
+        barrier.next().await.ok_or("barrier ended")??.1.as_ref(),
+        b"renewed"
+    );
+    assert!(barrier.next().await.is_none());
+    answer
+        .send(Bytes::from_static(b"checked"))
+        .map_err(|_| "original result producer was lost")?;
+    assert_eq!(
+        reply.next().await.ok_or("reply ended")??.1.as_ref(),
+        b"checked"
+    );
+    assert!(reply.next().await.is_none());
+
+    // The actual dispatched producer owns this result event. Losing it must
+    // end the public call rather than leave a live query waiting for a reply.
+    let lost = client.actor_call_chunks(&invocation, 0, 128).await?;
+    let mut lost = core::pin::pin!(lost);
+    let (_, producer) = calls.recv().await.ok_or("second call did not dispatch")?;
+    drop(producer);
+    assert!(matches!(
+        lost.next().await,
+        Some(Err(StreamError::Unavailable))
+    ));
+
+    let revoked = client.actor_call_chunks(&invocation, 0, 128).await?;
+    let mut revoked = core::pin::pin!(revoked);
+    let (_authorization, _producer) = calls.recv().await.ok_or("third call did not dispatch")?;
+    state.publish(acyclic_auth::testing::Snapshot::default(), u64::MAX);
+    assert_eq!(
+        dependency.authorize(
+            "fs:/volume/visible/file",
+            &[],
+            &attributes,
+            PolicyDecision::Allow,
+        ),
+        Err(StreamError::AccessDenied),
+        "dependent disclosure used a stale trust snapshot"
+    );
+    assert!(matches!(
+        revoked.next().await,
+        Some(Err(StreamError::AccessDenied))
+    ));
+    Ok(())
+}
+
 // Hold the actual request stream at EOF while the original server and client
 // continue running. No alternate dispatch, credit or terminal is supplied.
 struct HeldInputTerminal {
