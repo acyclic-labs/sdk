@@ -11,7 +11,12 @@ const UNAVAILABLE: Canonical<'static> = Canonical {
 
 /// Decodes a member's status. Unavailable keeps the member's original status
 /// (code, message, details and product metadata) as its refusal.
-pub(crate) fn status(error: &Status) -> StreamError {
+///
+/// Adapters use this shared conversion so status classification and recovery
+/// semantics agree with the native and browser clients. Refusal diagnostics
+/// never grant retry permission; recovery follows [`StreamError::uncertain`].
+#[must_use]
+pub fn status(error: &Status) -> StreamError {
     match category(error) {
         StreamError::Unavailable => Refusal::capture(
             error.code() as i32,
@@ -50,7 +55,10 @@ pub(crate) fn category(error: &Status) -> StreamError {
     }
 }
 
-pub(crate) fn error_status(error: &StreamError) -> Status {
+/// Encodes a Stream failure, reproducing a retained member status verbatim.
+/// A failure without retained diagnostics uses its canonical status.
+#[must_use]
+pub fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidResponse => Status::data_loss("invalid_response"),
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),

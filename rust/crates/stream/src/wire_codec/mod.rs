@@ -51,4 +51,4 @@ pub(crate) mod status;
 #[doc(hidden)]
 pub mod status_contract;
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
-pub(crate) use status::{error_status, status};
+pub use status::{error_status, status};
