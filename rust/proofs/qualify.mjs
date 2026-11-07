@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "dispatcher-clock-retirement": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::clock::running_dispatcher_reports_its_original_clock_retirement",
+    "dispatcher did not return its original retired clock failure", [],
+  ],
   "system-clock-runtime-retirement": [
     "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
     "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
