@@ -23,6 +23,12 @@ const claims = {
       { patch: "rust/proofs/cli-failure-output/shutdown.patch", label: "shutdown-omitted", diagnostic: "failure output retained a lost shutdown producer" },
     ] },
   ],
+  "seeded-runtime-configuration": [
+    "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
+    "seeded_runtime_requires_explicit_executor_configuration",
+    "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
+    { target: ["--test", "seeded_runtime"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
