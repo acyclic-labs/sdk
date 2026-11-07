@@ -37,6 +37,7 @@
   ],
   "assert": {
     "requests": 2,
+    "tool_contains": ["bytes omitted from this preview", "complete output:"],
     "files": {
       "bash.txt": "BASH_E2E_CONTENT\n"
     }
