@@ -194,7 +194,12 @@ impl HostWorkspace {
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let parsed = commands.fs_arguments(command, &self.scope)?;
+        let mut parsed = commands.fs_arguments(command, &self.scope)?;
+        crate::tools::resolve_child_branch(
+            &self.agent,
+            &mut parsed.arguments,
+            super::host_owner::child,
+        )?;
         let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
         let (selected, pending) = self.workspace.selected_view().await?;
@@ -280,12 +285,7 @@ impl HostWorkspace {
             selected.workspace().id(),
             self.workspace.store.clone(),
         )
-        .register_branch_workspace(
-            format!("agents/{reference}"),
-            view.workspace().id(),
-            None,
-            false,
-        )
+        .register_branch_workspace(child.as_str(), view.workspace().id(), None, false)
         .await
         .map_err(storage)?;
         drop(state);

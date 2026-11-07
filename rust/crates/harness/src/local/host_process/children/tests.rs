@@ -33,7 +33,83 @@ async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
 async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Result {
     for host in ["codex", "claude-code", "pi"] {
         served(host, references).await?;
+        served(host, shared_references).await?;
     }
+    Ok(())
+}
+
+/// Parent-local names remain independent across roots and a nested fork,
+/// even though both roots deliberately share the original checkout.
+fn shared_references(host: &str, cwd: &Path) -> Result {
+    let (mut left, left_parent) = children(host, cwd, "shared-left")?;
+    let (mut right, right_parent) = children(host, cwd, "shared-right")?;
+    let spawn = || SessionAction::Spawn {
+        prompt: "shared child name".into(),
+    };
+    let (left_run, left_view) = claim(&mut left, cwd, "shared", spawn())?;
+    let left_task = left_run.claim.agent.clone();
+    let (right_run, right_view) = claim(&mut right, cwd, "shared", spawn())
+        .map_err(|cause| failed("parent-scoped child reference", cause))?;
+    assert_ne!(left_task, right_run.claim.agent);
+    let mut nested = NativeChildren::own(host, cwd, left_task.clone(), Vec::new())?;
+    let (nested_run, nested_view) = claim(&mut nested, cwd, "shared", spawn())?;
+    assert!(nested_run.claim.agent.is_child_of(&left_task));
+    let events = match host {
+        "codex" => include_str!("../fixtures/codex-completed.jsonl"),
+        "claude-code" => include_str!("../fixtures/claude-code-completed.jsonl"),
+        "pi" => include_str!("../fixtures/pi-assistant-error.jsonl"),
+        _ => return Err(failed("select captured native output", host)),
+    };
+    for (sessions, mut running, view, name) in [
+        (&mut nested, nested_run, nested_view, "nested"),
+        (&mut left, left_run, left_view, "left"),
+        (&mut right, right_run, right_view, "right"),
+    ] {
+        let mut command = native_fixture(&view, events, "0");
+        running
+            .process
+            .spawn(&mut command, running.claim.operation)?;
+        shell_pid(&mut running)?;
+        running.process.queue_stdin(b"release\n".to_vec())?;
+        wait_exit(&mut running)?;
+        fs::rename(view.join("partial.txt"), view.join(format!("{name}.txt")))?;
+        let completed = sessions
+            .refresh("shared", &mut running, &mut [0; 8192])?
+            .ok_or("shared child did not settle")?;
+        assert_eq!(completed["status"]["settled"], true);
+        assert!(
+            !cwd.join(format!("{name}.txt")).exists(),
+            "child write escaped its fork"
+        );
+    }
+    for parent in [left_task, left_parent.clone(), right_parent.clone()] {
+        for command in ["diff agents/shared", "merge agents/shared"] {
+            host_files::request(
+                cwd,
+                HostAction::Fs {
+                    task: parent.clone(),
+                    command: command.into(),
+                },
+            )?;
+        }
+    }
+    for name in ["nested", "left", "right"] {
+        assert_eq!(fs::read(cwd.join(format!("{name}.txt")))?, b"captured");
+    }
+    host_files::request(
+        cwd,
+        HostAction::Fs {
+            task: left_parent,
+            command: "discard agents/shared".into(),
+        },
+    )?;
+    host_files::request(
+        cwd,
+        HostAction::Fs {
+            task: right_parent,
+            command: "diff agents/shared".into(),
+        },
+    )?;
     Ok(())
 }
 

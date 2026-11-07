@@ -147,6 +147,29 @@ pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     TurnEffect::child(parent, &intent).map_err(agent)
 }
 
+/// Resolves the child operand of diff, merge or discard exactly once. File
+/// operands (including `add agents/file`) retain their ordinary path meaning.
+/// The driver supplies its existing child derivation; the repository key is
+/// always the complete canonical address, including the owning ancestry.
+pub fn resolve_child_branch(
+    parent: &AgentPath,
+    arguments: &mut [String],
+    resolve: fn(&AgentPath, &str) -> Result<AgentPath>,
+) -> Result<Option<AgentPath>> {
+    let [command, branch] = arguments else {
+        return Ok(None);
+    };
+    if !matches!(command.as_str(), "diff" | "merge" | "discard") {
+        return Ok(None);
+    }
+    let Some(name) = branch.strip_prefix("agents/") else {
+        return Ok(None);
+    };
+    let child = resolve(parent, name)?;
+    *branch = child.as_str().to_owned();
+    Ok(Some(child))
+}
+
 impl AgentTool {
     async fn run(
         &self,

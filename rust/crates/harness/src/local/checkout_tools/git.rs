@@ -27,7 +27,7 @@ impl CheckoutTools {
 
     pub(super) async fn fs(
         &self,
-        parsed: crate::tools::FsCommand,
+        mut parsed: crate::tools::FsCommand,
         context: &ToolContext,
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
@@ -36,7 +36,7 @@ impl CheckoutTools {
         // its own checkout.
         if let Some((agent, volumes)) = context.task().agent() {
             self.workspace
-                .register_named_children(agent, volumes, &parsed.arguments)
+                .register_named_children(agent, volumes, &mut parsed.arguments)
                 .await?;
         }
         match self

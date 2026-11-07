@@ -33,6 +33,13 @@ const claims = {
     ["--no-default-features", "--features", "filesystem-local,native-execution"],
     { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
   ],
+  "native-child-branch-scope": [
+    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "parent-scoped child reference",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
+  ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
     "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating",
