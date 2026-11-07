@@ -1,0 +1,8 @@
+diff --git a/plugin/tests/hosts/managed-session.py b/plugin/tests/hosts/managed-session.py
+--- a/plugin/tests/hosts/managed-session.py
++++ b/plugin/tests/hosts/managed-session.py
+@@ -225,3 +225,4 @@ with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.
+   finally:
+    try:close_bridge()
+    finally:stop_owner()
++assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'
