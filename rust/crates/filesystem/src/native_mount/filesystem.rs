@@ -267,7 +267,9 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<(), MountSourceError>;
     /// Creates a same-volume hard link and returns its original binding stamp.
     /// When supplied, `expected` fences the source identity before any mutation.
-    /// `facts` requests adopted metadata when List permits its disclosure.
+    /// `facts` requires List authority before mutation and requests adopted
+    /// metadata. Revocation before return withholds those optional facts without
+    /// discarding the installed completion stamp.
     fn hard_link(
         &self,
         source: &MountPath,

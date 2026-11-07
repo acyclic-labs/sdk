@@ -158,10 +158,11 @@ where
             let source_authority = view
                 .pin(&source)
                 .map_err(|_| MountSourceError::AccessDenied)?;
-            let facts = facts
-                && source_authority
-                    .decide(crate::access::Action::List, now)
-                    .allowed;
+            if facts {
+                // Refuse missing metadata authority before installing a name
+                // whose native reply requires those facts.
+                access::require(&source_authority, crate::access::Action::List, now)?;
+            }
             let actions = crate::native_mount::actions::Mutation::HardLink.actions();
             access::require(&source_authority, actions.0, now)?;
             access::require(

@@ -916,9 +916,16 @@ fn native_relocations_cannot_disclose_denied_files_or_descendants()
 
 #[test]
 fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std::error::Error>> {
-    for (action, pattern, allowed) in [(Action::Read, "private", false), (Action::List, "**", true)]
-    {
-        let source = source(FilesystemProfile::Portable)?;
+    for (action, pattern, facts, allowed) in [
+        (Action::Read, "private", false, false),
+        (Action::List, "**", false, true),
+        (Action::List, "**", true, false),
+    ] {
+        let (source, around) = sources(
+            FilesystemProfile::Portable,
+            ConsistencyMode::Pinned,
+            MountPublication::Manual,
+        )?;
         seed(&source, "private", b"secret")?;
         let source = bind_test_access(source, vec![deny("private", &[action], pattern)], None)?;
         let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
@@ -926,8 +933,12 @@ fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std
             &native_test_path("private"),
             &native_test_path("public"),
             None,
-            true,
+            facts,
             &work,
+        );
+        assert_eq!(
+            around.lookup(&native_test_path("public"))?.is_some(),
+            allowed
         );
         if allowed {
             assert!(
