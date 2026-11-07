@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildContractTargets, captureContractCommand, contractTargetOutputs } from "./contract-targets.mjs";
 import { workspaceManifests } from "./package-closure.mjs";
-import { checkGenerated } from "./generated-bindings.mjs";
+import { checkGenerated, projectGenerated } from "./generated-bindings.mjs";
 
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
@@ -108,13 +108,12 @@ export async function generateContracts(mode = "write", families = []) {
       for (const [relative, content] of Object.entries(files)) {
         const path = join(root, relative);
         const baseline = relative.startsWith("fixtures/") || relative.startsWith("rust/crates/harness/fixtures/");
-        if (mode === "write" && !baseline) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, content); }
-        else {
-          try { checkGenerated(path, content); }
-          catch (error) {
-            if (!error.message.startsWith("STEP_FAILED generated-artifact:")) throw error;
-            stale.push(relative);
-          }
+        try {
+          if (baseline) checkGenerated(path, content);
+          else projectGenerated(path, content, mode === "check");
+        } catch (error) {
+          if (!error.message.startsWith("STEP_FAILED generated-artifact:")) throw error;
+          stale.push(relative);
         }
       }
       report.generators.push({ name: modules[index], execute_ms, render_compare_ms: performance.now() - renderStart });
