@@ -352,6 +352,21 @@ impl<K> Registration<K> {
     /// observation cannot move generation or consumption backwards. Reinstalling
     /// an unconsumed alarm permits retry after an unsuccessful physical attempt.
     pub fn update_alarm(&self, alarm: &super::Alarm) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, alarm.pending())
+    }
+
+    /// Record `alarm` as the one the running delivery consumes. That delivery
+    /// is its wake, so it leaves the due index: a failed attempt is retried by
+    /// the actor's next event, never by its own elapsed deadline.
+    pub fn deliver_alarm(&self, alarm: &super::Alarm) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, None)
+    }
+
+    fn observe_alarm(
+        &self,
+        alarm: &super::Alarm,
+        deadline: Option<u64>,
+    ) -> Result<(), super::Error> {
         if alarm.deadline_unix_ms == Some(0)
             || (alarm.deadline_unix_ms.is_some() && alarm.generation == 0)
             || alarm
@@ -377,9 +392,7 @@ impl<K> Registration<K> {
         {
             return Err(super::Error::Conflict);
         }
-        let due = alarm
-            .pending()
-            .map(|deadline| (deadline, self.id, alarm.generation));
+        let due = deadline.map(|deadline| (deadline, self.id, alarm.generation));
         if &entry.alarm == alarm && entry.due == due {
             return Ok(());
         }

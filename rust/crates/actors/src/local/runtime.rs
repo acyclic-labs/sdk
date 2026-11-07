@@ -798,10 +798,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             {
                 return Ok(true);
             }
-            slot.registration.update_alarm(state.alarm())?;
             let now = self.clock.now_unix_ms();
+            let due = state
+                .alarm()
+                .pending()
+                .is_some_and(|deadline| deadline <= now);
+            // The alarm this attempt delivers is not also a due wake: on
+            // failure it would refire at once, redelivering forever.
+            if due {
+                slot.registration.deliver_alarm(state.alarm())?;
+            } else {
+                slot.registration.update_alarm(state.alarm())?;
+            }
             let (trigger, record) = match state.alarm().pending() {
-                Some(deadline) if deadline <= now => (
+                Some(_) if due => (
                     Trigger::Alarm {
                         generation: state.alarm().generation(),
                         now_unix_ms: now,
