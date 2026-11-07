@@ -64,7 +64,10 @@ fn callback_failure_and_panic_join_the_other_physical_worker()
             panic,
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            packet_workers::run(&owner, NonZeroU32::MIN.saturating_add(1))
+            packet_workers::run(&owner, NonZeroU32::MIN.saturating_add(1), |created| {
+                assert_eq!(created, 2, "startup preceded physical worker creation");
+                Ok(())
+            })
         }));
         if panic {
             assert!(result.is_err());

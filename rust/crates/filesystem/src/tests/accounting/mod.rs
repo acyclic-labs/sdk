@@ -7,7 +7,7 @@ use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::kernel::{RetentionKind, retention_authority_id, volume_authority_id};
-use crate::storage::{AuthorityStoreError, ObjectId, ObjectKind, ReplayLimit};
+use crate::storage::{AuthorityStoreError, ObjectId, ReplayLimit};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthorityWork, CancellationToken, Fs, IdempotencyKey,
     MemoryFs, MemoryObjectBackend, WorkBudget,

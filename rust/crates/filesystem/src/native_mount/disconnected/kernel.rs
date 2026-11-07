@@ -34,7 +34,6 @@ pub(in crate::native_mount) struct Kernel {
 struct Fixture {
     base: Statx,
     helper_stat: rustix::fs::Stat,
-    early_release: bool,
     verify_recovery: bool,
 }
 struct State {
@@ -77,7 +76,6 @@ impl Kernel {
     pub(in crate::native_mount) fn install(
         base: Statx,
         helper_stat: rustix::fs::Stat,
-        early_release: bool,
         verify_recovery: bool,
     ) -> Arc<Self> {
         let kernel = current().unwrap();
@@ -87,7 +85,6 @@ impl Kernel {
                 .set(Fixture {
                     base,
                     helper_stat,
-                    early_release,
                     verify_recovery
                 })
                 .is_ok()
@@ -123,10 +120,6 @@ impl Kernel {
 
     pub(in crate::native_mount) fn registry_admission_disabled(&self) -> bool {
         self.missing_registry_admission.get().is_some()
-    }
-
-    pub(in crate::native_mount) fn early_release(&self) -> bool {
-        self.fixture.get().unwrap().early_release
     }
 
     pub(in crate::native_mount) fn stat(&self, fd: RawFd, flags: AtFlags) -> io::Result<Statx> {

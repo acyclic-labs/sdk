@@ -304,14 +304,9 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 /// Creates unbounded native work.
 #[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn ordinary_work() -> DemandWork {
-    #[cfg(not(loom))]
-    static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
-        std::sync::LazyLock::new(crate::CancellationToken::new);
-    #[cfg(loom)]
-    loom::lazy_static! {
-        static ref CANCELLATION: crate::CancellationToken = crate::CancellationToken::new();
-    }
-    DemandWork::new(WorkBudget::UNBOUNDED, &CANCELLATION)
+    // Each work owns its never-cancelled token: a process-global token would
+    // outlive every model execution whose primitives it holds.
+    DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
 }
 
 /// Maps native demand failures to I/O errors.

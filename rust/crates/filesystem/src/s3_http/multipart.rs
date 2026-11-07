@@ -1,4 +1,3 @@
-use acyclic_stream::StreamProviderExt as _;
 #[derive(Clone, Debug)]
 struct MultipartPart {
     staged: StagedContent,
