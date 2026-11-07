@@ -291,6 +291,9 @@ undocumented_unsafe_blocks = "deny"
 # independently compiled wire and identity leaves do not need it.
 [profile.dev]
 opt-level = 1
+# Parallel code generation without local ThinLTO keeps dev and test builds fast.
+lto = "off"
+codegen-units = 64
 # Keep panic/backtrace file:line information without full type/variable debuginfo.
 debug = "line-tables-only"
 
