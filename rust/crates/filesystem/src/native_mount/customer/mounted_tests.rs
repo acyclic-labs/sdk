@@ -58,7 +58,12 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     );
     path_work.receipt().verify(path_budget)?;
     assert_eq!(head(lazy.workspace(), &setup).await?, generation);
-    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    assert_eq!(
+        std::fs::read_dir(destination.path())
+            .expect("unfunded mount must leave the original directory readable")
+            .count(),
+        0
+    );
 
     let startup_work = new_work(WorkBudget::UNBOUNDED)?;
     let Err(MountLifecycleError::Native(NativeMountError::StartupFailed(mut startup))) = lazy
@@ -82,14 +87,16 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     }
     assert!(startup.owner().cleanup_state().cleanup_complete());
 
-    let unmounted_identity = crate::capture_root_identity(destination.path())?;
+    let unmounted_identity = crate::capture_root_identity(destination.path())
+        .expect("capture the original unmounted directory identity");
     let mount_work = new_work(WorkBudget::UNBOUNDED)?;
     let mount = lazy
         .mount(
             destination.path(),
             options.native_context(&mount_work, None, None),
         )
-        .await?;
+        .await
+        .expect("mount the original customer source");
     let query = new_work(WorkBudget::UNBOUNDED)?;
     let before = mount.snapshot(&query, &cancellation).await?;
     assert_eq!(before.authored_generation, generation);
@@ -130,11 +137,23 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert_eq!(bytes.as_ref(), b"source");
     drop(bytes);
     assert_eq!(
-        std::fs::read(destination.path().join("authored.txt"))?,
+        std::fs::read(destination.path().join("authored.txt")).unwrap_or_else(|error| {
+            panic!(
+                "read authored file through the kernel: {error:?}; original callback: {:?}",
+                mount.take_callback_failure()
+            )
+        }),
         b"authored"
     );
     #[cfg(not(windows))]
-    std::fs::write(destination.path().join("authored.txt"), b"native edit")?;
+    std::fs::write(destination.path().join("authored.txt"), b"native edit").unwrap_or_else(
+        |error| {
+            panic!(
+                "write authored file through the kernel: {error:?}; original callback: {:?}",
+                mount.take_callback_failure()
+            )
+        },
+    );
     #[cfg(windows)]
     {
         // ProjFS excludes its provider process's own I/O from notifications.
@@ -310,15 +329,23 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert!(mount.retire(&cancelled).is_err());
     assert!(mount.native_root_identity().is_some());
     mount_work.cancellation().cancel();
-    let drained = mount.retire(&CancellationToken::new())?;
+    let drained = mount
+        .retire(&CancellationToken::new())
+        .expect("acknowledge original physical retirement");
     assert!(mount.source.physically_retired()?);
     assert!(mount.native_source_io_lease().is_err());
     assert_eq!(
-        crate::capture_root_identity(destination.path())?,
+        crate::capture_root_identity(destination.path())
+            .expect("capture the original directory after acknowledged retirement"),
         unmounted_identity,
         "retirement acknowledged before the original native namespace detached"
     );
-    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    assert_eq!(
+        std::fs::read_dir(destination.path())
+            .expect("read the original directory after acknowledged retirement")
+            .count(),
+        0
+    );
     let repeated = mount.retire(&cancelled)?;
     drop(repeated);
     drop(drained);
