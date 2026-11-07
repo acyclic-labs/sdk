@@ -169,6 +169,32 @@ fn table_trim_preserves_graphemes_across_spans() {
             markdown.push(&source);
             bounded(markdown.lines(), source.len(), 1, width);
         }
+        let source = format!("|{text}|\n|---|\n");
+        let mut table = Table::new(vec![Alignment::None], Style::default(), 80);
+        for event in Parser::new_ext(&source, options()) {
+            table.event(&event, None);
+        }
+        let bytes: usize = table
+            .rows
+            .iter()
+            .flatten()
+            .flat_map(|cell| &cell.spans)
+            .map(|span| span.text.len())
+            .sum();
+        let before = acyclic_markdown_work::snapshot();
+        let rendered = table.render();
+        let work = acyclic_markdown_work::snapshot() - before;
+        // Column layout and cell admission each need the original display
+        // width. Padding reuses admission's result, including cross-span
+        // graphemes, rather than scanning the fitted text a third time.
+        assert_eq!(
+            work.rescanned_bytes,
+            2 * bytes,
+            "fitted table cells repeated their width scan"
+        );
+        let mut markdown = Markdown::with_width(80);
+        markdown.push(&source);
+        assert_eq!(rendered, markdown.lines());
     }
 }
 

@@ -15,6 +15,14 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "markdown-fitted-width": [
+    "rust/crates/markdown/src/table.rs", "acyclic-markdown",
+    "table::tests::table_trim_preserves_graphemes_across_spans",
+    "fitted table cells repeated their width scan", [],
+    { oracle: "rust/crates/markdown/tests/table_width.rs", nextest: ["--no-tests=fail", "--retries", "0"], mutations: [
+      { patch: "rust/proofs/markdown-fitted-width/repeated-scan.patch", label: "repeated-fitted-scan", diagnostic: "fitted table cells repeated their width scan" },
+    ] },
+  ],
   "native-call-identity": [
     "rust/crates/harness-mock-model/src/main.rs", "harness-mock-model",
     "http::real_server_records_all_protocols_and_isolates_parallel_cases",

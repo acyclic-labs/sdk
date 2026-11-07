@@ -164,8 +164,8 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
     let mut line = Line::plain("│", MUTED);
     let mut row = cells.into_iter();
     for (column, &size) in widths.iter().enumerate() {
-        let cell = trim(row.next().unwrap_or_default(), size);
-        let padding = size.saturating_sub(width(&cell));
+        let (cell, columns) = trim(row.next().unwrap_or_default(), size);
+        let padding = size.saturating_sub(columns);
         let left = match alignments.get(column) {
             Some(Alignment::Right) => padding,
             Some(Alignment::Center) => padding / 2,
@@ -182,9 +182,10 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
     line
 }
 
-fn trim(mut cell: Line, size: usize) -> Line {
-    if width(&cell) <= size {
-        return cell;
+fn trim(mut cell: Line, size: usize) -> (Line, usize) {
+    let columns = width(&cell);
+    if columns <= size {
+        return (cell, columns);
     }
     let limit = size.saturating_sub(1);
     let text = cell_text(&cell);
@@ -214,7 +215,8 @@ fn trim(mut cell: Line, size: usize) -> Line {
     }
     cell.spans.truncate(keep);
     cell.push("…", Style::default(), None);
-    cell
+    let columns = width(&cell);
+    (cell, columns)
 }
 
 #[cfg(test)]

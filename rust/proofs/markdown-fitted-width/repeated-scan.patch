@@ -1,0 +1,11 @@
+diff --git a/rust/crates/markdown/src/table.rs b/rust/crates/markdown/src/table.rs
+--- a/rust/crates/markdown/src/table.rs
++++ b/rust/crates/markdown/src/table.rs
+@@ -185,6 +185,7 @@ fn trim(mut cell: Line, size: usize) -> (Line, usize) {
+     let columns = width(&cell);
+     if columns <= size {
++        let columns = width(&cell);
+         return (cell, columns);
+     }
+     let limit = size.saturating_sub(1);
+     let text = cell_text(&cell);
