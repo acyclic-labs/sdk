@@ -7,8 +7,7 @@ use crate::foundation::{
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, CreateAuthorityOutcome, FenceOutcome, GuardedAppend, ObjectId, ObjectRead,
-    ObjectReadRequest, ObjectResult, PublicationPermit, PublicationReservation, ReplayLimit,
-    ReservationOutcome,
+    ObjectReadRequest, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
 };
 use acyclic_stream::{ProviderPlatform, ProviderTask};
 use std::any::{Any, TypeId};
