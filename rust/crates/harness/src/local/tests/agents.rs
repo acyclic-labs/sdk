@@ -484,7 +484,11 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             match retired.next_projected().await {
                 // The canonical pool returns an opening refusal to the pending
                 // open, rather than exposing that wire Close as a delivery.
-                Err(Error::Storage(reason)) if reason.contains("out_of_range") => break,
+                Err(Error::Storage(reason))
+                    if reason == acyclic_stream::StreamError::OutOfRange.to_string() =>
+                {
+                    break;
+                }
                 Err(error) => return Err(error),
                 Ok((event, _)) => {
                     event?;
