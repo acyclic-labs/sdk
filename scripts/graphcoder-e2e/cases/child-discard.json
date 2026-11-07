@@ -143,5 +143,6 @@
       "child.txt"
     ]
   },
-  "ntfs": true
+  "ntfs": true,
+  "physical": true
 }
