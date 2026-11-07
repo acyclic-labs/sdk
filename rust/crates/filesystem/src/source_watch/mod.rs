@@ -253,6 +253,7 @@ pub struct SourceWatchStartupFailure {
 }
 
 mod api;
+#[cfg(any(windows, target_os = "macos"))]
 use api::check_wait;
 mod callback;
 mod delivery;
