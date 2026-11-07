@@ -81,6 +81,13 @@ fn internal(args: &[String]) -> Result<bool> {
         "--help" | "-h" => {
             help()?;
         }
+        "fs" if matches!(args, [_, option] if matches!(option.as_str(), "--help" | "-h" | "help")) =>
+        {
+            let fs = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("step=read filesystem help: fs descriptor absent; recovery: reinstall the complete Acyclic package")?;
+            println!("Usage: acyclic fs COMMAND...\n{}", fs.description);
+        }
         "--version" | "-V" => {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         }

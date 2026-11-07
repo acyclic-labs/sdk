@@ -27,6 +27,9 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
         &["__workspace"][..],
         &["__install-package"][..],
         &["__hook", "codex", "Stop"][..],
+        &["fs", "--help"][..],
+        &["fs", "-h"][..],
+        &["fs", "help"][..],
     ] {
         let mut command = ProcessCommand::new(&executable);
         command
@@ -63,7 +66,15 @@ fn native_stdin_failures_stop_before_workspace_effects() -> Result<(), Box<dyn s
             process.is_reaped(),
             "native stdin refusal must retire its process"
         );
-        if args[0] == "__hook" {
+        if args[0] == "fs" {
+            assert!(output.status.success(), "help must not require a workspace");
+            assert!(output.stderr.is_empty());
+            let help = std::str::from_utf8(&output.stdout)?;
+            let descriptor = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("filesystem tool descriptor absent")?;
+            assert!(help.contains(descriptor.description));
+        } else if args[0] == "__hook" {
             assert!(output.status.success());
             assert!(output.stderr.is_empty());
             let answer: serde_json::Value = serde_json::from_slice(&output.stdout)?;
