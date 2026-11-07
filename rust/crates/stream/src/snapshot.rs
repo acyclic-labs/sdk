@@ -59,19 +59,16 @@ async fn read_owned<S: Snapshot>(
     if let Poll::Ready(result) = ready {
         return (state, result);
     }
+    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+    if tokio::runtime::Handle::try_current().is_err() {
+        return (state, Err(crate::StreamError::Unavailable));
+    }
     let (job, completed) = job::new(state);
     let worker = job.run();
     #[cfg(loom)]
     model::spawn(worker);
     #[cfg(all(not(loom), not(target_arch = "wasm32")))]
-    if tokio::runtime::Handle::try_current().is_ok() {
-        #[cfg(feature = "test-support")]
-        drop(acyclic_native_runtime::testing::spawn(worker));
-        #[cfg(not(feature = "test-support"))]
-        drop(tokio::spawn(worker));
-    } else {
-        std::thread::spawn(move || futures::executor::block_on(worker));
-    }
+    drop(acyclic_native_runtime::spawn(worker));
     #[cfg(all(not(loom), target_arch = "wasm32"))]
     wasm_bindgen_futures::spawn_local(worker);
     // Job retirement publishes Unavailable after its lock future has retired.

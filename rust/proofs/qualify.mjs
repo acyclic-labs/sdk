@@ -15,6 +15,21 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "snapshot-executor-admission": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+    "snapshot without an executor did not refuse before scheduling", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/snapshot-executor-admission/missing.patch", label: "omitted-executor-admission", diagnostic: "snapshot without an executor did not refuse before scheduling" },
+        { patch: "rust/proofs/snapshot-executor-admission/ready.patch", label: "executor-required-before-ready-probe", diagnostic: "ready snapshot required an executor" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+        "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
   "snapshot-producer-loss": [
     "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
     "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
