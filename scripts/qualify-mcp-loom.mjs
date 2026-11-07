@@ -342,6 +342,21 @@ export function qualifyNativeSignalLoom(run = runCommand) {
   });
 }
 
+export function qualifyNativeSignalMutationsLoom(run = runCommand) {
+  const recovery = "node scripts/qualify-mcp-loom.mjs --native-signal-mutations";
+  return qualifySourceMutationsLoom({
+    name: "NativeSignal", recovery,
+    source: "../rust/crates/native-runtime/src/wake.rs",
+    model: "../rust/crates/native-runtime/tests/process_signal_loom.rs",
+    mutations: [["let result = ready(&mut state);", "let result = std::task::Poll::Pending;",
+      "original terminal passed observer registration without a wake"]],
+    qualify: (run, expectedFailure) => qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
+      expectedFailure, recovery, filter: "settlement_cannot_pass_waker_registration",
+    }),
+    restored: qualifyNativeSignalLoom,
+  }, run);
+}
+
 export function qualifyNativeDurability(run = runCommand, physical = false) {
   return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
     kind: "--lib", targetCfg: [],
@@ -560,6 +575,7 @@ const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom,
   "--stream-retry": qualifyStreamRetryLoom,
   "--native-signal": qualifyNativeSignalLoom,
+  "--native-signal-mutations": qualifyNativeSignalMutationsLoom,
   "--native-host": qualifyNativeHostLoom,
   "--native-host-source": run => qualifyNativeHostLoom(run, true),
   "--native-executor-source": qualifyNativeExecutor,

@@ -37,7 +37,7 @@ terminal outcome under competing failure and cancellation. Run the instrumented
 production code with:
 
 ```sh
-RUSTFLAGS='--cfg loom' cargo test --locked -p acyclic-native-runtime --all-features --test process_signal_loom
+node scripts/qualify-mcp-loom.mjs --native-signal
 ```
 
 `missing-publication-recheck.patch` is captured from a real production mutation
@@ -47,10 +47,13 @@ normalized to the production file. Applying it must make
 observer registration without a wake`:
 
 ```sh
-git apply rust/proofs/native-waker-registration/missing-publication-recheck.patch
-RUSTFLAGS='--cfg loom' cargo test --locked -p acyclic-native-runtime --all-features --test process_signal_loom settlement_cannot_pass_waker_registration -- --exact
-git apply -R rust/proofs/native-waker-registration/missing-publication-recheck.patch
+node scripts/qualify-mcp-loom.mjs --native-signal-mutations
 ```
+
+The shared qualifier plants this exact mutation, checks the unchanged oracle,
+restores the original source in `finally` and runs both restored signal models.
+It compiles only the selected model target with `cfg(loom)`, leaving registry
+dependencies in their ordinary production mode.
 
 The helper has no loop, scan, wait, allocation, payload copy, syscall,
 durability barrier or round trip. A terminal read or unchanged observer takes
