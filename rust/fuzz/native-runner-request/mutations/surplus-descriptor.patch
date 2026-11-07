@@ -1,0 +1,12 @@
+--- a/rust/crates/native-runtime/runner/request.rs
++++ b/rust/crates/native-runtime/runner/request.rs
+@@ -212,9 +212,6 @@
+     } else {
+         None
+     };
+-    if received.count != next + usize::from(policy.is_some()) + usize::from(activity.is_some()) {
+-        return Err(invalid);
+-    }
+     // Every argument and environment entry needs at least its NUL byte.
+     // Validate that input-backed bound before allocating pointer storage.
+     let strings_required = argc
