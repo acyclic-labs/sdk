@@ -29,13 +29,12 @@ unicode-segmentation = "1.13"
 unicase = "2.10"
 
 [dev-dependencies]
+syntect = { package = "acyclic-syntect", version = "=0.2.0", path = "../../vendor/syntect-5.3.0", default-features = false, features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 # Feature unification enables instrumentation in the parser for tests/benches,
 # without a dependency cycle or counters in ordinary consumers.
 acyclic-markdown-work = { path = "../markdown-work", version = "0.2.0", features = ["enabled"] }
 proptest.workspace = true
-serde = "1.0"
-serde_json = "1.0"
 
 [lints]
 workspace = true

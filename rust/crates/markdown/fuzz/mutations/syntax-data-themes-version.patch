@@ -1,0 +1,11 @@
+--- a/rust/vendor/syntect-5.3.0/src/dumps.rs
++++ b/rust/vendor/syntect-5.3.0/src/dumps.rs
+@@ -165,7 +165,7 @@
+ fn read_dump<T: DeserializeOwned, R: Read>(mut input: R) -> Result<T> {
+     let mut version = [0; 4];
+     input.read_exact(&mut version)?;
+-    if u32::from_be_bytes(version) != 1 {
++    if u32::from_be_bytes(version) != 1 && !std::any::type_name::<T>().ends_with("::ThemeSet") {
+         return Err(Error::new(
+             ErrorKind::InvalidData,
+             "unsupported syntax data version",

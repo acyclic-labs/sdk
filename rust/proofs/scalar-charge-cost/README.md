@@ -1,6 +1,6 @@
 # Scalar charging avoids unrelated arithmetic
 
-Run `python3 rust/proofs/qualify.py scalar-charge-cost` from the repository root.
+Run `node rust/proofs/qualify.mjs scalar-charge-cost` from the repository root.
 
 The existing generated property invokes the actual standalone kernel accounting
 methods with full-width prior work, item count and budget. Each of 128 generated

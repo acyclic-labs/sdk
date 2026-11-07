@@ -34,6 +34,10 @@ pub mod parsing;
 pub mod util;
 mod utils;
 
+/// Shared dump invariants for corpus tests and fuzzing of the production decoder.
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 use std::io::Error as IoError;
 
 #[cfg(feature = "plist-load")]

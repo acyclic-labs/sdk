@@ -13,7 +13,7 @@ Grammar mutations use the production writer and checksum, not another parser.
 Capture the initial corpus and run the bounded instrumented control with:
 
 ```sh
-python3 rust/fuzz/native-codec-control.py claim /tmp/native-claim-control
+bun rust/fuzz/native-codec-control.mjs claim /tmp/native-claim-control
 ```
 
 The control captures four seed files through `Record::encode`, records their
@@ -56,7 +56,7 @@ also verifies that the current production writer emits the retained bytes.
 The producer remains available when Cargo compiles the example with `cfg(test)`.
 
 The same source-defect control can qualify this routine test without repeating
-the fuzz campaign: append `--routine` to the Python command above. It first
+the fuzz campaign: append `--routine` to the Bun command above. It first
 requires the checksum defect to fail the ordinary test, restores the production
 codec, then requires exactly one passing test.
 

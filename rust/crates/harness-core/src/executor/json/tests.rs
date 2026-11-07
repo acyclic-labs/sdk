@@ -44,17 +44,19 @@ mod borrowed_records {
 
         #[test]
         fn borrowed_nested_containers_admit_the_skip_stack(depth in 2usize..128) {
-            let source = format!("{}null{}", "[".repeat(depth), "]".repeat(depth));
-            let reserved = layout_reservation::<&serde_json::value::RawValue>(source.as_bytes()).unwrap();
-            let mut decoded = None;
-            let measured = acyclic_test_support::measure(|| {
-                decoded = Some(serde_json::from_str::<&serde_json::value::RawValue>(&source).unwrap());
-            });
-            prop_assert!(measured.bytes_max as u64 <= reserved);
-            prop_assert_eq!(decoded.unwrap().get(), source.as_str());
-            // A raw span owns no subtree, but zero scratch would underfund
-            // serde's iterative skip stack even without a single string.
-            prop_assert!(measured.bytes_max > 0);
+            for scalar in ["null", "1e400"] {
+                let source = format!("{}{scalar}{}", "[".repeat(depth), "]".repeat(depth));
+                let reserved = layout_reservation::<&serde_json::value::RawValue>(source.as_bytes()).unwrap();
+                let mut decoded = None;
+                let measured = acyclic_test_support::measure(|| {
+                    decoded = Some(serde_json::from_str::<&serde_json::value::RawValue>(&source).unwrap());
+                });
+                prop_assert!(measured.bytes_max as u64 <= reserved);
+                prop_assert_eq!(decoded.unwrap().get(), source.as_str());
+                // A raw span owns no subtree, but zero scratch would underfund
+                // serde's iterative skip stack even without a single string.
+                prop_assert!(measured.bytes_max > 0);
+            }
         }
 
         #[test]
@@ -498,11 +500,6 @@ fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> 
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn assert_encoding_needs_no_heap(value: &Value) -> Result<()> {
     let bytes = crate::contract::canonical_json_bytes(value)?;
     assert!(bytes.len() > 8 * 4096);
@@ -853,6 +850,11 @@ mod object_work {
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/duplicates"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/wide"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/compact_growth"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_large_exponent"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_deep"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_limit"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_empty"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_refused"),
         ] {
             oracle::check(bytes);
         }

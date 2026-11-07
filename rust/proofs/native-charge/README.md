@@ -1,6 +1,6 @@
 # Physical allocation on native charging
 
-Run `python3 rust/proofs/qualify.py native-charge` from the repository root.
+Run `node rust/proofs/qualify.mjs native-charge` from the repository root.
 
 The retained mutation inserts an allocation directly in production
 `KernelAccounting::charge`. It must fail the unchanged physical-allocation
