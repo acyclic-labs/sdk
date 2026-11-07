@@ -23,7 +23,7 @@ fn exercise_credit(
         Credit::Operations => {
             let file = tempfile::tempfile()?;
             let mut reservation =
-                NativeOperationReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 2)?;
+                NativeOperationReservation::new(Arc::clone(meter), NativeOperationKind::Read, 2)?;
             let (metadata, recorded) = reservation.attempt(|| file.metadata());
             assert_eq!(metadata?.len(), 0);
             recorded?;
@@ -31,12 +31,12 @@ fn exercise_credit(
         }
         Credit::Bytes => {
             let _reservation =
-                NativeByteReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 8)?;
+                NativeByteReservation::new(Arc::clone(meter), NativeOperationKind::Read, 8)?;
             unwind();
         }
         Credit::Codec => {
             let mut reservation = NativeCodecReservation::new(
-                Arc::clone(&meter),
+                Arc::clone(meter),
                 NativeCodecWork {
                     copied: 8,
                     ..NativeCodecWork::default()
@@ -52,11 +52,11 @@ fn exercise_credit(
             unwind();
         }
         Credit::AllocationReservation => {
-            let _reservation = ReadAllocationReservation::new(&meter, 8)?;
+            let _reservation = ReadAllocationReservation::new(meter, 8)?;
             unwind();
         }
         Credit::Allocation => {
-            let mut buffer = crate::meter::ReadBuffer::<u8>::new(8, &meter)?;
+            let mut buffer = crate::meter::ReadBuffer::<u8>::new(8, meter)?;
             buffer.data.extend_from_slice(b"original");
             assert_eq!(buffer.data.len(), 8);
             unwind();
