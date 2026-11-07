@@ -32,6 +32,36 @@ pub(super) enum LocalProject {
     },
 }
 
+/// How a checkout's task views reach the host filesystem.
+///
+/// `Native` projects every task view, the home volume and bound volumes
+/// through the platform's native provider (Linux FUSE, Windows ProjFS, macOS
+/// NFS) and refuses to open without it. `Physical` needs no device, capability
+/// or mount helper: the checkout and every task view are plain directories,
+/// and their changes are captured from userspace at each tool boundary. See
+/// `NATIVE_MOUNT_QUALIFICATION.md` for the guarantees that differ.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WorkspaceMounting {
+    /// Native projection; opening refuses when the host lacks it.
+    #[default]
+    Native,
+    /// Plain directories with userspace change capture.
+    Physical,
+}
+
+impl WorkspaceMounting {
+    /// `Native` when this host admits a native projection; otherwise
+    /// `Physical`, with the probe's reason for the caller to report.
+    #[cfg(feature = "native-execution")]
+    #[must_use]
+    pub fn detect() -> (Self, Option<&'static str>) {
+        match acyclic_fs::probe_native_mount().unavailable_reason {
+            None => (Self::Native, None),
+            Some(reason) => (Self::Physical, Some(reason)),
+        }
+    }
+}
+
 /// Durable local composition with a required model binding.
 pub struct LocalHarnessConfig {
     pub(super) active_directory: String,
@@ -70,6 +100,8 @@ pub struct LocalHarnessConfig {
     pub(super) clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(any(test, feature = "native-execution"))]
     pub(crate) environment_platform: crate::native_environment::PlatformPolicy,
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) workspace_mounting: WorkspaceMounting,
 }
 
 #[cfg(any(
@@ -201,7 +233,16 @@ impl LocalHarnessConfig {
             clock: Arc::new(acyclic_stream::SystemUnixMillisClock),
             #[cfg(any(test, feature = "native-execution"))]
             environment_platform: crate::native_environment::PlatformPolicy::Native,
+            #[cfg(any(test, feature = "native-execution"))]
+            workspace_mounting: WorkspaceMounting::Native,
         }
+    }
+    /// Selects how task views reach the host filesystem; `Native` by default.
+    #[cfg(any(test, feature = "native-execution"))]
+    #[must_use]
+    pub fn workspace_mounting(mut self, mounting: WorkspaceMounting) -> Self {
+        self.workspace_mounting = mounting;
+        self
     }
     /// Selects instruction scope relative to the workspace boundary.
     /// Empty selects root instructions; traversal outside the workspace is rejected.

@@ -26,5 +26,6 @@
     "tool_contains": ["harness/agents/"],
     "tool_results": [{ "settled": [{ "phase": "idle", "answer": "CHILD_RESULT_NATIVE_E2E" }], "running": [] }],
     "wire_contains": ["SPAWNED harness/agents/", "done"]
-  }
+  },
+  "physical": true
 }
