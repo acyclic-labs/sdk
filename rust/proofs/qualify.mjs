@@ -29,6 +29,23 @@ const claims = {
     "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
     { target: ["--test", "seeded_runtime"] },
   ],
+  "native-hook-ownership": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "foreign hook metadata was admitted", [],
+    { fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 } },
+  ],
+  "native-hook-admission": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "native hook writer output was refused", [],
+    {
+      fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/native-hook-admission/version-refusal.patch", label: "supported-version-refused", diagnostic: "captured supported Codex version was refused" },
+        { patch: "rust/proofs/native-hook-admission/version-admission.patch", label: "obsolete-version-admitted", diagnostic: "captured obsolete Codex version was admitted" },
+        { patch: "rust/proofs/native-hook-admission/ownership.patch", label: "writer-ownership-refused", diagnostic: "native hook writer output was refused" },
+      ],
+    },
+  ],
   "approval-wake-uncertainty": [
     "rust/crates/harness-core/src/filesystem/agent_turns.rs", "acyclic-agent-host-conformance",
     "local::local_approval_wake_retries_the_original_uncertain_request",
