@@ -13,8 +13,8 @@ if choice == "operation-admission":
     oracles = [oracle, repository / "rust/crates/stream/src/codec_fuzz.rs"]
     digests = {path: hashlib.sha256(path.read_bytes()).digest() for path in oracles}
     command = ["cargo", "nextest", "run", "--locked", "-p", "acyclic-stream", "--lib",
-               "--features", "test-support",
-               "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission)",
+               "--features", "test-support,local",
+               "-E", "test(=session::authority::tests::declared_method_credentials_match_session_admission) | test(=codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle)",
                "--profile", "ci", "--no-fail-fast", "--retries", "0"]
     mutations = [
         ("authorization.rs", b"Read => FOLLOW, Follow;",
@@ -26,6 +26,9 @@ if choice == "operation-admission":
         ("authorization.rs", b"Head => rpc::StreamRpc::Head.authorization(), Exact;",
          b"Head => MethodAuth { admitted: &[FOLLOW_ACTION, Action::Streams(StreamsAction::Read)], ..rpc::StreamRpc::Head.authorization() }, Exact;",
          "Session observations require exactly one declared action", True),
+        ("codec_fuzz.rs", b"let mut seeds = Vec::new();\n    for operation in crate::TokenOperation::ALL {",
+         b"let mut seeds = Vec::new();\n    for operation in &[] as &[crate::TokenOperation] {",
+         "token corpus omitted declared operation", False),
     ]
     step = "admit the original signed method and token credentials"
     try:
