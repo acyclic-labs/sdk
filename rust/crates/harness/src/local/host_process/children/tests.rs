@@ -375,6 +375,9 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
         LocalHarness::open(LocalHarnessConfig::native_host(&cwd).state_directory(state.path()))
             .await?,
     );
+    let repository = local
+        .workspace()
+        .map(|workspace| (workspace.view.workspace().id(), workspace.store.clone()));
     let (ready, readiness) = tokio::sync::oneshot::channel();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let mut server = tokio::spawn(async move {
@@ -411,6 +414,14 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
             format!("owner={retirement:?}; fixture={result:?}")
         )
     );
+    if result.is_err()
+        && let Some((workspace, store)) = repository
+    {
+        let pending = acyclic_fs::GitCompatRepository::new(workspace, store)
+            .pending_transition()
+            .await;
+        eprintln!("native {host} original checkout transition: {pending:?}");
+    }
     result
 }
 
