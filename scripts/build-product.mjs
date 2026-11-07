@@ -12,7 +12,7 @@ async function buildProduct() {
   const source = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], { cwd: root, encoding: "utf8" }).length !== 0;
 
-  if (process.env.RUSTFLAGS || process.env.CARGO_ENCODED_RUSTFLAGS) {
+  if (Object.hasOwn(process.env, "RUSTFLAGS") || Object.hasOwn(process.env, "CARGO_ENCODED_RUSTFLAGS")) {
     throw new Error("build-product flags refused; recovery: env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS node scripts/build-product.mjs");
   }
 
