@@ -97,9 +97,10 @@ impl StockExecution<'_> {
             self.dispatch_model_step(journal, input, step, (history, prepared), scope, phase)
                 .await
         };
-        futures::pin_mut!(execution);
         completion
-            .run(async {
+            .run(async move {
+                // Cancellation retires the owned provider before completion durability waits.
+                futures::pin_mut!(execution);
                 match futures::future::select(cancellation, execution).await {
                     Either::Left((result, _)) => {
                         result?;

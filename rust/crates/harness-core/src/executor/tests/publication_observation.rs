@@ -42,6 +42,19 @@ pub(super) async fn journal() -> Result<(
     >,
     crate::core::AuthorityRoot,
 )> {
+    journal_on(Arc::new(acyclic_stream::MemoryStream::default())).await
+}
+
+async fn journal_on<P: crate::store::JournalProvider>(
+    stream: Arc<P>,
+) -> Result<(
+    crate::filesystem::FilesystemExecutionJournal<
+        P,
+        acyclic_fs::MemoryAuthorityBackend,
+        acyclic_fs::MemoryObjectBackend,
+    >,
+    crate::core::AuthorityRoot,
+)> {
     use crate::{
         conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
         filesystem::{FilesystemExecutionJournal, FilesystemHost, FilesystemJournalBinding},
@@ -81,7 +94,7 @@ pub(super) async fn journal() -> Result<(
         &mut None,
     )?;
     let journal = FilesystemExecutionJournal::new(
-        Arc::new(acyclic_stream::MemoryStream::default()),
+        stream,
         host,
         FilesystemJournalBinding {
             volume: &volume,
@@ -91,6 +104,109 @@ pub(super) async fn journal() -> Result<(
         },
     )?;
     Ok((journal, issuer))
+}
+
+#[tokio::test]
+async fn cancellation_retires_provider_before_pending_completion_durability() -> Result<()> {
+    use acyclic_native_runtime::testing::Schedule;
+    use futures::{FutureExt as _, StreamExt as _, channel::oneshot};
+
+    struct Provider {
+        entered: Mutex<Option<oneshot::Sender<()>>>,
+        read: Mutex<Option<oneshot::Receiver<()>>>,
+    }
+    impl ModelProvider for Provider {
+        fn generate<'a>(
+            &'a self,
+            _: &'a crate::model::PreparedModelRequest,
+            _: crate::model::ModelDispatch,
+        ) -> crate::model::ModelStream<'a> {
+            let entered = self.entered.lock().unwrap().take().unwrap();
+            let read = self.read.lock().unwrap().take().unwrap();
+            let prefix = ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::Content {
+                delta: "accepted prefix".into(),
+            })])
+            .stream();
+            crate::model::ModelStream::new(Box::pin(prefix.chain(futures::stream::once(
+                async move {
+                    entered.send(()).unwrap();
+                    read.await
+                        .map_err(|_| Error::Storage("provider source closed".into()))?;
+                    Err(Error::Storage("provider unexpectedly resumed".into()))
+                },
+            ))))
+        }
+    }
+
+    let directory = tempfile::tempdir().map_err(|cause| Error::Storage(cause.to_string()))?;
+    let stream = acyclic_stream::LocalStream::open(directory.path(), Default::default())
+        .await
+        .map_err(|cause| Error::Storage(cause.to_string()))?;
+    let (journal, _issuer) = journal_on(Arc::new(stream)).await?;
+    assert!(journal.supports_deferred_durability());
+    let stop = acyclic_actors::guest::CancellationToken::new();
+    let journal = journal.with_stop(stop.clone());
+    let (entered, entry) = oneshot::channel();
+    let (producer, read) = oneshot::channel();
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "cancellation".into(), "1".into())?,
+        Arc::new(Provider {
+            entered: Mutex::new(Some(entered)),
+            read: Mutex::new(Some(read)),
+        }),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("original".into()),
+        selected_context: None,
+        max_steps: Some(1),
+    };
+    let (schedule, mut boundaries) = Schedule::new();
+    let mut execution = Box::pin(schedule.scope(executor.execute_progress(input, &journal)));
+    let mut entry = Box::pin(entry);
+    loop {
+        tokio::select! {
+            entered = &mut entry => {
+                entered.map_err(|_| Error::Storage("provider never opened".into()))?;
+                break;
+            }
+            _ = &mut execution => panic!("execution skipped the pending provider"),
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    }
+    assert!(!producer.is_canceled());
+    stop.cancel();
+    assert!(
+        execution.as_mut().now_or_never().is_none(),
+        "accepted prefix must await its original completion durability"
+    );
+    assert!(
+        producer.is_canceled(),
+        "cancellation retained provider custody through pending completion durability"
+    );
+    let result = loop {
+        tokio::select! {
+            result = &mut execution => break result,
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    };
+    assert!(matches!(
+        result,
+        Err(Error::InteractionRejected(
+            crate::InteractionRejection::Cancelled
+        ))
+    ));
+    drop(execution);
+    let mut drained = Box::pin(schedule.drained());
+    loop {
+        tokio::select! {
+            () = &mut drained => break,
+            boundary = boundaries.recv() => boundary.unwrap().release(),
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
