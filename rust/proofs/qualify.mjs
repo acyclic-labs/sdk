@@ -129,7 +129,17 @@ if (claim === "--help" && extra.length === 0) {
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
+  let fuzzTarget;
+  if (options.fuzz) {
+    const compiler = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+    fuzzTarget = compiler.stdout?.match(/^host: (\S+)$/m)?.[1];
+    if (compiler.error || compiler.status !== 0 || !fuzzTarget) {
+      console.error(`step=select native fuzz target; cause=${compiler.error?.message ?? compiler.stderr ?? "rustc host absent"}; recovery: rustc -vV; then node rust/proofs/qualify.mjs ${claim}`);
+      process.exit(2);
+    }
+  }
   const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+    "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
     `-artifact_prefix=target/${claim}/`];
   const command = options.fuzz ? fuzzCommand(1) : options.nextest
