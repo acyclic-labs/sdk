@@ -82,16 +82,28 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
             "child write escaped its fork"
         );
     }
-    for parent in [left_task, left_parent.clone(), right_parent.clone()] {
-        for command in ["diff agents/shared", "merge agents/shared"] {
+    for (name, parent) in [
+        ("nested", left_task),
+        ("left", left_parent.clone()),
+        ("right", right_parent.clone()),
+    ] {
+        let inspect = |command: &str| {
             host_files::request(
                 cwd,
                 HostAction::Fs {
                     task: parent.clone(),
                     command: command.into(),
                 },
-            )?;
-        }
+            )
+        };
+        let diff = inspect("diff agents/shared")
+            .map_err(|cause| failed(&format!("{host} inspect {name} child"), cause))?;
+        inspect("merge agents/shared").map_err(|cause| {
+            failed(
+                &format!("{host} merge {name} child"),
+                format!("{cause}; parent={parent}; diff={diff}"),
+            )
+        })?;
     }
     for name in ["nested", "left", "right"] {
         assert_eq!(fs::read(cwd.join(format!("{name}.txt")))?, b"captured");
