@@ -12,7 +12,7 @@ pub(super) mod inspection;
 // Leaf lock: only transfers owned state/results and the waiter registration.
 // No provider guard is held here; wake and state destruction happen outside it.
 struct Completion<S: Snapshot> {
-    value: Option<(S, Option<S::Output>)>,
+    value: Option<(S, Result<S::Output, crate::StreamError>)>,
     waker: Option<Waker>,
     // The consumer is gone: its job must not acquire or keep a lock reservation.
     abandoned: bool,
@@ -33,7 +33,10 @@ pub(super) struct Job<S: Snapshot> {
 
 pub(super) fn new<S: Snapshot>(
     state: S,
-) -> (Job<S>, impl Future<Output = (S, Option<S::Output>)> + Send) {
+) -> (
+    Job<S>,
+    impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + Send,
+) {
     let completed = Arc::new(SyncMutex::new(Completion {
         value: None,
         waker: None,
@@ -75,7 +78,7 @@ struct Receiver<S: Snapshot> {
 }
 
 impl<S: Snapshot> Future for Receiver<S> {
-    type Output = (S, Option<S::Output>);
+    type Output = (S, Result<S::Output, crate::StreamError>);
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -189,13 +192,13 @@ impl<S: Snapshot> Job<S> {
             .await
         };
         match result {
-            Some(result) => self.finish(Some(result)),
+            Some(result) => self.finish(result),
             // Nobody receives the cursor; dropping it never advanced it twice.
             None => drop(self.state.take()),
         }
     }
 
-    fn finish(&mut self, result: Option<S::Output>) {
+    fn finish(&mut self, result: Result<S::Output, crate::StreamError>) {
         let Some(state) = self.state.take() else {
             return;
         };
@@ -234,7 +237,7 @@ impl<S: Snapshot> Drop for Job<S> {
         }
         // The awaited read is dropped before this owner, so cancellation has
         // already released any queued/granted permit and has not moved a cursor.
-        self.finish(None);
+        self.finish(Err(crate::StreamError::Unavailable));
         #[cfg(all(test, not(loom)))]
         inspection::notify(
             &mut self.observation,

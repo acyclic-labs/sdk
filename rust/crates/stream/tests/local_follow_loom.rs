@@ -28,7 +28,7 @@ fn executor_shutdown_returns_unpolled_snapshot_ownership() {
 }
 
 #[test]
-fn executor_shutdown_returns_queued_or_granted_snapshot_ownership() {
+fn executor_shutdown_ends_queued_snapshot_reads() {
     for checked in [false, true] {
         acyclic_stream::verification::snapshot_executor_shutdown(false, checked, false, true);
     }
@@ -42,7 +42,7 @@ fn consumer_cancellation_races_executor_shutdown() {
 }
 
 #[test]
-#[should_panic(expected = "deadlock")]
+#[should_panic(expected = "lost snapshot producer left its public follow parked")]
 fn negative_control_executor_shutdown_discards_snapshot_ownership() {
     acyclic_stream::verification::snapshot_executor_shutdown(true, false, false, true);
 }

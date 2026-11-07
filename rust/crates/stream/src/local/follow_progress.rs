@@ -83,8 +83,8 @@ struct LocalProgress {
 impl crate::snapshot::Snapshot for Box<LocalProgress> {
     #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
-    type Output = Result<Option<crate::FollowUpdate>, StreamError>;
-    async fn read(&mut self) -> Self::Output {
+    type Output = Option<crate::FollowUpdate>;
+    async fn read(&mut self) -> Result<Self::Output, StreamError> {
         let state = &mut **self;
         state
             .provider

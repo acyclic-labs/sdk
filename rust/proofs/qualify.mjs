@@ -15,6 +15,21 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "snapshot-producer-loss": [
+    "rust/crates/stream/src/snapshot.rs", "acyclic-stream",
+    "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+    "lost snapshot producer left its public follow parked", ["--no-default-features"],
+    {
+      mutations: [
+        { source: "rust/crates/stream/src/snapshot/job.rs", patch: "rust/proofs/snapshot-producer-loss/retirement.patch", label: "omitted-producer-retirement", diagnostic: "lost snapshot producer did not wake its public follow" },
+        { patch: "rust/proofs/snapshot-producer-loss/retry.patch", label: "restarted-read-after-producer-loss", diagnostic: "lost snapshot producer left its public follow parked" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--lib", "--", "--exact", "--nocapture",
+        "memory::tests::runtime_shutdown::executor_loss_ends_public_follows_before_a_retained_writer_releases",
+        "memory::tests::parking::snapshot_callbacks_retire_outside_the_original_job_mutex"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
   "follow-index-reentry": [
     "rust/crates/stream/src/follow_index.rs", "acyclic-stream",
     "memory::tests::parking::publication_wakers_can_cancel_other_follows",
