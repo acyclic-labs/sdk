@@ -1,0 +1,9 @@
+{
+  "source": "96d8d5721372858233737329e72352c2a977351e",
+  "platform": "windows",
+  "entrypoint": "graphcoder",
+  "case": "pty-diff",
+  "capture": "original ConPTY host stderr",
+  "transcript_sha256": "3b176eb4420c88a588f14607e23acdac4d5b84fe28f37957fb34075ffffb268a",
+  "stderr": "conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=1200\r\n"
+}
