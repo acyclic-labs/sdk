@@ -199,6 +199,22 @@ pub const fn settle(control: Control, wait: Wait) -> (Control, bool) {
     }
 }
 
+/// The wait a condition implies: `need` more settlements, of which `open`
+/// children can still give at most one each, or a `sleep` naming no child.
+/// A condition parks the turn only while its open children can meet it; one
+/// already met, or one they can no longer meet, continues at once and its
+/// call reports why. So a parked wait on children always has a child that
+/// will wake it, and only a sleep parks on its deadline alone.
+#[must_use]
+pub const fn until(need: u32, open: usize, sleep: bool, deadline: Option<u64>) -> Wait {
+    let reachable = need > 0 && need as usize <= open;
+    if reachable || (sleep && deadline.is_some()) {
+        Wait::Await(deadline)
+    } else {
+        Wait::Continue
+    }
+}
+
 /// The awaited condition now holds: the waiting turn continues in a fresh
 /// step. Conditions are monotone, so this runs at most once per wait; any
 /// other control is unchanged, so a late arrival after cancel, archive or
