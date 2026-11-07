@@ -89,9 +89,6 @@ struct View {
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
-    /// The failed task's error while its conversation stays failed, shown
-    /// whole on the status row.
-    ended: Option<String>,
     /// A cancel was sent and its turn has not stopped yet.
     cancelling: bool,
     outcome: Outcome,
@@ -209,6 +206,9 @@ impl View {
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling || self.stopped.is_some();
+                } else if let TurnOutcome::Failed { message } = &entry.outcome {
+                    // The turn failed; the conversation stays open.
+                    self.failed(conversation, message);
                 } else {
                     self.outcome = Outcome::Settled;
                 }
@@ -217,7 +217,6 @@ impl View {
             }
             Event::Output => return Ok(()),
             Event::Status(status) => {
-                self.ended = None;
                 self.approval_prompt = match &status.phase {
                     Phase::WaitingApproval { id, .. } => conversation.approval_prompt(id).await?,
                     _ => None,
@@ -233,9 +232,7 @@ impl View {
                 } = &status.phase
                 {
                     self.settle_pending();
-                    self.ended = Some(format!("task {} failed: {message}", conversation.task()));
-                    self.outcome = Outcome::Failed;
-                    self.ring = true;
+                    self.failed(conversation, message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     if std::mem::take(&mut self.cancelling) {
                         // The cancel's stop shows once the entries this status
@@ -285,6 +282,16 @@ impl View {
         self.checkpoints.push(inbox);
         self.pending_dirty = true;
         Ok(())
+    }
+
+    /// Records a failure in the transcript, where it stays visible.
+    fn failed(&mut self, conversation: &Conversation, message: &str) {
+        self.transcript.push(
+            false,
+            &format!("task {} failed: {message}", conversation.task()),
+        );
+        self.outcome = Outcome::Failed;
+        self.ring = true;
     }
 
     /// Shows the pending prompts and the streamed answer as settled.
@@ -400,7 +407,7 @@ impl View {
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
-        if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
+        if let Some(notice) = &self.notice {
             return notice.clone();
         }
         match (&self.phase, self.approval()) {

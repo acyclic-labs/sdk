@@ -1,0 +1,121 @@
+{
+  "id": "pty-killed-edit-relaunch",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "notes.txt": "BASE_E2E\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "first edit"
+        },
+        "tools": [
+          {
+            "id": "first",
+            "name": "write",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "FIRST_EDIT_E2E\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "first edit",
+          "tool_result": "file"
+        },
+        "text": [
+          "NEVER_SHOWN"
+        ],
+        "hold": true
+      },
+      {
+        "when": {
+          "user": "second edit"
+        },
+        "tools": [
+          {
+            "id": "second",
+            "name": "write",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "SECOND_EDIT_E2E\n"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "second edit",
+          "tool_result": "file"
+        },
+        "text": [
+          "SECOND_EDIT_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "killed": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "first edit"
+        },
+        {
+          "after_request": {
+            "step": 1
+          },
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ]
+          },
+          "kill": true
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "task_failure": "model provider unavailable",
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "second edit"
+        },
+        {
+          "when": {
+            "task_failure": "model provider unavailable",
+            "contains": [
+              "SECOND_EDIT_DONE",
+              "\u25cb"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "files": {
+      "notes.txt": "SECOND_EDIT_E2E\n"
+    }
+  }
+}

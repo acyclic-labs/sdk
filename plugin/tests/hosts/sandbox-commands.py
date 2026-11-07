@@ -153,6 +153,9 @@ def main():
             path = root / name.lower()
             path.mkdir()
             env[name] = str(path)
+        # Fixture owners keep signing custody in this scratch tree, never the OS store.
+        env.update(ACYCLIC_SIGNING_CUSTODY='private-file',
+                   ACYCLIC_SIGNING_CUSTODY_DIRECTORY=str(root / 'signing-custody'))
         with (root / 'owner.log').open('w+') as owner_log, (root / 'native.log').open('w+') as native_log:
             owner_env = dict(env)
             for name in ['HOME', 'USERPROFILE', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']:

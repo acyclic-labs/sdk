@@ -62,6 +62,9 @@
         "kill-and-resume",
         "kill-during-count",
         "pty-kill-and-resume",
+        "pty-killed-at-first-frame",
+        "pty-killed-edit-relaunch",
+        "pty-killed-relaunch",
         "orphan-fencing"
       ]
     },

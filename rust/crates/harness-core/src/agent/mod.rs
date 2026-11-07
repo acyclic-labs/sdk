@@ -131,8 +131,10 @@ pub enum Error {
 impl Error {
     /// Whether the failed work may yet succeed unchanged: a commit whose
     /// outcome is unknown, or a store that left its outcome undecided however
-    /// that failure is wrapped. Only these retry; every other turn failure
-    /// settles the agent as failed.
+    /// that failure is wrapped. Only these retry; every other driver failure
+    /// settles the agent as failed. A definitive failure inside an opened turn
+    /// (executor, model or tool) is no driver failure: it settles only its
+    /// turn (see [`TurnOutcome::Failed`]).
     #[must_use]
     pub fn uncertain(&self) -> bool {
         match self {

@@ -11,7 +11,7 @@ use windows::{
         Storage::FileSystem::*,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     },
-    core::{BOOL, PCWSTR},
+    core::PCWSTR,
 };
 
 /// The OS user's profile, independent of process environment overrides.
@@ -136,56 +136,6 @@ pub(super) fn process_user_id(process: *mut std::ffi::c_void) -> io::Result<Vec<
 
 /// Checks a file has a protected DACL granting full access only to its current user.
 pub(super) fn is_private(file: &File) -> io::Result<bool> {
-    check_security(file, false)
-}
-
-/// Tighten a trusted legacy descriptor only while exclusively holding the
-/// original, unaliased inode owned by this process user. No bytes are read first.
-pub(super) fn open_for_upgrade(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .access_mode(GENERIC_READ.0 | READ_CONTROL.0 | WRITE_DAC.0)
-        .share_mode(0)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
-        .open(path)?;
-    if !file.metadata()?.is_file() || !check_security(&file, true)? || !is_private(&file)? {
-        return Err(io::ErrorKind::PermissionDenied.into());
-    }
-    Ok(file)
-}
-
-fn tighten(file: &File) -> io::Result<()> {
-    use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
-    with_security(|attributes| {
-        let mut present = BOOL::default();
-        let mut defaulted = BOOL::default();
-        let mut acl = std::ptr::null_mut();
-        // SAFETY: with_security retains the descriptor and ACL for this closure;
-        // the caller retains a valid handle opened with WRITE_DAC.
-        unsafe {
-            GetSecurityDescriptorDacl(
-                PSECURITY_DESCRIPTOR(attributes.lpSecurityDescriptor),
-                &mut present,
-                &mut acl,
-                &mut defaulted,
-            )?;
-            SetSecurityInfo(
-                HANDLE(file.as_raw_handle()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(acl),
-                None,
-            )
-            .ok()?;
-        }
-        Ok(())
-    })
-}
-
-fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
     use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
     let mut information = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: the held file handle and initialized output are live for this call.
@@ -222,34 +172,6 @@ fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
             if !EqualSid(owner, current).is_ok() {
                 return Ok(false);
             }
-            if control & SE_DACL_PROTECTED.0 == 0 && upgrade_legacy {
-                // Neither inherited nor explicit grants establish trust. The
-                // legacy bytes must already exclude other users: the current
-                // owner, SYSTEM and local administrators are the only trusted
-                // readers. A missing/empty ACL or an unknown ACE fails closed.
-                if acl.is_null() || (*acl).AceCount == 0 {
-                    return Ok(false);
-                }
-                for index in 0..u32::from((*acl).AceCount) {
-                    let mut ace = std::ptr::null_mut();
-                    GetAce(acl, index, &mut ace)?;
-                    if (*ace.cast::<ACE_HEADER>()).AceType != 0 {
-                        return Ok(false);
-                    }
-                    let allowed = &*ace.cast::<ACCESS_ALLOWED_ACE>();
-                    let sid = PSID((&allowed.SidStart as *const u32).cast_mut().cast());
-                    if !(EqualSid(sid, current).is_ok()
-                        || IsWellKnownSid(sid, WinLocalSystemSid).as_bool()
-                        || IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool())
-                    {
-                        return Ok(false);
-                    }
-                }
-                // The existing owner is authenticated before permissions change.
-                // No publicly readable legacy bytes are silently adopted.
-                tighten(file)?;
-                return Ok(true);
-            }
             if control & SE_DACL_PROTECTED.0 == 0 || acl.is_null() || (*acl).AceCount != 1 {
                 return Ok(false);
             }
@@ -267,141 +189,5 @@ fn check_security(file: &File, upgrade_legacy: bool) -> io::Result<bool> {
         })();
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
         check
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write as _;
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Security::Authorization::{
-        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
-    };
-
-    fn install_untrusted_acl(file: &File, kind: &str) -> io::Result<()> {
-        let mut acl = [0usize; 32];
-        let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
-        let mut world = [0usize; 16];
-        let mut world_length =
-            u32::try_from(std::mem::size_of_val(&world)).map_err(io::Error::other)?;
-        let mut descriptor = PSECURITY_DESCRIPTOR::default();
-        // SAFETY: aligned fixture buffers and the held file outlive every
-        // security call. The returned descriptor is released below.
-        unsafe {
-            InitializeAcl(
-                acl_pointer,
-                u32::try_from(std::mem::size_of_val(&acl)).map_err(io::Error::other)?,
-                ACL_REVISION,
-            )?;
-            if kind.ends_with("public") {
-                let sid = PSID(world.as_mut_ptr().cast());
-                CreateWellKnownSid(WinWorldSid, None, Some(sid), &mut world_length)?;
-                AddAccessAllowedAceEx(
-                    acl_pointer,
-                    ACL_REVISION,
-                    if kind == "inherited-public" {
-                        INHERITED_ACE
-                    } else {
-                        ACE_FLAGS(0)
-                    },
-                    FILE_ALL_ACCESS.0,
-                    sid,
-                )?;
-            }
-            SetSecurityInfo(
-                HANDLE(file.as_raw_handle()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(if kind == "missing" {
-                    std::ptr::null_mut()
-                } else {
-                    acl_pointer
-                }),
-                None,
-            )
-            .ok()
-            .map_err(|cause| io::Error::other(format!("{kind}: fixture ACL: {cause}")))?;
-            let mut actual_acl = std::ptr::null_mut();
-            GetSecurityInfo(
-                HANDLE(file.as_raw_handle()),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                None,
-                None,
-                Some(&mut actual_acl),
-                None,
-                Some(&mut descriptor),
-            )
-            .ok()
-            .map_err(|cause| io::Error::other(format!("{kind}: fixture inspection: {cause}")))?;
-            let mut control = 0;
-            let mut revision = 0;
-            let result = GetSecurityDescriptorControl(descriptor, &mut control, &mut revision);
-            if kind == "inherited-public" {
-                assert!(!actual_acl.is_null());
-                let mut ace = std::ptr::null_mut();
-                GetAce(actual_acl, 0, &mut ace)?;
-                assert_ne!(
-                    u32::from((*ace.cast::<ACE_HEADER>()).AceFlags) & INHERITED_ACE.0,
-                    0
-                );
-            }
-            let _ = LocalFree(Some(HLOCAL(descriptor.0)));
-            result?;
-            if kind == "missing" {
-                // Windows protects a null DACL when installing it. Its
-                // absent grant list must still fail the strict reader.
-                assert!(actual_acl.is_null());
-            } else {
-                // Negative control: the former upgrade guard accepted
-                // unprotected public and empty ACLs without checking grants.
-                assert_eq!(control & SE_DACL_PROTECTED.0, 0, "{kind}");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn owner_upgrade_rejects_explicit_shared_empty_and_missing_access_lists_before_decode()
-    -> io::Result<()> {
-        for kind in ["explicit-public", "inherited-public", "empty", "missing"] {
-            let root = tempfile::tempdir()?;
-            let path = root.path().join("owner");
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .access_mode(GENERIC_READ.0 | GENERIC_WRITE.0 | READ_CONTROL.0 | WRITE_DAC.0)
-                .open(&path)
-                .map_err(|cause| io::Error::other(format!("{kind}: fixture creation: {cause}")))?;
-            file.write_all(b"untrusted owner")?;
-            install_untrusted_acl(&file, kind)?;
-            drop(file);
-            assert!(
-                crate::private_file::validate_destination_for_upgrade(&path).is_err(),
-                "untrusted {kind} ACL reached credential admission"
-            );
-            assert!(
-                crate::private_file::read_for_upgrade_with::<(), io::Error>(
-                    &path,
-                    100,
-                    |_, _| panic!("untrusted {kind} ACL reached owner decoding"),
-                )
-                .is_err(),
-                "{kind}"
-            );
-            // An empty ACL also denies ordinary deletion. Restore this owned
-            // fixture through the same ACL setter before temporary cleanup.
-            let restore = std::fs::OpenOptions::new()
-                .read(true)
-                .access_mode(READ_CONTROL.0 | WRITE_DAC.0)
-                .open(&path)
-                .map_err(|cause| io::Error::other(format!("{kind}: cleanup handle: {cause}")))?;
-            tighten(&restore)
-                .map_err(|cause| io::Error::other(format!("{kind}: cleanup ACL: {cause}")))?;
-        }
-        Ok(())
     }
 }

@@ -261,12 +261,24 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         .ok_or_else(|| invalid("the agent wrote no status"))?;
     let status = StatusRecord::decode(last).map_err(agent_error)?;
     let conversation = records(&*stream, root.conversation().map_err(agent_error)?).await?;
-    Ok(match status.phase {
-        Phase::Idle if conversation.len() == 1 => StockTurn::Settled,
-        Phase::Done {
-            outcome: AgentOutcome::Failed { message },
-        } => StockTurn::Failed(message),
-        phase => {
+    let settled = match conversation.as_slice() {
+        [entry] => Some(
+            agent::ConversationEntry::decode(entry)
+                .map_err(agent_error)?
+                .outcome,
+        ),
+        _ => None,
+    };
+    Ok(match (status.phase, settled) {
+        (Phase::Idle, Some(agent::TurnOutcome::Completed)) => StockTurn::Settled,
+        (Phase::Idle, Some(agent::TurnOutcome::Failed { message })) => StockTurn::Failed(message),
+        (
+            Phase::Done {
+                outcome: AgentOutcome::Failed { message },
+            },
+            _,
+        ) => StockTurn::Failed(message),
+        (phase, _) => {
             return Err(invalid(format!(
                 "the prompted turn did not settle: {phase:?}, {} conversation records",
                 conversation.len()

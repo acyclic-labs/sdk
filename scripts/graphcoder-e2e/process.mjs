@@ -280,7 +280,23 @@ export class Processes {
     if (process.platform !== "win32") return start(binary, args, { ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
-    return start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    // Kill only the shipping executable, as POSIX custody does: the ConPTY and
+    // process hosts then observe its exit and retire the tree with a receipt.
+    const terminal = running => {
+      const announced = new Promise((resolve, reject) => {
+        let text = "";
+        running.child.stderr.on("data", bytes => {
+          text += bytes;
+          const pid = /child-process-id=(\d+)/.exec(text)?.[1];
+          if (pid) resolve(Number(pid));
+        });
+        running.exited.then(() => reject(new Error("ConPTY host exited before announcing its child")));
+      });
+      announced.catch(() => {});
+      return { ...running, killExecutable: () => announced.then(pid => process.kill(pid)) };
+    };
+    const running = start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    return running instanceof Promise ? running.then(terminal) : terminal(running);
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");

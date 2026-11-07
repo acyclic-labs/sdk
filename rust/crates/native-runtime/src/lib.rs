@@ -82,7 +82,7 @@ mod io_progress;
 mod kernel_keyring;
 pub mod owner_record;
 pub mod private_file;
-/// Native or owner-only file custody for persisted authority signing seeds.
+/// Native or owner-only file custody for the account's authority signing root.
 pub mod signing_key;
 #[cfg(windows)]
 pub use file::device_control_in_place;

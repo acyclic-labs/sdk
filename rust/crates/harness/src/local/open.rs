@@ -244,10 +244,7 @@ impl Opening {
         let files = FilesystemHost::new(filesystem.clone(), provider_ref, None)?;
         let issuer = AuthorityRoot::bootstrap(
             "acyclic.local",
-            owner
-                .key_ref
-                .as_ref()
-                .ok_or_else(|| Error::Unauthorized("local owner has no signing custody".into()))?,
+            &owner.key_ref,
             custody,
             Authority {
                 kind: AggregateKind::Task,

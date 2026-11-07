@@ -32,7 +32,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let home = temporary.path().join("home");
     seed_home(&home, &case.home)?;
     let harness = Arc::new(open_harness(&directory, &home, &state, &volume, &provider).await?);
-    if !state.join("owner.json").is_file() {
+    if !state.join("owner.v2").is_file() {
         return Err("harness did not use the fixture-owned state directory".into());
     }
     let base = host.resolve(&workspace, None).await?.generation;
@@ -43,8 +43,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let committed_failure = matches!(&outcome, Ok(PromptOutcome::Failed(_)));
     let entry = verify_outcome(&case.expect, outcome)?;
     if committed_failure {
-        // Replay after failure is committed: the first reply is already Dropped,
-        // but the original failure must remain visible without model redispatch.
+        // Replay after failure is committed: the reply is the original failed
+        // entry, visible without model redispatch.
         let replay = prompt_settled(&harness, "scenario", &case.prompt).await;
         verify_outcome(&case.expect, replay)?;
     }
@@ -349,7 +349,7 @@ fn verify_outcome(
         {
             Ok(Some(entry))
         }
-        // A failed or uncertain turn ends the agent with its cause.
+        // A failed turn, or an agent a host failure ended, carries its cause.
         (
             ExpectedOutcome::Failed | ExpectedOutcome::Indeterminate,
             Ok(PromptOutcome::Failed(message)),

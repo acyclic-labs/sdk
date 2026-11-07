@@ -106,39 +106,22 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
     }
 }
 
-/// One stable lock inode in the selected custody store's own namespace.
-/// Production uses OS account data; fixture children borrow their parent's
-/// isolated store directory. Never unlink a live store's lock inodes. Only an
-/// import of an existing seed needs it; generated custody is exclusive by
-/// entropy, so ordinary startup never writes the account profile.
-pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
-    #[cfg(any(test, feature = "test-support"))]
-    let shared = crate::signing_key::fixture::lock_directory()?;
-    #[cfg(any(test, feature = "test-support"))]
-    let root = shared.clone().unwrap_or_else(|| {
-        static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-        ROOT.get_or_init(std::env::temp_dir).clone()
-    });
-    #[cfg(all(unix, not(any(test, feature = "test-support"))))]
+/// The native signing root's one stable creation-lock inode in the OS
+/// account's data directory. Never unlink it. Only the account's first root
+/// creation opens it; reopening an existing root never writes the profile.
+#[cfg(not(any(test, feature = "test-support")))]
+pub(crate) fn credential_lock() -> io::Result<File> {
+    #[cfg(unix)]
     let root = unix_user_data_directory().map_err(|error| io::Error::new(error.kind(),
         format!("credential lock namespace lookup failed: {error}; recovery: configure a persistent absolute home outside /tmp and /var/tmp for the effective OS account")))?;
     #[cfg(unix)]
     let user = effective_user().to_string();
-    #[cfg(all(windows, not(any(test, feature = "test-support"))))]
+    #[cfg(windows)]
     let root = windows::user_data_directory().map_err(windows::io_error)?;
     #[cfg(windows)]
     let user = "user";
-    #[cfg(not(any(test, feature = "test-support")))]
     let root = credential_directory(&root)?;
-    // A fixture credential exists in this process only. Its lock namespace
-    // follows that same custody boundary, without changing the locking API.
-    #[cfg(any(test, feature = "test-support"))]
-    let identity = if shared.is_some() {
-        identity.to_owned()
-    } else {
-        format!("fixture-{}-{identity}", std::process::id())
-    };
-    open_or_create(&root.join(format!("acyclic-custody-{user}-{identity}.lock")))
+    open_or_create(&root.join(format!("acyclic-custody-{user}-root.lock")))
 }
 
 // Resolve the account's home through the OS account database, never HOME,
@@ -208,9 +191,10 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
 // Admission must follow every appended component and alias, including the
 // service directory. A persistent account home alone does not establish that
 // its data directory is outside a service-private temporary mount.
-#[cfg(any(test, not(feature = "test-support")))]
+// Only the Unix namespace test exercises this outside production.
+#[cfg(any(all(test, unix), not(any(test, feature = "test-support"))))]
 fn credential_directory(data: &Path) -> io::Result<std::path::PathBuf> {
-    let root = data.join("acyclic.authority.signing-seed.v1");
+    let root = data.join("acyclic.authority.signing-root.v2");
     let mut create = fs::DirBuilder::new();
     create.recursive(true);
     #[cfg(unix)]
@@ -225,7 +209,8 @@ fn credential_directory(data: &Path) -> io::Result<std::path::PathBuf> {
     Ok(resolved)
 }
 
-#[cfg(any(test, not(feature = "test-support")))]
+// Only the Unix namespace test exercises this outside production.
+#[cfg(any(all(test, unix), not(any(test, feature = "test-support"))))]
 fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
     #[cfg(unix)]
     let temporary = ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]
@@ -247,23 +232,7 @@ fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
 
 /// Reject an existing nonprivate entry while permitting a missing destination.
 pub fn validate_destination(path: &Path) -> io::Result<()> {
-    validate_destination_with(path, |path| open(path, false))
-}
-
-/// Admit a missing destination or an existing trusted legacy owner record.
-/// Windows tightens its descriptor under exclusive ownership before returning;
-/// shared ACLs, aliases and live writers remain refused. Other OSes stay strict.
-/// No payload is read or replaced, so original credentials and lock identities
-/// survive migration through the same guard as [`read_for_upgrade_with`].
-pub fn validate_destination_for_upgrade(path: &Path) -> io::Result<()> {
-    validate_destination_with(path, open_for_upgrade)
-}
-
-fn validate_destination_with(
-    path: &Path,
-    open: impl FnOnce(&Path) -> io::Result<File>,
-) -> io::Result<()> {
-    match open(path) {
+    match open(path, false) {
         Ok(_) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -533,34 +502,6 @@ pub fn read_with<T, E: From<io::Error>>(
 ) -> Result<T, E> {
     let file = open(path, false)?;
     read_held_with(file, maximum, read)
-}
-
-/// Read an existing owner for a format upgrade. On Windows, a legacy owner
-/// descriptor is tightened before any read. Protected records and other OSes
-/// take the strict path. Tightening requires an exclusive, unaliased regular
-/// file owned by the current user, whose nonempty ACL grants access only to that
-/// user, SYSTEM or local administrators. Other ACLs and foreign ownership are
-/// refused. This does not generate credentials.
-pub fn read_for_upgrade_with<T, E: From<io::Error>>(
-    path: &Path,
-    maximum: u64,
-    read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
-) -> Result<T, E> {
-    read_held_with(open_for_upgrade(path)?, maximum, read)
-}
-
-fn open_for_upgrade(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    let file = match open(path, false) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            windows::open_for_upgrade(path).map_err(windows::io_error)?
-        }
-        Err(error) => return Err(error),
-    };
-    #[cfg(not(windows))]
-    let file = open(path, false)?;
-    Ok(file)
 }
 
 fn read_held_with<T, E: From<io::Error>>(

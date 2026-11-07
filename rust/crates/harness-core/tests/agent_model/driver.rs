@@ -352,8 +352,18 @@ fn request(id: &str) -> Result<(InboxRecord, TurnInput)> {
     ))
 }
 
+/// How a step that failed with one executor error settles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Settles {
+    /// A definitive model or executor failure: a failed turn; the agent
+    /// stays open.
+    Turn,
+    /// An undecided failure: the step retries.
+    Retry,
+}
+
 #[tokio::test]
-async fn provider_failures_commit_terminal_status_while_uncertain_errors_propagate() -> Result {
+async fn definitive_failures_settle_the_turn_and_uncertain_ones_retry() -> Result {
     use acyclic_harness_core::ModelTransportFailure;
     let mut cases = vec![
         (
@@ -361,42 +371,62 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
                 failure: ModelTransportFailure::Status(500),
                 excerpt: "exhausted".into(),
             },
-            true,
+            Settles::Turn,
         ),
         (
             CoreError::ModelUnavailable {
                 failure: ModelTransportFailure::Connect,
                 excerpt: String::new(),
             },
-            true,
+            Settles::Turn,
         ),
+        // A request a crash interrupted reconciles to this on restart.
         (
             CoreError::ModelUnavailable {
                 failure: ModelTransportFailure::Interrupted,
                 excerpt: String::new(),
             },
-            true,
+            Settles::Turn,
         ),
-        (CoreError::Storage("unreadable journal".into()), false),
+        (
+            CoreError::Storage("unreadable journal".into()),
+            Settles::Retry,
+        ),
         (
             CoreError::Indeterminate(OperationId::from_bytes([8; 16])),
-            false,
+            Settles::Retry,
         ),
-        (CoreError::Cancelled, false),
-        // A definitive failure settles the agent as failed; only an
-        // undecided one retries the step.
+        (CoreError::Cancelled, Settles::Retry),
         (
             CoreError::Invalid("unclassified executor error".into()),
-            true,
+            Settles::Turn,
         ),
     ];
-    for (code, terminal) in [
-        (acyclic_harness_core::wire::ErrorCode::Invalid, true),
-        (acyclic_harness_core::wire::ErrorCode::Unauthorized, true),
-        (acyclic_harness_core::wire::ErrorCode::Unavailable, true),
-        (acyclic_harness_core::wire::ErrorCode::Storage, false),
-        (acyclic_harness_core::wire::ErrorCode::Indeterminate, false),
-        (acyclic_harness_core::wire::ErrorCode::Cancelled, false),
+    for (code, settles) in [
+        (
+            acyclic_harness_core::wire::ErrorCode::Invalid,
+            Settles::Turn,
+        ),
+        (
+            acyclic_harness_core::wire::ErrorCode::Unauthorized,
+            Settles::Turn,
+        ),
+        (
+            acyclic_harness_core::wire::ErrorCode::Unavailable,
+            Settles::Turn,
+        ),
+        (
+            acyclic_harness_core::wire::ErrorCode::Storage,
+            Settles::Retry,
+        ),
+        (
+            acyclic_harness_core::wire::ErrorCode::Indeterminate,
+            Settles::Retry,
+        ),
+        (
+            acyclic_harness_core::wire::ErrorCode::Cancelled,
+            Settles::Retry,
+        ),
     ] {
         cases.push((
             CoreError::ModelDiagnostic {
@@ -404,7 +434,7 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
                 message: "host-protected model exchange failed".into(),
                 custody: None,
             },
-            terminal,
+            settles,
         ));
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -413,16 +443,16 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
             code: acyclic_harness_core::wire::ErrorCode::Unavailable,
             reason: "native admission refused",
         },
-        false,
+        Settles::Retry,
     ));
-    for (error, terminal) in cases.drain(..) {
+    for (error, settles) in cases.drain(..) {
         let diagnostic = error.to_string();
         let path = AgentPath::root(&id(1));
         let script = Arc::new(Script {
             failure: Mutex::new(Some(error)),
             ..Script::default()
         });
-        let driver = ExecutorDriver::new(Host(script, None));
+        let driver = ExecutorDriver::new(Host(script.clone(), None));
         let result = step(
             &driver,
             &path,
@@ -435,26 +465,58 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await;
-        if terminal {
-            let settled = result?;
-            assert_eq!(
-                settled.state.phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Failed {
-                        message: diagnostic
-                    }
-                }
-            );
-            let status = settled.status.ok_or("missing terminal status")?;
-            assert_eq!(status.phase, settled.state.phase);
-            assert_eq!(status.cursor, 1);
-            assert!(settled.state.turn.is_none());
-        } else {
-            assert!(
-                matches!(result, Err(Error::Turn(_))),
-                "uncertain failure was settled: {diagnostic}"
-            );
-        }
+        let settled = match settles {
+            Settles::Retry => {
+                assert!(
+                    matches!(result, Err(Error::Turn(_))),
+                    "uncertain failure was settled: {diagnostic}"
+                );
+                continue;
+            }
+            Settles::Turn => result?,
+        };
+        assert!(settled.state.turn.is_none());
+        // Negative control: before failed turns, this agent ended `Done`
+        // and dropped every later input.
+        assert_eq!(settled.state.phase, Phase::Idle, "{diagnostic}");
+        let entries = |outs: &[Out]| -> Result<Vec<ConversationEntry>> {
+            outs.iter()
+                .filter_map(|out| match out {
+                    Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                    _ => None,
+                })
+                .collect::<std::result::Result<_, _>>()
+                .map_err(Into::into)
+        };
+        let failed = entries(&settled.outs)?;
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].inbox, 1);
+        assert_eq!(
+            failed[0].outcome,
+            TurnOutcome::Failed {
+                message: diagnostic.clone()
+            }
+        );
+        // The next input starts a new turn, which completes normally.
+        script.progress.lock().expect("lock").push_back(ready());
+        let next = step(
+            &driver,
+            &path,
+            Some(settled.state),
+            (2, 0),
+            Wake::Inbox {
+                sequence: 2,
+                record: request("next")?.0,
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(script.operations.lock().expect("lock").len(), 2);
+        assert_eq!(next.state.phase, Phase::Idle);
+        let completed = entries(&next.outs)?;
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].inbox, 2);
+        assert_eq!(completed[0].outcome, TurnOutcome::Completed);
     }
     Ok(())
 }
@@ -500,12 +562,19 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
             matches!(step.outs.first(), Some(Out::Send { to: recipient, record: InboxRecord::Message(message) })
             if recipient == &to && message.id == intent("sent") && message.body == body)
         );
-        assert_eq!(step.outs.len(), if failed { 1 } else { 2 });
-        if failed {
-            assert!(matches!(step.wait, Wait::Done(AgentOutcome::Failed { .. })));
-        } else {
-            assert!(matches!(step.outs.get(1), Some(Out::Conversation(_))));
-        }
+        // A failed turn settles its entry with the recorded actions too.
+        assert_eq!(step.outs.len(), 2);
+        assert!(matches!(step.wait, Wait::Input));
+        let Some(Out::Conversation(entry)) = step.outs.get(1) else {
+            return Err("settled turn has no entry".into());
+        };
+        assert_eq!(
+            matches!(
+                ConversationEntry::decode(entry)?.outcome,
+                TurnOutcome::Failed { .. }
+            ),
+            failed
+        );
     }
     Ok(())
 }

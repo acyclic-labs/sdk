@@ -99,7 +99,7 @@ export function toolOutcome(value, expectedErrors, recovery, caseId) {
     if (value.version === 2 && Array.isArray(value.context))
       toolFailure(value.output?.error, expectedErrors, recovery, caseId);
     if (Array.isArray(value.settled)) for (const child of value.settled)
-      toolFailure(child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
+      toolFailure(child.failed ?? child.phase?.done?.outcome?.failed, expectedErrors, recovery, caseId);
     if (value.success === false || (typeof value.exit_code === "number" && value.exit_code !== 0))
       toolFailure(`tool reported success=${value.success}, exit_code=${value.exit_code}`, expectedErrors, recovery, caseId);
   } else if (typeof value === "string" && value.startsWith("tool execution failed: "))

@@ -9,40 +9,6 @@ use zeroize::Zeroizing;
 
 mod host;
 pub use host::FixtureCustody;
-pub(crate) use host::lock_directory;
-
-#[cfg(test)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Fault {
-    StoredRead,
-    WriteAcknowledgement,
-}
-
-#[cfg(test)]
-fn faults() -> &'static Mutex<BTreeMap<String, Fault>> {
-    static FAULTS: OnceLock<Mutex<BTreeMap<String, Fault>>> = OnceLock::new();
-    FAULTS.get_or_init(|| Mutex::new(BTreeMap::new()))
-}
-
-#[cfg(test)]
-pub(super) fn fail_once(name: &str, fault: Fault) {
-    faults()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert(name.into(), fault);
-}
-
-#[cfg(test)]
-pub(super) fn check_fault(name: &str, fault: Fault) -> keyring::Result<()> {
-    let mut faults = faults().lock().unwrap_or_else(|error| error.into_inner());
-    if faults.get(name) == Some(&fault) {
-        faults.remove(name);
-        return Err(Error::PlatformFailure(Box::new(std::io::Error::other(
-            "fixture custody cut",
-        ))));
-    }
-    Ok(())
-}
 
 type Secrets = BTreeMap<String, Zeroizing<Vec<u8>>>;
 
@@ -51,15 +17,48 @@ fn secrets() -> &'static Mutex<Secrets> {
     SECRETS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+/// Entries of this process's own store, excluding hosted fixture children.
+#[cfg(test)]
+pub(super) fn local_entries() -> usize {
+    secrets()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .keys()
+        .filter(|name| !name.contains(':'))
+        .count()
+}
+
+/// The fixture store's creation lock follows its custody boundary: a hosted
+/// store's children share its directory; a process-local store is one process.
+pub(super) struct CreationLock {
+    _hosted: Option<crate::FileLock>,
+    _local: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+pub(super) fn creation_lock() -> std::io::Result<CreationLock> {
+    if let Some(directory) = host::lock_directory()? {
+        let file = crate::private_file::open_or_create(&directory.join("root.lock"))?;
+        return Ok(CreationLock {
+            _hosted: Some(crate::FileLock::acquire(file, crate::FileLockMode::Exclusive)?),
+            _local: None,
+        });
+    }
+    static LOCAL: Mutex<()> = Mutex::new(());
+    Ok(CreationLock {
+        _hosted: None,
+        _local: Some(LOCAL.lock().unwrap_or_else(|error| error.into_inner())),
+    })
+}
+
 #[derive(Debug)]
 struct Credential {
     name: String,
     remote: Option<host::Remote>,
 }
 
-pub(super) fn entry(name: &str) -> keyring::Entry {
+pub(super) fn entry() -> keyring::Entry {
     keyring::Entry::new_with_credential(Box::new(Credential {
-        name: name.into(),
+        name: super::ROOT.into(),
         remote: host::remote(),
     }))
 }
@@ -67,7 +66,7 @@ pub(super) fn entry(name: &str) -> keyring::Entry {
 impl CredentialApi for Credential {
     fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
         if let Some(remote) = &self.remote {
-            return remote.request(1, &self.name, secret).map(|_| ());
+            return remote.request(1, secret).map(|_| ());
         }
         secrets()
             .lock()
@@ -78,7 +77,7 @@ impl CredentialApi for Credential {
 
     fn get_secret(&self) -> keyring::Result<Vec<u8>> {
         if let Some(remote) = &self.remote {
-            return remote.request(2, &self.name, &[]);
+            return remote.request(2, &[]);
         }
         let secrets = secrets().lock().unwrap_or_else(|error| error.into_inner());
         let secret = secrets.get(&self.name).ok_or(Error::NoEntry)?;
@@ -87,7 +86,7 @@ impl CredentialApi for Credential {
 
     fn delete_credential(&self) -> keyring::Result<()> {
         if let Some(remote) = &self.remote {
-            return remote.request(3, &self.name, &[]).map(|_| ());
+            return remote.request(3, &[]).map(|_| ());
         }
         secrets()
             .lock()
