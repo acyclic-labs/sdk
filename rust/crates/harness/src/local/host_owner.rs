@@ -337,8 +337,7 @@ impl HostWorkspaceOwner {
     ) -> Result<Value> {
         let parsed = crate::tools::parse_fs_command(command)?;
         let merged = match parsed.arguments.as_slice() {
-            [name, reference] if name == "merge" => reference
-                .strip_prefix("agents/")
+            [name, reference] if name == "merge" => crate::tools::branch_child(reference)
                 .map(|reference| agents::child(task, reference))
                 .transpose()?,
             _ => None,

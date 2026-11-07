@@ -41,6 +41,147 @@ struct CallLog<'a> {
     output_bytes: u64,
 }
 
+/// console.log lines the program printed, returned beside its result: a
+/// model that prints a value expects to read it. Lines beyond the render
+/// budget remain in the journal; `logs_omitted` reports them when its framing fits.
+#[derive(Default)]
+struct ProgramLogs {
+    lines: Vec<Value>,
+    bytes: usize,
+    omitted: u64,
+}
+
+impl ProgramLogs {
+    /// Both field names, array framing and the largest u64 omission count.
+    const FIELDS: usize = 48;
+
+    fn observe(
+        &mut self,
+        values: &serde_json::value::RawValue,
+        maximum: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if self.omitted > 0 {
+            self.omitted += 1;
+            return Ok(());
+        }
+        // The rendered line cannot exceed the original JSON array's bytes.
+        // Refuse its copy and argument index before decoding either of them.
+        let available = maximum.saturating_sub(self.bytes.saturating_add(Self::FIELDS));
+        if values.get().len() > available {
+            self.omitted = 1;
+            return Ok(());
+        }
+        let values: Vec<&serde_json::value::RawValue> = Self::decode(values.get(), io)?;
+        let mut line = String::new();
+        for (index, value) in values.into_iter().enumerate() {
+            if index > 0 {
+                stock_string_push(
+                    &mut line,
+                    " ",
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
+            }
+            // Strings print as their text, like console.log; other values
+            // print as their JSON encoding.
+            if value.get().starts_with('"') {
+                let text: crate::executor::json::BorrowedText<'_> = Self::decode(value.get(), io)?;
+                stock_string_push(
+                    &mut line,
+                    &text.0,
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
+            } else {
+                stock_string_push(
+                    &mut line,
+                    value.get(),
+                    available as u64,
+                    "JavaScript log exceeds render capacity",
+                    io,
+                )?;
+            }
+        }
+        let cost = with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(line.as_str(), u64::MAX, work)
+        })? as usize
+            + 1;
+        if self.bytes + cost + Self::FIELDS > maximum {
+            self.omitted = 1;
+            return Ok(());
+        }
+        self.bytes += cost;
+        stock_vec_push(&mut self.lines, Value::String(line), io)
+    }
+
+    /// The existing typed codec admits the argument index and escape decoding
+    /// before allocation, using the caller's original ledger.
+    fn decode<'de, T: serde::Deserialize<'de> + crate::HeapLayout>(
+        source: &'de str,
+        io: Option<&PreparationIo>,
+    ) -> Result<T> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            let (value, hold) = io.decode_seed(
+                std::marker::PhantomData::<T>,
+                source.as_bytes(),
+                crate::executor::json::JsonValueSchema::None,
+                0,
+                crate::wire::ErrorCode::Invalid,
+            )?;
+            hold.into_retained()?;
+            return Ok(value);
+        }
+        let _ = io;
+        crate::executor::json::json_from_slice_bounded(
+            std::marker::PhantomData::<T>,
+            source.as_bytes(),
+            crate::executor::json::JsonBounds {
+                maximum_bytes: source.len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
+            },
+            None,
+            None,
+            &mut |_| Ok(()),
+        )
+    }
+
+    /// The program's result has priority. Attach the batch only when its
+    /// complete framing fits; the journal retains every original log.
+    fn attach(self, output: &mut Value, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
+        let Self {
+            mut lines,
+            bytes,
+            mut omitted,
+        } = self;
+        if lines.is_empty() && omitted == 0 {
+            return Ok(());
+        }
+        let result = with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(&*output, u64::MAX, work)
+        })? as usize;
+        let Some(available) = maximum.checked_sub(result.saturating_add(Self::FIELDS)) else {
+            return Ok(());
+        };
+        if bytes > available {
+            omitted += lines.len() as u64;
+            lines.clear();
+        }
+        let Some(fields) = output.as_object_mut() else {
+            return Ok(());
+        };
+        fields.insert("logs".into(), Value::Array(lines));
+        if omitted > 0 {
+            fields.insert("logs_omitted".into(), Value::from(omitted));
+        }
+        Ok(())
+    }
+}
+
 type CallResult<'a> =
     std::result::Result<(Value, Option<crate::conversation::ContentHold<'a>>), String>;
 
@@ -364,6 +505,7 @@ impl StockExecution<'_> {
             )));
             let mut ordinal = 0_u64;
             let mut log_ordinal = 0_u64;
+            let mut logs = ProgramLogs::default();
             let mut inner_context = Vec::new();
             let program = loop {
                 tokio::select! {
@@ -390,6 +532,7 @@ impl StockExecution<'_> {
                                 // Borrow the engine's JSON without allocating a second value tree.
                                 let values = serde_json::from_str(&arguments.value).map_err(|_| stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "JavaScript log arguments are not JSON"))?;
                                 let entry = Log { kind: "code.log", call_id: &parent.call_id, ordinal: log_ordinal, values };
+                                logs.observe(values, maximum, self.io)?;
                                 let key = with_history_io(self.io, |work| preparation_format(format_args!("tool:{}:code:log:{log_ordinal}", parent.operation_id), work))?;
                                 #[cfg(feature = "filesystem")]
                                 let _key_hold = self.io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
@@ -454,7 +597,7 @@ impl StockExecution<'_> {
             {
                 return Err(error.into());
             }
-            let value = match program {
+            let mut value = match program {
                 Ok(value) => {
                     serde_json::json!({"value": value})
                 }
@@ -478,6 +621,7 @@ impl StockExecution<'_> {
                 maximum as u64,
                 self.io,
             )?;
+            logs.attach(&mut value, maximum, self.io)?;
             let mut context = Vec::new();
             for message in stock_into_iter(inner_context, self.io)? {
                 let ModelContent::Text(text) = message.content else {

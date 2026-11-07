@@ -176,6 +176,27 @@ proptest! {
             prop_assert_ne!(known.credential_scope, provider.reasoning_origin(Some("rotated-key"), None).credential_scope);
             let account = provider.reasoning_origin(Some("first-key"), Some("account"));
             prop_assert_eq!(account, provider.reasoning_origin(Some("rotated-key"), Some("account")));
+            // An anonymous route (a gateway injects credentials) owns what it
+            // signed: its own continuity replays, and only to that route.
+            let required = std::mem::replace(
+                &mut std::sync::Arc::make_mut(&mut provider.config).authentication,
+                crate::Authentication::Optional,
+            );
+            let route = provider.reasoning_origin(None, None);
+            prop_assert!(route.credential_scope.is_some(), "an anonymous route lost its own continuity");
+            prop_assert_eq!(&route, &provider.reasoning_origin(Some(""), None));
+            prop_assert_ne!(route.credential_scope, known.credential_scope);
+            let block = ReasoningBlock {kind: KINDS[kind], text: text.clone(), origin: route.clone(),
+                continuity: bytes.clone(), outcome: ReasoningOutcome::PreservedOpaque};
+            let native = matches!(project_reasoning(&block, &route), ProjectedReasoning::Native {..});
+            prop_assert_eq!(native, !bytes.is_empty());
+            let dropped = matches!(project_reasoning(&block, &known), ProjectedReasoning::Dropped {..});
+            prop_assert!(dropped);
+            std::sync::Arc::make_mut(&mut provider.config).headers.insert("x-gateway-tenant".into(), "other".into());
+            prop_assert_ne!(route.credential_scope, provider.reasoning_origin(None, None).credential_scope);
+            let config = std::sync::Arc::make_mut(&mut provider.config);
+            config.headers.remove("x-gateway-tenant");
+            config.authentication = required;
             provider.credential_scope = Some([37; 32]);
             let protected = provider.reasoning_origin(None, None);
             prop_assert!(protected.credential_scope.is_some());

@@ -2,15 +2,8 @@
 #[cfg(test)]
 acyclic_test_support::counting_allocator!();
 
-use acyclic_harness::{Error, Result};
+use acyclic_harness::tools::{agent_diff, parse_command, parse_fs_command};
 use libfuzzer_sys::fuzz_target;
-
-#[path = "../../harness-core/src/tools/command.rs"]
-mod command;
-#[path = "../../harness-core/src/tools/fs_command.rs"]
-mod fs_command;
-use command::parse_command;
-use fs_command::parse_fs_command;
 
 fuzz_target!(|input: &str| {
     if let Ok(arguments) = parse_command(input) {
@@ -28,10 +21,7 @@ fuzz_target!(|input: &str| {
             .join(" ");
         let restored = parse_command(&encoded).unwrap();
         assert_eq!(restored, arguments);
-        assert_eq!(
-            fs_command::agent_diff(&restored),
-            fs_command::agent_diff(&arguments)
-        );
+        assert_eq!(agent_diff(&restored), agent_diff(&arguments));
     }
     if let Ok(parsed) = parse_fs_command(input) {
         let mut arguments = parsed.arguments.clone();

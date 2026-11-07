@@ -468,7 +468,7 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
             let allocator = EngineAllocator::new(Some(&work));
             let failure = allocator.failure();
             let source = if console {
-                format!("await console.log({literal})")
+                format!("await console.log({literal}, {{value:42}}, null, [], true, 1)")
             } else {
                 format!("await tools[{tool_name}]({{}})")
             };
@@ -490,9 +490,10 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
                 drop(receive);
                 match settlement {
                     Settlement::Console => {
-                        let super::Request::Log { reply, .. } = request else {
+                        let super::Request::Log { arguments, reply } = request else {
                             panic!("console must use its original log request");
                         };
+                        check_logs(&arguments.value);
                         let _ = reply.send(None);
                     }
                     Settlement::Cancel => {
@@ -527,4 +528,89 @@ async fn check_settlement(definitions: &OwnedBytes, tool_name: &str, literal: &s
             }
         }
     }
+}
+
+/// Differential checks consume the frame the production engine actually emitted.
+/// The same retained fuzz target covers escaped strings, bounds and native denials.
+fn check_logs(frame: &str) {
+    use super::ProgramLogs;
+    use serde_json::{Value, json};
+    let raw: &serde_json::value::RawValue = serde_json::from_str(frame).unwrap();
+    let arguments: Vec<Value> = serde_json::from_str(frame).unwrap();
+    let expected = arguments
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    for maximum in [0, 64, frame.len() + 64, frame.len() + 128] {
+        let work = native_work(false);
+        let baseline = work.live_allocation_bytes();
+        {
+            let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+            let mut logs = ProgramLogs::default();
+            let before = io.receipt();
+            logs.observe(raw, maximum, Some(&io)).unwrap();
+            if logs.bytes > 0 {
+                assert!(
+                    io.receipt().bytes_copied - before.bytes_copied >= expected.len() as u64,
+                    "retained log text must fund its actual copy"
+                );
+            }
+            if maximum == 0 {
+                assert!(logs.lines.is_empty());
+                assert_eq!(logs.omitted, 1);
+                assert_eq!(
+                    io.receipt(),
+                    before,
+                    "omitted logs need no decode, allocation or copy"
+                );
+                assert_eq!(work.live_allocation_bytes(), baseline);
+                continue;
+            }
+            let mut output = json!({"value":42});
+            logs.attach(&mut output, maximum, Some(&io)).unwrap();
+            let receipt = json!({"version":2,"output":output});
+            let projected = crate::tools::code_mode::projected(&receipt).unwrap();
+            assert!(serde_json::to_vec(projected).unwrap().len() <= maximum);
+            if let Value::Object(output) = projected {
+                assert_eq!(output["value"], 42);
+                if output["logs"]
+                    .as_array()
+                    .is_some_and(|logs| !logs.is_empty())
+                {
+                    assert_eq!(output["logs"], json!([expected]));
+                }
+            } else {
+                assert_eq!(projected, 42);
+            }
+        }
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    // Exhaust the original owner after initialization. A fitting line must
+    // refuse before its argument index or decoded text allocates. An omitted
+    // line needs neither allocation and must still make progress.
+    let work = native_work(false);
+    let baseline = work.live_allocation_bytes();
+    let io = crate::filesystem::PreparationIo::from_native_work(&work).unwrap();
+    let held = work
+        .claim(
+            work.budget().peak_allocation_bytes - work.live_allocation_bytes(),
+            1,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )
+        .unwrap();
+    assert!(
+        ProgramLogs::default()
+            .observe(raw, frame.len() + 128, Some(&io))
+            .is_err()
+    );
+    ProgramLogs::default().observe(raw, 0, Some(&io)).unwrap();
+    drop(held);
+    drop(io);
+    assert_eq!(work.live_allocation_bytes(), baseline);
 }

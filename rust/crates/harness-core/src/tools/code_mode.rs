@@ -15,7 +15,7 @@ impl crate::tool::ToolProjection for CodeMode {
         result: &ToolResult,
         work: crate::NativeWork<'_>,
     ) -> Result<(serde_json::Value, crate::NativeCustody)> {
-        crate::tool::schema::project_json(output(&result.value)?, work)
+        crate::tool::schema::project_json(projected(&result.value)?, work)
     }
 
     fn supports_native_projection(&self, work: crate::NativeWork<'_>) -> Result<()> {
@@ -28,6 +28,17 @@ impl crate::tool::ToolProjection for CodeMode {
     }
 }
 
+/// What the model reads: the program's value, or its lines beside its value
+/// or error when it printed any.
+pub(crate) fn projected(value: &serde_json::Value) -> Result<&serde_json::Value> {
+    let result = output(value)?;
+    match value.get("output") {
+        Some(output) if output.get("logs").is_some() => Ok(output),
+        _ => Ok(result),
+    }
+}
+
+/// What a JavaScript caller receives: the program's value or error.
 pub(crate) fn output(value: &serde_json::Value) -> Result<&serde_json::Value> {
     if value.get("version") != Some(&serde_json::json!(2)) {
         return Err(crate::Error::Invalid(

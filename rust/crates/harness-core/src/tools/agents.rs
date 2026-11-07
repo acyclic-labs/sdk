@@ -86,7 +86,7 @@ pub struct ArchiveAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitAgentInput {
-    /// Child names or agent paths, as spawn returned them.
+    /// Children by exact spawn name or agent path; fork branches are for `fs`.
     pub agents: Vec<String>,
     /// How many of them must settle before the wait returns: all of them by
     /// default, 1 for the first, or any quorum in between.
@@ -370,7 +370,7 @@ impl AgentTool {
             // only through `fs merge` of it. A spawn name names it; an agent
             // path does not.
             if AgentPath::try_from(name.clone()).is_err() {
-                entry["branch"] = json!(format!("agents/{name}"));
+                entry["branch"] = json!(child_branch(name));
             }
             settled.push(entry);
         }
@@ -400,8 +400,24 @@ fn peer_grants(
     Ok(crate::Capabilities::new(grants))
 }
 
-/// The child of `agent` that `reference` names: a spawn name, or the agent
-/// path of one of its children, open or settled.
+/// A spawned child's fork branch, as `wait` reports it and `fs diff` and
+/// `fs merge` take it.
+pub fn child_branch(name: &str) -> String {
+    format!("{CHILD_BRANCH}{name}")
+}
+
+/// The spawn name a fork branch names.
+pub fn branch_child(branch: &str) -> Option<&str> {
+    branch
+        .strip_prefix(CHILD_BRANCH)
+        .filter(|name| !name.is_empty())
+}
+
+const CHILD_BRANCH: &str = "agents/";
+
+/// The child of `agent` that `reference` names: any name the surface shows
+/// for it (its exact spawn name or its agent path), open or
+/// settled.
 fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
         return path.is_child_of(agent).then_some(path);
@@ -701,6 +717,50 @@ mod tests {
         assert!(
             serde_json::from_value::<WaitAgentInput>(json!({"agents": [], "need": -1})).is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn every_name_the_surface_shows_for_a_child_names_it() -> Result<()> {
+        let agent = AgentPath::try_from(format!(
+            "{}/0cce2d330b354cbaa4843a984ac6698c",
+            crate::agent::AGENTS
+        ))
+        .map_err(super::agent)?;
+        let child = spawned_child(&agent, "worker")?;
+        // Spawn returns the exact name and path. Both name the same child;
+        // the fork branch is a separate input to fs diff and fs merge.
+        for reference in ["worker", child.as_str()] {
+            assert_eq!(
+                named_child(&agent, reference).as_ref(),
+                Some(&child),
+                "{reference}"
+            );
+        }
+        // Negative controls: another child, an empty branch, a foreign path.
+        let other = AgentPath::try_from(format!(
+            "{}/25874da5707547aa13f87af88762cec4",
+            crate::agent::AGENTS
+        ))
+        .map_err(super::agent)?;
+        for reference in [
+            "other",
+            "agents/",
+            spawned_child(&other, "worker")?.as_str(),
+        ] {
+            assert_ne!(
+                named_child(&agent, reference).as_ref(),
+                Some(&child),
+                "{reference}"
+            );
+        }
+        // A literal spawn name beginning with the branch prefix must never
+        // alias another child. Its full path remains the same identity too.
+        let prefixed = spawned_child(&agent, "agents/worker")?;
+        assert_ne!(prefixed, child);
+        for reference in ["agents/worker", prefixed.as_str()] {
+            assert_eq!(named_child(&agent, reference).as_ref(), Some(&prefixed));
+        }
         Ok(())
     }
 
