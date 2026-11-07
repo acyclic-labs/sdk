@@ -16,6 +16,8 @@
 //! missing imports and semantic failures, so another evaluation of that cut
 //! needs no module reads or parsing. Its input identity describes evaluation;
 //! the caller retains authorization, generation and publication ownership.
+//! [`compose_with_evidence`] retains those original observations through a
+//! layered fold, including absent roots, pinned generations and its refusal.
 pub mod policy;
 mod types;
 
@@ -28,7 +30,8 @@ pub use types::{
 mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{
-    Evaluated, Evaluation, ModuleRead, Prepared, Surface, Tree, compose, evaluate, prepare,
+    Composition, Evaluated, Evaluation, LayerInput, LayerState, ModuleCut, ModuleRead, Prepared,
+    Surface, Tree, compose, compose_with_evidence, evaluate, prepare,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]

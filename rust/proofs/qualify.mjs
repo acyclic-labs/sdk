@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "config-composition-cut": [
+    "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
+        { patch: "rust/proofs/config-composition-cut/generations.patch", label: "discarded-original-layer-generations", diagnostic: "composition identity discarded its original layer generations" },
+      ],
+    },
+  ],
   "config-retained-cut": [
     "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
