@@ -1,3 +1,5 @@
+//! Inspects an actor through the configured Actors HTTP endpoint.
+
 use acyclic_actors::{http::Client, wire};
 
 #[tokio::main]

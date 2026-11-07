@@ -11,6 +11,8 @@ From this checkout, `cargo test -p sdk-service-examples --doc --locked` compiles
 Account-scoped content-addressed blobs (BLAKE3-256 digests), with logical range reads, manifests and retained references. This example stores a blob through the hosted HTTP provider and reads it back.
 
 ```rust,no_run
+//! Stores and reads a blob through the configured Objects HTTP endpoint.
+
 use acyclic_objects::{Blobs, ByteRange, HttpObjects};
 
 #[tokio::main]
@@ -37,6 +39,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
 
 ```rust,no_run
+//! Reads the tail of a stream through the configured Stream HTTP endpoint.
+
 use acyclic_stream::{Stream, http::HttpStream};
 use std::sync::Arc;
 
@@ -58,6 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 Durable actor identities, invocation and subscriptions. This example inspects an existing actor using the Rust-backed client.
 
 ```rust,no_run
+//! Inspects an actor through the configured Actors HTTP endpoint.
+
 use acyclic_actors::{http::Client, wire};
 
 #[tokio::main]
@@ -88,6 +94,8 @@ deployment retains its own stable intent root until confirmed deletion. Modules
 load lazily from the same account-scoped Objects provider.
 
 ```rust,no_run
+//! Publishes, invokes and retires a deployment through Workers and Objects.
+
 use acyclic_actors::{http, wire};
 use acyclic_objects::{HttpObjects, RootId};
 use acyclic_workers::{
@@ -155,6 +163,8 @@ tools. Hosted clients can compose `acyclic_fs::StreamAuthorityStore` with
 `acyclic_fs::LogicalObjectStore` using scoped Streams and Objects providers.
 
 ```rust,no_run
+//! Creates a durable local filesystem volume under the configured root.
+
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{CancellationToken, Fs, LocalOptions, WorkBudget};
 
