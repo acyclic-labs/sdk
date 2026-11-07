@@ -32,7 +32,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         .map_err(exchange)?;
     let (ready, endpoint) = tokio::sync::oneshot::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
-    let serving = tokio::spawn(crate::server::serve(
+    let mut serving = tokio::spawn(crate::server::serve(
         listener,
         crate::server::ServerConfig::new(config),
         move |endpoint| {
@@ -89,6 +89,25 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .map_err(exchange)?;
             assert_eq!(page.children.len(), 1);
             assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
+            let selected = connection.select(child.clone()).await?;
+            assert_eq!(selected.root(), &child);
+            // A selected frontend follows the child's private tool-output
+            // resource as well as its conversation and status streams.
+            let _changes = session
+                .subscribe(acyclic_stream::wire::SessionSubscription {
+                    credential: CREDENTIAL,
+                    resume: Some(acyclic_stream::wire::SessionCursor::default()),
+                    kind: Some(acyclic_stream::wire::session_subscription::Kind::Follow(
+                        acyclic_stream::wire::SessionFollow {
+                            resource: selected.tools.clone(),
+                            delivery: acyclic_stream::wire::SessionDelivery::All as i32,
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                })
+                .await
+                .map_err(exchange)?;
             // Adoption publishes the first status; the turn's own status
             // event announces its committed conversation entry.
             let mut status = acyclic_stream::records_only(
@@ -114,8 +133,6 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     )));
                 }
             }
-            let selected = connection.select(child.clone()).await?;
-            assert_eq!(selected.root(), &child);
             // The entry and its immutable output are read through the same
             // public surfaces that retain native transcript references.
             let mut conversation = acyclic_stream::records_only(
@@ -170,8 +187,14 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         ));
         assert!(connection.select(foreign).await.is_err());
         Ok(())
-    }
-    .await;
+    };
+    let checked = tokio::select! {
+        result = &mut serving => {
+            result.map_err(exchange)?.map_err(exchange)?;
+            return Err(Error::Conflict("server stopped before tree observation completed".into()));
+        },
+        checked = checked => checked,
+    };
     let _ = stop.send(());
     serving.await.map_err(exchange)??;
     checked
