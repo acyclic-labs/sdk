@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/filesystem/native_directory.rs b/rust/crates/harness-core/src/filesystem/native_directory.rs
+--- a/rust/crates/harness-core/src/filesystem/native_directory.rs
++++ b/rust/crates/harness-core/src/filesystem/native_directory.rs
+@@ -90,7 +90,7 @@
+ ) -> Result<[u8; 56], base64::EncodeSliceError> {
+     // One exclusive leaf owns all staging. Shared ancestors would survive
+     // operation cleanup and cannot be removed while another publisher uses them.
+-    let mut leaf = [b'-'; 56];
++    let mut leaf = [std::path::MAIN_SEPARATOR as u8; 56];
+     leaf[..10].copy_from_slice(b".acyclic-m");
+     base64::engine::general_purpose::URL_SAFE_NO_PAD
+         .encode_slice(&digest.as_bytes()[..16], &mut leaf[11..33])?;

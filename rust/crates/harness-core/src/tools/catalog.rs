@@ -130,8 +130,8 @@ static SHELL: ToolSpec = ToolSpec {
 
 static FS: ToolSpec = ToolSpec {
     name: "fs",
-    revision: "3",
-    description: "Manage a child's fork: diff, merge or discard agents/<name>. After a merge conflict, edit the paths, then add <path> and merge --continue, or merge --abort. --volume <name> selects a mounted volume. Use shell for other git commands",
+    revision: "4",
+    description: "Inspect working-tree status, or manage a child's fork: diff, merge or discard agents/<name>. After a merge conflict, edit the paths, then add <path> and merge --continue, or merge --abort. --volume <name> selects a mounted volume. Use shell for other git commands",
     hook_names: &[],
     binding: ToolBinding::Filesystem,
     input: || {

@@ -238,6 +238,10 @@ impl Fixture {
             assert_eq!(std::fs::read_to_string(self.root.join(name))?, "host-owned");
         }
         assert!(!publication.directory().exists());
+        assert!(
+            !self.root.parent().unwrap().join(".acyclic-m").exists(),
+            "publication left shared staging ancestors behind"
+        );
         std::fs::write(self.root.join("note"), "edit after acknowledgement")?;
         self.publish(adapter, operation, &self.to).await?;
         assert_eq!(

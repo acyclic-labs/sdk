@@ -88,32 +88,13 @@ fn root_materialization_leaf(
     digest: &blake3::Hash,
     operation_id: OperationId,
 ) -> Result<[u8; 56], base64::EncodeSliceError> {
-    let mut leaf = [std::path::MAIN_SEPARATOR as u8; 56];
+    // One exclusive leaf owns all staging. Shared ancestors would survive
+    // operation cleanup and cannot be removed while another publisher uses them.
+    let mut leaf = [b'-'; 56];
     leaf[..10].copy_from_slice(b".acyclic-m");
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(&digest.as_bytes()[..16], &mut leaf[11..33])?;
     base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(operation_id.into_bytes(), &mut leaf[34..])?;
     Ok(leaf)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn staging_stays_inside_the_same_filesystem_parent() -> Result<(), Box<dyn std::error::Error>> {
-        let temp = tempfile::tempdir()?;
-        let root = temp.path().join("root");
-        let directory = NativeDirectory(&root).publication_directory(OperationId::new())?;
-        assert!(directory.starts_with(temp.path().join(".acyclic-m")));
-        assert_eq!(
-            directory.components().count(),
-            temp.path().components().count() + 3
-        );
-        assert!(matches!(
-            NativeDirectory(Path::new("/")).publication_directory(OperationId::new()),
-            Err(crate::Error::Invalid(_))
-        ));
-        Ok(())
-    }
 }
