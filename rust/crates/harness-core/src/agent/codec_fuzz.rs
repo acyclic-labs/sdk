@@ -35,6 +35,11 @@ fn header<T: serde::Serialize + for<'de> serde::Deserialize<'de>>(value: &T) {
         assert!(refused, "agent record header refusal changed");
     }
     let encoded = records::seal(value).expect("admitted record writer");
+    assert_eq!(
+        records::encoded_size(value).expect("record size"),
+        encoded.len(),
+        "record size counter differs from canonical writer"
+    );
     assert!(records::decode_record::<T>(&encoded).is_ok());
     // Struct records and the struct payload of an externally tagged variant
     // refuse unknown fields. Unit variants have no fields to extend.
@@ -199,6 +204,14 @@ pub fn check(bytes: &[u8]) {
         }
     }
     record::<InboxRecord>(bytes);
+    if let Ok(record) = InboxRecord::decode(bytes)
+        && let Some(queued) = super::input::input(0, record)
+    {
+        records::settlement_frame(queued.input)
+            .expect("bounded settlement metadata")
+            .encode()
+            .expect("admitted input leaves room for settlement");
+    }
     // Read the selection independently of SpawnRequest's field deserializer:
     // dropping it there otherwise leaves a stable decode/encode fixed point.
     if let Ok(InboxRecord::Spawn(spawn)) = InboxRecord::decode(bytes) {
@@ -666,6 +679,12 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
     }
     seeds.extend(history_seeds()?);
     seeds.push(("roster", roster_seed()?));
+    // Captured from the real canonical payload writer, before inbox frame
+    // admission: the old writer admitted this identity and stranded its turn.
+    let oversized = InboxRecord::Approval(super::Approval {
+        id: IntentId::try_from("a".repeat(records::MAX_RECORD_BYTES - 255))?,
+    });
+    seeds.push(("inbox-settlement-overflow", records::seal(&oversized)?));
     Ok(seeds)
 }
 

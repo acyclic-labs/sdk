@@ -12,7 +12,8 @@
 //! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
 //! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
 //! built or decoded), and names by their own limits. Intent text has no
-//! independent cap: every record writer enforces the complete encoded frame.
+//! independent cap: inbox admission reserves its settlement's encoded envelope,
+//! and every record writer enforces the complete encoded frame.
 //! `tests` exercises every record kind with maximum bounded fields and a
 //! representative intent, and the worst settled checkpoint within
 //! [`MAX_CHECKPOINT_BYTES`] and one stream

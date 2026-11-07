@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "inbox-settlement": [
+    "rust/crates/harness-core/src/agent/records.rs", "acyclic-harness-core",
+    "agent::checkpoint::tests::bounded_record_fields_and_settled_checkpoints_fit_their_frames",
+    "a conversation entry fits", ["--features", "filesystem-local,test-support"],
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],

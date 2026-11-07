@@ -1,0 +1,8 @@
+diff --git a/rust/crates/harness-core/src/agent/records.rs b/rust/crates/harness-core/src/agent/records.rs
+--- a/rust/crates/harness-core/src/agent/records.rs
++++ b/rust/crates/harness-core/src/agent/records.rs
+@@ -799,3 +799,3 @@
+-    (*LIMIT).map_err(Error::Record)
++    (*LIMIT).map(|_| MAX_RECORD_BYTES).map_err(Error::Record)
+ }
+ 

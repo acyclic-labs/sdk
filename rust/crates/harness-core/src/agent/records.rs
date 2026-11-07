@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// Largest encoded agent record. Paths and references have their own bounds;
 /// caller-chosen intent text consumes the remaining frame. Writers and readers
-/// enforce the frame bound independently of field validation.
+/// enforce the frame bound independently of field validation. Inbox admission
+/// reserves the widest settlement envelope within this same frame.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
 /// Largest binding, principal or host name.
 pub const MAX_NAME_BYTES: usize = 128;
@@ -84,6 +85,33 @@ fn write_payload<T: Serialize + ?Sized>(bytes: &mut Vec<u8>, value: &T) -> crate
         .map_err(|error| crate::Error::Invalid(error.to_string()))
 }
 
+// Positional MessagePack can be smaller than the named record we will write.
+// Count that canonical shape without allocating a second payload or JSON tree.
+pub(super) fn encoded_size<T: Serialize + ?Sized>(value: &T) -> Result<usize, Error> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| std::io::Error::other("record encoded size overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(4);
+    value
+        .serialize(
+            &mut rmp_serde::Serializer::new(&mut count)
+                .with_struct_map()
+                .with_human_readable(),
+        )
+        .map_err(|_| Error::Record("record encoded size is not representable"))?;
+    Ok(count.0)
+}
+
 /// Decode exactly one value, including all of its fields. The library's
 /// from_slice helper accepts trailing values; a durable record must not.
 pub(super) fn decode_payload<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
@@ -123,11 +151,12 @@ pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Er
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
-/// Text has no independent length limit; the record's encoded frame bounds it.
+/// Text has no independent length limit; the record's encoded frame and its
+/// settlement reserve bound it.
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
 )]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 #[heap_layout(as = String)]
 pub struct IntentId(String);
 crate::core::ownership::owned_tuple!(IntentId, (text));
@@ -617,14 +646,21 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
         Ok(())
     }
 
+    /// Admit the encoded frame, including space a queued input needs when
+    /// its turn publishes the corresponding settlement.
+    fn check_encoded_size(&self, bytes: usize) -> Result<(), Error> {
+        if bytes > MAX_RECORD_BYTES {
+            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
+        }
+        Ok(())
+    }
+
     /// Canonical named MessagePack under the shared [`RECORD_VERSION`]
     /// header, refused above [`MAX_RECORD_BYTES`].
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.check()?;
         let bytes = seal(self).map_err(|_| Error::Record("record is not encodable"))?;
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
-        }
+        self.check_encoded_size(bytes.len())?;
         Ok(bytes)
     }
 
@@ -633,6 +669,7 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let value: Self = decode_record(bytes)?;
         value.check()?;
+        value.check_encoded_size(encoded_size(&value)?)?;
         Ok(value)
     }
 }
@@ -668,6 +705,13 @@ pub(super) fn check_text(text: &str) -> Result<(), Error> {
 }
 
 impl AgentRecord for InboxRecord {
+    fn check_encoded_size(&self, bytes: usize) -> Result<(), Error> {
+        if bytes > input_frame_limit()? {
+            return Err(Error::Record("inbox record leaves no room for settlement"));
+        }
+        Ok(())
+    }
+
     fn check(&self) -> Result<(), Error> {
         match self {
             Self::ForkAdopted(adopted) => {
@@ -738,6 +782,75 @@ impl AgentRecord for InboxRecord {
             | Self::ChildSettled(_) => Ok(()),
         }
     }
+}
+
+// The real settlement writer determines the reserve once. No intent-specific
+// cap or hand-maintained estimate of serialized field widths is needed.
+fn input_frame_limit() -> Result<usize, Error> {
+    static LIMIT: std::sync::LazyLock<Result<usize, &'static str>> =
+        std::sync::LazyLock::new(|| {
+            let reserve = settlement_frame(super::TurnInput::Approval {
+                id: IntentId("i".into()),
+            })
+            .and_then(|entry| seal(&entry))
+            .map_err(|_| "settlement frame reserve is not encodable")?;
+            MAX_RECORD_BYTES
+                .checked_sub(reserve.len())
+                .ok_or("settlement envelope exceeds MAX_RECORD_BYTES")
+        });
+    (*LIMIT).map_err(Error::Record)
+}
+
+/// The complete, widest settlement envelope around an original input. Shared
+/// with the retained codec oracle so admission is checked against real bytes.
+pub(super) fn settlement_frame(input: super::TurnInput) -> crate::Result<super::ConversationEntry> {
+    use crate::conversation::{
+        FileDescriptor, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES, VolumeClass,
+        VolumeOwner,
+    };
+    let label = || "a".repeat(MAX_LABEL_BYTES);
+    let volume = VolumeRef::new(
+        crate::resources::ProviderRef::new(label(), label(), label(), &mut None)?,
+        label(),
+        VolumeClass::SessionShared,
+        VolumeOwner::Project(label()),
+        &mut None,
+    )?;
+    let file = FileRef::new(
+        volume,
+        "a".repeat(MAX_PATH_BYTES),
+        label(),
+        FileDescriptor::new(
+            [255; 32],
+            MAX_EXACT_JS_INTEGER,
+            format!("a/{}", "a".repeat(MAX_LABEL_BYTES - 2)),
+        )?,
+        label(),
+        &mut None,
+    )?;
+    let mut source = AgentPath::root(&AgentId::from_bytes([255; 16]));
+    for _ in 0..super::MAX_DEPTH {
+        source = source
+            .child(&AgentId::from_bytes([255; 16]))
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+    }
+    Ok(super::ConversationEntry {
+        inbox: u64::MAX,
+        input,
+        output: file.clone(),
+        outcome: super::TurnOutcome::RestoreConflict,
+        goal: Some(crate::OperationId::from_bytes([255; 16])),
+        targets: Some(file.clone()),
+        steering: Some(super::SteeringTranscript {
+            through: u64::MAX,
+            file,
+        }),
+        tool_results: Some("a".repeat(MAX_PATH_BYTES)),
+        notices: Some(super::NoticeSelection {
+            source,
+            range: u64::MAX - 1..u64::MAX,
+        }),
+    })
 }
 
 fn check_sender(sender: &Sender) -> Result<(), Error> {
