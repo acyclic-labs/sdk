@@ -347,6 +347,25 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "ok: a run with these flags starts
 "
     );
+    // A JSONL run's exact flags are accepted; output flags are inert here.
+    let flagged = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--output-format",
+            "jsonl",
+            "--operation",
+            "doctor-flags",
+            "doctor",
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(
+        succeeded(&flagged),
+        "ok: a run with these flags starts
+"
+    );
     // State nested in the checkout is the refusal opening meets, with its recovery.
     let nested = Fixture {
         workspace: fixture.workspace.clone(),
