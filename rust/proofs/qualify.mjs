@@ -26,6 +26,18 @@ const claims = {
       ],
     },
   ],
+  "local-native-failure-progress": [
+    "rust/crates/stream/src/local/native_mutations.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a native guarded commit parked", ["--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-failure-progress/guarded.patch", label: "missing-guarded-retirement", diagnostic: "failed journal left a native guarded commit parked" },
+        { patch: "rust/proofs/local-failure-progress/preparation.patch", source: "rust/crates/stream/src/local/prepared_commit.rs", label: "missing-preparation-retirement", diagnostic: "failed journal left native preparation parked" },
+        { patch: "rust/proofs/local-failure-progress/prepared.patch", source: "rust/crates/stream/src/local/prepared_commit.rs", label: "missing-prepared-retirement", diagnostic: "failed journal left a prepared completion parked" },
+      ],
+    },
+  ],
   "browser-revision-progress": [
     "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
     "browser::tests::database_loss_ends_parked_revision_observers",

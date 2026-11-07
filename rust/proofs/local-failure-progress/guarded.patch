@@ -1,0 +1,17 @@
+diff --git a/rust/crates/stream/src/local/native_mutations.rs b/rust/crates/stream/src/local/native_mutations.rs
+index 1f3f02450c0..b5288b67593 100644
+--- a/rust/crates/stream/src/local/native_mutations.rs
++++ b/rust/crates/stream/src/local/native_mutations.rs
+@@ -109,10 +109,8 @@ impl LocalStream {
+                 let _allocation = allocation;
+                 worker.await
+             }));
+-            match LocalInner::observe(&mut failed, task).await {
+-                Ok(result) => result.map_err(std::io::Error::other)?,
+-                Err(error) => Ok(Err(E::from(error))),
+-            }
++            drop(failed);
++            task.await.map_err(std::io::Error::other)?
+         })
+     }
+ 

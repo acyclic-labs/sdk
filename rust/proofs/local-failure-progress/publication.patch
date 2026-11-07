@@ -1,37 +1,16 @@
 diff --git a/rust/crates/stream/src/local/local_stream.rs b/rust/crates/stream/src/local/local_stream.rs
-index 76cef07ad0d..0da694cbd47 100644
+index cba13904704..966ec01b417 100644
 --- a/rust/crates/stream/src/local/local_stream.rs
 +++ b/rust/crates/stream/src/local/local_stream.rs
-@@ -696,10 +696,9 @@ impl LocalStream {
-                 return Ok(span.in_scope(|| finish(Err(error))));
-             }
-             let stream = self.worker();
--            let mut failed = self.inner.failed.subscribe();
-             // The mutation owns completion as well as durability, even if its caller is dropped.
-             let operation = span.clone();
--            let pending = spawn(publication_scope(async move {
-+            spawn(publication_scope(async move {
-                 let task = std::pin::pin!(async {
-                     let (result, required) = {
-                         let _visibility = stream.inner.visibility.write().await;
-@@ -719,17 +718,9 @@ impl LocalStream {
-                 });
+@@ -720,9 +720,8 @@ impl LocalStream {
                  let result = operation.scope(task).await;
                  operation.in_scope(|| finish(result))
--            }));
--            let pending = std::pin::pin!(pending);
--            let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
--            // Keep completed results and the original task's custody. A lost
--            // observation never proves that a submitted mutation did not commit.
--            match futures::future::select(pending, unavailable).await {
--                futures::future::Either::Left((result, _)) => {
--                    result.map_err(|_| StreamError::Unavailable)
--                }
--                futures::future::Either::Right((error, _)) => Err(error),
--            }
-+            }))
-+            .await
-+            .map_err(|_| StreamError::Unavailable)
+             }));
+-            LocalInner::observe(&mut failed, pending)
+-                .await?
+-                .map_err(|_| StreamError::Unavailable)
++            drop(failed);
++            pending.await.map_err(|_| StreamError::Unavailable)
          }
      }
  

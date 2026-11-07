@@ -720,16 +720,9 @@ impl LocalStream {
                 let result = operation.scope(task).await;
                 operation.in_scope(|| finish(result))
             }));
-            let pending = std::pin::pin!(pending);
-            let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
-            // Keep completed results and the original task's custody. A lost
-            // observation never proves that a submitted mutation did not commit.
-            match futures::future::select(pending, unavailable).await {
-                futures::future::Either::Left((result, _)) => {
-                    result.map_err(|_| StreamError::Unavailable)
-                }
-                futures::future::Either::Right((error, _)) => Err(error),
-            }
+            LocalInner::observe(&mut failed, pending)
+                .await?
+                .map_err(|_| StreamError::Unavailable)
         }
     }
 

@@ -29,6 +29,7 @@ impl LocalStream {
             // The caller's handle stays with this future; the detached work
             // holds none, so it drains as the store closes.
             let _handle = stream.handle.take();
+            let mut failed = stream.inner.failed.subscribe();
             let provider = stream.inner.provider.with_context(Arc::clone(&work));
             let input = match provider.request_claim(&request) {
                 Ok(input) => input,
@@ -108,7 +109,10 @@ impl LocalStream {
                 let _allocation = allocation;
                 worker.await
             }));
-            task.await.map_err(std::io::Error::other)?
+            match LocalInner::observe(&mut failed, task).await {
+                Ok(result) => result.map_err(std::io::Error::other)?,
+                Err(error) => Ok(Err(E::from(error))),
+            }
         })
     }
 

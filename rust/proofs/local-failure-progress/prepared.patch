@@ -1,0 +1,17 @@
+diff --git a/rust/crates/stream/src/local/prepared_commit.rs b/rust/crates/stream/src/local/prepared_commit.rs
+index a41b111666c..dd2b2646d6d 100644
+--- a/rust/crates/stream/src/local/prepared_commit.rs
++++ b/rust/crates/stream/src/local/prepared_commit.rs
+@@ -76,10 +76,8 @@ impl LocalStream {
+                                 &work.meter,
+                                 async move {
+                                     let _handle = handle;
+-                                    match LocalInner::observe(&mut failed, task).await {
+-                                        Ok(result) => result.map_err(std::io::Error::other)?,
+-                                        Err(error) => Ok(Err(error)),
+-                                    }
++                                    drop(failed);
++                                    task.await.map_err(std::io::Error::other)?
+                                 },
+                             ) {
+                                 Ok(future) => future,

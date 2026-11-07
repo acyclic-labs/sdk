@@ -16,6 +16,12 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             observer.0.store(true, Ordering::Release);
         }
     }
+    fn observed<T>(result: crate::NativeStreamResult<T>) -> Result<(), StreamError> {
+        match result {
+            Ok(result) => result.map(|_| ()),
+            Err(error) => panic!("observation took an unrelated worker's physical error: {error}"),
+        }
+    }
     for native in [false, true] {
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
         let (root, path, meter) = super::journal_lifecycle(&schedule, &mut boundaries, async {
@@ -34,6 +40,12 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                     std::pin::pin!(acyclic_native_runtime::testing::untracked(follow.next()));
                 assert!(futures::poll!(next).is_pending());
             }
+            let meter = Arc::new(crate::test_meter::Meter::local());
+            let request = super::prepared_fixture(&stream).await?;
+            let packet = stream
+                .native_prepare_commit(request.clone(), 64, meter.original())
+                .await??;
+            let (packet, allocation) = packet.into_parts();
             let file_path = root.path().join(JOURNAL_FILE);
             let read_only = acyclic_native_runtime::CachedFile::new(
                 std::fs::File::open(&file_path)?,
@@ -48,7 +60,6 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 .lock()
                 .map_err(|_| "journal poisoned")?
                 .file = read_only;
-            let meter = Arc::new(crate::test_meter::Meter::local());
             let work = if native {
                 Some(crate::native::Work::new(meter.original())?)
             } else {
@@ -63,7 +74,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             let publication = stream.inner.publication.write().await;
             // These public operations are parked before they can observe memory.
             // Failure must wake them while both original fences remain held.
-            let mut waits: [crate::BoxProviderFuture<'_, Result<(), StreamError>>; 4] = [
+            let mut waits: [crate::BoxProviderFuture<'_, Result<(), StreamError>>; 7] = [
                 Box::pin(
                     acyclic_native_runtime::testing::untracked(stream.tail(path.clone()))
                         .map(|result| result.map(|_| ())),
@@ -100,8 +111,25 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                         })
                         .map(|result| result.map(|_| ())),
                 ),
+                Box::pin(
+                    stream
+                        .native_commit_guarded(request.clone(), None, meter.original(), || {
+                            std::future::ready(Ok::<_, StreamError>(()))
+                        })
+                        .map(observed),
+                ),
+                Box::pin(
+                    stream
+                        .native_prepare_commit(request, 64, meter.original())
+                        .map(observed),
+                ),
+                Box::pin(
+                    packet
+                        .finish(OwnedBytes::from_static(b"queued prepared record").into())
+                        .map(observed),
+                ),
             ];
-            let observers: [_; 4] =
+            let observers: [_; 7] =
                 std::array::from_fn(|_| Arc::new(Observer(AtomicBool::new(false))));
             let wakers = observers
                 .each_ref()
@@ -118,10 +146,12 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             for (index, ((waiting, waker), observer)) in
                 waits.iter_mut().zip(&wakers).zip(&observers).enumerate()
             {
-                let diagnostic = if index == 3 {
-                    "failed journal left a conditional mutation parked"
-                } else {
-                    "failed journal left a public observation parked"
+                let diagnostic = match index {
+                    3 => "failed journal left a conditional mutation parked",
+                    4 => "failed journal left a native guarded commit parked",
+                    5 => "failed journal left native preparation parked",
+                    6 => "failed journal left a prepared completion parked",
+                    _ => "failed journal left a public observation parked",
                 };
                 assert!(observer.0.load(Ordering::Acquire), "{diagnostic}");
                 assert!(
@@ -133,6 +163,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 );
             }
             drop(waits);
+            drop(allocation);
             let cause = stream.failure().ok_or("missing original failure")?;
             assert_eq!(cause.operation, "write");
             assert_eq!(cause.cause, "io");
