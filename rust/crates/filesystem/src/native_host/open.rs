@@ -1,5 +1,41 @@
 use super::*;
 
+/// Reads one regular file through its held parent and the shared native leaf
+/// admission. Links and nonregular files are refused before any payload read;
+/// a FIFO cannot wait for a writer during admission.
+pub fn read_regular_file(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "regular file name is absent")
+    })?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut work = DemandWork::new(
+        crate::performance::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    );
+    let mut open = || -> Result<File, DemandError> {
+        let parent = open_root_directory_handle(parent, DirectoryAccess::Search, &mut work)?;
+        #[cfg(windows)]
+        directory_identity(&parent, &mut work)?;
+        open_leaf(
+            &parent,
+            Path::new(name),
+            &NativeOpenOptions::Read,
+            &mut work,
+        )
+    };
+    let mut file = open().map_err(|error| match error {
+        DemandError::Io(error) => error,
+        error => io::Error::new(io::ErrorKind::InvalidInput, error),
+    })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub(crate) enum NativeOpenOptions {
     Read,
     #[cfg(any(test, feature = "local", feature = "native-mount"))]

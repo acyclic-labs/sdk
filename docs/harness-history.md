@@ -22,6 +22,15 @@ A reconnect resumes after the last emitted record; consumers deduplicate by
 source stream and sequence. Pages and transport credit bound memory, not the
 total history or session count. EOF, cancellation and follow delivery are events.
 
+The terminal JSONL `completed` record follows publication of every requested
+file export. A publication failure emits an error instead of successful
+completion, even when the underlying agent turn has settled.
+
+Native startup file inputs (cursor, output schema, approval policy, provider
+catalog, explicit credentials and TLS identity) require regular files. Shared
+native admission refuses links and pipes before reading their contents; a pipe
+does not wait for a writer. Missing cursor files still start a new projection.
+
 `graphcoder sessions` and `graphcoder history` expose the same bounded page
 request: `--page-size` controls rows and `--page-bytes` controls encoded reply
 credit. Both default to the shared client's page settings. Return `--cursor`

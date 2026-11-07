@@ -8,6 +8,11 @@
       "cases": [
         "cli-help",
         "cli-invalid-option",
+        "explicit-credential-source",
+        "output-destination-aliases",
+        "output-destination-kind",
+        "usage-publication-failure",
+        "nonregular-startup-input",
         "text-responses"
       ]
     },

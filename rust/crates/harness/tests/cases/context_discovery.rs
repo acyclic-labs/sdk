@@ -18,6 +18,7 @@ use acyclic_harness::{
     model::{ModelContent, ModelEvent},
     resources::ProviderRef,
     test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
+    wire::ErrorCode,
 };
 use std::sync::{
     Arc,
@@ -82,11 +83,11 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
             'a,
-            (
+            Option<(
                 acyclic_harness::conversation::FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<acyclic_harness::conversation::ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -244,6 +245,7 @@ fn assert_lazy_request(provider: &ScriptedModelProvider) -> Result<()> {
 struct Fixture {
     host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
     issuer: AuthorityRoot,
+    scope: acyclic_harness::core::Scope,
     volume: VolumeRef,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -349,6 +351,7 @@ impl Fixture {
         Ok(Self {
             host,
             issuer,
+            scope,
             volume,
             writer,
             reader,
@@ -904,6 +907,125 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         None,
     )?
     .0;
+    use acyclic_harness::context::InstructionReader;
+    let mut instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: fixture.reader.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    assert!(
+        instructions
+            .instruction(&source.path, &source.generation, 32_768)
+            .await
+            .is_err(),
+        "missing generation must not omit the selected instruction"
+    );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            &source.root.directory,
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&source.generation),
+            true,
+        )
+        .await
+        .is_err(),
+        "missing generation must not omit the optional skill directory"
+    );
+    assert!(
+        instructions
+            .instruction(
+                "skills/missing/SKILL.md",
+                &first_skill(&captured)?.source.generation,
+                32_768,
+            )
+            .await?
+            .is_none(),
+        "only an absent filename is optional"
+    );
+    for (directory, active) in [("skills", "missing"), ("skills/missing", "")] {
+        assert!(
+            acyclic_harness::context::capture_instructions(
+                &mut instructions,
+                directory,
+                active,
+                &["SKILL.md".into()],
+                &mut acyclic_harness::context::DiscoveryWork::default(),
+                Some(&first_skill(&captured)?.source.generation),
+            )
+            .await
+            .is_err(),
+            "a missing declared instruction directory must not omit context: {directory}/{active}"
+        );
+    }
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            true,
+        )
+        .await?
+        .is_empty(),
+        "an absent optional skill directory has no catalog"
+    );
+    assert!(
+        acyclic_harness::context::discover_skills_from(
+            &mut instructions,
+            "skills/missing",
+            "SKILL.md",
+            &mut acyclic_harness::context::DiscoveryWork::default(),
+            Some(&first_skill(&captured)?.source.generation),
+            false,
+        )
+        .await
+        .is_err(),
+        "an absent required skill directory must remain an error"
+    );
+    let unavailable = FilesystemContentVerifier::new(
+        FilesystemHost::new(Fs::memory(), fixture.volume.provider(), None)?,
+        &fixture.issuer.verifier(&mut None)?,
+        &fixture.scope,
+        32_768,
+        None,
+    )?;
+    let mut unavailable_instructions = acyclic_harness::context::VolumeDiscovery {
+        reader: unavailable.as_ref(),
+        root: &source.root,
+        io: None,
+    };
+    let missing_skill_authority = acyclic_harness::context::discover_skills_from(
+        &mut unavailable_instructions,
+        &source.root.directory,
+        "SKILL.md",
+        &mut acyclic_harness::context::DiscoveryWork::default(),
+        Some(&first_skill(&captured)?.source.generation),
+        true,
+    )
+    .await;
+    assert!(
+        missing_skill_authority.is_err(),
+        "missing source authority must not omit the optional skill directory"
+    );
+    assert_eq!(
+        missing_skill_authority.unwrap_err().code(),
+        ErrorCode::NotFound
+    );
+    let missing_authority = unavailable_instructions
+        .instruction(
+            &source.path,
+            &first_skill(&captured)?.source.generation,
+            32_768,
+        )
+        .await;
+    assert!(
+        missing_authority.is_err(),
+        "missing source authority must not omit the selected instruction"
+    );
+    assert_eq!(missing_authority.unwrap_err().code(), ErrorCode::NotFound);
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture

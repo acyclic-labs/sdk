@@ -287,7 +287,7 @@ where
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
         if io.is_some() {
             return Err(stock_boundary(
                 io,
@@ -302,7 +302,7 @@ where
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
-            let (generation, page) = FilesystemContentVerifier::list_private_directory(
+            let selected = FilesystemContentVerifier::list_private_directory(
                 self,
                 volume,
                 granted_prefix,
@@ -315,6 +315,9 @@ where
                 },
             )
             .await?;
+            let Some((generation, page)) = selected else {
+                return Ok(None);
+            };
             let entries = page
                 .entries
                 .into_iter()
@@ -342,11 +345,11 @@ where
                     Ok(PrivateDirectoryEntry { name, kind })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(PrivateDirectoryPage {
+            Ok(Some(PrivateDirectoryPage {
                 generation,
                 entries,
                 has_more: page.has_more,
-            })
+            }))
         })
     }
 
@@ -440,11 +443,11 @@ where
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<crate::conversation::ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -467,9 +470,9 @@ where
             let grant_hold = io
                 .map(|io| io.guard_owned(grant.logical_owned_bytes()?))
                 .transpose()?;
-            let (file, bytes) = self
+            let selected = self
                 .host
-                .read_private_path(
+                .read_private_path_indexed(
                     volume,
                     &grant,
                     path,
@@ -480,10 +483,13 @@ where
                 .await?;
             drop(grant);
             drop(grant_hold);
+            let Some((file, bytes, _)) = selected else {
+                return Ok(None);
+            };
             let hold = io
                 .map(|io| io.guard_owned(file.logical_owned_bytes()?))
                 .transpose()?;
-            Ok((file, bytes, hold))
+            Ok(Some((file, bytes, hold)))
         })
     }
 }
@@ -548,13 +554,14 @@ where
     }
 
     /// Lazily lists another agent's private directory under this reader's signed, owner-delegated subtree grant.
+    /// Only an absent authorized directory returns `None`; source failures remain errors.
     pub async fn list_private_directory(
         &self,
         volume: &VolumeRef,
         granted_prefix: &str,
         path: &str,
         options: crate::filesystem::DirectoryOptions<'_>,
-    ) -> Result<(GenerationRef, DirectoryPage)> {
+    ) -> Result<Option<(GenerationRef, DirectoryPage)>> {
         let crate::filesystem::DirectoryOptions {
             generation: expected_generation,
             after,

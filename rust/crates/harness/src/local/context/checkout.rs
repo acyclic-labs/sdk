@@ -251,18 +251,47 @@ impl crate::context::DiscoverySource for CheckoutInstructions<'_> {
         maximum: u32,
     ) -> acyclic_stream::BoxProviderFuture<
         'a,
-        Result<crate::context::DiscoveryPage<Self::Revision, Self::Cursor>>,
+        Result<Option<crate::context::DiscoveryPage<Self::Revision, Self::Cursor>>>,
     > {
         self.directory.page(path, revision, cursor, maximum)
     }
 }
 impl crate::context::InstructionReader for CheckoutInstructions<'_> {
+    fn instruction_directory<'a>(
+        &'a mut self,
+        path: &'a str,
+        revision: Option<&'a Self::Revision>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
+        Box::pin(async move {
+            let cut = revision.copied().unwrap_or(self.directory.cut);
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: self.directory.work,
+                cancellation: self.directory.work.cancellation(),
+            };
+            let Some(stat) = self
+                .directory
+                .view
+                .stat_at_snapshot(cut, &format!("/{path}"), &mut accounting)
+                .await?
+            else {
+                return Ok(None);
+            };
+            if stat.kind != acyclic_fs::demand::SourceNodeKind::Directory {
+                return Err(Error::Invalid(
+                    "instruction entry is not a directory".into(),
+                ));
+            }
+            Ok(Some((cut, 0)))
+        })
+    }
+
     fn instruction<'a>(
         &'a mut self,
         path: &'a str,
         cut: &'a Self::Revision,
         maximum: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>
+    {
         Box::pin(async move {
             let archive_length = "inputs/context/".len() + 64 + 1 + path.len();
             if archive_length > self.harness.limits.path_bytes {
@@ -274,11 +303,21 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 work: self.directory.work,
                 cancellation: self.directory.work.cancellation(),
             };
-            let (bytes, _allocation) = self
+            let (bytes, _allocation) = match self
                 .directory
                 .view
                 .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
-                .await?;
+                .await
+            {
+                Ok(file) => file,
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => return Ok(None),
+                Err(acyclic_fs::LazyWorkspaceError::NotRegularFile) => {
+                    return Err(Error::Invalid(
+                        "instruction entry is not a regular file".into(),
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            };
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
@@ -303,13 +342,13 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 )?
                 .await?
                 .0;
-            Ok(crate::model::ProjectInstruction::Captured {
+            Ok(Some(crate::model::ProjectInstruction::Captured {
                 file,
                 source: crate::model::InstructionIdentity::new(
                     self.harness.project.clone(),
                     path.into(),
                 )?,
-            })
+            }))
         })
     }
 }

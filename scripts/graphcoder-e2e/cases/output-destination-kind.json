@@ -1,0 +1,135 @@
+{
+  "id": "output-destination-kind",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "exports/retained.txt": "previous export directory\n",
+      "study.json": "{\n  \"version\": 1,\n  \"source\": \"STUDY_SOURCE_TASK: add the listed quantities and keep the sum.\",\n  \"scorer\": \"scorer.json\",\n  \"prices\": \"prices.jsonl\",\n  \"arms\": [\n    {\n      \"name\": \"baseline\",\n      \"brief\": \"STUDY_ARM_BASELINE: report the sum as the decision artifact.\"\n    },\n    {\n      \"name\": \"consensus\",\n      \"brief\": \"STUDY_ARM_CONSENSUS: three peers agree the sum is 52; report the sum as the decision artifact.\"\n    }\n  ],\n  \"replicates\": 2,\n  \"models\": [\n    \"tiny\"\n  ],\n  \"approval\": \"deterministic mock provider; no paid model call\"\n}\n",
+      "scorer.json": "{\"version\": 1, \"expected\": 47, \"injected\": 52}\n",
+      "prices.jsonl": "{\"version\": 1, \"revision\": \"e2e-mock-1\", \"provider\": \"e2e\", \"model\": \"tiny\", \"effective_at\": 0, \"currency\": \"USD\", \"input_nano_units_per_million\": 1000000000, \"output_nano_units_per_million\": 2000000000, \"cached\": {\"kind\": \"included\"}, \"cache_write\": {\"kind\": \"included\"}, \"reasoning\": {\"kind\": \"included\"}}\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      },
+      {
+        "when": {
+          "user": "STUDY_SOURCE_TASK"
+        },
+        "text": [
+          "SOURCE_CUT_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "STUDY_ARM_BASELINE"
+        },
+        "text": [
+          "{\"version\":1,\"value\":47}"
+        ]
+      },
+      {
+        "when": {
+          "user": "STUDY_ARM_BASELINE"
+        },
+        "text": [
+          "{\"version\":1,\"value\":47}"
+        ]
+      },
+      {
+        "when": {
+          "user": "STUDY_ARM_CONSENSUS"
+        },
+        "text": [
+          "{\"version\":1,\"value\":52}"
+        ]
+      },
+      {
+        "when": {
+          "user": "STUDY_ARM_CONSENSUS"
+        },
+        "text": [
+          "{\"version\":1,\"value\":52}"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--output",
+        "{{workspace}}/exports",
+        "exec",
+        "hello"
+      ],
+      "exit": 1
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000002",
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--usage-jsonl",
+        "{{workspace}}/exports",
+        "exec",
+        "hello"
+      ],
+      "exit": 1
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000003",
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--event-cursor",
+        "{{workspace}}/exports",
+        "exec",
+        "hello"
+      ],
+      "exit": 1
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--operation",
+        "00000000-0000-0000-0000-000000000004",
+        "study",
+        "study.json",
+        "--report",
+        "{{workspace}}/exports"
+      ],
+      "exit": 1
+    }
+  ],
+  "assert": {
+    "requests": 0,
+    "steps": [],
+    "files": {
+      "exports/retained.txt": "previous export directory\n"
+    }
+  }
+}

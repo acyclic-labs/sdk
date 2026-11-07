@@ -50,7 +50,9 @@ The generated browser API uses the same Rust capture and validation code.
 `captureDiscoveredContext` and `contextForRequest` receive a call-scoped
 `ContextDiscoveryReader` whose bound owner supplies authenticated directory
 pages, bounded prefixes and retained path reads. `readPinnedContextPath` loads a
-body through those same owner operations. The reader does not grant authority,
+body through those same owner operations. Directory and path callbacks return
+`null` only for an absent authorized directory or filename; unavailable sources,
+generations and authority reject the operation. The reader does not grant authority,
 store callbacks, open a host path or maintain a catalog. TypeScript's
 `HarnessBuilder.declaredContext` binds a detached snapshot through the ordinary
 context builder; later `context` calls replace it. Configure limits before

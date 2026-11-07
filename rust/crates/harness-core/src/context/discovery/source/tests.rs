@@ -12,10 +12,11 @@ impl DiscoverySource for Pages {
         _: Option<&'a u8>,
         _: Option<u8>,
         _: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<u8, u8>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<u8, u8>>>> {
         Box::pin(async {
             self.0
                 .pop_front()
+                .map(Some)
                 .ok_or_else(|| Error::Storage("page script exhausted".into()))
         })
     }
@@ -49,7 +50,8 @@ async fn directory_adapters_share_order_revision_duplicate_and_progress_fences()
     );
     let (_, entries) = DiscoveryWork::default()
         .list_source(&mut source, "", None)
-        .await?;
+        .await?
+        .expect("scripted directory exists");
     assert_eq!(
         entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
         ["a", "z"]
@@ -152,16 +154,6 @@ fn cached_discovery_cannot_bypass_invalid_limits() {
     }
 }
 
-impl InstructionReader for Pages {
-    fn instruction<'a>(
-        &'a mut self,
-        _: &'a str,
-        _: &'a u8,
-        _: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
-        panic!("non-file instruction must be rejected before a body read")
-    }
-}
 impl SkillReader for Pages {
     fn skill_prefix<'a>(
         &'a mut self,
@@ -178,7 +170,7 @@ impl SkillReader for Pages {
     }
 }
 #[tokio::test]
-async fn unsupported_source_kinds_cannot_become_instructions_or_skills() {
+async fn unsupported_source_kinds_cannot_become_skills() {
     let entry = |name: &str, kind| DiscoveryPage {
         revision: 1,
         scanned: 1,
@@ -188,19 +180,6 @@ async fn unsupported_source_kinds_cannot_become_instructions_or_skills() {
         }],
         next: None,
     };
-    let mut instruction = Pages([entry("AGENTS.md", DiscoveryKind::Other)].into());
-    assert!(matches!(
-        capture_instructions(
-            &mut instruction,
-            "",
-            "",
-            &["AGENTS.md".into()],
-            &mut DiscoveryWork::default(),
-            None
-        )
-        .await,
-        Err(Error::Invalid(_))
-    ));
     let mut skill = Pages(
         [
             entry("inspect", DiscoveryKind::Directory),

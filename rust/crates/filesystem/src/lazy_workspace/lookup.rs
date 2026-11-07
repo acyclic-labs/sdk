@@ -178,6 +178,27 @@ impl<
         Ok(stat)
     }
 
+    /// Classifies a path at a frozen cut, preserving authenticated absence.
+    pub async fn stat_at_snapshot(
+        &self,
+        cut: LazySnapshotRef,
+        path: &str,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<Option<LazyStat>, LazyWorkspaceError> {
+        let (lookup, _, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
+        let result = match &lookup {
+            Some(LazyLookup::Source { .. }) if cut.source != self.source.reference() => {
+                Err(LazyWorkspaceError::StaleSource)
+            }
+            _ => Ok(lookup.as_ref().map(LazyLookup::stat)),
+        };
+        match lookup {
+            Some(lookup) => self.retire_lookup((lookup, guard), ctx)?,
+            None => crate::kernel::retire_allocation(guard, 0, ctx)?,
+        }
+        result
+    }
+
     pub(crate) async fn inspect_unauthored(
         &self,
         checkout: &mut crate::Checkout<A, O>,

@@ -45,23 +45,47 @@ pub struct DiscoveryPage<R, C> {
 pub trait DiscoverySource {
     type Revision: Clone + Eq;
     type Cursor;
+    /// `None` means the directory is absent at the authorized source selection.
+    /// Authority, generation and backing failures remain errors.
     fn page<'a>(
         &'a mut self,
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>>;
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<Self::Revision, Self::Cursor>>>>;
 }
 
 #[doc(hidden)]
 pub trait InstructionReader: DiscoverySource {
+    /// Selects an existing directory and reports entries inspected to do so.
+    /// Native readers classify the path without enumerating its children.
+    fn instruction_directory<'a>(
+        &'a mut self,
+        directory: &'a str,
+        revision: Option<&'a Self::Revision>,
+    ) -> BoxProviderFuture<'a, Result<Option<(Self::Revision, u32)>>> {
+        let page = self.page(directory, revision, None, 1);
+        Box::pin(async move {
+            let Some(page) = page.await? else {
+                return Ok(None);
+            };
+            if page.scanned > 1 || page.entries.len() > page.scanned as usize {
+                return Err(Error::Storage(
+                    "discovery page violated pinned range".into(),
+                ));
+            }
+            Ok(Some((page.revision, page.scanned)))
+        })
+    }
+
+    /// Reads one regular file at the pinned revision; `None` means absent.
     fn instruction<'a>(
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
         maximum: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>>;
+    ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>>;
 }
 
 #[doc(hidden)]
@@ -117,7 +141,7 @@ impl DiscoveryWork {
         source: &mut S,
         directory: &str,
         revision: Option<&S::Revision>,
-    ) -> Result<(S::Revision, Vec<DiscoveryEntry>)> {
+    ) -> Result<Option<(S::Revision, Vec<DiscoveryEntry>)>> {
         self.limits.validate()?;
         self.directories = self
             .directories
@@ -144,6 +168,13 @@ impl DiscoveryWork {
             let page = source
                 .page(directory, pinned.as_ref(), cursor, remaining.min(128))
                 .await?;
+            let Some(page) = page else {
+                return if pages == 1 {
+                    Ok(None)
+                } else {
+                    Err(Error::NotFound("discovery directory disappeared".into()))
+                };
+            };
             if pinned.as_ref().is_some_and(|r| r != &page.revision)
                 || page.scanned > remaining.min(128)
                 || page.entries.len() > page.scanned as usize
@@ -176,10 +207,10 @@ impl DiscoveryWork {
         {
             return Err(Error::Storage("discovery directory repeats a name".into()));
         }
-        Ok((
+        Ok(Some((
             pinned.ok_or_else(|| Error::Storage("missing discovery revision".into()))?,
             entries,
-        ))
+        )))
     }
 }
 
@@ -249,22 +280,43 @@ pub async fn capture_instructions<S: InstructionReader>(
     let mut pinned = revision.cloned();
     let mut result = Vec::new();
     loop {
-        let (r, entries) = work
-            .list_source(source, &directory, pinned.as_ref())
-            .await?;
+        work.include(DiscoveryWork {
+            directories: 1,
+            ..Default::default()
+        })?;
+        let (selected, scanned) = source
+            .instruction_directory(&directory, pinned.as_ref())
+            .await?
+            .ok_or_else(|| Error::NotFound("instruction directory does not exist".into()))?;
+        if pinned
+            .as_ref()
+            .is_some_and(|revision| revision != &selected)
+        {
+            return Err(Error::Storage(
+                "discovery page violated pinned range".into(),
+            ));
+        }
+        work.include(DiscoveryWork {
+            entries: scanned,
+            ..Default::default()
+        })?;
         for name in names {
-            if let Some(entry) = entries.iter().find(|e| &e.name == name) {
-                if entry.kind != DiscoveryKind::File {
-                    return Err(Error::Invalid("instruction entry is not a file".into()));
-                }
-                result.push(
-                    source
-                        .instruction(&child(&directory, name), &r, work.limits.instruction_bytes)
-                        .await?,
-                );
+            work.include(DiscoveryWork {
+                entries: 1,
+                ..Default::default()
+            })?;
+            if let Some(instruction) = source
+                .instruction(
+                    &child(&directory, name),
+                    &selected,
+                    work.limits.instruction_bytes,
+                )
+                .await?
+            {
+                result.push(instruction);
             }
         }
-        pinned = Some(r);
+        pinned = Some(selected);
         match segments.next() {
             Some(segment) => directory = child(&directory, segment),
             None => break,
@@ -325,12 +377,10 @@ async fn layer_skills<S: SkillReader>(
             "discovery entry must be one filename".into(),
         ));
     }
-    let (revision, entries) = match work.list_source(source, directory, revision).await {
-        Ok(listed) => listed,
-        Err(error) if optional_root && error.code() == crate::wire::ErrorCode::NotFound => {
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(error),
+    let (revision, entries) = match work.list_source(source, directory, revision).await? {
+        Some(listed) => listed,
+        None if optional_root => return Ok(Vec::new()),
+        None => return Err(Error::NotFound("skill directory does not exist".into())),
     };
     let mut result = Vec::new();
     for entry in entries {
@@ -340,7 +390,8 @@ async fn layer_skills<S: SkillReader>(
         let directory = child(directory, &entry.name);
         let (_, files) = work
             .list_source(source, &directory, Some(&revision))
-            .await?;
+            .await?
+            .ok_or_else(|| Error::NotFound("discovered skill directory disappeared".into()))?;
         let Some(file) = files.iter().find(|e| e.name == name) else {
             continue;
         };
@@ -470,7 +521,7 @@ impl DiscoverySource for VolumeDiscovery<'_> {
         revision: Option<&'a GenerationRef>,
         cursor: Option<String>,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<DiscoveryPage<GenerationRef, String>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<DiscoveryPage<GenerationRef, String>>>> {
         Box::pin(async move {
             self.root.validate(&mut None)?;
             let page = self
@@ -486,6 +537,9 @@ impl DiscoverySource for VolumeDiscovery<'_> {
                     None,
                 )?
                 .await?;
+            let Some(page) = page else {
+                return Ok(None);
+            };
             page.validate()?;
             if page.entries.first().is_some_and(|e| {
                 cursor
@@ -509,13 +563,13 @@ impl DiscoverySource for VolumeDiscovery<'_> {
             if page.has_more && next.is_none() {
                 return Err(Error::Storage("empty discovery continuation".into()));
             }
-            Ok(DiscoveryPage {
+            Ok(Some(DiscoveryPage {
                 revision: page.generation,
                 scanned: u32::try_from(page.entries.len())
                     .map_err(|_| Error::Invalid("entry count overflow".into()))?,
                 entries: page.entries.into_iter().map(Into::into).collect(),
                 next,
-            })
+            }))
         })
     }
 }
@@ -525,20 +579,22 @@ impl InstructionReader for VolumeDiscovery<'_> {
         path: &'a str,
         revision: &'a GenerationRef,
         maximum: u64,
-    ) -> BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
+    ) -> BoxProviderFuture<'a, Result<Option<crate::model::ProjectInstruction>>> {
         Box::pin(async move {
             let source = PinnedContextPath {
                 root: self.root.clone(),
                 generation: revision.clone(),
                 path: path.into(),
             };
-            let (file, bytes) = source.read(self.reader, maximum).await?;
+            let Some((file, bytes)) = source.read_if_present(self.reader, maximum).await? else {
+                return Ok(None);
+            };
             ContextDiscoveryLimits {
                 instruction_bytes: maximum,
                 ..Default::default()
             }
             .validate_instruction(&bytes)?;
-            Ok(file.into())
+            Ok(Some(file.into()))
         })
     }
 }

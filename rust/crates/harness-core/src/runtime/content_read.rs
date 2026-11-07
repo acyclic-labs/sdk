@@ -221,7 +221,8 @@ impl TaskContext {
                 Some(self.scope.grants()),
                 None,
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))?;
         page.validate()?;
         if page.generation.as_resource().provider() != volume.provider()
             || expected_generation.is_some_and(|expected| &page.generation != expected)
@@ -290,7 +291,14 @@ impl TaskContext {
                     io,
                 },
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "selected file does not exist",
+                )
+            })?;
         crate::executor::with_history_io(io, |history| {
             scope.limits().validate_file(&file, history)?;
             if file.volume() != volume || file.path() != path {

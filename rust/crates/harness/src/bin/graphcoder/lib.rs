@@ -226,7 +226,9 @@ fn configure(
         .graphcoder(&args.workspace, args.model.clone())
         .working_directory(&std::env::current_dir()?)?;
     if let Some(path) = &args.approval_policy {
-        config = config.approval_policy(serde_json::from_slice(&std::fs::read(path)?)?);
+        config = config.approval_policy(serde_json::from_slice(
+            &acyclic_harness::local::read_regular_file(path)?,
+        )?);
     }
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
@@ -242,11 +244,14 @@ fn configure(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(
-    args: Args,
+    mut args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     shutdown: completion::Shutdown,
     event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
+    args.prepare_outputs().map_err(|error| {
+        headless::PreparationFailure(Box::new(error) as Box<dyn std::error::Error>)
+    })?;
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
@@ -268,7 +273,9 @@ async fn run(
         let policy = match &args.approval_policy {
             Some(path) => Some(serde_json::from_slice::<
                 acyclic_harness::approvals::ApprovalPolicy,
-            >(&std::fs::read(path)?)?),
+            >(&acyclic_harness::local::read_regular_file(
+                path,
+            )?)?),
             None => None,
         };
         let local = Arc::new(
@@ -309,27 +316,19 @@ async fn run(
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
         return connected(&args, connection, output, event_output).await;
     }
+    let configured = args
+        .credentials
+        .as_deref()
+        .map(Credentials::from_file)
+        .transpose()?;
     let credentials = if args.default_config {
-        let configured = args
-            .credentials
-            .as_deref()
-            .map(|path| -> Result<Credentials, Box<dyn std::error::Error>> {
-                let bytes = std::fs::read(path)?;
-                serde_json::from_slice::<Credentials>(&bytes)
-                    .map_err(|_| "invalid provider credential file".into())
-            })
-            .transpose()?;
         Credentials::explicit(
             configured
                 .map(|credentials| credentials.api_keys)
                 .unwrap_or_default(),
         )
     } else {
-        args.credentials
-            .as_deref()
-            .map(Credentials::from_file)
-            .transpose()?
-            .unwrap_or_default()
+        configured.unwrap_or_default()
     };
     let config = configure(&args, credentials)?;
     if let Some(Command::Serve(serve)) = &args.command {
@@ -337,8 +336,8 @@ async fn run(
             (Some(certificate), Some(key), Some(url)) => {
                 Some(acyclic_harness::server::TlsIdentity {
                     url: url.clone(),
-                    certificate: std::fs::read(certificate)?,
-                    key: std::fs::read(key)?,
+                    certificate: acyclic_harness::local::read_regular_file(certificate)?,
+                    key: acyclic_harness::local::read_regular_file(key)?,
                     peer: None,
                 })
             }
@@ -438,6 +437,7 @@ async fn drive(
     event_output: Option<&mut headless::Output>,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
+    let events = projection.is_some();
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && args.output_format != OutputFormat::Jsonl
@@ -514,5 +514,9 @@ async fn drive(
             }
         }
     }
-    result
+    let code = result?;
+    if events {
+        headless::completed(output, conversation.task(), &operation, code == 0).await?;
+    }
+    Ok(code)
 }
