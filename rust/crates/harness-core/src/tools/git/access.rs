@@ -9,94 +9,126 @@ pub(crate) struct RepositoryAccess<'a, O: 'static, S> {
     pub repository: acyclic_fs::WorkspaceId,
 }
 
-impl<O, S> RepositoryAccess<'_, O, S>
+impl<'context, O, S> RepositoryAccess<'context, O, S>
 where
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
-    pub(crate) async fn request_result(
-        &self,
+    pub(crate) fn request_result<'task>(
+        &'task self,
         operation: acyclic_fs::OperationId,
-    ) -> crate::Result<Option<GitCommandOutput>> {
-        let state = self.state().await?;
-        if state.request(operation).is_none() {
-            return Ok(None);
+    ) -> impl std::future::Future<Output = crate::Result<Option<GitCommandOutput>>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            let state = self.state().await?;
+            if state.request(operation).is_none() {
+                return Ok(None);
+            }
+            self.require_result_access(&state).await?;
+            Ok(state.request(operation).cloned())
         }
-        self.require_result_access(&state).await?;
-        Ok(state.request(operation).cloned())
     }
 
     /// Authorizes saved output without copying it or running its command.
-    pub(crate) async fn require_saved_result_access(&self) -> crate::Result<()> {
-        self.require_result_access(&self.state().await?).await
+    pub(crate) fn require_saved_result_access<'task>(
+        &'task self,
+    ) -> impl std::future::Future<Output = crate::Result<()>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move { self.require_result_access(&self.state().await?).await }
     }
 
-    async fn state(&self) -> crate::Result<acyclic_fs::GitCompatState> {
-        GitCompatRepository::new(self.repository, self.store.clone())
-            .load()
-            .await
-            .map_err(super::errors::compat_error::<S>)
-    }
-
-    async fn require_result_access(&self, state: &acyclic_fs::GitCompatState) -> crate::Result<()> {
-        self.authorize(state).await?;
-        self.access.require(self.current).await?;
-        Ok(())
-    }
-
-    async fn authorize(&self, state: &acyclic_fs::GitCompatState) -> crate::Result<()> {
-        let mut workspaces = BTreeSet::new();
-        workspaces.extend(state.branches.values().map(|branch| branch.workspace_id));
-        workspaces.extend(state.retired_workspaces.iter().copied());
-        workspaces.extend(state.commits.values().flat_map(|commit| {
-            [
-                commit.tree.workspace_id(),
-                commit.workspace_tree.workspace_id(),
-            ]
-        }));
-        workspaces.extend(state.stash.iter().map(|tree| tree.workspace_id()));
-        if let Some(pending) = &state.pending {
-            pending_workspaces(&pending.action, &mut workspaces)?;
+    fn state<'task>(
+        &'task self,
+    ) -> impl std::future::Future<Output = crate::Result<acyclic_fs::GitCompatState>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            GitCompatRepository::new(self.repository, self.store.clone())
+                .load()
+                .await
+                .map_err(super::errors::compat_error::<S>)
         }
-        if let Some((_, pending)) = state.checkout_reconciliation {
-            workspaces.insert(pending.workspace_id);
-        }
-        for id in workspaces {
-            self.workspace(id).await?;
-        }
-        Ok(())
     }
 
-    pub(super) async fn workspace(
-        &self,
-        workspace_id: acyclic_fs::WorkspaceId,
-    ) -> crate::Result<ManagedWorkspace<O>> {
-        if workspace_id == self.current.id() {
+    fn require_result_access<'task>(
+        &'task self,
+        state: &'task acyclic_fs::GitCompatState,
+    ) -> impl std::future::Future<Output = crate::Result<()>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            self.authorize(state).await?;
             self.access.require(self.current).await?;
-            return Ok(self.current.clone());
+            Ok(())
         }
-        let graph = WorkspaceGraph::new(self.store.clone());
-        graph
-            .authorize_descendant(workspace_id, self.repository)
+    }
+
+    fn authorize<'task>(
+        &'task self,
+        state: &'task acyclic_fs::GitCompatState,
+    ) -> impl std::future::Future<Output = crate::Result<()>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            let mut workspaces = BTreeSet::new();
+            workspaces.extend(state.branches.values().map(|branch| branch.workspace_id));
+            workspaces.extend(state.retired_workspaces.iter().copied());
+            workspaces.extend(state.commits.values().flat_map(|commit| {
+                [
+                    commit.tree.workspace_id(),
+                    commit.workspace_tree.workspace_id(),
+                ]
+            }));
+            workspaces.extend(state.stash.iter().map(|tree| tree.workspace_id()));
+            if let Some(pending) = &state.pending {
+                pending_workspaces(&pending.action, &mut workspaces)?;
+            }
+            if let Some((_, pending)) = state.checkout_reconciliation {
+                workspaces.insert(pending.workspace_id);
+            }
+            for id in workspaces {
+                self.workspace(id).await?;
+            }
+            Ok(())
+        }
+    }
+
+    pub(super) fn workspace<'task>(
+        &'task self,
+        workspace_id: acyclic_fs::WorkspaceId,
+    ) -> impl std::future::Future<Output = crate::Result<ManagedWorkspace<O>>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            if workspace_id == self.current.id() {
+                self.access.require(self.current).await?;
+                return Ok(self.current.clone());
+            }
+            let graph = WorkspaceGraph::new(self.store.clone());
+            graph
+                .authorize_descendant(workspace_id, self.repository)
+                .await
+                .map_err(|error| match error {
+                    acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => Error::Unauthorized(
+                        "Git workspace is outside its repository lineage".into(),
+                    ),
+                    error => S::lineage_error(error),
+                })?;
+            let workspace = acyclic_fs::WorkspaceResolver::resolve(
+                &((*self.filesystem).clone(), graph),
+                workspace_id,
+            )
             .await
-            .map_err(|error| match error {
-                acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => {
-                    Error::Unauthorized("Git workspace is outside its repository lineage".into())
-                }
-                error => S::lineage_error(error),
-            })?;
-        let workspace = acyclic_fs::WorkspaceResolver::resolve(
-            &((*self.filesystem).clone(), graph),
-            workspace_id,
-        )
-        .await
-        .map_err(S::lineage_error)?;
-        self.access.require(&workspace).await?;
-        Ok(workspace)
+            .map_err(S::lineage_error)?;
+            self.access.require(&workspace).await?;
+            Ok(workspace)
+        }
     }
 }
 
-impl<O, S> WorkspaceGitExecutor<'_, O, S>
+impl<'context, O, S> WorkspaceGitExecutor<'context, O, S>
 where
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
@@ -111,12 +143,18 @@ where
         }
     }
 
-    pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
-        let state = GitCompatRepository::new(self.repository_id, self.store.clone())
-            .load()
-            .await
-            .map_err(super::errors::compat_error::<S>)?;
-        self.repository_access().authorize(&state).await
+    pub(super) fn authorize_repository<'task>(
+        &'task self,
+    ) -> impl std::future::Future<Output = crate::Result<()>>
+    + acyclic_stream::ProviderTask
+    + use<'task, 'context, O, S> {
+        async move {
+            let state = GitCompatRepository::new(self.repository_id, self.store.clone())
+                .load()
+                .await
+                .map_err(super::errors::compat_error::<S>)?;
+            self.repository_access().authorize(&state).await
+        }
     }
 }
 
