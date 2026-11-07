@@ -86,7 +86,7 @@ fn child(test: &str, root: &Path) -> Command {
         .args([
             test,
             "--exact",
-            "--ignored",
+            "--include-ignored",
             "--nocapture",
             "--test-threads=1",
         ])
@@ -215,10 +215,13 @@ pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CHILD).is_some() {
+        return shared_view_costs_in_this_process();
+    }
     for unshared in [false, true] {
         let temporary = tempfile::tempdir()?;
         let mut command = child(
-            "native_mount::fuse::tests::shared::shared_view_costs_in_this_process",
+            "native_mount::fuse::tests::shared::linux_shared_views_cost_no_thread_descriptor_or_mount",
             temporary.path(),
         );
         if unshared {
@@ -241,9 +244,7 @@ pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 }
 
 /// Child half of `linux_shared_views_cost_no_thread_descriptor_or_mount`.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
+fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
     let Some(base) = std::env::var_os(CHILD) else {
         return Ok(());
     };
@@ -333,12 +334,15 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CHILD).is_some() {
+        return shared_view_owner_until_killed();
+    }
     use std::io::{BufRead as _, BufReader};
 
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(
-        "native_mount::fuse::tests::shared::shared_view_owner_until_killed",
+        "native_mount::fuse::tests::shared::linux_a_crashed_owner_leaves_a_root_the_next_start_reaps",
         temporary.path(),
     )
     .stdout(Stdio::piped())
@@ -387,9 +391,7 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
 
 /// Child half of `linux_a_crashed_owner_leaves_a_root_the_next_start_reaps`:
 /// holds a view until its parent kills it.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
+fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
     let Some(base) = std::env::var_os(CHILD) else {
         return Ok(());
     };
