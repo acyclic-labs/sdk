@@ -274,6 +274,19 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Derives an immutable epoch selection from this original provider. The
+    /// caller retains the returned model and provider together; the original
+    /// selection remains available to other sessions. Admission performs no I/O.
+    #[cfg(feature = "filesystem")]
+    fn admit_profile(
+        &self,
+        _: &Model,
+        _: &crate::profile::AgentProfile<'_>,
+    ) -> Result<(Model, std::sync::Arc<dyn ModelProvider>)> {
+        Err(Error::Unsupported(
+            "selected provider cannot admit a profile; recovery: select a provider with epoch profile admission".into(),
+        ))
+    }
     /// Binds the composition's authenticated reader for file-backed model input.
     /// Providers that consume canonical file references directly need no rebinding.
     fn bind_content(
@@ -291,6 +304,20 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// offer the tools it maps under that family's declarations.
     fn native_tool_profile(&self, _: &Model) -> Result<Option<NativeToolProfile>> {
         Ok(None)
+    }
+    /// Native declarations admitted with this immutable selection. Providers
+    /// with replaced declarations return their original binding owner here;
+    /// family defaults use the shared native constructor. The stock executor
+    /// reserves and retains the returned owner once, before preparing a turn.
+    #[cfg(feature = "filesystem")]
+    fn native_tools(
+        &self,
+        model: &Model,
+    ) -> Result<Option<std::sync::Arc<crate::tools::native::NativeTools>>> {
+        self.native_tool_profile(model)?
+            .map(crate::tools::native::NativeTools::new)
+            .transpose()
+            .map(|tools| tools.map(std::sync::Arc::new))
     }
     /// Capacities of the exact immutable model selection.
     fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {

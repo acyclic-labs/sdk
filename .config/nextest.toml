@@ -9,6 +9,14 @@ command = ["bun", "run", "--filter", "@acyclic-labs/stream", "build"]
 filter = 'package(=acyclic-stream-typescript-models)'
 setup = "stream-typescript"
 
+[test-groups.macos-nfs]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "macos")'
+filter = 'package(=acyclic-fs) & (test(native_mount::darwin_mount::tests::) | test(native_mount::lazy::tests::live_mount::) | test(native_mount::customer::mounted_tests::) | test(=native_mount::adapter::tests::macos_explicit_file_fsync_reaches_mount_source) | test(=native_mount::adapter::tests::independent_mount_start_cases) | test(=native_mount::adapter::tests::exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps) | test(=native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent))'
+test-group = "macos-nfs"
+
 # CI test profile: flags slow tests in the log and records per-test timings
 # as JUnit for the job summary (scripts/ci-summary.mjs).
 [profile.ci]

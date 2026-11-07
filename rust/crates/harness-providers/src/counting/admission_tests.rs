@@ -26,7 +26,7 @@ proptest! {
             prop_assert_eq!(first.input_tokens, actual + u64::from(framing));
             prop_assert!(first.input_tokens >= actual);
             // Calibration can alter only planning weights, including after resume.
-            provider.estimator.observe(1_000, &json!({"usage":{
+            provider.accounting.estimator.observe(1_000, &json!({"usage":{
                 "input_tokens":observed,"prompt_tokens":observed,"promptTokenCount":observed
             }}));
             let next = futures::executor::block_on(provider.count_tokens(&prepared, 0)).unwrap();
@@ -276,7 +276,7 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
         let counted = provider.count_tokens(&prepared, body).await?;
         assert_eq!((counted.input_tokens, sent()), (7 + u64::from(framing), 1));
         // Anchored on reported usage, a tighter ceiling is still proven locally.
-        provider.usage.observe(
+        provider.accounting.usage.observe(
             adapter,
             &prepared,
             &json!({"usage":{"input_tokens":5,"prompt_tokens":5,"promptTokenCount":5}}),
@@ -372,9 +372,11 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
                     &mut crate::files::FileText::default(),
                 )?;
                 let old_body = wire::body(projected, &provider.model.name, adapter)?;
-                provider
-                    .usage
-                    .observe(adapter, &observed, &json!({"usage":{"input_tokens":5}}))?;
+                provider.accounting.usage.observe(
+                    adapter,
+                    &observed,
+                    &json!({"usage":{"input_tokens":5}}),
+                )?;
                 let next = ModelMessage {
                     role: ModelRole::User,
                     content: ModelContent::Text("Continue".into()),

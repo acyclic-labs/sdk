@@ -1,0 +1,5 @@
+*** Begin Patch
+*** Add File: public/first
++first
+*** Update File: private/bad
+@@ 

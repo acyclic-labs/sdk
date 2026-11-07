@@ -1,6 +1,6 @@
 use super::*;
-use std::io::Write as _;
-use std::process::{Command, Stdio};
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
+use std::io::Read as _;
 
 const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts";
 
@@ -17,11 +17,7 @@ fn request(
     })
 }
 
-fn crashed_owner() -> TestResult {
-    let Some(root) = std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT") else {
-        return Ok(());
-    };
-    let root = PathBuf::from(root);
+fn crashed_owner(root: PathBuf) -> TestResult {
     let began = Instant::now();
     let (source, _, work) = checkout_context(MountPublication::Manual)?;
     let _owned = crate::mount_native(request(&root.join("owned"), &source)?, source.clone())?;
@@ -43,11 +39,13 @@ fn crashed_owner() -> TestResult {
         )?;
     }
     phase(began, "child-foreign-ready");
-    println!("RECLAIM_READY");
-    std::io::stdout().flush()?;
-    let mut command = String::new();
-    std::io::stdin().read_line(&mut command)?;
-    Err("crash fixture must be killed".into())
+    acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "RECLAIM_READY")?;
+    // Only the parent owns this pipe; its loss returns UnexpectedEof.
+    std::io::stdin().read_exact(&mut [0])?;
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "step=await crash fixture kill; recovery: cargo test --locked -p acyclic-fs --all-features --lib native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts -- --exact --nocapture",
+    ).into())
 }
 
 struct CrashRoots(Option<tempfile::TempDir>);
@@ -81,22 +79,19 @@ impl Drop for CrashRoots {
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
-    if std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT").is_some() {
-        return crashed_owner();
+    if let Some(root) = std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT") {
+        return crashed_owner(PathBuf::from(root));
     }
     check_startup_recovery(false, crate::initialize_native_mount_services)
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
     check_startup_recovery(true, crate::initialize_native_mount_services)
 }
 
 #[test]
-#[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn negative_control_direct_only_startup_cannot_retire_after_eperm() -> TestResult {
     let attempted = std::cell::Cell::new(false);
     let result = check_startup_recovery(true, || {
@@ -139,20 +134,20 @@ fn check_startup_recovery(
     } else {
         None
     };
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
-        .args(["--exact", CHILD, "--include-ignored", "--nocapture"])
+        .args(["--exact", CHILD, "--nocapture"])
         .env("ACYCLIC_RECLAIM_TEST_ROOT", &canonical)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::inherit());
     if deny_direct_unmount {
         command.env("ACYCLIC_RECLAIM_LIVE_FOREIGN", "1");
     }
-    let mut child = command.spawn()?;
-    let output = child.stdout.take().ok_or("missing child stdout")?;
+    let mut child = ProcessTree::spawn(&mut command)?;
+    let output = child.take_stdout().ok_or("missing child stdout")?;
     acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "RECLAIM_READY")?;
-    child.kill()?;
-    child.wait()?;
+    child.terminate(None)?;
     phase(began, "crash-witness-ready");
     // Negative witness: SIGKILL itself leaves both kernel mounts behind.
     let mounted = |path: &Path| -> Result<bool, NativeMountError> {

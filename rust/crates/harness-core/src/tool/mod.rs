@@ -20,7 +20,7 @@ pub mod text_files;
 mod definition;
 pub use definition::{ToolDefinition, json_projection_schema};
 mod invocation;
-pub use invocation::{ToolInvocation, ToolResult};
+pub use invocation::{CanonicalInvocation, ToolInvocation, ToolResult};
 mod recorded_invocation;
 pub(crate) use recorded_invocation::{RecordedInvocation, validate_model_call_recorded};
 mod executor;
