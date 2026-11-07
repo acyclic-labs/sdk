@@ -238,31 +238,26 @@ impl Pool {
     fn apply_command(&mut self, command: Command) -> Result<(), StreamError> {
         self.sync_attempts()?;
         match command {
+            Command::AcquireCredential {
+                credential,
+                withdrawal,
+                ready,
+            } => self.acquire_credential(credential, withdrawal, ready),
+            Command::ReleaseCredential { slot } => {
+                if !self.credential_slots.owned(slot) {
+                    return Err(StreamError::InvalidArgument);
+                }
+                self.install_credential(slot, Bytes::new())?;
+                self.credential_slots.release(slot);
+                Ok(())
+            }
             Command::Credential { slot, credential } => {
-                let total = self
-                    .credential_bytes
-                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
-                    .and_then(|current| current.checked_add(credential.len()))
-                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
-                    .ok_or(StreamError::Capacity)?;
-                let encoded = frame(
-                    0,
-                    0,
-                    Body::Credential(wire::SessionCredential {
-                        slot,
-                        credential: credential.clone(),
-                    }),
-                );
-                if credential.is_empty() {
-                    self.credentials.remove(&slot);
-                } else {
-                    self.credentials.insert(slot, credential);
+                if self.credential_slots.owned(slot) {
+                    return Err(StreamError::InvalidArgument);
                 }
-                self.credential_bytes = total;
-                let nodes = self.links.keys().cloned().collect::<Vec<_>>();
-                for node in nodes {
-                    self.send(&node, encoded.clone())?;
-                }
+                let empty = credential.is_empty();
+                self.install_credential(slot, credential)?;
+                self.credential_slots.available(slot, empty);
                 Ok(())
             }
             Command::Socket {

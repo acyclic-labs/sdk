@@ -28,6 +28,7 @@ pub(in crate::session::client) fn fixture(
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
+        credential_slots: credentials::Slots::new(),
         credentials: BTreeMap::new(),
         credential_bytes: 0,
         connections: super::super::super::Connections::new(),
@@ -157,6 +158,7 @@ pub(in crate::session::client) fn route(
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
     let (commands, _) = mpsc::channel(2);
     Client {
+        credential_owner: None,
         pool: PoolHandle {
             connections: super::super::super::Connections::new(),
             commands,
