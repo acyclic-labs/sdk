@@ -366,6 +366,14 @@ impl HostSessionProcess {
         Ok(drained)
     }
 
+    /// Stops descendants after root exit and fixes the original pipe boundary.
+    /// Both operations share the terminal observation's funding window.
+    pub fn seal_output(&mut self) -> Result<()> {
+        let mut owner = self.live_io()?;
+        owner.terminate_descendants().map_err(storage)?;
+        owner.seal_output().map_err(storage)
+    }
+
     /// Arms one wait for this child's next pipe data, writable stdin or exit,
     /// served by the shared process-event hub without a thread or timer.
     pub fn readiness(&mut self) -> Result<acyclic_native_runtime::ProcessReadiness> {

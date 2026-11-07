@@ -493,7 +493,7 @@ impl NativeChildren {
                 .map_err(|error| error.to_string()),
         };
         if matches!(&exited, Ok(Some(_))) {
-            running.process.terminate_descendants()?;
+            running.process.seal_output()?;
             match running.process.pump_stdin() {
                 Ok(false) => return Ok(None),
                 Ok(true) => {}
