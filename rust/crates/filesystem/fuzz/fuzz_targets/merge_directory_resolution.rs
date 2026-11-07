@@ -38,7 +38,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         include_bytes!("../corpus/merge_directory_resolution/resolution-text-refused-v1")
             .as_slice(),
     ] {
-        acyclic_fs::workspace::check_captured_merge_resolution(trace);
+        acyclic_fs::workspace::check_captured_merge_resolution(trace, bytes);
     }
     acyclic_fs::workspace::check_merge_directory_resolution(bytes);
 });
