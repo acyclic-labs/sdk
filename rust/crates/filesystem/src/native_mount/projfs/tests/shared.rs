@@ -43,7 +43,6 @@ fn mount_shared(
 // Synchronous startup must use its projector, leaving no pending callback
 // future on the calling current-thread executor.
 #[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn shared_views_serve_their_own_sources_and_retire_without_trace()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;

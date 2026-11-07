@@ -1,5 +1,15 @@
 experimental = ["setup-scripts"]
 
+# These tests require writable ProjFS mounts and a readable local USN journal.
+# Missing native capabilities fail their ordinary Windows test entry points.
+[test-groups.windows-native-volume]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(windows)'
+filter = 'package(=acyclic-fs) & (test(native_mount::projfs::) | test(windows_usn::) | test(writable_projfs_captures_closes_renames_links_and_deletes) | test(projfs_profile::))'
+test-group = 'windows-native-volume'
+
 # The transport models execute the packaged TypeScript and WASM implementation.
 # Prepare its ignored artifacts once, before any selected model starts.
 [scripts.setup.stream-typescript]
