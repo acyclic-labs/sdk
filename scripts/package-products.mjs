@@ -44,10 +44,6 @@ async function main() {
   try {
     for (const [platform, directory, machine] of [['linux-x64', x64, 62], ['linux-arm64', arm64, 183]]) {
       const build = buildManifest(readFileSync(join(directory, 'PRODUCT-BUILD.json'), 'utf8'), source);
-      for (const name of ['graphcoder', 'acyclic']) {
-        admitExecutable(join(directory, name), machine);
-        if (build.hashes[name] !== await sha256File(join(directory, name))) throw new Error(`${platform}/${name} differs from its original build`);
-      }
       const stage = join(temporary, platform);
       mkdirSync(stage);
       for (const file of files) {
@@ -57,6 +53,12 @@ async function main() {
       }
       copyFileSync(join(directory, 'acyclic'), join(stage, 'plugin/bin/acyclic'));
       copyFileSync(join(directory, 'graphcoder'), join(stage, 'graphcoder'));
+      for (const [name, entry] of [['acyclic', 'plugin/bin/acyclic'], ['graphcoder', 'graphcoder']]) {
+        // Admit the private snapshot that tar consumes, after the sole copy.
+        const snapshot = join(stage, entry);
+        admitExecutable(snapshot, machine);
+        if (build.hashes[name] !== await sha256File(snapshot)) throw new Error(`${platform}/${name} differs from its original build`);
+      }
       for (const executable of ['plugin/bin/acyclic', 'graphcoder']) chmodSync(join(stage, executable), 0o755);
       for (const [kind, entry] of [['graphcoder', 'graphcoder'], ['acyclic-plugin', 'plugin']]) {
         const name = `${kind}-${version}-${platform}.tar.gz`;

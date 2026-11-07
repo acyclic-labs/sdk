@@ -38,13 +38,17 @@ fn events(context: usize, occurrence: usize) -> Vec<ModelEvent> {
 /// returned-object allocation credit, cancellation and observed prefixes.
 /// These are generated SDK operands and schedules, not provider recordings.
 pub fn assert_replay_admission(schedule: &[u8]) {
-    futures::executor::block_on(check(schedule)).expect("replay schedule admission");
+    // Keep the complete index operands reproducible from the original input.
+    // Reuse the bytes as actions so retained schedules keep their meaning.
+    let operation = OperationId::from_bytes(std::array::from_fn(|index| {
+        schedule.get(index).copied().unwrap_or(0)
+    }));
+    futures::executor::block_on(check(schedule, operation)).expect("replay schedule admission");
 }
 
-async fn check(schedule: &[u8]) -> Result<()> {
+async fn check(schedule: &[u8], operation: OperationId) -> Result<()> {
     let mut requests = Vec::new();
     let mut source = Recording::default();
-    let operation = OperationId::new();
     for context in 0..2 {
         let request = PreparedModelRequest::prepare(
             ModelRequest {
@@ -245,4 +249,15 @@ fn retained_replay_schedules_use_the_production_admission_oracle() {
     ] {
         assert_replay_admission(schedule);
     }
+    // Original native replay diagnostic, including its captured operation.
+    // See recorded-replay-corpus.md for the unchanged operand provenance.
+    let operation = OperationId::from_bytes([
+        0x36, 0x92, 0x44, 0xc8, 0x9a, 0xa4, 0x42, 0x35, 0xbc, 0x4f, 0x4a, 0xb2, 0x3d, 0xaa, 0x74,
+        0x79,
+    ]);
+    futures::executor::block_on(check(
+        include_bytes!("../../../harness-fuzz/corpus/recorded_replay/refusal-retry"),
+        operation,
+    ))
+    .expect("original replay diagnostic coordinates");
 }
