@@ -360,6 +360,8 @@ pub use native_mount::{
     restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
     shared_view_namespace_contains, shared_view_root, shared_view_root_in,
 };
+#[cfg(all(feature = "native-mount", target_os = "macos"))]
+pub use native_mount::{DarwinRetirementFailure, DarwinTeardownFailure};
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::{
     recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
