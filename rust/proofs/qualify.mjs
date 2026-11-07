@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "ready-alarm-progress": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "an earlier committed deadline must rearm the shared dispatcher", [],
+  ],
   "ready-waker-custody": [
     "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
     "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
