@@ -572,6 +572,15 @@ const claims = {
     "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
     "CompletionFailed(Conflict)", [],
   ],
+  "failed-input-fairness": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+    "failed input starved another ready subscription", [],
+    { positive: [
+      "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+      "local::runtime::tests::retry::guard_refusals_distinguish_unchanged_observations_from_source_changes",
+    ] },
+  ],
   "seeded-runtime-configuration": [
     "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
     "seeded_runtime_requires_explicit_executor_configuration",
