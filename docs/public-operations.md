@@ -88,3 +88,25 @@ alone does not cover those operations.
 Local backend/provider traits, filesystem mounts and guest host imports are
 in-process or OS interfaces. Their shared conformance obligations still apply;
 they do not imply additional network endpoints or another wire protocol.
+
+## External protocols and transport adapters
+
+`workers::deployment::Client::{deploy,invoke,delete}` in
+`rust/crates/workers/src/deployment.rs` use the existing Actors Worker RPCs.
+`BinaryObjects` in `rust/crates/objects/src/binary.rs`, Actors' HTTP client,
+and native, JavaScript and Wasm clients lower to the same product contracts.
+They require adapter conformance, rather than duplicate operation identities.
+
+Some public provider interfaces perform remote work against an external
+protocol. They do not add an Acyclic service endpoint:
+
+| Source | Symbols | Original protocol owner |
+| --- | --- | --- |
+| `rust/crates/harness-core/src/oidc/http.rs` | `HttpSource` implementation of `JwksSource::fetch` | The configured issuer's JWKS HTTP resource. |
+| `rust/crates/harness-core/src/mcp/protocol.rs` | `McpToolTransport::{call,reconcile}` | The admitted MCP server and its existing operation identity. |
+| `rust/crates/harness-core/src/mcp/install.rs` | `McpInstallation::install` | The configured MCP transport's initialization and discovery. |
+| `rust/crates/harness-providers/src/http.rs` | `HttpTransport::{send,send_with_native_work}` | The caller's explicit HTTP request; a transport port, not another product service. |
+
+Keep their provider and protocol checks with those owners. A product RPC
+inventory must not describe them as missing Acyclic RPCs or silently claim
+their external effects have been exercised.
