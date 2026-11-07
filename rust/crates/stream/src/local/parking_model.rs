@@ -67,6 +67,7 @@ pub(crate) fn abandon(
 ) {
     loom::model(move || {
         crate::snapshot::model::set_mutant(mutant);
+        eprintln!("snapshot local progress: stage=fixture departure={departure:?}");
         let provider = query_model::fixture(false).unwrap();
         let keeper = ManuallyDrop::new(provider.clone());
         let path = StreamPath::new("watched").unwrap();
@@ -77,6 +78,7 @@ pub(crate) fn abandon(
             idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
+        eprintln!("snapshot local progress: stage=opening departure={departure:?}");
         let follow: futures::stream::BoxStream<'static, _> = {
             block_on(
                 provider
@@ -87,6 +89,7 @@ pub(crate) fn abandon(
             .map(|record| record.map(|_| ()))
             .boxed()
         };
+        eprintln!("snapshot local progress: stage=reservation departure={departure:?}");
         let held = block_on(provider.inner.publication.write());
         crate::snapshot::model::depart(
             follow,
