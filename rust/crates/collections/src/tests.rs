@@ -691,7 +691,8 @@ fn adversarial_branches_have_a_fixed_key_width_bound_and_cancel_safe_retirement(
     every_bit::<0>()?;
     every_bit::<8>()?;
     every_bit::<24>()?;
-    every_bit::<40>()
+    every_bit::<40>()?;
+    every_bit::<52>()
 }
 
 #[test]
