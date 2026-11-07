@@ -172,7 +172,10 @@ fn collector_loss_rejects_subscriptions_and_preserves_owned_cleanup()
         // publish loss without either existing watch's read cursor.
         hub::end_for_test(|| std::fs::write(root.join("collector-wake"), b""))?;
         assert!(
-            hub::hub()?.drain().is_err(),
+            hub::hub()
+                .map_err(crate::native_host::ordinary_error)?
+                .drain()
+                .is_err(),
             "collector ended without publishing loss"
         );
         assert_ne!(
