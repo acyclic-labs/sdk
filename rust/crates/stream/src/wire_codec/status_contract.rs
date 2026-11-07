@@ -89,24 +89,23 @@ fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str
     if actual.uncertain() != expected.uncertain() {
         return Err("status mutation uncertainty");
     }
-    if *expected == StreamError::Unavailable {
-        let encoded = wire_codec::error_status(actual);
-        if encoded.code() != wire.code()
-            || encoded.message() != wire.message()
-            || encoded.details() != wire.details()
-            || !encoded
+    // Every recognized category retains the peer's original diagnostics too.
+    let encoded = wire_codec::error_status(actual);
+    if encoded.code() != wire.code()
+        || encoded.message() != wire.message()
+        || encoded.details() != wire.details()
+        || !encoded
+            .metadata()
+            .as_ref()
+            .iter()
+            .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
+            .eq(wire
                 .metadata()
                 .as_ref()
                 .iter()
-                .filter(|(name, _)| name.as_str().starts_with("acyclic-"))
-                .eq(wire
-                    .metadata()
-                    .as_ref()
-                    .iter()
-                    .filter(|(name, _)| name.as_str().starts_with("acyclic-")))
-        {
-            return Err("original refusal diagnostics");
-        }
+                .filter(|(name, _)| name.as_str().starts_with("acyclic-")))
+    {
+        return Err("original refusal diagnostics");
     }
     Ok(())
 }
