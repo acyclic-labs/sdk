@@ -1,7 +1,7 @@
-diff --git b/rust/crates/native-runtime/src/process_tree/cleanup.rs a/rust/crates/native-runtime/src/process_tree/cleanup.rs
-index cb4e0a53367..befb8379533 100644
---- b/rust/crates/native-runtime/src/process_tree/cleanup.rs
-+++ a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+diff --git a/rust/crates/native-runtime/src/process_tree/cleanup.rs b/rust/crates/native-runtime/src/process_tree/cleanup.rs
+index 56d1d4a5e69..befb8379533 100644
+--- a/rust/crates/native-runtime/src/process_tree/cleanup.rs
++++ b/rust/crates/native-runtime/src/process_tree/cleanup.rs
 @@ -18,16 +18,7 @@ impl<'a> Cleanup<'a> {
          })
      }
@@ -20,7 +20,14 @@ index cb4e0a53367..befb8379533 100644
          self.token.take().map_or(Ok(()), |token| {
              self.meter
                  .ok_or(io::ErrorKind::InvalidInput)?
-@@ -43,26 +34,3 @@ impl Drop for Cleanup<'_> {
+@@ -39,36 +30,7 @@ impl<'a> Cleanup<'a> {
+ impl Drop for Cleanup<'_> {
+     fn drop(&mut self) {
+         if let (Some(meter), Some(token)) = (self.meter, self.token.take()) {
+-            crate::delivery::deliver(std::iter::once(token), |token| {
+-                meter.cancel_cleanup_write(token);
+-            });
++            meter.cancel_cleanup_write(token);
          }
      }
  }
@@ -44,13 +51,17 @@ index cb4e0a53367..befb8379533 100644
 -
 -impl Drop for Released<'_> {
 -    fn drop(&mut self) {
--        let _ = self.0.record();
+-        // Preserve an existing unwind while completing this original callback.
+-        // Normal callback failure still unwinds after the native owner released.
+-        crate::delivery::deliver(std::iter::once(()), |()| {
+-            let _ = self.0.record();
+-        });
 -    }
 -}
-diff --git b/rust/crates/native-runtime/src/process_tree/exit_wait.rs a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
+diff --git a/rust/crates/native-runtime/src/process_tree/exit_wait.rs b/rust/crates/native-runtime/src/process_tree/exit_wait.rs
 index 60342ea003e..c9da5bc9975 100644
---- b/rust/crates/native-runtime/src/process_tree/exit_wait.rs
-+++ a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
+--- a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/exit_wait.rs
 @@ -1,5 +1,5 @@
  //! Direct-child exit notification leaves the leader unreaped for tree cleanup.
 -use super::cleanup::{Cleanup, Resource};
@@ -93,10 +104,10 @@ index 60342ea003e..c9da5bc9975 100644
      };
      // Retain the descriptor and its prepaid close before late accounting can
      // fail. Every successful open has one physical release on this ledger.
-diff --git b/rust/crates/native-runtime/src/process_tree/windows_event.rs a/rust/crates/native-runtime/src/process_tree/windows_event.rs
+diff --git a/rust/crates/native-runtime/src/process_tree/windows_event.rs b/rust/crates/native-runtime/src/process_tree/windows_event.rs
 index 86651b739db..21025648522 100644
---- b/rust/crates/native-runtime/src/process_tree/windows_event.rs
-+++ a/rust/crates/native-runtime/src/process_tree/windows_event.rs
+--- a/rust/crates/native-runtime/src/process_tree/windows_event.rs
++++ b/rust/crates/native-runtime/src/process_tree/windows_event.rs
 @@ -1,12 +1,13 @@
  //! Owned Windows events and their original metered cleanup custody.
 -use super::cleanup::{Cleanup, Resource};
@@ -133,10 +144,10 @@ index 86651b739db..21025648522 100644
 +        let _ = self.cleanup.record();
 +    }
 +}
-diff --git b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
+diff --git a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
 index 2c453d54f77..181e0645a50 100644
---- b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
-+++ a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
+--- a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
 @@ -1,5 +1,5 @@
  //! Job membership is rechecked after a pinned member exits, never on a timer.
 -use super::super::cleanup::{Cleanup, Resource};
@@ -178,10 +189,10 @@ index 2c453d54f77..181e0645a50 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-diff --git b/rust/crates/native-runtime/src/process_tree/windows_wait.rs a/rust/crates/native-runtime/src/process_tree/windows_wait.rs
+diff --git a/rust/crates/native-runtime/src/process_tree/windows_wait.rs b/rust/crates/native-runtime/src/process_tree/windows_wait.rs
 index 44e07cc6d5e..2f1fb9fc22a 100644
---- b/rust/crates/native-runtime/src/process_tree/windows_wait.rs
-+++ a/rust/crates/native-runtime/src/process_tree/windows_wait.rs
+--- a/rust/crates/native-runtime/src/process_tree/windows_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/windows_wait.rs
 @@ -1,4 +1,4 @@
 -use super::super::cleanup::{Cleanup, Resource};
 +use super::super::cleanup::Cleanup;

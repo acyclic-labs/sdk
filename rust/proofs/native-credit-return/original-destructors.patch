@@ -1,0 +1,66 @@
+diff --git b/rust/crates/native-runtime/src/meter/allocation.rs a/rust/crates/native-runtime/src/meter/allocation.rs
+index 6b4021a7424..3098b197a8d 100644
+--- b/rust/crates/native-runtime/src/meter/allocation.rs
++++ a/rust/crates/native-runtime/src/meter/allocation.rs
+@@ -40,9 +40,7 @@ impl ReadAllocationReservation {
+ impl Drop for ReadAllocationReservation {
+     fn drop(&mut self) {
+         if let Some(bytes) = self.bytes {
+-            crate::delivery::deliver(std::iter::once(bytes), |bytes| {
+-                self.meter.cancel_reserved_allocation(bytes);
+-            });
++            self.meter.cancel_reserved_allocation(bytes);
+         }
+     }
+ }
+@@ -238,8 +236,6 @@ impl<M: Deref<Target: NativeReadMeter>> std::fmt::Debug for ReadAllocation<M> {
+ 
+ impl<M: Deref<Target: NativeReadMeter>> Drop for ReadAllocation<M> {
+     fn drop(&mut self) {
+-        crate::delivery::deliver(std::iter::once(self.bytes), |bytes| {
+-            self.meter.release(bytes);
+-        });
++        self.meter.release(self.bytes);
+     }
+ }
+diff --git b/rust/crates/native-runtime/src/meter/codec.rs a/rust/crates/native-runtime/src/meter/codec.rs
+index d3316ce95fb..f105791be8d 100644
+--- b/rust/crates/native-runtime/src/meter/codec.rs
++++ a/rust/crates/native-runtime/src/meter/codec.rs
+@@ -55,8 +55,6 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeCodecReservation<M> {
+ 
+ impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeCodecReservation<M> {
+     fn drop(&mut self) {
+-        crate::delivery::deliver(std::iter::once(self.remaining), |remaining| {
+-            self.meter.cancel_reserved_codec(remaining);
+-        });
++        self.meter.cancel_reserved_codec(self.remaining);
+     }
+ }
+diff --git b/rust/crates/native-runtime/src/meter/reservation.rs a/rust/crates/native-runtime/src/meter/reservation.rs
+index 19a2b7c9152..7653775fd1d 100644
+--- b/rust/crates/native-runtime/src/meter/reservation.rs
++++ a/rust/crates/native-runtime/src/meter/reservation.rs
+@@ -74,9 +74,8 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M>
+ 
+ impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeOperationReservation<M> {
+     fn drop(&mut self) {
+-        crate::delivery::deliver(std::iter::once(self.remaining), |remaining| {
+-            self.meter.cancel_reserved_operations(self.kind, remaining);
+-        });
++        self.meter
++            .cancel_reserved_operations(self.kind, self.remaining);
+     }
+ }
+ 
+@@ -110,9 +109,7 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeByteReservation<M> {
+ impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeByteReservation<M> {
+     fn drop(&mut self) {
+         if let Some(maximum) = self.maximum.take() {
+-            crate::delivery::deliver(std::iter::once(maximum), |maximum| {
+-                self.meter.cancel_reserved_bytes(self.kind, maximum);
+-            });
++            self.meter.cancel_reserved_bytes(self.kind, maximum);
+         }
+     }
+ }

@@ -74,8 +74,9 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M> 
 
 impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeOperationReservation<M> {
     fn drop(&mut self) {
-        self.meter
-            .cancel_reserved_operations(self.kind, self.remaining);
+        crate::delivery::deliver(std::iter::once(self.remaining), |remaining| {
+            self.meter.cancel_reserved_operations(self.kind, remaining);
+        });
     }
 }
 
@@ -109,7 +110,9 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeByteReservation<M> {
 impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeByteReservation<M> {
     fn drop(&mut self) {
         if let Some(maximum) = self.maximum.take() {
-            self.meter.cancel_reserved_bytes(self.kind, maximum);
+            crate::delivery::deliver(std::iter::once(maximum), |maximum| {
+                self.meter.cancel_reserved_bytes(self.kind, maximum);
+            });
         }
     }
 }

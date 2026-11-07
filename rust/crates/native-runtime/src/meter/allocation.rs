@@ -21,11 +21,13 @@ impl ReadAllocationReservation {
     /// Records the accepted allocation and transfers its exact original custody.
     pub fn allocate(mut self) -> io::Result<ReadAllocation> {
         let bytes = self.bytes.ok_or(io::ErrorKind::InvalidInput)?;
+        let owner = ReadAllocation::owner(&self.meter);
         self.meter.record_reserved_allocation(bytes)?;
         self.bytes = None;
-        let mut allocation = ReadAllocation::empty(&self.meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(ReadAllocation {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Consumes only a reservation for this exact allocation footprint.
@@ -40,7 +42,9 @@ impl ReadAllocationReservation {
 impl Drop for ReadAllocationReservation {
     fn drop(&mut self) {
         if let Some(bytes) = self.bytes {
-            self.meter.cancel_reserved_allocation(bytes);
+            crate::delivery::deliver(std::iter::once(bytes), |bytes| {
+                self.meter.cancel_reserved_allocation(bytes);
+            });
         }
     }
 }
@@ -53,40 +57,49 @@ pub struct ReadAllocation<M: Deref<Target: NativeReadMeter> = Arc<dyn NativeRead
 }
 
 impl ReadAllocation {
+    // Resolve the original ledger owner before an admission can charge it.
+    fn owner(meter: &Arc<dyn NativeReadMeter>) -> Arc<dyn NativeReadMeter> {
+        meter
+            .allocation_owner()
+            .unwrap_or_else(|| Arc::clone(meter))
+    }
+
     /// Admits one genuine positive allocation attempt before its allocator call.
     pub fn new(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+        let owner = Self::owner(meter);
         let bytes = bytes as u64;
         if bytes == 0 {
             meter.check()?;
         } else {
             meter.allocate(bytes)?;
         }
-        let mut allocation = Self::empty(meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(Self {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Borrows the same original meter without an allocation or resource grant.
     pub fn empty(meter: &Arc<dyn NativeReadMeter>) -> Self {
         Self {
-            meter: meter
-                .allocation_owner()
-                .unwrap_or_else(|| Arc::clone(meter)),
+            meter: Self::owner(meter),
             bytes: 0,
         }
     }
 
     /// Admits retention of an existing transferred payload, with zero allocation operations.
     pub fn adopt(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+        let owner = Self::owner(meter);
         let bytes = bytes as u64;
         if bytes == 0 {
             meter.check()?;
         } else {
             meter.adopt(bytes)?;
         }
-        let mut allocation = Self::empty(meter);
-        allocation.bytes = bytes;
-        Ok(allocation)
+        Ok(Self {
+            meter: owner,
+            bytes,
+        })
     }
 
     /// Admits another genuine positive allocation attempt before it occurs.
@@ -108,15 +121,23 @@ impl ReadAllocation {
         let actual = actual as u64;
         if actual > self.bytes {
             self.meter.adopt(actual - self.bytes)?;
+            self.bytes = actual;
         } else if actual < self.bytes {
-            self.meter.release(self.bytes - actual);
+            self.shrink_to(actual);
         }
-        self.bytes = actual;
         Ok(())
     }
 }
 
 impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+    // All callers establish retained <= bytes before returning original credit.
+    // Commit custody first: a callback unwind must not refund these bytes again.
+    fn shrink_to(&mut self, retained: u64) {
+        let released = self.bytes - retained;
+        self.bytes = retained;
+        self.meter.release(released);
+    }
+
     /// Records real capacity discovered after a controlled allocation.
     ///
     /// # Panics
@@ -138,8 +159,7 @@ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
                 "successful adoption retains all actual excess"
             );
         } else if actual < self.bytes {
-            self.meter.release(self.bytes - actual);
-            self.bytes = actual;
+            self.shrink_to(actual);
         }
         Ok(())
     }
@@ -204,8 +224,7 @@ impl ReadAllocation {
             .bytes
             .checked_sub(bytes)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        self.meter.release(bytes);
-        self.bytes = remaining;
+        self.shrink_to(remaining);
         Ok(())
     }
 }
@@ -236,6 +255,8 @@ impl<M: Deref<Target: NativeReadMeter>> std::fmt::Debug for ReadAllocation<M> {
 
 impl<M: Deref<Target: NativeReadMeter>> Drop for ReadAllocation<M> {
     fn drop(&mut self) {
-        self.meter.release(self.bytes);
+        crate::delivery::deliver(std::iter::once(self.bytes), |bytes| {
+            self.meter.release(bytes);
+        });
     }
 }
