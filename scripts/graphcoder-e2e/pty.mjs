@@ -56,7 +56,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       try {
         const { visible, diagnostic } = screenSnapshot(screen, { completeLines: !settled });
         const action = input.actions[index];
-        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when);
+        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when, action?.assert);
         if (refusal) {
           const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
@@ -74,7 +74,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         if (!matches(screen, raw, action.when, visible, diagnostic)) return;
         if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic),
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-        failures.accept(diagnostic, action.when);
+        failures.accept(diagnostic, action.when, action.assert);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
         index++;
