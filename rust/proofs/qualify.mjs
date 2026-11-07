@@ -20,8 +20,10 @@ const claims = {
     "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
     "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", "--features", "local"],
     {
-      patchPath: "rust/proofs/local-prepared-ingress-close/mutation.patch",
-      negativeLabel: "omitted-original-ingress-close",
+      mutations: [
+        { patch: "rust/proofs/local-prepared-ingress-close/mutation.patch", label: "omitted-original-ingress-close", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
+        { patch: "rust/proofs/local-prepared-ingress-close/registration.patch", label: "omitted-original-ingress-registration", diagnostic: "abandoned prepared producer did not reach its original completion boundary" },
+      ],
     },
   ],
   "local-prepared-producer-loss": [

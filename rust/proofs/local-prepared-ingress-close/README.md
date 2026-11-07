@@ -13,9 +13,11 @@ awaiting anything else, so a missing producer close fails deterministically.
 It then releases the completion boundary, checks the original task drain and
 unchanged tails, and verifies provider retirement and funding release.
 
-The retained mutation removes only the production prepared-packet destructor's
-ingress close. It must fail at the same completion-boundary assertion. The
-qualifier restores production before running the unchanged oracle again.
+Two retained mutations independently remove the production prepared-packet
+destructor's ingress close or the original worker's wake registration. Missing
+close is caught before worker execution; missing registration is caught only
+after the worker parks. Each must fail at the same completion-boundary assertion.
+The qualifier restores production before running the unchanged oracle again.
 No timeout, polling loop, replacement producer or private receiver is used.
 The scheduler polls the original shipped worker and its ingress state machine;
 there is no parallel model of either.
