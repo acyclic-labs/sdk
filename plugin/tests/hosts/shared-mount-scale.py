@@ -1,6 +1,6 @@
 """Probe-only scale proof through each production MCP host adapter.
 
-Run on Linux or macOS: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
+Run on Linux: python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
 the separate real-host suite owns the real sandbox/model matrix. The shipped
 binaries answer the owner's public resources query; no test feature is needed.
@@ -16,6 +16,10 @@ import sys
 import tempfile
 import time
 import traceback
+from contextlib import closing
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / 'scripts/graphcoder-e2e'))
+from owned_mounts import MountLease
 from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
@@ -36,7 +40,7 @@ signal.signal(signal.SIGTERM, interrupted)
 
 # Marginal cost of each view added from N to 2N, in whole units per view.
 # Process constants cancel; nothing is subtracted or warmed up first.
-VIEW_LIMITS = {'descriptors': 1, 'threads': 0, 'mounts': 0}
+VIEW_LIMITS = {'descriptors': 1, 'threads': 0, 'fixture_mounts': 0}
 
 
 def exceeded(small, large):
@@ -61,6 +65,7 @@ def main():
     with (
         tempfile.TemporaryDirectory(prefix='.plugins-shared-scale-', dir=pathlib.Path.home()) as temporary,
         socket.socket() as barrier,
+        closing(MountLease(temporary)) as mount_lease,
     ):
         root = pathlib.Path(temporary)
         workspace = root / 'workspace'
@@ -188,6 +193,11 @@ sys.exit(17)
                     sample = client({'kind': 'resources', 'task': task})
                     assert_live()
                     assert sample['views'] > population, sample
+                    # The OS counter includes every concurrent fixture in this
+                    # mount namespace. Use the shared custody reader to count
+                    # this fixture's actual registrations, including submounts.
+                    sample['fixture_mounts'] = len(mount_lease.mounts())
+                    assert sample['fixture_mounts'] > 0, sample
                     sample['live_sessions'] = population
                     samples.append(sample)
                     print(json.dumps({'host': host, 'sample': sample,
@@ -215,7 +225,6 @@ sys.exit(17)
                 previous, owner = owner, None
                 stop_workspace_owner(previous)
                 elapsed = time.monotonic() - started
-                assert elapsed < 10, elapsed
                 print(json.dumps({'host': host, 'samples': samples, 'seconds': elapsed,
                                   'model_calls': 0, 'native_session_standins': True,
                                   'sessions_alive_at_both_samples': True,

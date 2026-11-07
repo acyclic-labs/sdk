@@ -134,18 +134,20 @@ adding a sandbox implementation to Pi or the plugin.
 
 The separate [identity package](identity-mcp.md) retains its command surface.
 
-The probe-only resource check exercises each production host adapter with
+The Linux probe-only resource check exercises each production host adapter with
 stand-in native sessions held alive at the N/2N samples:
 
 ```sh
 python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
 ```
 
-Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
-with the harness `test-support` feature for its OS resource query. These
-instrumented binaries are test fixtures, not the shipping package. The oracle
+Select `claude-code` or `pi` for the other adapters. The shipped binaries expose
+the owner's resource query. The oracle
 shares the harness's descriptor/thread bounds and requires zero mount growth;
 it samples the shared mount owner, excluding descendant host-runtime resources.
+Mount growth counts actual OS registrations beneath this fixture's root through
+the shared mount-custody reader. The namespace-wide OS mount count remains a
+diagnostic: concurrent fixtures can add mounts outside this root.
 Each child acknowledges the hold barrier before and after each sample; the
 same N sessions remain alive through the 2N sample. Releasing and waiting for
 children before sampling must fail that barrier. The per-child-mount

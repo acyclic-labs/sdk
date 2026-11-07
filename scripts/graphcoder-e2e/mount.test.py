@@ -104,14 +104,20 @@ class MountOwnership(unittest.TestCase):
             root, sibling = Path(parent) / "fixture", Path(parent) / "fixture-other"
             root.mkdir()
             sibling.mkdir()
+            lease = MountLease(root)
             peer = MountLease(sibling)
             try:
                 code, _, error = finish(host(sibling, leased=False))
                 self.assertEqual(code, 0, error)
-                code, _, error = finish(host(root))
+                self.assertEqual(lease.mounts(), [], "prefix sibling contaminated the fixture census")
+                code, _, error = finish(host(root, leased=False))
                 self.assertEqual(code, 0, error)
+                self.assertEqual(len(lease.mounts()), 1, "owned mount omitted from the fixture census")
+                lease.retire()
                 self.assertEqual(len(peer.mounts()), 1, "unrelated mount was retired")
             finally:
+                lease.retire()
+                lease.close()
                 peer.retire()
                 peer.close()
 
