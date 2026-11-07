@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "seeded-runtime-configuration": [
+    "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
+    "seeded_runtime_requires_explicit_executor_configuration",
+    "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
+    { target: ["--test", "seeded_runtime"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
