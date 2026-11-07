@@ -16,6 +16,18 @@
       },
       {
         "when": {
+          "contains": "refuse unmatched summary"
+        },
+        "status": 400,
+        "json": {
+          "error": {
+            "message": "scripted refusal",
+            "type": "invalid_request_error"
+          }
+        }
+      },
+      {
+        "when": {
           "contains": "preserve the fact"
         },
         "text": [
@@ -50,7 +62,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "○"
+              "â—‹"
             ]
           },
           "prompt": "/compact refuse unmatched summary",
@@ -60,23 +72,23 @@
           "when": {
             "contains": [
               "Compacted conversation",
-              "○"
+              "â—‹"
             ]
           },
           "assert": {
-            "task_failure": "model HTTP status 409"
+            "task_failure": "model HTTP status 400"
           },
           "prompt": "after compact",
           "after_request": {
             "path": "responses",
-            "step": 1
+            "step": 2
           }
         },
         {
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "○"
+              "â—‹"
             ]
           },
           "send": "\u0004"
