@@ -1,4 +1,5 @@
 [package]
+autotests = false
 license.workspace = true
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
@@ -7,6 +8,13 @@ publish = false
 
 [package.metadata]
 cargo-fuzz = true
+
+# Integration tests also build every enabled binary, even with test = false.
+[lib]
+path = "tests/lib.rs"
+doc = false
+doctest = false
+bench = false
 
 [[bin]]
 name = "native_answer"
@@ -100,7 +108,6 @@ runtime = ["native-settings", "filesystem-local", "native-execution", "native-in
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
 filesystem-local = []
 native-execution = []
-
 
 [dependencies]
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }

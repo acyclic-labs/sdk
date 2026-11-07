@@ -1,6 +1,6 @@
 //! Replay original argument inputs through the shared parser and fuzz oracle.
 #[path = "../local_hotpath_options.rs"]
-mod local_hotpath_options;
+mod oracle;
 
 #[test]
 fn original_parser_admits_and_refuses_the_retained_argument_corpus() {
@@ -11,7 +11,7 @@ fn original_parser_admits_and_refuses_the_retained_argument_corpus() {
         let name = entry.file_name();
         let name = name.to_str().expect("corpus name");
         let input = std::fs::read(entry.path()).expect("original argument bytes");
-        let admitted = local_hotpath_options::check(&input);
+        let admitted = oracle::check(&input);
         if name.starts_with("accepted-") || name.starts_with("refused-") {
             assert_eq!(admitted, name.starts_with("accepted-"), "{name}");
         }
