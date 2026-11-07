@@ -15,6 +15,25 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "backed-retention": [
+    "rust/crates/stream/src/owned_bytes/mod.rs", "acyclic-stream",
+    "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+    "spare backing escaped compaction", [],
+    {
+      mutations: [
+        { patch: "rust/proofs/backed-retention/compaction.patch", label: "missing-compaction", diagnostic: "spare backing escaped compaction" },
+        { patch: "rust/proofs/backed-retention/known-copy.patch", label: "copied-known-owner", diagnostic: "known backing was copied" },
+        { patch: "rust/proofs/backed-retention/custody.patch", label: "lost-backing-custody", diagnostic: "backing lost original owner" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "-p", "acyclic-harness-client", "--lib", "--", "--exact", "--nocapture",
+        "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+        "reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing"],
+      completed: [
+        "test owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody ... ok",
+        "test reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing ... ok",
+      ],
+    },
+  ],
   "compiled-prefix-invariant": [
     "rust/crates/collections/src/compiled_prefix.rs", "acyclic-collections",
     "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",

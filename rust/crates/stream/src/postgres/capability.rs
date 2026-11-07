@@ -1,3 +1,9 @@
+//! Requires a disposable PostgreSQL database through `STORAGE_POSTGRES_URL`.
+//! Select this entire capability with the `postgres::capability::` test filter.
+//! SQL observation counts additionally use server statement logs tagged with
+//! the `publication-count-` application name; enable `log_statement = 'all'`
+//! and include `%a` in `log_line_prefix` when collecting those observations.
+
 use super::*;
 use crate::replicated::ReplayObserver;
 use futures::FutureExt as _;
@@ -28,7 +34,6 @@ async fn sql_case(replica: &Replicated<PgJournal>, case: &str) -> Result<(), Str
 }
 
 #[tokio::test]
-#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn publication_uses_only_required_sql_observations()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -468,7 +473,6 @@ impl ReplayObserver for AppendDuringReplay<'_> {
 }
 
 #[tokio::test]
-#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -553,7 +557,6 @@ impl ReplayObserver for CompetingPublication<'_> {
 }
 
 #[tokio::test]
-#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn stale_publication_returns_without_retaining_the_losing_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
@@ -612,7 +615,6 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
 }
 
 #[tokio::test]
-#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
 async fn cancelled_acknowledgement_replays_the_committed_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;

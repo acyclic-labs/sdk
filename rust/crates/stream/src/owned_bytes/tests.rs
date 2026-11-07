@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_meter::Meter;
+use proptest::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering as Order};
 
 fn funded(
@@ -21,6 +22,69 @@ impl Drop for Owner {
     fn drop(&mut self) {
         self.retired
             .store(self.meter.held.load(Order::Relaxed), Order::Relaxed);
+    }
+}
+
+proptest! {
+    #[test]
+    fn backed_retention_preserves_visible_bytes_identity_and_final_custody(
+        payload in proptest::collection::vec(any::<u8>(), 0..64),
+        spare in 0usize..128,
+        start in any::<usize>(),
+        end in any::<usize>(),
+        budget in 0usize..256,
+    ) {
+        let start = start % (payload.len() + 1);
+        let end = start + end % (payload.len() - start + 1);
+        for mode in 0..4 {
+            let observed = Arc::new(Meter::default());
+            let meter = observed.original();
+            let mut data = Vec::with_capacity(payload.len() + spare);
+            data.extend_from_slice(&payload);
+            let bytes = match mode {
+                0 => OwnedBytes::from(data),
+                1 => OwnedBytes::from(Bytes::from_owner(data)),
+                2 => {
+                    let claim = ReadAllocation::new(&meter, data.capacity()).unwrap();
+                    OwnedBytes::from_vec_with_guard(data, claim, meter.clone()).unwrap()
+                }
+                _ => {
+                    let claim = ReadAllocation::new(&meter, data.capacity()).unwrap();
+                    let bytes = OwnedBytes::from(data);
+                    let alias = bytes.clone();
+                    let bytes = bytes.with_guard(claim, meter.clone()).unwrap();
+                    drop(alias);
+                    bytes
+                }
+            }.slice(start..end);
+            let capacity = bytes.retained_capacity();
+            let shared = capacity.is_some_and(|capacity| capacity <= budget || capacity <= bytes.len());
+            let identity = bytes.data.identity();
+            let pointer = bytes.as_slice().as_ptr();
+            let held = observed.held.load(Order::Relaxed);
+            let (bytes, backing) = bytes.into_backed(budget);
+            prop_assert_eq!(bytes.as_slice(), payload.get(start..end).unwrap(), "retention changed visible bytes");
+            if shared {
+                prop_assert_eq!(bytes.retained_capacity(), capacity, "known backing was copied");
+                prop_assert_eq!(bytes.data.identity(), identity, "known backing was copied");
+                prop_assert_eq!(bytes.as_slice().as_ptr(), pointer, "known backing was copied");
+                prop_assert_eq!(Some(backing.capacity()), capacity);
+            } else {
+                prop_assert_eq!(backing.capacity(), bytes.len(), "spare backing escaped compaction");
+                if !bytes.is_empty() {
+                    prop_assert_ne!(bytes.as_slice().as_ptr(), pointer, "unknown backing was not copied");
+                }
+            }
+            prop_assert_eq!(bytes.backing().as_ref(), Some(&backing), "backing lost original owner");
+            prop_assert_eq!(bytes.retained_capacity(), Some(backing.capacity()));
+            let retained = if shared { held } else { 0 };
+            prop_assert_eq!(observed.held.load(Order::Relaxed), retained, "original custody retired early");
+            drop(bytes);
+            prop_assert_eq!(observed.held.load(Order::Relaxed), retained, "backing lost final custody");
+            drop(backing);
+            prop_assert_eq!(observed.held.load(Order::Relaxed), 0, "backing leaked original custody");
+            observed.assert_refunded();
+        }
     }
 }
 

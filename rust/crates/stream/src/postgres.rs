@@ -14,9 +14,9 @@ use tokio::sync::{Mutex, watch};
 use tokio_postgres::{AsyncMessage, Client, NoTls, Statement};
 
 const PAGE: usize = 64;
-mod port;
 #[cfg(test)]
-mod tests;
+mod capability;
+mod port;
 use port::PgJournal;
 const SCHEMA: &str = include_str!("postgres/schema.sql");
 
