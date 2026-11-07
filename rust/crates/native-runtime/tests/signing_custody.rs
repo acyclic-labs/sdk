@@ -70,20 +70,21 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
     }
     let root = tempfile::tempdir()?;
     let records = [0, 1, 2].map(|owner| root.path().join(format!("owner-{owner}.json")));
-    let invoke = |operation: &str, policy: &str, record: &Path| -> io::Result<std::process::Output> {
-        Command::new(std::env::current_exe()?)
-            .args([
-                "--exact",
-                "explicit_private_custody_reopens_and_refuses_public_access",
-                "--nocapture",
-            ])
-            .env("CUSTODY_CONTROL_OPERATION", operation)
-            .env("CUSTODY_CONTROL_RECORD", record)
-            .env("ACYCLIC_SIGNING_CUSTODY", policy)
-            .env("ACYCLIC_SIGNING_CUSTODY_DIRECTORY", root.path())
-            .env_remove("DBUS_SESSION_BUS_ADDRESS")
-            .output()
-    };
+    let invoke =
+        |operation: &str, policy: &str, record: &Path| -> io::Result<std::process::Output> {
+            Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "explicit_private_custody_reopens_and_refuses_public_access",
+                    "--nocapture",
+                ])
+                .env("CUSTODY_CONTROL_OPERATION", operation)
+                .env("CUSTODY_CONTROL_RECORD", record)
+                .env("ACYCLIC_SIGNING_CUSTODY", policy)
+                .env("ACYCLIC_SIGNING_CUSTODY_DIRECTORY", root.path())
+                .env_remove("DBUS_SESSION_BUS_ADDRESS")
+                .output()
+        };
     // Owners created by separate processes share the account's one root entry.
     for operation in ["create", "read"] {
         for record in &records {
