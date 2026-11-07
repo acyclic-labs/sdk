@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -112,7 +112,7 @@
+     fn resolve(self, conflict: &crate::ConflictView) -> Result<MergeResolution, DrivenJoinError> {
+         match self {
+             Self::Take { take } => Ok(MergeResolution::Select(match take {
+-                ResolutionSide::Ours => ConflictSide::Ours,
++                ResolutionSide::Ours => ConflictSide::Theirs,
+                 ResolutionSide::Theirs => ConflictSide::Theirs,
+             })),
+             Self::Remove { remove: true } => match conflict.key {
