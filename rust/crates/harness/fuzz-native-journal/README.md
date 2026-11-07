@@ -46,7 +46,11 @@ the portable mount alphabet and bounds invalid-input diagnostics. A separate
 generator requires valid components to be admitted, so a reject-all parser
 cannot pass. Arbitrary input is not
 truncated; generated components obey the existing 255-byte filesystem bound.
-This checks reference syntax, not mount confinement or process lifetime.
+It also calls the production child resolver with generated local names and
+their canonical AgentPath aliases. Both must retain one identity; parent and
+grandchild paths must fail with an invalid-input classification before storage
+is involved. Arbitrary canonical input exercises the same direct-child check.
+This checks reference syntax and routing, not mount confinement or process lifetime.
 
 The corpus contains explicitly authored user references, including `first`
 (the input used by the real-owner receipt control), parent/current paths,

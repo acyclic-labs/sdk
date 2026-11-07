@@ -173,7 +173,7 @@ impl HostWorkspaceOwner {
                 if self.native.session(&child).await?.1.control == Control::Archive
                     && control != Control::Archive
                 {
-                    return Err(Error::Conflict("native session is archived".into()));
+                    return Err(Error::Conflict(agents::ARCHIVED.into()));
                 }
                 self.native
                     .request(&child, operation, &Event::Control { control })

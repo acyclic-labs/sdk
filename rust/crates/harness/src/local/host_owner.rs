@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod agents;
 mod events;
 mod sessions;
+pub(in crate::local) use agents::child;
 /// Exercises the production native session storage codecs.
 #[cfg(feature = "test-support")]
 pub use agents::validation::check_native_session_storage;
@@ -351,7 +352,12 @@ impl HostWorkspaceOwner {
             .await;
         self.attach(task).await?;
         if let Some(child) = &merged {
-            let (state, session) = self.native.session(child).await?;
+            let (state, session) = self.native.session(child).await.map_err(|error| match error {
+                Error::NotFound(_) => Error::Invalid(
+                    "only a parent can merge its direct child's changes; return your result to your parent, which runs acyclic fs merge agents/<reference>".into(),
+                ),
+                error => error,
+            })?;
             if session.claimed().is_some() || session.pending(&state) > 0 {
                 return Err(Error::Conflict(
                     "native session is still running; wait for its captured result before merging"

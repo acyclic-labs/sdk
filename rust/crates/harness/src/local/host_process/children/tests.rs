@@ -30,6 +30,91 @@ async fn an_idle_child_runs_a_follow_up_after_its_view_is_released() -> Result {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Result {
+    for host in ["codex", "claude-code", "pi"] {
+        served(host, references).await?;
+    }
+    Ok(())
+}
+
+fn references(host: &str, cwd: &Path) -> Result {
+    let (mut sessions, parent) = children(host, cwd, "reference-custody")?;
+    let (mut running, view) = claim(
+        &mut sessions,
+        cwd,
+        "child",
+        SessionAction::Spawn {
+            prompt: "work".into(),
+        },
+    )?;
+    let task = running.claim.agent.clone();
+    let key = task.to_string();
+    let mut command = native_fixture(&view, "", "0");
+    running
+        .process
+        .spawn(&mut command, running.claim.operation)?;
+    shell_pid(&mut running)?;
+    sessions.children.insert(key.clone(), running);
+    assert!(sessions.wait("child")?.is_none());
+    assert!(sessions.wait(&key)?.is_none());
+    assert_eq!(sessions.accepted.len(), 1);
+    let grandchild = crate::local::host_owner::child(&task, "grandchild")?;
+    for other in [&parent, &grandchild] {
+        assert!(
+            matches!(sessions.wait(other.as_str()), Err(Error::Invalid(message))
+                if message.contains("only direct children can be waited on")),
+            "a non-child path must fail before a storage lookup"
+        );
+    }
+    let refused = host_files::request(
+        cwd,
+        HostAction::Fs {
+            task,
+            command: "merge agents/child".into(),
+        },
+    )
+    .expect_err("a leaf cannot merge its own changes");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
+    assert!(
+        refused.to_string().contains("only a parent can merge"),
+        "{refused}"
+    );
+    sessions.cancel(&key)?;
+    assert!(!sessions.running());
+    let local = sessions
+        .wait("child")?
+        .ok_or("cancelled child is still running")?;
+    let full = sessions
+        .wait(&key)?
+        .ok_or("cancelled path is still running")?;
+    assert_eq!(local["task"], full["task"]);
+    assert_eq!(local["control"], "interrupt");
+    sessions.archive("child")?;
+    for result in [
+        sessions.resume(&key, "next".into()),
+        sessions.spawn("child", "work".into()),
+        sessions.spawn("child", "different".into()),
+    ] {
+        let refused = result.expect_err("an archived reference cannot resume");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
+        assert!(
+            refused.to_string().contains("spawn a new reference"),
+            "{refused}"
+        );
+    }
+    let fresh = sessions.request(
+        "fresh",
+        SessionAction::Spawn {
+            prompt: "new work".into(),
+        },
+        false,
+    )?;
+    assert_ne!(fresh["task"], full["task"]);
+    sessions.archive("fresh")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Result {
     served("codex", |host, cwd| {
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
@@ -131,15 +216,16 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
         writer.write_all(&captured[..first])?;
         writer.write_all(&corrupted)?;
         writer.write_all(&captured[first..])?;
-        sessions.children.insert("captured".into(), running);
-        sessions.ready.push("captured");
+        let key = sessions.key("captured")?;
+        sessions.children.insert(key.clone(), running);
+        sessions.ready.push(&key);
         // Small scratch pages force both real output passes to spend all
         // their credit while the captured terminal is still unread.
         let mut page = [0; 8];
         sessions.pump_output(&mut page)?;
-        assert!(sessions.children.contains_key("captured"));
+        assert!(sessions.children.contains_key(&key));
         assert!(
-            sessions.children["captured"].answer.outcome.is_none(),
+            sessions.children[&key].answer.outcome.is_none(),
             "terminal remains unread after the full passes"
         );
         assert_eq!(
@@ -150,7 +236,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            ["captured"],
+            [key.as_str()],
             "actual output must schedule exactly its next bounded pass"
         );
         // The original exit boundary is already fixed. A detached writer can
@@ -161,7 +247,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
         assert_eq!(
             sessions
                 .children
-                .get_mut("captured")
+                .get_mut(&key)
                 .ok_or("original child absent")?
                 .process
                 .drain_stderr()?
@@ -170,7 +256,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             "terminal capture must exclude later detached stderr writes"
         );
         sessions.pump_output(&mut page)?;
-        assert!(!sessions.children.contains_key("captured"));
+        assert!(!sessions.children.contains_key(&key));
         assert!(sessions.ready.queue().keys.is_empty());
         let completed = sessions
             .wait("captured")?
@@ -280,7 +366,8 @@ fn claim(
         .and_then(|reply| reply.remove("next"))
         .filter(Value::is_object)
         .ok_or("fixture child input was not claimed")?;
-    let receipt = sessions.record(reference, &accepted)?.receipt.clone();
+    let key = sessions.key(reference)?;
+    let receipt = sessions.record(&key, &accepted)?.receipt.clone();
     let view = receipt.confirm(&claimed)?;
     let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
     let running = Running {
