@@ -1,7 +1,7 @@
 use super::*;
 
-// Keep the authority implementation behind the canonical future boundary: a
-// caller proves only the erased future, including for dynamically held providers.
+// Erase the authority implementation in the shared never-inlined factory. The
+// async signature retains every independent input borrow in its public future.
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     for StreamAuthorityStore<P>
@@ -17,31 +17,29 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         true
     }
 
-    fn quote_group_append(
+    async fn quote_group_append(
         &self,
         request: &crate::GuardedAppend,
         growth: usize,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<
-        Output = Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError>,
-    > + acyclic_stream::ProviderTask {
+    ) -> Result<Option<crate::AuthorityGroupCost>, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             StreamAuthorityStore::quote_group_append(self, request, growth, work).await
         })
+        .await
     }
 
-    fn compare_and_append_group<G: AuthorityGuard>(
+    async fn compare_and_append_group<G: AuthorityGuard>(
         &self,
         requests: &[crate::GuardedAppend],
         cuts: &[crate::PolicyCut],
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<
-        Output = Result<super::AppendGroupOutcome, AuthorityError<G::Error>>,
-    > + acyclic_stream::ProviderTask {
+    ) -> Result<super::AppendGroupOutcome, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             StreamAuthorityStore::compare_and_append_group(self, requests, cuts, work, guard).await
         })
+        .await
     }
 
     fn policy_owner(&self) -> crate::PolicyOwner {
@@ -52,12 +50,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         }
     }
 
-    fn policy_cut(
+    async fn policy_cut(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<crate::PolicyCut, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<crate::PolicyCut, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -69,6 +66,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 snapshot.epoch_tail,
             ))
         })
+        .await
     }
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         self.provider.context().operation_claims()
@@ -81,11 +79,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         self.provider.context().deferred_durability()
     }
 
-    fn durability_barrier(
+    async fn durability_barrier(
         &self,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>> + acyclic_stream::ProviderTask
-    {
+    ) -> Result<(), AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             work.check()?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -104,6 +101,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .await
                 .map_err(map_stream_error)
         })
+        .await
     }
 
     fn prepare_durability_barrier<'a>(
@@ -154,74 +152,73 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         true
     }
 
-    fn retains_generation(
+    async fn retains_generation(
         &self,
         authority: AuthorityId,
         generation: GenerationId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<bool, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<bool, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.retained_generation(authority, generation, work).await
         })
+        .await
     }
 
-    fn create_authority<G: AuthorityGuard>(
+    async fn create_authority<G: AuthorityGuard>(
         &self,
         authority: AuthorityId,
         epoch: Epoch,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.create(authority, epoch, work, guard).await
         })
+        .await
     }
 
-    fn create_first_record<G: AuthorityGuard>(
+    async fn create_first_record<G: AuthorityGuard>(
         &self,
         authority: AuthorityId,
         commit: ProposedCommit,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<Output = Result<bool, AuthorityError<G::Error>>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<bool, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.first(authority, commit, work, guard).await
         })
+        .await
     }
 
-    fn fork_workspace<G: AuthorityGuard>(
+    async fn fork_workspace<G: AuthorityGuard>(
         &self,
         fork: WorkspaceForkCommit,
         permit: PublicationPermit,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<Output = Result<WorkspaceForkOutcome, AuthorityError<G::Error>>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<WorkspaceForkOutcome, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.fork_records(fork, permit, work, guard).await
         })
+        .await
     }
 
-    fn fork_authority<G: AuthorityGuard>(
+    async fn fork_authority<G: AuthorityGuard>(
         &self,
         source: crate::GenerationForkSource,
         destination: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<Output = Result<CreateAuthorityOutcome, AuthorityError<G::Error>>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<CreateAuthorityOutcome, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             if source.lineage == crate::GenerationFork::Independent {
                 return self
@@ -233,15 +230,15 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             self.fork_generation(source, destination, operation, work, guard)
                 .await
         })
+        .await
     }
 
-    fn compare_and_append<G: AuthorityGuard>(
+    async fn compare_and_append<G: AuthorityGuard>(
         &self,
         request: crate::GuardedAppend,
         work: &mut AuthorityWork<'_>,
         guard: Option<&mut G>,
-    ) -> impl std::future::Future<Output = Result<FsAppendOutcome, AuthorityError<G::Error>>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -249,14 +246,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .await
                 .and_then(|value| work.finish(value).map_err(Into::into))
         })
+        .await
     }
 
-    fn head(
+    async fn head(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<Head, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<Head, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -264,45 +261,43 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .await
                 .and_then(|snapshot| work.finish(snapshot.head))
         })
+        .await
     }
 
-    fn head_payload(
+    async fn head_payload(
         &self,
         authority: AuthorityId,
         maximum_payload_bytes: u64,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<
-        Output = Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError>,
-    > + acyclic_stream::ProviderTask {
+    ) -> Result<((Head, Option<Bytes>), AuthorityAllocation), AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             self.head_payload_checked::<true>(authority, maximum_payload_bytes, work)
                 .await
         })
+        .await
     }
 
-    fn first_generation(
+    async fn first_generation(
         &self,
         authority: AuthorityId,
         generation: GenerationId,
         through: Sequence,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<Option<Sequence>, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<Option<Sequence>, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             self.seek_generation(authority, generation, through, work)
                 .await
         })
+        .await
     }
 
-    fn replay(
+    async fn replay(
         &self,
         authority: AuthorityId,
         after: Sequence,
         limit: ReplayLimit,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<
-        Output = Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError>,
-    > + acyclic_stream::ProviderTask {
+    ) -> Result<(Vec<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             if limit.records == 0 || limit.payload_bytes == 0 {
                 return Err(AuthorityStoreError::InvalidReplayLimit);
@@ -316,15 +311,15 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 scope.finish_owned(value).map_err(authority_error)?,
             ))
         })
+        .await
     }
 
-    fn fence(
+    async fn fence(
         &self,
         authority: AuthorityId,
         expected: Head,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<FenceOutcome, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<FenceOutcome, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -332,15 +327,15 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .await
                 .and_then(|value| work.finish(value))
         })
+        .await
     }
 
-    fn find_operation(
+    async fn find_operation(
         &self,
         authority: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<Option<DurableCommit>, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
@@ -348,57 +343,56 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 .await
                 .and_then(|value| work.finish(value))
         })
+        .await
     }
 
-    fn publication_reservation(
+    async fn publication_reservation(
         &self,
         authority: AuthorityId,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<
-        Output = Result<Option<PublicationReservation>, AuthorityStoreError>,
-    > + acyclic_stream::ProviderTask {
+    ) -> Result<Option<PublicationReservation>, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.reservation(authority, operation, work).await
         })
+        .await
     }
 
-    fn reserve_publication(
+    async fn reserve_publication(
         &self,
         authority: AuthorityId,
         expected: Head,
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<ReservationOutcome, AuthorityStoreError>>
-    + acyclic_stream::ProviderTask {
+    ) -> Result<ReservationOutcome, AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.reserve(authority, expected, operation, work).await
         })
+        .await
     }
 
-    fn release_publication(
+    async fn release_publication(
         &self,
         reservation: PublicationReservation,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>> + acyclic_stream::ProviderTask
-    {
+    ) -> Result<(), AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let mut scope = work.scope()?;
             let work = &mut *scope;
             self.release(reservation, work).await
         })
+        .await
     }
 
-    fn retire_authority(
+    async fn retire_authority(
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
-    ) -> impl std::future::Future<Output = Result<(), AuthorityStoreError>> + acyclic_stream::ProviderTask
-    {
+    ) -> Result<(), AuthorityStoreError> {
         acyclic_stream::erase_provider_future(|| async move {
             let actor = self.actor(authority, work)?;
             let journal = actor.lease(work).await?;
@@ -453,5 +447,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
                 Err(error) => Err(map_stream_error(error)),
             }
         })
+        .await
     }
 }
