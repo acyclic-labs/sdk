@@ -129,7 +129,7 @@ pub fn stamp(path: &Path) -> io::Result<Stamp> {
 fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_BASIC_INFO, FILE_ID_INFO, FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx,
+        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
     };
     let mut basic = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
     let mut id = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
