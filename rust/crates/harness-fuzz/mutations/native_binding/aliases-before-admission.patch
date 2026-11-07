@@ -1,0 +1,202 @@
+--- a/rust/crates/harness-core/src/tool/registry/mod.rs
++++ b/rust/crates/harness-core/src/tool/registry/mod.rs
+@@ -20,21 +20,15 @@
+     Hidden,
+     /// A capability the model sees as these native declarations, each
+     /// selected under its own name. Its grant still names the capability.
+-    Native {
+-        revision: Option<String>,
+-        names: Vec<String>,
+-    },
++    Native(Vec<String>),
+ }
+ 
+ impl ModelSelection {
+     fn owned_bytes(&self) -> u64 {
+         match self {
+             Self::Revision(revision) => revision.capacity() as u64,
+-            Self::Native { revision, names } => names.iter().fold(
+-                (names.capacity() * std::mem::size_of::<String>()) as u64
+-                    + revision
+-                        .as_ref()
+-                        .map_or(0, |revision| revision.capacity() as u64),
++            Self::Native(names) => names.iter().fold(
++                (names.capacity() * std::mem::size_of::<String>()) as u64,
+                 |bytes, name| bytes.saturating_add(name.capacity() as u64),
+             ),
+             Self::Ambiguous | Self::Hidden => 0,
+--- a/rust/crates/harness-core/src/tool/registry/native.rs
++++ b/rust/crates/harness-core/src/tool/registry/native.rs
+@@ -67,16 +67,12 @@
+                 ),
+                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
+                 ModelSelection::Hidden => ModelSelection::Hidden,
+-                ModelSelection::Native { revision, names } => ModelSelection::Native {
+-                    revision: revision
+-                        .as_ref()
+-                        .map(|revision| crate::executor::stock_string_copy(revision, Some(&io)))
+-                        .transpose()?,
+-                    names: names
++                ModelSelection::Native(names) => ModelSelection::Native(
++                    names
+                         .iter()
+                         .map(|name| crate::executor::stock_string_copy(name, Some(&io)))
+                         .collect::<Result<_>>()?,
+-                },
++                ),
+             };
+             data.selected.insert(name, selection);
+         }
+--- a/rust/crates/harness-core/src/tool/registry/selection.rs
++++ b/rust/crates/harness-core/src/tool/registry/selection.rs
+@@ -13,7 +13,7 @@
+             .data
+             .selected
+             .values()
+-            .any(|selection| matches!(selection, ModelSelection::Native { .. }))
++            .any(|selection| matches!(selection, ModelSelection::Native(_)))
+         {
+             return Err(Error::Conflict(
+                 "native declarations bind after the manifest pins".into(),
+@@ -110,8 +110,8 @@
+ 
+     /// Presents capability `name` to the model as `natives`, declarations
+     /// already registered and selected under their own names. Calls under the
+-    /// capability's own name are no longer offered, unless included among the
+-    /// declarations; its selected revision then stays callable.
++    /// capability's own name are no longer offered, unless that is the one
++    /// declaration being presented; its selected revision then stays callable.
+     pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
+         let selection = Arc::make_mut(&mut self.data)
+             .selected
+@@ -120,23 +120,7 @@
+         if natives.len() == 1 && natives[0] == name {
+             return Ok(());
+         }
+-        let revision = if natives.iter().any(|native| native == name) {
+-            match std::mem::replace(selection, ModelSelection::Hidden) {
+-                ModelSelection::Revision(revision) => Some(revision),
+-                previous => {
+-                    *selection = previous;
+-                    return Err(Error::Conflict(format!(
+-                        "native declaration {name} requires a selected revision"
+-                    )));
+-                }
+-            }
+-        } else {
+-            None
+-        };
+-        *selection = ModelSelection::Native {
+-            revision,
+-            names: natives,
+-        };
++        *selection = ModelSelection::Native(natives);
+         Ok(())
+     }
+ 
+@@ -183,17 +167,6 @@
+         revision: Option<&str>,
+         io: Option<&crate::executor::PreparationIo>,
+     ) -> Result<Option<&Tool>> {
+-        self.get_shared(name, revision, io)
+-            .map(|tool| tool.map(Arc::as_ref))
+-    }
+-
+-    /// Resolves the same selection while retaining the original executor owner.
+-    pub(crate) fn get_shared(
+-        &self,
+-        name: &str,
+-        revision: Option<&str>,
+-        io: Option<&crate::executor::PreparationIo>,
+-    ) -> Result<Option<&Arc<Tool>>> {
+         #[cfg(feature = "filesystem")]
+         if revision.is_none()
+             && let Some(io) = io
+@@ -208,11 +181,7 @@
+             None => match name.rsplit_once('@') {
+                 Some(pinned) => pinned,
+                 None => match self.data.selected.get(name) {
+-                    Some(ModelSelection::Revision(revision))
+-                    | Some(ModelSelection::Native {
+-                        revision: Some(revision),
+-                        ..
+-                    }) => (name, revision.as_str()),
++                    Some(ModelSelection::Revision(revision)) => (name, revision.as_str()),
+                     _ => return Ok(None),
+                 },
+             },
+@@ -221,7 +190,7 @@
+             if let Some(work) = work.as_deref_mut() {
+                 work.check_cancellation()?;
+             }
+-            Ok(lookup::get(&self.data.versions, name, revision))
++            Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref))
+         })
+     }
+ 
+@@ -265,7 +234,7 @@
+             names()
+                 .flat_map(move |name| {
+                     let natives = match self.data.selected.get(name) {
+-                        Some(ModelSelection::Native { names, .. }) if capabilities => Some(names),
++                        Some(ModelSelection::Native(natives)) if capabilities => Some(natives),
+                         _ => None,
+                     };
+                     let own = natives.is_none().then_some(name);
+@@ -276,15 +245,8 @@
+                         return Some(Err(error));
+                     }
+                     match self.data.selected.get(name) {
+-                        Some(ModelSelection::Revision(revision))
+-                        | Some(ModelSelection::Native {
+-                            revision: Some(revision),
+-                            ..
+-                        }) => Some(Ok((name, revision))),
+-                        Some(
+-                            ModelSelection::Hidden | ModelSelection::Native { revision: None, .. },
+-                        )
+-                        | None => None,
++                        Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
++                        Some(ModelSelection::Hidden | ModelSelection::Native(_)) | None => None,
+                         Some(ModelSelection::Ambiguous) => {
+                             Some(Err(crate::executor::stock_boundary(
+                                 io,
+--- a/rust/crates/harness-core/src/tools/native/mod.rs
++++ b/rust/crates/harness-core/src/tools/native/mod.rs
+@@ -178,20 +178,12 @@
+     /// # Errors
+     /// A registry refusal of a declaration.
+     pub fn bind(&self, tools: &mut ToolRegistry) -> Result<()> {
+-        // Resolve every original selection before registering a declaration can
+-        // replace it, including one offered under the capability's own name.
+-        let capabilities = self
+-            .0
+-            .iter()
+-            .map(|(name, ..)| tools.get_shared(name, None, None).map(|tool| tool.cloned()))
+-            .collect::<Result<Vec<_>>>()?;
+-        let mut presented = std::collections::BTreeMap::<&str, Vec<String>>::new();
+-        for ((name, implementation, definition, arguments), capability) in
+-            self.0.iter().zip(capabilities)
+-        {
+-            let Some(capability) = capability else {
++        let mut presented: Vec<(&str, Vec<String>)> = Vec::new();
++        for (name, implementation, definition, arguments) in &self.0 {
++            let Some(capability) = tools.get(name, None, None)? else {
+                 continue;
+             };
++            let capability = Arc::new(capability.clone());
+             let original = implementation
+                 .clone()
+                 .unwrap_or_else(|| Arc::clone(&capability));
+@@ -224,7 +216,10 @@
+                 None,
+             )?;
+             tools.select_model_version(&native, &revision)?;
+-            presented.entry(name).or_default().push(native);
++            match presented.iter_mut().find(|(offered, _)| offered == name) {
++                Some((_, natives)) => natives.push(native),
++                None => presented.push((name, vec![native])),
++            }
+         }
+         presented
+             .into_iter()

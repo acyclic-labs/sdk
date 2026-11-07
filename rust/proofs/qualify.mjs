@@ -114,12 +114,7 @@ const claims = {
       completed: ["3 passed; 0 failed"],
     },
   ],
-  "execution-allowance-grant": [
-    "rust/crates/auth/src/authority.rs", "acyclic-auth",
-    "narrowing::execution_allowances_require_one_eligible_grant",
-    "billing allowance combined incompatible grants", [],
-    { target: ["--test", "main"] },
-  ],
+
   "revision-publication-progress": [
     "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
     "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
@@ -259,6 +254,16 @@ const claims = {
         "execution::tests::compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits"],
       completed: ["2 passed; 0 failed", "1 passed; 0 failed"],
     },
+  ],
+  "stream-error-admission": [
+    "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
+    "canonical failure writer output was refused", [],
+    { fuzz: { bin: "stream_error", corpus: "fuzz/corpus/stream_error", runs: 1024 } },
+  ],
+  "invocation-header-admission": [
+    "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
+    "captured actor invocation was refused", [],
+    { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
@@ -805,14 +810,27 @@ if (claim === "--help" && extra.length === 0) {
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : options.patchPath ?? `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
+  let fuzzTarget;
+  if (options.fuzz) {
+    const compiler = spawnSync("rustc", ["-vV"], { encoding: "utf8" });
+    fuzzTarget = compiler.stdout?.match(/^host: (\S+)$/m)?.[1];
+    if (compiler.error || compiler.status !== 0 || !fuzzTarget) {
+      console.error(`step=select native fuzz target; cause=${compiler.error?.message ?? compiler.stderr ?? "rustc host absent"}; recovery: rustc -vV; then node rust/proofs/qualify.mjs ${claim}`);
+      process.exit(2);
+    }
+  }
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+    "--target", fuzzTarget,
+    "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
+    `-artifact_prefix=target/${claim}/`];
   const command = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
-    : options.nextest
+    : options.fuzz ? fuzzCommand(1) : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
   const positive = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
-    : options.positiveCommand ?? (options.positive
+    : options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
@@ -834,6 +852,10 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.fuzz ? {
+            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
+              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
@@ -885,6 +907,7 @@ if (claim === "--help" && extra.length === 0) {
         const mutated = check(mutation.label, mutation.command ?? command);
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
+          : options.fuzz ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic) && mutated.output.includes("ERROR: libFuzzer:")
           : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.started === undefined || mutated.output.includes(options.started))
             && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? "0 passed; 1 failed")));
@@ -896,8 +919,8 @@ if (claim === "--help" && extra.length === 0) {
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    const completed = options.completed ?? (options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"]);
     require(restored.status === 0 && !restored.signal && (instrumented
       ? ["DONE", "1000 runs", "cov:"].every(marker => restored.output.includes(marker))
       : completed.every(marker => restored.output.includes(marker))));

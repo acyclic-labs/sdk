@@ -30,7 +30,7 @@ The ordinary corpus check and fuzzer share this oracle.
 From the repository root, replay the corpus with:
 
 ```sh
-cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-options --test local_hotpath_options
+cargo test --locked -p acyclic-sdk-fuzz --no-default-features --features local-hotpath-options --lib local_hotpath_options::
 ```
 
 From the repository root, run instrumented mutation with an installed nightly:

@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/mod.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/mod.rs
+@@ -639,7 +639,7 @@
+             return;
+         }
+         let mut registry = self.hub.registry();
+-        registry.remove(self.token);
++        // Leave the cancelled native registration armed.
+         #[cfg(unix)]
+         if let Some(source) = self.source
+             && let std::collections::hash_map::Entry::Occupied(entry) =

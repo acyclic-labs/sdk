@@ -600,8 +600,9 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
-        self.authorize(None, context, invocation, None)?;
+        self.authorize(None, context, invocation, work)?;
         let (agent, _) = self.agent(context)?;
         let call = super::records::call(agent, invocation.operation_id)?;
         let provider = Arc::clone(&self.provider);
@@ -657,10 +658,16 @@ impl<P: StreamProvider + ?Sized + 'static> ToolExecutor for DeviceExecutor<P> {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
         };
+        #[cfg(feature = "filesystem")]
+        if work.is_some() {
+            self.authorize(None, Some(context), invocation, work)?;
+        }
+        let _ = work;
         if self.terminal.is_none() {
             return Err(self.refusal(Refused::Offline));
         }

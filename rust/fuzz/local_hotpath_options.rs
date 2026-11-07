@@ -38,7 +38,7 @@ pub(crate) fn check(input: &[u8]) -> bool {
     );
     assert!(!options.populations.is_empty());
     assert!(options.populations.iter().all(|n| POPULATIONS.contains(n)));
-    assert!(options.populations.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(options.populations.is_sorted_by(|left, right| left < right));
     // Exercise the original command producer with the same accepted strings.
     // Executing that command in a native shell remains a separate obligation.
     let _ = options.recovery();

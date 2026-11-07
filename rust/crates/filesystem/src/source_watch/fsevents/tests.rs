@@ -280,7 +280,25 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
         )));
         let mut startup = crate::NativeMaterializationWork::from_meter((&birth).clone());
         let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut startup)?);
-        let watch = NativeSourceWatch::start_driver(&held, delivery, &mut startup)?;
+        let watch = Arc::new(NativeSourceWatch::start_driver(
+            &held,
+            delivery,
+            &mut startup,
+        )?);
+        let observer = Arc::downgrade(&watch);
+        let (published, retired) = std::sync::mpsc::channel();
+        *watch.shared.delivery.after_retirement.lock().unwrap() = Some(Box::new(move || {
+            let observer = observer.upgrade().expect("live original stream owner");
+            published
+                .send(
+                    observer.is_stopped()
+                        && observer
+                            .stream
+                            .try_lock()
+                            .is_some_and(|stream| stream.is_none()),
+                )
+                .unwrap();
+        }));
         let owned = watch.platform_owned_bytes();
         let before = birth.with_original_leaf(|work| work.work);
         let held_budget = birth.with_original_leaf(|work| work.budget);
@@ -324,6 +342,10 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
         } else {
             watch.stop_with_cleanup_wait(&wait)?;
         }
+        assert!(
+            retired.recv()?,
+            "physical publication releases original stream custody"
+        );
         assert!(
             watch.is_stopped(),
             "terminal follows native serial queue drain and context release"

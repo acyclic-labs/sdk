@@ -225,6 +225,87 @@ fn prepared_closed_spawn_denial_retains_original_frame() -> io::Result<()> {
     Ok(())
 }
 
+/// Cut every actual native initialization, spawn and cleanup callback through
+/// the exported prepared-spawn path. A callback cannot strand a later native
+/// object, consume its cleanup twice, or lose the already-created child.
+#[cfg(unix)]
+#[test]
+fn closed_spawn_retires_native_objects_at_every_callback_cut() -> io::Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    for unwinds in [false, true] {
+        for cut in 1..=10 {
+            let calls = Arc::new(AtomicU64::new(0));
+            let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, 0);
+            meter.operation_recorded = Some(Box::new({
+                let calls = Arc::clone(&calls);
+                move || {
+                    if calls.fetch_add(1, Ordering::AcqRel) + 1 == cut {
+                        if unwinds {
+                            std::panic::panic_any("original closed-spawn callback cut");
+                        }
+                        return Err(io::ErrorKind::Interrupted.into());
+                    }
+                    Ok(())
+                }
+            }));
+            let meter = Arc::new(meter);
+            let mut frame = Some(ProcessTree::prepare_closed_process(2, meter.clone())?);
+            meter.deny_allocations.store(true, Ordering::Release);
+            let mut custody = None;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ProcessTree::spawn_closed_prepared(
+                    c"/bin/sh",
+                    &[c"-c", c"exit 7"],
+                    &mut frame,
+                    meter.as_ref(),
+                    &mut custody,
+                )
+            }));
+            // Retire the actual original child before asserting the fault,
+            // including a panic after posix_spawn already published its PID.
+            let owns_child = custody.is_some();
+            if let Some(tree) = &mut custody {
+                tree.terminate(None)?;
+                assert!(tree.is_reaped());
+            }
+            drop(custody);
+            drop(frame);
+            assert_eq!(
+                owns_child,
+                cut >= if unwinds { 9 } else { 8 },
+                "original child custody at cut {cut}"
+            );
+            if unwinds {
+                assert!(
+                    outcome.is_err(),
+                    "original callback did not unwind at {cut}"
+                );
+            } else {
+                let Err(error) =
+                    outcome.map_err(|_| io::Error::other("error callback unexpectedly unwound"))?
+                else {
+                    return Err(io::Error::other("original callback cut was ignored"));
+                };
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            }
+            // The shared reservation records an attempt before invoking the
+            // native call: an error still executes it, an unwind does not.
+            // Cleanup instead destroys each initialized object before its
+            // accounting callback. Count only those original obligations.
+            let initialized = if unwinds { cut - 1 } else { cut }.min(2);
+            let expected = if cut <= 8 { cut + initialized } else { 10 };
+            assert_eq!(
+                meter.write_attempts.load(Ordering::Acquire),
+                expected,
+                "closed spawn stranded original native cleanup at cut {cut}"
+            );
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn measured_kill_with_denied_observation_keeps_owned_child() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
@@ -296,7 +377,10 @@ fn wait_for_owner_stop() -> ! {
 
 /// Await the original diagnostic pipe without consuming its captured payload.
 /// EOF also completes the wait, letting capture report the lost producer.
-fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
+fn stderr_ready(tree: &mut ProcessTree) -> io::Result<()> {
+    #[cfg(windows)]
+    tree.prepare_output_readers()?;
+    #[cfg(unix)]
     let stderr = tree
         .child
         .as_ref()
@@ -308,9 +392,8 @@ fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
         super::events::Source::Readable(stderr.as_fd())
     };
     #[cfg(windows)]
-    let operation = super::events::PipeOperation::reader(stderr)?;
-    #[cfg(windows)]
-    let source = super::events::Source::Pipe(&operation);
+    let source =
+        super::events::Source::Pipe(tree.readers[1].as_ref().ok_or(io::ErrorKind::BrokenPipe)?);
     super::events::arm(&[source], None)?.block().into_result()
 }
 
@@ -1264,7 +1347,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    stderr_ready(&tree).expect("original stalled input readiness event");
+    stderr_ready(&mut tree).expect("original stalled input readiness event");
     // The capture clock is frozen and only reaches the deadline inside the
     // second check, so expiry is ordered after two full capture iterations no
     // matter how late the scheduler runs this thread.
@@ -1317,7 +1400,9 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
         .expect("spawn partial output");
-    stderr_ready(&tree).expect("original partial output readiness event");
+    stderr_ready(&mut tree).expect("original partial output readiness event");
+    #[cfg(windows)]
+    let original_readers = tree.readers.clone();
     let failure = tree
         .wait_with_output(
             Duration::from_millis(20),
@@ -1330,7 +1415,21 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
             None,
         )
         .expect_err("partial process times out");
-    assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+    #[cfg(windows)]
+    assert_eq!(
+        tree.readers
+            .each_ref()
+            .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr)),
+        original_readers
+            .each_ref()
+            .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr)),
+        "capture replaced the original pipe completion owners"
+    );
+    assert_eq!(
+        failure.error.kind(),
+        std::io::ErrorKind::TimedOut,
+        "{failure:?}"
+    );
     assert!(failure.stdout.ends_with(b"stdout-before-stop"));
     assert_eq!(failure.stderr, b"stderr-before-stop");
     assert!(failure.cleanup_completed);

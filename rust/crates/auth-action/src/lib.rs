@@ -15,33 +15,8 @@ impl core::fmt::Display for UnknownAction {
 
 impl core::error::Error for UnknownAction {}
 
-/// What a product's actions bill, and so what an allowance's product list
-/// restricts. Allowance product lists name billing products, which are not
-/// always spelled like capability products (`machines` bills `vmm`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Metering {
-    /// The actions bill nothing; a product list never restricts them.
-    Unmetered,
-    /// The actions bill this billing product.
-    Billed(&'static str),
-    /// The actions bill the product their execution grant's signed
-    /// `usage_owner` names in its first component (`actors/<id>`).
-    UsageOwner,
-}
-
 macro_rules! catalog {
-    ($($product:ident $kind:ident $prefix:literal $metering:expr, { $($variant:ident => $name:literal),* $(,)? })*) => {
-        /// Billing of each declared capability product, by its prefix. A
-        /// product's undeclared actions bill as its declared ones; an
-        /// undeclared product has no metering.
-        #[must_use]
-        pub fn metering(product: &str) -> Option<Metering> {
-            match product {
-                $($prefix => Some($metering),)*
-                _ => None,
-            }
-        }
-
+    ($($product:ident $kind:ident $prefix:literal { $($variant:ident => $name:literal),* $(,)? })*) => {
         $(
             #[doc = concat!("Declared `", $prefix, "` capabilities.")]
             #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -97,7 +72,8 @@ macro_rules! catalog {
             #[must_use]
             pub const fn product(self) -> &'static str {
                 match self { $(Self::$product(_) => $prefix),* }
-            }        }
+            }
+        }
 
         impl core::str::FromStr for Action {
             type Err = UnknownAction;
@@ -112,45 +88,45 @@ macro_rules! catalog {
 }
 
 catalog! {
-    Actors ActorsAction "actors" Metering::Billed("actors"), {
+    Actors ActorsAction "actors" {
         Checkpoint => "checkpoint", Connect => "connect", DeployNamespace => "deploy-namespace",
         DeleteAll => "delete-all", Fork => "fork", Invoke => "invoke", Read => "read",
         Resume => "resume", Subscribe => "subscribe", Unsubscribe => "unsubscribe",
         UpdateNamespace => "update-namespace",
     }
-    Billing BillingAction "billing" Metering::Unmetered, {
+    Billing BillingAction "billing" {
         Audit => "audit", Cost => "cost", Inventory => "inventory", Receipt => "receipt", Usage => "usage",
     }
-    Execution ExecutionAction "execution" Metering::UsageOwner, {
+    Execution ExecutionAction "execution" {
         JobExecute => "job-execute", WorkerExecute => "worker-execute",
     }
-    Fs FsAction "fs" Metering::Billed("fs"), {
+    Fs FsAction "fs" {
         List => "list", Read => "read", Create => "create", Write => "write", Append => "append",
         Delete => "delete", Rename => "rename", Fork => "fork", MergeInto => "merge-into",
         ReadHistory => "read-history", Lock => "lock", Admin => "admin",
     }
-    Infer InferAction "infer" Metering::Billed("inference"), {
+    Infer InferAction "infer" {
         CancelRun => "cancel-run", CreateContext => "create-context", CreateEvaluation => "create-evaluation",
         FollowRun => "follow-run", Generate => "generate", ListModels => "list-models",
         ReadContext => "read-context", ReadEvaluation => "read-evaluation", ReadRetention => "read-retention",
         ReadRun => "read-run", ReleaseRetention => "release-retention", RenewRetention => "renew-retention",
         RetainContext => "retain-context", WriteContext => "write-context",
     }
-    Machines MachinesAction "machines" Metering::Billed("vmm"), {
+    Machines MachinesAction "machines" {
         Cancel => "cancel", Checkpoint => "checkpoint", Create => "create", Delete => "delete",
         DeleteCheckpoint => "delete-checkpoint", Exec => "exec", Follow => "follow", List => "list",
         Qualify => "qualify", Read => "read", ReadCheckpoint => "read-checkpoint", ReadFile => "read-file",
         ReadOutput => "read-output", ReadUsage => "read-usage", Recover => "recover", Update => "update",
         WriteFile => "write-file",
     }
-    Objects ObjectsAction "objects" Metering::Billed("objects"), {
+    Objects ObjectsAction "objects" {
         Collect => "collect", Delete => "delete", Get => "get", Head => "head", List => "list", Put => "put", Retain => "retain",
     }
-    Secrets SecretsAction "secrets" Metering::Unmetered, { Delete => "delete", List => "list", Put => "put" }
-    Streams StreamsAction "streams" Metering::Billed("streams"), {
+    Secrets SecretsAction "secrets" { Delete => "delete", List => "list", Put => "put" }
+    Streams StreamsAction "streams" {
         Append => "append", Commit => "commit", Create => "create", Follow => "follow", Fork => "fork", List => "list", Read => "read",
     }
-    Workers WorkersAction "workers" Metering::Billed("workers"), { Deploy => "deploy", Delete => "delete", Invoke => "invoke" }
+    Workers WorkersAction "workers" { Deploy => "deploy", Delete => "delete", Invoke => "invoke" }
 }
 
 impl core::fmt::Display for Action {

@@ -9,11 +9,11 @@ use std::{
 use tokio::{io::AsyncWriteExt as _, sync::Semaphore};
 
 fn flags(file: &impl AsRawFd) -> io::Result<i32> {
-    // SAFETY: F_GETFL reads flags on the still-borrowed descriptor.
     #[expect(
         unsafe_code,
         reason = "checks that the original shared flags are unchanged"
     )]
+    // SAFETY: F_GETFL reads flags on the still-borrowed descriptor.
     let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
     if flags < 0 {
         Err(io::Error::last_os_error())
@@ -163,9 +163,9 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
         // a PTY master (which would create another endpoint).
         let mut master = -1;
         let mut slave = -1;
+        #[expect(unsafe_code, reason = "opens the original real terminal pair")]
         // SAFETY: openpty initializes two independent owned descriptors on
         // success; null optional pointers request the native terminal defaults.
-        #[expect(unsafe_code, reason = "opens the original real terminal pair")]
         let opened = unsafe {
             libc::openpty(
                 &mut master,
@@ -178,8 +178,8 @@ fn full_output_preserves_credit_flags_and_independent_progress() -> io::Result<(
         if opened < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: each successful descriptor is transferred exactly once.
         #[expect(unsafe_code, reason = "owns both original terminal endpoints")]
+        // SAFETY: each successful descriptor is transferred exactly once.
         let (terminal, mut peer) = unsafe { (File::from_raw_fd(master), File::from_raw_fd(slave)) };
         let original_flags = flags(&terminal)?;
         let output = InheritedOutput::from_file(terminal.try_clone()?)?;
@@ -221,7 +221,11 @@ impl AsRef<[u8]> for OwnedCredit {
     fn as_ref(&self) -> &[u8] {
         assert_eq!(self.bytes.as_ptr() as usize, self.pointer);
         if std::thread::current().id() != self.caller
-            && let Some(entered) = self.entered.lock().unwrap().take()
+            && let Some(entered) = self
+                .entered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
         {
             let _ = entered.send(());
         }
@@ -272,10 +276,19 @@ async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::
             // execute a synchronous inherited write on this coordinator.
             let _inline = crate::InlineBlocking::enter();
             poll_fn(|cx| {
-                assert!(delivery.as_mut().unwrap().as_mut().poll(cx).is_pending());
-                Poll::Ready(())
+                assert!(
+                    delivery
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other(
+                            "original output observer lost before first poll"
+                        ))?
+                        .as_mut()
+                        .poll(cx)
+                        .is_pending()
+                );
+                Poll::Ready(Ok::<(), io::Error>(()))
             })
-            .await;
+            .await?;
         }
         started.await.map_err(io::Error::other)?;
         assert_eq!(credit.available_permits(), 0);
@@ -290,10 +303,9 @@ async fn synchronous_output_retains_owned_credit_through_observer_loss() -> io::
         if close {
             drop(reader);
             if let Some(delivery) = delivery.take() {
-                let error = match delivery.await {
-                    Ok(_) => panic!("a withdrawn reader cannot accept a full-socket write"),
-                    Err(error) => error,
-                };
+                let error = delivery.await.err().ok_or_else(|| {
+                    io::Error::other("a withdrawn reader accepted a full-socket write")
+                })?;
                 assert!(matches!(
                     error.kind(),
                     io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
@@ -345,12 +357,12 @@ fn fill_socket(file: &File) -> io::Result<usize> {
     loop {
         // MSG_DONTWAIT exhausts actual kernel credit without changing the
         // inherited socket's shared flags or relying on a guessed capacity.
-        // SAFETY: send borrows a live descriptor and initialized stack slice;
-        // this synchronous call retains no user buffer after returning.
         #[expect(
             unsafe_code,
             reason = "fills a real socket without changing shared flags"
         )]
+        // SAFETY: send borrows a live descriptor and initialized stack slice;
+        // this synchronous call retains no user buffer after returning.
         let written = unsafe {
             libc::send(
                 file.as_raw_fd(),

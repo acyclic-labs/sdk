@@ -326,72 +326,44 @@ fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
     if matches!(r.target, Target::Context) {
         return true;
     }
-    set.grants.iter().any(|g| grant_allows(g, r, record_facts))
+    set.grants.iter().any(|g| {
+        let Target::Resource { action, resource } = r.target else {
+            return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
+        };
+        let grant = match &g.kind {
+            GrantKind::Resource(g) => g,
+            GrantKind::Execution(g)
+                if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
+                    && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
+                    && g.max_concurrency
+                        .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
+            {
+                &g.grant
+            }
+            GrantKind::Billing(g)
+                if g.spend_micros
+                    .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n) =>
+            {
+                &g.grant
+            }
+            GrantKind::Filesystem(g) => &g.grant,
+            _ => return false,
+        };
+        grant.actions.iter().any(|a| a == action)
+            && (resource_matches(&grant.resource, resource)
+                || !record_facts && matches!(action, "streams/list" | "fs/list")
+                    && resource_matches(&ResourcePattern { name: resource.into(), prefix: true }, &grant.resource.name))
+    })
 }
-
-fn grant_allows(g: &Grant, r: &Request<'_>, record_facts: bool) -> bool {
-    let Target::Resource { action, resource } = r.target else {
-        return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
-    };
-    let grant = match &g.kind {
-        GrantKind::Resource(g) => g,
-        GrantKind::Execution(g)
-            if g.cpu_millis.is_none_or(|n| r.cpu_millis <= n)
-                && g.memory_bytes.is_none_or(|n| r.memory_bytes <= n)
-                && g.max_concurrency
-                    .is_none_or(|n| r.usage.concurrency.unwrap_or(0) <= n) =>
-        {
-            &g.grant
-        }
-        GrantKind::Billing(g)
-            if g.spend_micros
-                .is_none_or(|n| r.usage.spend_micros.unwrap_or(0) <= n) =>
-        {
-            &g.grant
-        }
-        GrantKind::Filesystem(g) => &g.grant,
-        _ => return false,
-    };
-    grant.actions.iter().any(|a| a == action)
-        && (resource_matches(&grant.resource, resource)
-            || !record_facts
-                && matches!(action, "streams/list" | "fs/list")
-                && resource_matches(
-                    &ResourcePattern {
-                        name: resource.into(),
-                        prefix: true,
-                    },
-                    &grant.resource.name,
-                ))
-}
-// An allowance limits spend on the billing products it covers and admits no
-// other billed work. The action catalog says what each action bills: unmetered
-// actions (billing, secrets) are never restricted by a product list, and an
-// execution bills the product its leaf grant's signed usage owner names.
-fn allowance_covers(allowance: &Allowance, target: Target<'_>, grant: &Grant) -> bool {
-    use crate::action::Metering;
-    let covers = |product: &str| allowance.products.iter().any(|p| p == product);
+// An allowance limits spend on the products it covers and admits no other.
+fn allowance_covers(allowance: &Allowance, target: Target<'_>) -> bool {
     allowance.products.is_empty()
         || match target {
-            Target::Resource { action, .. } => {
-                match action
-                    .split_once('/')
-                    .and_then(|(product, _)| crate::action::metering(product))
-                {
-                    Some(Metering::Unmetered) => true,
-                    Some(Metering::Billed(product)) => covers(product),
-                    Some(Metering::UsageOwner) => {
-                        matches!(&grant.kind, GrantKind::Execution(g)
-                            if g.usage_owner
-                                    .as_deref()
-                                    .and_then(|owner| owner.split_once('/'))
-                                    .is_some_and(|(product, _)| covers(product)))
-                    }
-                    None => false,
-                }
-            }
+            Target::Resource { action, .. } => action
+                .split_once('/')
+                .is_some_and(|(product, _)| allowance.products.iter().any(|p| p == product)),
             Target::Context => true,
-            Target::Websocket(_) => false,
+            _ => false,
         }
 }
 
@@ -560,24 +532,7 @@ fn permits_canonical<const CURRENT: bool>(
         (CURRENT
             || r.now_unix_seconds >= key.validity.not_before_unix_seconds
                 && r.now_unix_seconds < key.validity.expires_at_unix_seconds)
-            && if std::ptr::eq(cert, leaf) && !matches!(r.target, Target::Context) {
-                // One usable leaf grant must cover every allowance; separate
-                // searches can combine unrelated limits and billing owners.
-                key.grants.grants.iter().any(|grant| {
-                    grant_allows(grant, r, record_facts)
-                        && blocks
-                            .iter()
-                            .flat_map(|block| &block.caveats)
-                            .all(|c| match &c.kind {
-                                CaveatKind::Allowance(signed) => {
-                                    allowance_covers(&signed.allowance, r.target, grant)
-                                }
-                                _ => true,
-                            })
-                })
-            } else {
-                grants_allow(&key.grants, r, record_facts)
-            }
+            && grants_allow(&key.grants, r, record_facts)
     }) {
         return false;
     }
@@ -610,6 +565,7 @@ fn permits_canonical<const CURRENT: bool>(
             CaveatKind::Allowance(signed) => {
                 (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
                     && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
+                    && allowance_covers(&signed.allowance, r.target)
             }
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })

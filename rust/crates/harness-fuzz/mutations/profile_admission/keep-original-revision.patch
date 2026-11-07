@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-providers/src/resolved.rs b/rust/crates/harness-providers/src/resolved.rs
+--- a/rust/crates/harness-providers/src/resolved.rs
++++ b/rust/crates/harness-providers/src/resolved.rs
+@@ -218,7 +218,7 @@ impl ModelProvider for ResolvedModel {
+         let model = Model {
+             provider: self.model.provider.clone(),
+             name: self.model.name.clone(),
+-            revision: self.profile_revision(&binding),
++            revision: self.model.revision.clone(),
+         };
+         let admitted = self.derived(model, Some(binding), self.files.clone());
+         Ok((admitted.model.clone(), Arc::new(admitted)))

@@ -32,10 +32,10 @@ pub use render::{
     Header, RenderError, Segment, Tail, gemini_summary, json_error, render, render_summary, seg,
     summary_artifact,
 };
-pub use tools::{ToolDeclaration, ToolDeclarations};
+pub use tools::{SummaryHeader, ToolDeclaration, ToolDeclarations};
 
 /// Changing rendered bytes requires a new renderer version and corpus review.
-pub const RENDERER_VERSION: u32 = 4;
+pub const RENDERER_VERSION: u32 = 5;
 
 #[cfg(test)]
 mod notice_tests;

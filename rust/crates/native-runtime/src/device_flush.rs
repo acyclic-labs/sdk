@@ -29,7 +29,7 @@ use std::sync::{Condvar, Mutex};
 
 #[derive(Default)]
 struct Progress {
-    /// Drains started so far; the running one, if any, is the last.
+    /// Drains started so far, saturating at exhaustion; the running one is last.
     started: u64,
     /// The latest drain that finished successfully.
     completed: u64,
@@ -77,11 +77,30 @@ impl Drop for Draining<'_> {
             progress.completed = self.number;
         }
         drop(progress);
-        self.coalescer.drained.notify_all();
+        self.coalescer.drained.notify_one();
     }
 }
 
 impl Coalescer {
+    #[cfg(all(not(loom), any(target_vendor = "apple", test)))]
+    fn ordered_cut(&self) -> Option<u64> {
+        self.progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .started
+            .checked_add(1)
+            .filter(|cut| *cut < u64::MAX)
+    }
+
+    #[cfg(all(not(loom), any(target_vendor = "apple", test)))]
+    fn covers(&self, cut: u64) -> bool {
+        self.progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .completed
+            >= cut
+    }
+
     /// Returns once a drain that started after this call began has finished.
     /// The caller has already staged its writes, so that drain covered them.
     /// This caller runs `drain` itself only when no drain is running and none
@@ -91,15 +110,22 @@ impl Coalescer {
     pub(crate) fn flush(&self, drain: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
         let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
         // The running drain may have started before this caller staged.
-        let target = progress.started + 1;
+        // An exhausted counter cannot identify a later covering drain.
+        // Such requests keep their own drain obligation under the same lock.
+        let target = progress.started.checked_add(1);
         #[cfg(all(test, not(loom)))]
         self.arrivals.arrive();
         loop {
-            if progress.completed >= target {
+            if target.is_some_and(|target| progress.completed >= target) {
+                // Pass the original completion to another covered waiter,
+                // or to the next request that must drain. One caller wakes
+                // at most one successor, including after counter exhaustion.
+                drop(progress);
+                self.drained.notify_one();
                 return Ok(());
             }
             if !progress.draining {
-                progress.started += 1;
+                progress.started = progress.started.saturating_add(1);
                 progress.draining = true;
                 let mut draining = Draining {
                     coalescer: self,
@@ -167,6 +193,22 @@ pub(crate) fn full(
 pub(crate) struct HeldDevice {
     #[cfg(not(loom))]
     device: std::sync::OnceLock<Option<std::sync::Arc<apple::Device>>>,
+}
+
+#[cfg(all(target_vendor = "apple", not(loom)))]
+impl HeldDevice {
+    /// No classification on a barrier: unresolved descriptors keep their own
+    /// closing flush. The ticket is sampled only after native staging succeeds.
+    pub(crate) fn ordered_cut(&self) -> Option<u64> {
+        self.device.get()?.as_ref()?.ordered_cut()
+    }
+
+    pub(crate) fn covers(&self, cut: u64) -> bool {
+        self.device
+            .get()
+            .and_then(Option::as_ref)
+            .is_some_and(|device| device.covers(cut))
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -370,6 +412,24 @@ mod apple {
     }
 
     impl Device {
+        pub(super) fn ordered_cut(&self) -> Option<u64> {
+            match &self.shared {
+                Some(shared) => shared
+                    .started
+                    .load(Ordering::SeqCst)
+                    .checked_add(1)
+                    .filter(|cut| *cut < u64::MAX),
+                None => self.coalescer.ordered_cut(),
+            }
+        }
+
+        pub(super) fn covers(&self, cut: u64) -> bool {
+            match &self.shared {
+                Some(shared) => shared.completed.load(Ordering::SeqCst) >= cut,
+                None => self.coalescer.covers(cut),
+            }
+        }
+
         /// Runs `drain` unless a drain by any process, started after this
         /// call began, has finished once this caller holds the drain lock.
         pub(super) fn across_processes(
@@ -386,19 +446,24 @@ mod apple {
     impl Shared {
         /// Every drain numbered above the count read here stores its number
         /// before it starts, so it starts after this read.
-        fn ticket(&self) -> u64 {
-            self.started.load(Ordering::SeqCst) + 1
+        fn ticket(&self) -> Option<u64> {
+            self.started.load(Ordering::SeqCst).checked_add(1)
         }
 
-        fn settle(&self, ticket: u64, drain: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        fn settle(
+            &self,
+            ticket: Option<u64>,
+            drain: impl FnOnce() -> io::Result<()>,
+        ) -> io::Result<()> {
             // Waits in the kernel while another process drains.
             self.lock.with_lock(FileLockMode::Exclusive, || {
-                if self.completed.load(Ordering::SeqCst) >= ticket {
+                if ticket.is_some_and(|ticket| self.completed.load(Ordering::SeqCst) >= ticket) {
                     return Ok(());
                 }
                 // A process that died mid-drain left `started` ahead of
-                // `completed`; numbers only grow.
-                let number = self.started.load(Ordering::SeqCst) + 1;
+                // `completed`; numbers never wrap. At exhaustion no new
+                // ticket can coalesce, so every request retains its own drain.
+                let number = self.started.load(Ordering::SeqCst).saturating_add(1);
                 self.started.store(number, Ordering::SeqCst);
                 drain()?;
                 self.completed.store(number, Ordering::SeqCst);
@@ -547,7 +612,7 @@ mod apple {
                     1,
                     "a drain started after the ticket covers it"
                 );
-                let mut late = 0;
+                let mut late = None;
                 first.settle(first.ticket(), || {
                     late = second.ticket();
                     drain()
@@ -555,6 +620,28 @@ mod apple {
                 second.settle(late, drain)?;
                 assert_eq!(drains.get(), 3, "a drain running at the ticket does not");
                 assert_eq!(second.completed.load(Ordering::SeqCst), 3);
+                // Both actual mappings keep working past the last ticket.
+                first.lock.with_lock(FileLockMode::Exclusive, || {
+                    first.started.store(u64::MAX - 1, Ordering::SeqCst);
+                    first.completed.store(u64::MAX - 1, Ordering::SeqCst);
+                    Ok(())
+                })?;
+                let last = second.ticket();
+                first.settle(first.ticket(), drain)?;
+                second.settle(last, drain)?;
+                assert_eq!(
+                    drains.get(),
+                    4,
+                    "the last representable ticket still coalesces"
+                );
+                for expected in [5, 6] {
+                    second.settle(second.ticket(), drain)?;
+                    assert_eq!(
+                        drains.get(),
+                        expected,
+                        "exhausted shared counters reused a stale completion"
+                    );
+                }
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o620))?;
                 assert_eq!(
                     shared(id).err().map(|error| error.kind()),
@@ -632,14 +719,23 @@ mod tests {
 
     impl Arrivals {
         pub(super) fn arrive(&self) {
-            *self.count.lock().unwrap() += 1;
+            *self
+                .count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             self.changed.notify_all();
         }
 
         fn wait_for(&self, count: usize) {
-            let mut arrived = self.count.lock().unwrap();
+            let mut arrived = self
+                .count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             while *arrived < count {
-                arrived = self.changed.wait(arrived).unwrap();
+                arrived = self
+                    .changed
+                    .wait(arrived)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
     }
@@ -661,45 +757,87 @@ mod tests {
                 .open(&path)
         };
         let lock = FileLock::new(open()?);
-        let coalescer = Coalescer::default();
-        for unwind in [false, true] {
-            let completed = coalescer.progress.lock().unwrap().completed;
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                coalescer.flush(|| {
-                    lock.with_lock(FileLockMode::Exclusive, || {
-                        assert_eq!(
-                            FileLock::try_acquire(open()?, FileLockMode::Exclusive)
-                                .unwrap_err()
-                                .kind(),
-                            io::ErrorKind::WouldBlock
-                        );
-                        if unwind {
-                            panic!("drain producer unwound");
-                        }
-                        std::fs::File::open(directory.path().join("missing")).map(drop)
-                    })
-                })
-            }));
-            if unwind {
-                assert_eq!(
-                    result.unwrap_err().downcast_ref::<&str>(),
-                    Some(&"drain producer unwound")
-                );
-            } else {
-                assert_eq!(result.unwrap().unwrap_err().kind(), io::ErrorKind::NotFound);
+        // Seed the production state at both ordinary and terminal generations;
+        // failure, unwind and successful handoff follow the same original path.
+        for started in [0, u64::MAX - 1] {
+            let coalescer = Coalescer::default();
+            {
+                let mut progress = coalescer.progress.lock().unwrap();
+                progress.started = started;
+                progress.completed = started;
             }
-            // Check before another acquisition: restoring either missing
-            // release fails here without waiting on the abandoned producer.
-            assert!(!coalescer.progress.lock().unwrap().draining);
-            assert!(!lock.is_held());
-            assert_eq!(coalescer.progress.lock().unwrap().completed, completed);
-            drop(FileLock::try_acquire(open()?, FileLockMode::Exclusive)?);
-            let mut attempts = 0;
-            coalescer.flush(|| {
-                attempts += 1;
-                lock.with_lock(FileLockMode::Exclusive, || Ok(()))
-            })?;
-            assert_eq!(attempts, 1, "failed drain cannot cover the next request");
+            for unwind in [false, true] {
+                let ordered = coalescer.ordered_cut();
+                assert_eq!(ordered.is_some(), started == 0);
+                let completed = coalescer.progress.lock().unwrap().completed;
+                let mut attempted = false;
+                let result = catch_unwind(AssertUnwindSafe(|| {
+                    coalescer.flush(|| {
+                        attempted = true;
+                        lock.with_lock(FileLockMode::Exclusive, || {
+                            assert_eq!(
+                                FileLock::try_acquire(open()?, FileLockMode::Exclusive)
+                                    .unwrap_err()
+                                    .kind(),
+                                io::ErrorKind::WouldBlock
+                            );
+                            if unwind {
+                                panic!("drain producer unwound");
+                            }
+                            std::fs::File::open(directory.path().join("missing")).map(drop)
+                        })
+                    })
+                }));
+                assert!(
+                    attempted,
+                    "exhausted drain counters reused a stale completion"
+                );
+                if unwind {
+                    assert_eq!(
+                        result.unwrap_err().downcast_ref::<&str>(),
+                        Some(&"drain producer unwound")
+                    );
+                } else {
+                    assert_eq!(result.unwrap().unwrap_err().kind(), io::ErrorKind::NotFound);
+                }
+                // Check before another acquisition: restoring either missing
+                // release fails here without waiting on the abandoned producer.
+                assert!(
+                    !coalescer.progress.lock().unwrap().draining,
+                    "original drain ended without releasing its in-flight state"
+                );
+                assert!(!lock.is_held());
+                assert_eq!(
+                    coalescer.progress.lock().unwrap().completed,
+                    completed,
+                    "unsuccessful original drain acknowledged durability"
+                );
+                assert!(
+                    ordered.is_none_or(|ordered| !coalescer.covers(ordered)),
+                    "failed original drain covered an ordered cut"
+                );
+                drop(FileLock::try_acquire(open()?, FileLockMode::Exclusive)?);
+                let mut attempts = 0;
+                let mut during = None;
+                catch_unwind(AssertUnwindSafe(|| {
+                    coalescer.flush(|| {
+                        attempts += 1;
+                        during = coalescer.ordered_cut();
+                        lock.with_lock(FileLockMode::Exclusive, || Ok(()))
+                    })
+                }))
+                .expect("exhausted drain counters must keep successful requests executing")?;
+                assert_eq!(attempts, 1, "failed drain cannot cover the next request");
+                assert_eq!(during.is_some(), started == 0);
+                assert!(
+                    ordered.is_none_or(|ordered| coalescer.covers(ordered)),
+                    "successful later drain lost coverage"
+                );
+                assert!(
+                    during.is_none_or(|during| !coalescer.covers(during)),
+                    "running drain covered a later ordered cut"
+                );
+            }
         }
 
         // An actual concurrent request has entered the original coalescer
@@ -734,9 +872,9 @@ mod tests {
 
     #[test]
     fn concurrent_requests_share_the_next_covering_drain() {
-        // One running drain and two waiters distinguish premature coverage,
-        // one covering drain shared by both waiters, and a drain per waiter.
-        const REQUESTS: usize = 3;
+        // One running drain leaves one successor to drain and two covered
+        // waiters: the first covered return must wake the last one.
+        const REQUESTS: usize = 4;
         let shared = Arc::new(Coalescer::default());
         let drains = Arc::new(AtomicUsize::new(0));
         let threads: Vec<_> = (0..REQUESTS)
@@ -778,19 +916,20 @@ mod model {
         let mut builder = loom::model::Builder::new();
         builder.preemption_bound = Some(3);
         builder.check(move || {
-            let coalescer = Arc::new(Coalescer::default());
-            let staged = Arc::new(AtomicUsize::new(0));
-            let durable = Arc::new(AtomicUsize::new(0));
-            let uncovered = Arc::new(AtomicUsize::new(0));
-            let violations = Arc::clone(&uncovered);
+            let coalescer = Coalescer::default();
+            // Two remaining generations let the same four requests share
+            // the last covering drain or arrive after counter exhaustion.
+            {
+                let mut progress = coalescer.progress.lock().unwrap();
+                progress.started = u64::MAX - 2;
+                progress.completed = u64::MAX - 2;
+            }
+            // All callers retain one fixture until their original joins.
+            let shared = Arc::new((coalescer, AtomicUsize::new(0), AtomicUsize::new(0)));
             let request = move |id: usize| {
-                let (coalescer, staged, durable, uncovered) = (
-                    Arc::clone(&coalescer),
-                    Arc::clone(&staged),
-                    Arc::clone(&durable),
-                    Arc::clone(&uncovered),
-                );
+                let shared = Arc::clone(&shared);
                 move || {
+                    let (coalescer, staged, durable) = &*shared;
                     staged.fetch_or(1 << id, Ordering::SeqCst);
                     let result = coalescer.flush(|| {
                         let covered = staged.load(Ordering::SeqCst);
@@ -800,19 +939,21 @@ mod model {
                         durable.fetch_or(covered, Ordering::SeqCst);
                         Ok(())
                     });
-                    if result.is_ok() && durable.load(Ordering::SeqCst) & (1 << id) == 0 {
-                        uncovered.fetch_add(1, Ordering::SeqCst);
-                    }
+                    result.is_err() || durable.load(Ordering::SeqCst) & (1 << id) != 0
                 }
             };
             let first = loom::thread::spawn(request(0));
             let second = loom::thread::spawn(request(1));
-            request(2)();
-            first.join().unwrap();
-            second.join().unwrap();
-            assert_eq!(
-                violations.load(Ordering::SeqCst),
-                0,
+            let third = loom::thread::spawn(request(2));
+            let fourth = request(3)();
+            let outcomes = [
+                first.join().unwrap(),
+                second.join().unwrap(),
+                third.join().unwrap(),
+                fourth,
+            ];
+            assert!(
+                outcomes.into_iter().all(std::convert::identity),
                 "acknowledged before a covering drain"
             );
         });

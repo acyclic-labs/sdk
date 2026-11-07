@@ -1,0 +1,12 @@
+*** Begin Patch
+*** Add File: public/first
++first
+*** Add File: private/added
++new
+*** Update File: private/edited
+-old
++new
+*** Delete File: private/deleted
+*** Update File: public/source
+*** Move to: private/destination
+*** End Patch

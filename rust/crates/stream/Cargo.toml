@@ -21,9 +21,6 @@ consumer-features = [
     { features = ["wasm", "wasm-journal"], target = "wasm32-unknown-unknown" },
 ]
 
-[lib]
-crate-type = ["cdylib", "rlib"]
-
 [[example]]
 name = "wave1-conformance"
 required-features = ["http"]

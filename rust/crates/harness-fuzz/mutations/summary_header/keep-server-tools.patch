@@ -1,0 +1,12 @@
+diff --git a/rust/crates/model-render/src/render.rs b/rust/crates/model-render/src/render.rs
+--- a/rust/crates/model-render/src/render.rs
++++ b/rust/crates/model-render/src/render.rs
+@@ -450,7 +450,7 @@ fn render_request<S: Segment>(
+ ) -> Result<(), RenderError> {
+     let mut writer = crate::sink::Sink(writer);
+     let prefix = if summary.is_some() {
+-        header.summary_prefix.as_deref().unwrap_or(header.bytes())
++        header.bytes()
+     } else {
+         header.bytes()
+     };

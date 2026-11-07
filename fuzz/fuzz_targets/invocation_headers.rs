@@ -28,11 +28,36 @@ macro_rules! check {
                 ),
                 expected
             );
+            true
+        } else {
+            false
         }
     };
 }
 
 fuzz_target!(|input: &[u8]| {
+    // Original public-constructor/prost captures; the first eight bytes select
+    // the shared protobuf corpus type and are not part of the request packet.
+    assert!(
+        check!(
+            &include_bytes!(
+                "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeActorRequest-semantic"
+            )[8..],
+            InvokeActorRequest,
+            InvokeActorHeader
+        ),
+        "captured actor invocation was refused"
+    );
+    assert!(
+        check!(
+            &include_bytes!(
+                "../../rust/codec-fuzz/corpus/protobuf/acyclic.actors.v1.InvokeWorkerRequest-semantic"
+            )[8..],
+            InvokeWorkerRequest,
+            InvokeWorkerHeader
+        ),
+        "captured worker invocation was refused"
+    );
     check!(input, InvokeActorRequest, InvokeActorHeader);
     check!(input, InvokeWorkerRequest, InvokeWorkerHeader);
 });

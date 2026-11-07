@@ -3,7 +3,11 @@ struct NativeWatch {
     _ownership: SourcePayloadOwnership,
 }
 
-#[cfg(all(test, target_os = "macos", feature = "native-mount"))]
+#[cfg(all(
+    test,
+    any(target_os = "linux", target_os = "macos"),
+    feature = "native-mount"
+))]
 pub(crate) fn native_watch_fixture(
     watch: Arc<crate::source_watch::NativeSourceWatch>,
     original: &mut crate::NativeMaterializationWork,
@@ -76,6 +80,19 @@ struct NativeChanges {
     excluded: Arc<ExcludedPaths>,
 }
 impl NativeDemandSource {
+    /// Observes the actual watch created by the production subscription path.
+    #[cfg(all(test, target_os = "linux", feature = "native-mount"))]
+    pub(crate) fn physical_watch_for_test(
+        &self,
+    ) -> Option<Arc<crate::source_watch::NativeSourceWatch>> {
+        self.inner
+            .watches
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .first()
+            .and_then(std::sync::Weak::upgrade)
+    }
+
     fn subscribe(
         &self,
         sink: Arc<dyn SourceChangeSink>,

@@ -88,9 +88,10 @@ pub(super) fn start_native_mount_prepared_with_meter(
     // The existing driver loop accepts its lifetime before this stack factory
     // acquires a physical fence. The factory never escapes or allocates a frame.
     let mut retirement = Some(NativeMountRetirement {
-        retained_source: Some(Arc::clone(&source)),
+        retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+            Arc::clone(&source),
+        )),
         destination_guard: None,
-        startup_source_watch: None,
         terminal_source_failure: None,
         #[cfg(windows)]
         warm_namespace: None,
@@ -131,18 +132,14 @@ pub(super) fn start_native_mount_prepared_with_meter(
     );
     // A prebirth rejection leaves its packet here. An accepted loop owns it
     // even on failure; the retained driver signals that same owner to retire.
-    let (destination_guard, retained_source, startup_source_watch) = match retirement {
-        Some(packet) => (
-            packet.destination_guard,
-            packet.retained_source,
-            packet.startup_source_watch,
-        ),
-        None => (None, None, None),
+    let (destination_guard, retained_source) = match retirement {
+        Some(packet) => (packet.destination_guard, packet.retained_source),
+        None => (None, None),
     };
-    let mut owner = NativeMountSession::new(request, retained_source, destination_custody);
+    let mut owner = NativeMountSession::new(request, None, destination_custody);
+    owner.retained_source = retained_source;
     owner.driver = driver;
     owner.destination_guard = destination_guard;
-    owner.startup_source_watch = startup_source_watch;
     match result {
         Ok(()) => {
             drop(storage);

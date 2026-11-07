@@ -1,0 +1,229 @@
+diff --git b/rust/crates/native-runtime/src/process_tree/cleanup.rs a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+index cb4e0a53367..befb8379533 100644
+--- b/rust/crates/native-runtime/src/process_tree/cleanup.rs
++++ a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+@@ -18,16 +18,7 @@ impl<'a> Cleanup<'a> {
+         })
+     }
+ 
+-    /// Adoption fixes drop order once for every resource: the native owner is
+-    /// released before its original accounting callback can run or unwind.
+-    pub(in crate::process_tree) fn adopt<T>(self, resource: T) -> Resource<'a, T> {
+-        Resource {
+-            resource,
+-            _released: Released(self),
+-        }
+-    }
+-
+-    fn record(&mut self) -> io::Result<()> {
++    pub(in crate::process_tree) fn record(&mut self) -> io::Result<()> {
+         self.token.take().map_or(Ok(()), |token| {
+             self.meter
+                 .ok_or(io::ErrorKind::InvalidInput)?
+@@ -43,26 +34,3 @@ impl Drop for Cleanup<'_> {
+         }
+     }
+ }
+-
+-/// Fields are dropped in declaration order, including during unwinding.
+-/// No custom destructor may publish completion ahead of the native owner.
+-pub(in crate::process_tree) struct Resource<'a, T> {
+-    resource: T,
+-    _released: Released<'a>,
+-}
+-
+-impl<T> std::ops::Deref for Resource<'_, T> {
+-    type Target = T;
+-
+-    fn deref(&self) -> &T {
+-        &self.resource
+-    }
+-}
+-
+-struct Released<'a>(Cleanup<'a>);
+-
+-impl Drop for Released<'_> {
+-    fn drop(&mut self) {
+-        let _ = self.0.record();
+-    }
+-}
+diff --git b/rust/crates/native-runtime/src/process_tree/exit_wait.rs a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
+index 60342ea003e..c9da5bc9975 100644
+--- b/rust/crates/native-runtime/src/process_tree/exit_wait.rs
++++ a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
+@@ -1,5 +1,5 @@
+ //! Direct-child exit notification leaves the leader unreaped for tree cleanup.
+-use super::cleanup::{Cleanup, Resource};
++use super::cleanup::Cleanup;
+ use super::*;
+ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+ 
+@@ -97,8 +97,9 @@ pub(super) fn wait_metered(
+ }
+ 
+ pub(super) struct ExitWatch<'a> {
+-    fd: Resource<'a, OwnedFd>,
++    fd: OwnedFd,
+     meter: Option<&'a dyn crate::NativeReadMeter>,
++    cleanup: Cleanup<'a>,
+ }
+ 
+ impl AsRawFd for ExitWatch<'_> {
+@@ -107,6 +108,12 @@ impl AsRawFd for ExitWatch<'_> {
+     }
+ }
+ 
++impl Drop for ExitWatch<'_> {
++    fn drop(&mut self) {
++        let _ = self.cleanup.record();
++    }
++}
++
+ pub(super) fn open(
+     id: libc::id_t,
+     meter: Option<&dyn crate::NativeReadMeter>,
+@@ -141,8 +148,9 @@ fn open_watch(
+             open_descriptor_for(id)
+         })?;
+     let watch = ExitWatch {
+-        fd: cleanup.adopt(opened?),
++        fd: opened?,
+         meter,
++        cleanup,
+     };
+     // Retain the descriptor and its prepaid close before late accounting can
+     // fail. Every successful open has one physical release on this ledger.
+diff --git b/rust/crates/native-runtime/src/process_tree/windows_event.rs a/rust/crates/native-runtime/src/process_tree/windows_event.rs
+index 86651b739db..21025648522 100644
+--- b/rust/crates/native-runtime/src/process_tree/windows_event.rs
++++ a/rust/crates/native-runtime/src/process_tree/windows_event.rs
+@@ -1,12 +1,13 @@
+ //! Owned Windows events and their original metered cleanup custody.
+-use super::cleanup::{Cleanup, Resource};
++use super::cleanup::Cleanup;
+ use super::*;
+ use std::os::windows::io::{AsHandle, AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
+ use windows_sys::Win32::Foundation::HANDLE;
+ use windows_sys::Win32::System::Threading::CreateEventW;
+ 
+ pub(in crate::process_tree) struct Event<'a> {
+-    handle: Resource<'a, OwnedHandle>,
++    handle: OwnedHandle,
++    cleanup: Cleanup<'a>,
+ }
+ 
+ impl<'a> Event<'a> {
+@@ -33,7 +34,8 @@ impl<'a> Event<'a> {
+                 Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+             })?;
+         let event = Self {
+-            handle: cleanup.adopt(opened?),
++            handle: opened?,
++            cleanup,
+         };
+         recorded?;
+         Ok(event)
+@@ -51,3 +53,9 @@ impl AsRawHandle for Event<'_> {
+         self.handle.as_raw_handle()
+     }
+ }
++
++impl Drop for Event<'_> {
++    fn drop(&mut self) {
++        let _ = self.cleanup.record();
++    }
++}
+diff --git b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
+index 2c453d54f77..181e0645a50 100644
+--- b/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
++++ a/rust/crates/native-runtime/src/process_tree/windows_job_wait.rs
+@@ -1,5 +1,5 @@
+ //! Job membership is rechecked after a pinned member exits, never on a timer.
+-use super::super::cleanup::{Cleanup, Resource};
++use super::super::cleanup::Cleanup;
+ use super::*;
+ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+ use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA};
+@@ -78,7 +78,8 @@ fn first_member(
+ }
+ 
+ struct Member<'a> {
+-    handle: Resource<'a, OwnedHandle>,
++    handle: OwnedHandle,
++    cleanup: Cleanup<'a>,
+ }
+ 
+ impl<'a> Member<'a> {
+@@ -110,9 +111,7 @@ impl<'a> Member<'a> {
+                 let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+                 Ok(Some(handle))
+             })?;
+-        let process = opened?.map(|handle| Self {
+-            handle: cleanup.adopt(handle),
+-        });
++        let process = opened?.map(|handle| Self { handle, cleanup });
+         recorded?;
+         let Some(process) = process else {
+             return Ok(None);
+@@ -132,6 +131,12 @@ impl<'a> Member<'a> {
+     }
+ }
+ 
++impl Drop for Member<'_> {
++    fn drop(&mut self) {
++        let _ = self.cleanup.record();
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git b/rust/crates/native-runtime/src/process_tree/windows_wait.rs a/rust/crates/native-runtime/src/process_tree/windows_wait.rs
+index 44e07cc6d5e..2f1fb9fc22a 100644
+--- b/rust/crates/native-runtime/src/process_tree/windows_wait.rs
++++ a/rust/crates/native-runtime/src/process_tree/windows_wait.rs
+@@ -1,4 +1,4 @@
+-use super::super::cleanup::{Cleanup, Resource};
++use super::super::cleanup::Cleanup;
+ use super::super::windows_event::Event;
+ use crate::process_tree::Child;
+ use std::ffi::c_void;
+@@ -21,10 +21,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
+ };
+ 
+ pub(in crate::process_tree) struct ResumeNotification<'a> {
+-    // Unregister before releasing the callback's event, then account each
+-    // native release through the same resource-ordering primitive.
+-    _registration: Resource<'a, ResumeRegistration>,
+     pub(in crate::process_tree) event: Event<'a>,
++    registration: isize,
++    cleanup: Cleanup<'a>,
+ }
+ impl<'a> ResumeNotification<'a> {
+     pub(in crate::process_tree) fn new() -> io::Result<Self> {
+@@ -59,20 +58,20 @@ impl<'a> ResumeNotification<'a> {
+             })?;
+         let registration = registration?;
+         let notification = Self {
+-            _registration: cleanup.adopt(ResumeRegistration(registration)),
+             event,
++            registration,
++            cleanup,
+         };
+         recorded?;
+         Ok(notification)
+     }
+ }
+-struct ResumeRegistration(isize);
+-
+-impl Drop for ResumeRegistration {
++impl Drop for ResumeNotification<'_> {
+     fn drop(&mut self) {
++        let _ = self.cleanup.record();
+         // SAFETY: this exclusively owned registration is cancelled before
+         // releasing the event handle carried by its callback.
+-        unsafe { UnregisterSuspendResumeNotification(self.0) };
++        unsafe { UnregisterSuspendResumeNotification(self.registration) };
+     }
+ }
+ 

@@ -114,17 +114,20 @@ impl ToolExecutor for WorkspaceExecutor {
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
+        work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         let context = context?;
         if let Some(target) = &context.execution_target {
-            target.executor.authorize_replay(Some(context), invocation)
+            target
+                .executor
+                .authorize_replay(Some(context), invocation, work)
         } else if invocation.name == "fs" {
             context
                 .task()
                 .harness
                 .filesystem
                 .as_ref()?
-                .authorize_replay(Some(context), invocation)
+                .authorize_replay(Some(context), invocation, work)
         } else {
             None
         }
@@ -169,6 +172,7 @@ impl ToolExecutor for WorkspaceExecutor {
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<crate::tool::Dispatch>> {
         let Some(context) = context else {
             return Ok(None);
@@ -184,15 +188,16 @@ impl ToolExecutor for WorkspaceExecutor {
             // Nothing may be handed to a remote target before that verdict.
             return Ok(None);
         }
-        target(context, invocation, None)?
+        target(context, invocation, work)?
             .executor()
-            .dispatch(invocation, Some(context))
+            .dispatch(invocation, Some(context), work)
     }
 
     fn cancellation(
         &self,
         invocation: &ToolInvocation,
         context: Option<&ToolContext>,
+        work: crate::NativeWork<'_>,
     ) -> Result<Option<BoxProviderFuture<'static, Result<()>>>> {
         let Some(context) = context else {
             return Ok(None);
@@ -200,10 +205,12 @@ impl ToolExecutor for WorkspaceExecutor {
         // A recorded call retains its selected executor. Never cancel through
         // a newly resolved device or a replacement incarnation.
         if let Some(target) = &context.execution_target {
-            target.executor.cancellation(invocation, Some(context))
+            target
+                .executor
+                .cancellation(invocation, Some(context), work)
         } else if invocation.name == "fs" {
             match &context.task().harness.filesystem {
-                Some(filesystem) => filesystem.cancellation(invocation, Some(context)),
+                Some(filesystem) => filesystem.cancellation(invocation, Some(context), work),
                 None => Ok(None),
             }
         } else {

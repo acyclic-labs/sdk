@@ -97,49 +97,131 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
         !tree.is_reaped(),
         "terminal observation must retain PID custody"
     );
+    #[cfg(target_vendor = "apple")]
+    {
+        // The original child is exited but unreaped, so its identity cannot
+        // be reused. Darwin has removed this exact NOTE_EXIT producer. The
+        // group-member path has no child-reap authority and must preserve
+        // ESRCH rather than return an empty queue to an unbounded waiter.
+        let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        let refused = open_member(id, Some(&meter));
+        assert!(
+            refused.is_err(),
+            "missing group-member registration created an empty exit watch"
+        );
+        let error = refused.err().unwrap();
+        assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+        assert_eq!(meter.write_attempts.load(Ordering::Acquire), 1);
+        assert!(
+            !tree.is_reaped(),
+            "registration refusal must retain tree custody"
+        );
+    }
     tree.terminate(None)?;
     assert!(tree.is_reaped());
     Ok(())
 }
 
 #[test]
-fn every_exit_registration_outcome_preserves_terminal_custody() {
-    for registered in [false, true] {
-        for failed in [false, true] {
-            let mut settled = false;
-            let result = complete_registration(registered, || {
-                settled = true;
-                if failed {
-                    Err(io::Error::from_raw_os_error(libc::EIO))
-                } else {
-                    Ok(())
-                }
-            });
-            assert_eq!(settled, !registered);
-            assert_eq!(result.is_err(), !registered && failed);
-            if let Err(error) = result {
-                assert_eq!(error.raw_os_error(), Some(libc::EIO));
-            }
-        }
-    }
-}
-
-#[test]
 fn exit_watch_prepays_and_records_its_descriptor_release() -> io::Result<()> {
+    if crate::delivery::isolated()? {
+        return Ok(());
+    }
     let mut tree = child("0")?;
-    let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-    let watch = open(tree.owned_child_id()?, Some(&meter))?;
-    assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
-    drop(watch);
+    for (panic_after_recording, caller_unwinds) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let descriptor = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(-1));
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        meter.operation_recorded = Some(Box::new({
+            let descriptor = std::sync::Arc::clone(&descriptor);
+            let released = std::sync::Arc::clone(&released);
+            move || {
+                let fd = descriptor.load(Ordering::Acquire);
+                if fd >= 0 {
+                    // Observe the actual original descriptor inside its original
+                    // accounting callback, before any later test assertion.
+                    // SAFETY: F_GETFD observes a descriptor number without borrowing
+                    // memory or taking ownership, including the closed-FD case.
+                    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                    released.store(
+                        result == -1
+                            && io::Error::last_os_error().raw_os_error() == Some(libc::EBADF),
+                        Ordering::Release,
+                    );
+                    if panic_after_recording {
+                        panic!("original cleanup callback failure");
+                    }
+                }
+                Ok(())
+            }
+        }));
+        let watch = open(tree.owned_child_id()?, Some(&meter))?;
+        descriptor.store(watch.as_raw_fd(), Ordering::Release);
+        assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _watch = watch;
+            if caller_unwinds {
+                std::panic::panic_any("original caller unwind");
+            }
+        }));
+        assert_eq!(dropped.is_err(), panic_after_recording || caller_unwinds);
+        if caller_unwinds {
+            assert_eq!(
+                dropped
+                    .err()
+                    .and_then(|panic| panic.downcast::<&str>().ok()),
+                Some(Box::new("original caller unwind")),
+                "resource accounting replaced the original caller unwind"
+            );
+        }
+        assert!(
+            released.load(Ordering::Acquire),
+            "cleanup accounting preceded the original descriptor release"
+        );
+        assert_eq!(
+            meter.write_attempts.load(Ordering::Acquire),
+            1,
+            "the exit descriptor close must stay on its original ledger"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+    }
+
+    // Original read-attempt accounting unwinds before native open. The
+    // production cleanup owner must refund its unused close reservation even
+    // when that original refund callback also unwinds.
+    let refunds = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut cancelled = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    cancelled.operation_recorded = Some(Box::new(|| {
+        std::panic::panic_any("original operation admission unwind");
+    }));
+    cancelled.cleanup_cancelled = Some(Box::new({
+        let refunds = std::sync::Arc::clone(&refunds);
+        move || {
+            refunds.fetch_add(1, Ordering::AcqRel);
+            std::panic::panic_any("original unused cleanup refund failure");
+        }
+    }));
+    let id = tree.owned_child_id()?;
+    let admission = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _watch = open(id, Some(&cancelled));
+    }));
     assert_eq!(
-        meter.write_attempts.load(Ordering::Acquire),
-        1,
-        "the exit descriptor close must stay on its original ledger"
+        admission
+            .err()
+            .and_then(|panic| panic.downcast::<&str>().ok()),
+        Some(Box::new("original operation admission unwind")),
+        "cleanup refund replaced the original admission unwind"
     );
-    #[cfg(target_os = "linux")]
-    assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
-    #[cfg(target_vendor = "apple")]
-    assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+    assert_eq!(refunds.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.used_operations.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.read_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(cancelled.write_attempts.load(Ordering::Acquire), 0);
 
     let refused = crate::tests::ReadBudgetMeter::new(1, u64::MAX);
     assert!(

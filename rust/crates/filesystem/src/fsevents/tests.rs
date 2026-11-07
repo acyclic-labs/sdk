@@ -37,10 +37,10 @@ fn stopping_retires_handles_and_preserves_admitted_cleanup()
         if cancelled {
             stop.work.admit(&stream.cleanup_work(), &stop.budget)?;
             cancellation.cancel();
-            stream.cleanup_admitted(&mut stop)?;
+            stream.cleanup_admitted(&mut stop).complete()?;
             assert!(matches!(stop.check(), Err(DemandError::Cancelled)));
         } else {
-            stream.stop_with_work(&mut stop)?;
+            stream.stop_with_work(&mut stop).complete()?;
         }
         assert!(stream.registration.is_none());
         assert!(stream.is_stopped());
@@ -48,9 +48,9 @@ fn stopping_retires_handles_and_preserves_admitted_cleanup()
         stop.work.verify(budget)?;
         let before = stop.work;
         if cancelled {
-            stream.cleanup_admitted(&mut stop)?;
+            stream.cleanup_admitted(&mut stop).complete()?;
         } else {
-            stream.stop_with_work(&mut stop)?;
+            stream.stop_with_work(&mut stop).complete()?;
         }
         assert_eq!(stop.work, before);
         drop(stream);

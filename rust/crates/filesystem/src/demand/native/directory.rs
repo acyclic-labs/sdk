@@ -372,7 +372,7 @@ impl NativeDemandSource {
         let ownership = SourcePayloadOwnership::new(work)?;
         let bytes = work.claim(std::mem::size_of::<SourceDirectoryPublication>() as u64)?;
         ownership.retain(bytes, work)?;
-        let original = work.native_source_work();
+        let original = work.native_source_work().cloned();
         if let Some(original) = &original {
             original.with_original_leaf(|work| work.reserve(publication_cleanup()))?;
         }

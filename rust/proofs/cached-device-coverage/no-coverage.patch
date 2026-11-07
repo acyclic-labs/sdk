@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -38,7 +38,7 @@
+ 
+ impl Completion {
+     pub(super) fn ordered(cut: Option<u64>) -> Self {
+-        cut.map_or(Self::Unchanged, Self::Ordered)
++        { let _ = cut; Self::Unchanged }
+     }
+ }
+ 

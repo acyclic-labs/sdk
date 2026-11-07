@@ -160,12 +160,12 @@ impl Drop for LockHolder {
 #[cfg(unix)]
 fn wait_for_holder_owner() -> io::Result<()> {
     let mut byte = 0_u8;
-    // SAFETY: this helper's stderr is the inherited readable lifetime pipe,
-    // and the one-byte destination lives until this blocking read returns.
     #[allow(
         unsafe_code,
         reason = "waits on the inherited lifetime pipe without duplicating it"
     )]
+    // SAFETY: this helper's stderr is the inherited readable lifetime pipe,
+    // and the one-byte destination lives until this blocking read returns.
     let count = unsafe { libc::read(libc::STDERR_FILENO, (&raw mut byte).cast(), 1) };
     if count < 0 {
         return Err(io::Error::last_os_error());

@@ -1,5 +1,4 @@
 use crate::Adapter;
-use crate::accounting::*;
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -10,7 +9,15 @@ proptest! {
         observations in prop::collection::vec((1usize..65536, 1u32..65536), 0..32),
         bytes in 0usize..4096,
     ) {
-        let estimator = TokenEstimator::new(Adapter::Responses);
+        // This is the original selection constructor used by Registry::resolve.
+        // Calibration and usage must fund one owner, independent of observations.
+        let mut accounting = None;
+        let cost = acyclic_test_support::measure(|| {
+            accounting = Some(crate::resolved::Accounting::new(Adapter::Responses));
+        });
+        prop_assert_eq!(cost.count_total, 1, "selection accounting allocated separate owners");
+        let accounting = accounting.unwrap();
+        let estimator = &accounting.estimator;
         let mut ratio = 2.0f64;
         let mut previous = estimator.tokens(bytes).unwrap();
         for (size, tokens) in observations {

@@ -4,8 +4,8 @@
 //! watch owns its registrations, its inbox of routed records and its held root.
 #![allow(unsafe_code, reason = "watches through the Linux inotify API")]
 use super::{
-    Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, check_wait,
-    record_cleanup_credits, reserve_cleanup_credits,
+    Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, record_cleanup_credits,
+    reserve_cleanup_credits,
 };
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::native_host::NativeHostWork;
@@ -63,13 +63,9 @@ const EVENT_HEADER_BYTES: usize = 16;
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    /// Background delivery through the hub's service pool, until retired.
-    worker: Custody<Option<Worker>>,
+    /// Serializes controllers while the shared service pool retires delivery.
+    controller: Custody<()>,
 }
-
-/// Custody of background delivery for one watch.
-#[derive(Clone, Copy, Debug)]
-struct Worker;
 
 struct Shared {
     /// The hub's descriptor while this watch holds hub registrations, else -1.
@@ -96,7 +92,6 @@ struct Shared {
     reading: Reading,
     watches: Custody<Vec<(PathBuf, i32)>>,
     stopping: AtomicBool,
-    completed: AtomicBool,
     controller_alive: AtomicBool,
     cleanup: Custody<StartupCleanup>,
     ownership: SourcePayloadOwnership,
@@ -109,7 +104,6 @@ struct Shared {
 
 #[derive(Default)]
 struct StartupCleanup {
-    reads: u64,
     writes: u64,
     records: u64,
 }

@@ -1,0 +1,27 @@
+diff --git a/rust/crates/native-runtime/src/device_flush.rs b/rust/crates/native-runtime/src/device_flush.rs
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -406,21 +406,11 @@
+ 
+     impl Device {
+         pub(super) fn ordered_cut(&self) -> Option<u64> {
+-            match &self.shared {
+-                Some(shared) => shared
+-                    .started
+-                    .load(Ordering::SeqCst)
+-                    .checked_add(1)
+-                    .filter(|cut| *cut < u64::MAX),
+-                None => self.coalescer.ordered_cut(),
+-            }
++            self.coalescer.ordered_cut()
+         }
+ 
+         pub(super) fn covers(&self, cut: u64) -> bool {
+-            match &self.shared {
+-                Some(shared) => shared.completed.load(Ordering::SeqCst) >= cut,
+-                None => self.coalescer.covers(cut),
+-            }
++            self.coalescer.covers(cut)
+         }
+ 
+         /// Runs `drain` unless a drain by any process, started after this

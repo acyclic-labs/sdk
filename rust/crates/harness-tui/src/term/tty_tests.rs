@@ -196,7 +196,7 @@ fn real_trace(
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
     if select {
-        match super::darwin::Readiness::select(&tty.input.file) {
+        match super::darwin::Readiness::select(Arc::clone(&tty.input)) {
             Ok(readiness) => tty.readiness = Some(readiness),
             Err(error) => {
                 tty.restore()?;

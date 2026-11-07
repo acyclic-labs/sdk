@@ -173,7 +173,7 @@ impl NativeDemandFile {
             output_bytes: capacity as u64,
             ..copying
         })?;
-        let original = context.native_source_work();
+        let original = context.native_source_work().cloned();
         let (mut data, mut allocation, mut native_allocation) = if let Some(original) = &original {
             let (data, allocation) = crate::native_host::buffer::<u8, _>(capacity, &mut &*original)
                 .map_err(crate::demand::DemandError::from)?;

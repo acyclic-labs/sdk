@@ -145,7 +145,7 @@ fn a_queued_flush_covers_the_worker_cut_instead_of_the_submitter_cut()
             (journal.appended, journal.file.lease()?)
         };
         deferring_durability(old.commit(keyed_commit("old-queued", 0)?)).await?;
-        let old_completion = sync_file_data(file.file(), LocalDurability::FullFlush)?;
+        let old_completion = file.flush(|file| sync_file_data(file, LocalDurability::FullFlush))?;
         {
             let mut journal = old.inner.journal.lock().unwrap();
             old.inner

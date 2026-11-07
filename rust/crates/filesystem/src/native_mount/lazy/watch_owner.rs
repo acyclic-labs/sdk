@@ -10,7 +10,7 @@ pub struct NativeMountSourceWatchOwner {
 }
 
 impl NativeMountSourceWatchOwner {
-    #[cfg(all(test, target_os = "macos"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub(in crate::native_mount) fn from_native_watch_fixture(watch: Box<dyn SourceWatch>) -> Self {
         Self {
             watch: Some(watch),
@@ -36,19 +36,18 @@ impl NativeMountSourceWatchOwner {
         wait: &crate::CancellationToken,
     ) -> Result<bool, MountSourceError> {
         self.stop_with_cleanup(Some(wait))
+            .map_err(MountSourceError::from)
     }
 
     pub(in crate::native_mount) fn stop_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
-        self.stop_with_cleanup(None)
+        self.stop_with_cleanup(None).map_err(MountSourceError::from)
     }
 
     pub(super) fn stop_with_cleanup(
         &self,
         wait: Option<&crate::CancellationToken>,
-    ) -> Result<bool, MountSourceError> {
-        if self.is_stopped() {
-            return Ok(false);
-        }
+    ) -> Result<bool, crate::DemandError> {
+        let stopped = self.is_stopped();
         let result = if let Some(failure) = &self.startup_failure {
             match wait {
                 Some(wait) => failure.stop_with_cleanup_wait(wait),
@@ -62,7 +61,7 @@ impl NativeMountSourceWatchOwner {
         } else {
             return Ok(false);
         };
-        result.map_err(MountSourceError::from).map(|()| true)
+        result.map(|()| !stopped)
     }
 
     /// Stops the original watch on the supplied carrier.
@@ -73,22 +72,20 @@ impl NativeMountSourceWatchOwner {
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
-        let mut work = crate::NativeMaterializationWork::clone(&original);
+        let mut work = crate::NativeMaterializationWork::clone(original);
         crate::native_host::NativeHostWork::check(&work).map_err(MountSourceError::from)?;
-        if self.is_stopped() {
-            return Ok(false);
-        }
+        let stopped = self.is_stopped();
         let result = if let Some(failure) = &self.startup_failure {
             failure.stop_with_work(&mut work)
         } else if let Some(watch) = &self.watch {
             watch.stop(&mut crate::kernel::KernelAccounting::native(
-                &original,
+                original,
                 original.cancellation(),
             ))
         } else {
             return Ok(false);
         };
-        result.map_err(MountSourceError::from).map(|()| true)
+        result.map_err(MountSourceError::from).map(|()| !stopped)
     }
 }
 

@@ -1,0 +1,11 @@
+--- a/rust/crates/collections/src/prefix.rs
++++ b/rust/crates/collections/src/prefix.rs
+@@ -154,7 +154,7 @@
+                 Kind::Leaf { key, .. } => {
+                     visit(N as u64 + 1);
+                     let boundary = difference(key, &through);
+-                    break (boundary, boundary.is_none_or(|bit| !high(key, bit)));
++                    break (boundary, boundary.is_some_and(|bit| !high(key, bit)));
+                 }
+                 Kind::Branch {
+                     bit,

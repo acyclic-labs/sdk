@@ -1,13 +1,14 @@
-//! One process-wide readiness hub for every process wait.
+//! Native readiness producers shared by every process wait.
 //!
 //! A waiting child holds no thread. Each wait arms one-shot interest in its
-//! pipes, its exit and an optional wake time with a single hub thread (epoll
-//! with pidfds on Linux, kqueue with `EVFILT_PROC` on macOS, an I/O completion
-//! port with pipe operations and registered process waits on Windows), and
+//! pipes, its exit and an optional wake time with fixed producers, one per
+//! available CPU (epoll with pidfds on Linux, kqueue with `EVFILT_PROC` on
+//! macOS, an I/O completion port with pipe operations and registered process
+//! waits on Windows), and
 //! the first of them to fire wakes the waiter. An async waiter costs a waker;
 //! a synchronous caller parks its own thread.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -80,9 +81,12 @@ impl Source<'_> {
     }
 }
 
+mod deadlines;
 mod outcome;
+mod pool;
 mod signal;
 pub use outcome::ProcessWaitOutcome;
+use pool::pool;
 use signal::Signal;
 
 fn copy_error(error: &io::Error) -> io::Error {
@@ -94,19 +98,19 @@ fn copy_error(error: &io::Error) -> io::Error {
 
 struct Armed {
     signal: Arc<Signal>,
-    wake_at: Option<Instant>,
+    deadline: Option<deadlines::Key>,
 }
 
 #[derive(Default)]
 struct Registry {
-    next: u64,
+    next: usize,
     // A dense live list makes terminal notification proportional only to the
     // waiters it must settle, independent of cancelled/historical entries.
-    armed: Vec<(u64, Armed)>,
-    positions: HashMap<u64, usize>,
+    armed: Vec<(usize, Armed)>,
+    positions: HashMap<usize, usize>,
     #[cfg(unix)]
-    sources: HashMap<SourceKey, u64>,
-    timers: BTreeSet<(Instant, u64)>,
+    sources: HashMap<SourceKey, usize>,
+    timers: deadlines::Deadlines,
     failure: Option<Arc<io::Error>>,
 }
 
@@ -114,39 +118,41 @@ impl Registry {
     fn registered(
         &mut self,
         poller: &platform::Poller,
-        token: u64,
+        token: usize,
         signal: &Arc<Signal>,
         wake_at: Option<Instant>,
         ready: bool,
-    ) -> Option<Failure> {
+    ) -> io::Result<Option<Failure>> {
         if ready {
-            return None;
+            return Ok(None);
         }
-        let earliest = wake_at.filter(|at| self.timers.first().is_none_or(|(first, _)| at < first));
-        if let Some(at) = wake_at {
-            self.timers.insert((at, token));
-        }
+        let earliest =
+            wake_at.is_some_and(|at| self.timers.first().is_none_or(|(first, _)| at < first));
+        let deadline = wake_at
+            .map(|at| self.timers.insert(at, token))
+            .transpose()?;
         self.positions.insert(token, self.armed.len());
         self.armed.push((
             token,
             Armed {
                 signal: Arc::clone(signal),
-                wake_at,
+                deadline,
             },
         ));
-        earliest
-            .and_then(|_| poller.notify().err())
-            .and_then(|error| self.fail(error))
+        Ok(earliest
+            .then(|| poller.notify())
+            .and_then(Result::err)
+            .and_then(|error| self.fail(error)))
     }
 
-    fn remove(&mut self, token: u64) -> Option<Armed> {
+    fn remove(&mut self, token: usize) -> Option<Armed> {
         let position = self.positions.remove(&token)?;
         let (_, armed) = self.armed.swap_remove(position);
         if let Some((moved, _)) = self.armed.get(position) {
             self.positions.insert(*moved, position);
         }
-        if let Some(at) = armed.wake_at {
-            self.timers.remove(&(at, token));
+        if let Some(key) = armed.deadline {
+            self.timers.remove(key);
         }
         Some(armed)
     }
@@ -168,7 +174,7 @@ impl Registry {
 
 struct Failure {
     error: Arc<io::Error>,
-    armed: Vec<(u64, Armed)>,
+    armed: Vec<(usize, Armed)>,
 }
 
 impl Failure {
@@ -185,66 +191,44 @@ impl Failure {
 struct Hub {
     poller: platform::Poller,
     registry: Mutex<Registry>,
+    stride: usize,
+    service_failure: Arc<OnceLock<Arc<io::Error>>>,
+    #[cfg(test)]
+    locks: std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(test)]
 static STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Whether anything in this process has started the hub.
+/// Whether anything in this process has started the readiness service.
 #[cfg(test)]
 fn started() -> bool {
     STARTED.load(Ordering::Acquire)
 }
 
-static HUB: OnceLock<io::Result<&'static Hub>> = OnceLock::new();
-
-fn start_hub() -> io::Result<&'static Hub> {
-    #[cfg(test)]
-    STARTED.store(true, Ordering::Release);
-    let hub: &'static Hub = Box::leak(Box::new(Hub {
-        poller: platform::Poller::new()?,
-        registry: Mutex::new(Registry::default()),
-    }));
-    std::thread::Builder::new()
-        .name("acyclic-process-events".into())
-        .spawn(move || hub.run())?;
-    Ok(hub)
-}
-
-/// The running hub, held by every process tree from before its child is
-/// created. The hub is therefore part of the first spawn, never of whichever
-/// later wait happens to arm first: a process's service threads and
-/// descriptors do not depend on whether its children exited before anyone
-/// waited, and a hub that cannot start fails the spawn, not a later wait.
+/// The original readiness service is started before creating a child.
+/// A partial startup refusal ends its waiting producers and fails the spawn.
 #[derive(Clone, Copy)]
 pub(super) struct Events {
-    _hub: &'static Hub,
+    _pool: &'static pool::Pool,
 }
 
 impl Events {
     pub(super) fn start() -> io::Result<Self> {
-        let hub = hub()?;
-        if let Some(error) = &hub.registry().failure {
-            return Err(io::Error::new(error.kind(), Arc::clone(error)));
-        }
-        Ok(Self { _hub: hub })
+        let pool = pool()?;
+        pool.check()?;
+        Ok(Self { _pool: pool })
     }
-}
-
-fn hub() -> io::Result<&'static Hub> {
-    HUB.get_or_init(start_hub)
-        .as_ref()
-        .copied()
-        .map_err(copy_error)
 }
 
 // Source retirement precedes physical close or ownership transfer. An old
 // wait may outlive that source, but must not reserve a reused descriptor/PID.
 #[cfg(unix)]
 fn retire_source(source: SourceKey) {
-    let Some(Ok(hub)) = HUB.get() else {
+    let Some(pool) = pool::existing() else {
         return;
     };
+    let hub = pool.source(source);
     let signal = {
         let mut registry = hub.registry();
         registry
@@ -333,12 +317,16 @@ impl<T: io::Write> io::Write for OwnedSource<T> {
 
 impl Hub {
     fn registry(&self) -> std::sync::MutexGuard<'_, Registry> {
+        #[cfg(test)]
+        self.locks.fetch_add(1, Ordering::Relaxed);
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn fail(&self, error: io::Error) {
         let failure = self.registry().fail(error);
         if let Some(failure) = failure {
+            self.service_failure
+                .get_or_init(|| Arc::clone(&failure.error));
             failure.deliver();
         }
     }
@@ -369,7 +357,7 @@ impl Hub {
         }
     }
 
-    fn dispatch(&self, ready: &mut Vec<u64>, now: Instant) {
+    fn dispatch(&self, ready: &mut Vec<usize>, now: Instant) {
         let mut fired = Vec::new();
         {
             let mut registry = self.registry();
@@ -378,14 +366,14 @@ impl Hub {
                     fired.push((armed.signal, ProcessWaitOutcome::Ready));
                 }
             }
-            while let Some(&(at, token)) = registry.timers.first() {
+            while let Some((at, token)) = registry.timers.first() {
                 if at > now {
                     break;
                 }
                 if let Some(armed) = registry.remove(token) {
                     fired.push((armed.signal, ProcessWaitOutcome::Deadline));
                 } else {
-                    registry.timers.remove(&(at, token));
+                    unreachable!("a deadline retains its original armed registration");
                 }
             }
         }
@@ -393,24 +381,10 @@ impl Hub {
     }
 }
 
-// Removed signals retain their terminal outcomes until delivered.
-struct Delivery<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> {
-    signals: I,
-}
-
-impl<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> Drop for Delivery<I> {
-    fn drop(&mut self) {
-        for (signal, outcome) in self.signals.by_ref() {
-            signal.settle(outcome);
-        }
-    }
-}
-
 fn deliver(signals: impl Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>) {
-    let mut delivery = Delivery { signals };
-    for (signal, outcome) in delivery.signals.by_ref() {
+    crate::delivery::deliver(signals, |(signal, outcome)| {
         signal.settle(outcome);
-    }
+    });
 }
 
 // A producer that unwinds also settles its waits; no replacement is started.
@@ -426,15 +400,17 @@ impl Drop for Retirement<'_> {
 /// wake time passes, or fails when its OS event producer ends. Dropping it
 /// disarms every registration it still holds.
 pub(super) struct Wait<'a> {
-    hub: &'a Hub,
-    token: u64,
     signal: Arc<Signal>,
-    registrations: Vec<Registration>,
+    // The common single-source/deadline wait needs no registration allocation.
+    first: Option<Registration<'a>>,
+    other: Vec<Registration<'a>>,
 }
 
-struct Registration {
+struct Registration<'a> {
+    hub: &'a Hub,
+    token: usize,
     #[cfg(unix)]
-    source: SourceKey,
+    source: Option<SourceKey>,
     _native: Option<platform::Registration>,
 }
 
@@ -448,7 +424,7 @@ pub enum DescriptorInterest {
     Writable,
 }
 
-/// One descriptor observation served by the shared native event hub.
+/// One descriptor observation served by its original native producer.
 ///
 /// The descriptor remains borrowed until this future is dropped. Readiness
 /// permits another nonblocking operation; it does not promise that operation
@@ -459,12 +435,12 @@ pub struct DescriptorReadiness<'a> {
     _descriptor: std::os::fd::BorrowedFd<'a>,
 }
 
-/// Arms the shared native event hub after a nonblocking operation would block.
+/// Arms the original native producer after a nonblocking operation would block.
 ///
 /// Each descriptor may belong to only one live readiness observation, including
 /// process observations. Competing registration returns `AlreadyExists` before
 /// changing native interest. Drop the observation before rearming, including
-/// when changing direction. Peer closure wakes it; loss of the shared event
+/// when changing direction. Peer closure wakes it; loss of its original event
 /// producer returns [`ProcessWaitOutcome::ServiceFailed`]. No descriptor is
 /// copied and no per-observation thread or timer is created.
 #[cfg(unix)]
@@ -499,83 +475,112 @@ pub(super) fn arm(sources: &[Source<'_>], wake_at: Option<Instant>) -> io::Resul
             "process readiness needs a source or deadline",
         ));
     }
-    arm_on(hub()?, sources, wake_at)
+    pool()?.arm(sources, wake_at)
 }
 
+#[cfg(test)]
 fn arm_on<'a>(
     hub: &'a Hub,
     sources: &[Source<'_>],
     wake_at: Option<Instant>,
 ) -> io::Result<Wait<'a>> {
-    // Construct the owner before taking the lifecycle lock. A partial native
-    // registration failure drops that lock before this owner's rollback.
+    arm_with(sources, wake_at, |_| hub)
+}
+
+fn arm_with<'a>(
+    sources: &[Source<'_>],
+    mut wake_at: Option<Instant>,
+    owner: impl Fn(Option<Source<'_>>) -> &'a Hub,
+) -> io::Result<Wait<'a>> {
+    #[cfg(all(test, feature = "test-support", not(loom)))]
+    LIVE_WAITS.fetch_add(1, Ordering::Relaxed);
     let mut wait = Wait {
-        hub,
-        token: 0,
         signal: Arc::new(Signal::default()),
-        registrations: Vec::new(),
+        first: None,
+        other: Vec::with_capacity(sources.len().saturating_sub(1)),
     };
-    let (ready, failure) = {
-        let mut registry = hub.registry();
-        if let Some(error) = &registry.failure {
-            let error = Arc::clone(error);
-            drop(registry);
-            wait.signal.settle(ProcessWaitOutcome::ServiceFailed(error));
-            return Ok(wait);
-        }
-        registry.next = registry
-            .next
-            .checked_add(1)
-            .filter(|token| *token != u64::MAX)
-            .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
-        wait.token = registry.next;
-        wait.registrations.reserve(sources.len());
-        // Registration and producer retirement share this lifecycle lock.
-        // No native registration may be dispatched after its producer ends.
-        let mut ready = false;
+    if sources.is_empty() {
+        wait.register(owner(None), None, wake_at)?;
+    } else {
         for source in sources {
-            #[cfg(unix)]
-            let key = source.key();
-            #[cfg(unix)]
-            match registry.sources.entry(key) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "native readiness source already has a live observation; drop it before rearming",
-                    ));
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(wait.token);
-                }
-            }
-            // Retain the claim before the syscall so every refusal releases
-            // exactly the sources already admitted to this original wait.
-            let index = wait.registrations.len();
-            wait.registrations.push(Registration {
-                #[cfg(unix)]
-                source: key,
-                _native: None,
-            });
-            let native = hub.poller.register(*source, wait.token)?;
-            ready = native.is_none();
-            wait.registrations
-                .get_mut(index)
-                .ok_or(io::ErrorKind::InvalidData)?
-                ._native = native;
-            if ready {
+            if wait.register(owner(Some(*source)), Some(*source), wake_at.take())? {
                 break;
             }
         }
-        let failure = registry.registered(&hub.poller, wait.token, &wait.signal, wake_at, ready);
-        (ready, failure)
-    };
-    // A wake may re-enter registration, so deliver outside the lifecycle lock.
-    if let Some(failure) = failure {
-        failure.deliver();
-    } else if ready {
-        wait.signal.settle(ProcessWaitOutcome::Ready);
     }
     Ok(wait)
+}
+
+impl<'a> Wait<'a> {
+    fn register(
+        &mut self,
+        hub: &'a Hub,
+        source: Option<Source<'_>>,
+        wake_at: Option<Instant>,
+    ) -> io::Result<bool> {
+        // The original entry owns rollback before native admission. Its Drop
+        // runs after the lifecycle lock, including on a partially refused arm.
+        let mut entry = Registration {
+            hub,
+            token: 0,
+            #[cfg(unix)]
+            source: None,
+            _native: None,
+        };
+        let (ready, failure) = {
+            let mut registry = hub.registry();
+            if let Some(error) = &registry.failure {
+                let error = Arc::clone(error);
+                drop(registry);
+                self.signal.settle(ProcessWaitOutcome::ServiceFailed(error));
+                return Ok(true);
+            }
+            registry.next = registry
+                .next
+                .checked_add(hub.stride)
+                .filter(|token| *token != usize::MAX)
+                .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
+            entry.token = registry.next;
+            let mut ready = false;
+            if let Some(source) = source {
+                #[cfg(unix)]
+                match registry.sources.entry(source.key()) {
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "native readiness source already has a live observation; drop it before rearming",
+                        ));
+                    }
+                    std::collections::hash_map::Entry::Vacant(claim) => {
+                        claim.insert(entry.token);
+                        entry.source = Some(source.key());
+                    }
+                }
+                entry._native = hub.poller.register(source, entry.token)?;
+                ready = entry._native.is_none();
+            }
+            let failure =
+                registry.registered(&hub.poller, entry.token, &self.signal, wake_at, ready)?;
+            (ready, failure)
+        };
+        if self.first.is_none() {
+            self.first = Some(entry);
+        } else {
+            self.other.push(entry);
+        }
+        // Wakers may re-enter admission. Always deliver outside native locks.
+        if let Some(failure) = failure {
+            hub.service_failure
+                .get_or_init(|| Arc::clone(&failure.error));
+            failure.deliver();
+            Ok(true)
+        } else {
+            if ready {
+                self.signal.settle(ProcessWaitOutcome::Ready);
+            }
+            Ok(ready)
+        }
+    }
 }
 
 impl Wait<'_> {
@@ -617,24 +622,38 @@ impl Future for Wait<'_> {
     }
 }
 
-impl Drop for Wait<'_> {
+impl Drop for Registration<'_> {
     fn drop(&mut self) {
+        if self.token == 0 {
+            return;
+        }
         let mut registry = self.hub.registry();
         registry.remove(self.token);
         #[cfg(unix)]
-        for registration in &self.registrations {
-            if let std::collections::hash_map::Entry::Occupied(entry) =
-                registry.sources.entry(registration.source)
-                && entry.get() == &self.token
-            {
-                entry.remove();
-            }
+        if let Some(source) = self.source
+            && let std::collections::hash_map::Entry::Occupied(entry) =
+                registry.sources.entry(source)
+            && entry.get() == &self.token
+        {
+            entry.remove();
         }
+        // The guard drops before the native field's destructor. A late native
+        // callback can only post its original token, never a borrowed entry.
     }
 }
 
-/// The number of armed waits the hub holds, for scale tests.
 #[cfg(all(test, feature = "test-support", not(loom)))]
-pub(super) fn armed_waits() -> usize {
-    hub().map_or(0, |hub| hub.registry().armed.len())
+static LIVE_WAITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(all(test, feature = "test-support", not(loom)))]
+impl Drop for Wait<'_> {
+    fn drop(&mut self) {
+        LIVE_WAITS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Counts original wait owners, independent of their number of native sources.
+#[cfg(all(test, feature = "test-support", not(loom)))]
+pub(super) fn live_waits() -> usize {
+    LIVE_WAITS.load(Ordering::Relaxed)
 }

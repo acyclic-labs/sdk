@@ -24,8 +24,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         E: From<LazyWorkspaceError> + From<WorkspaceError> + From<crate::FsError> + Send + 'static,
     {
         work.remaining().map_err(LazyWorkspaceError::from)?;
-        if !input.1.work().shares_ledger(work)
-            || !input.1.work().shares_resource_allowance(work)
+        if !input.1.work().shares_allocation_context(work)
             || input.1.bytes() < input.0.logical_owned_bytes()
         {
             return Err(LazyWorkspaceError::NativeLedgerMismatch.into());

@@ -315,6 +315,7 @@ dependencies = [
  "http",
  "icu_casemap",
  "indexed_db_futures",
+ "indexmap",
  "js-sys",
  "libc",
  "loom",

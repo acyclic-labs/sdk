@@ -575,6 +575,15 @@ pub enum MountSourceError {
     /// Original native filesystem work cause, without formatting or reboxing.
     #[error(transparent)]
     NativeWork(#[from] crate::NativeTreeMaterializationError),
+    /// Source recording and its dependent watcher both failed during retirement.
+    #[error("source retirement recording failed: {completion}; watcher retirement failed: {watch}")]
+    RetirementFinalization {
+        /// Original source completion cause, retained without boxing.
+        #[source]
+        completion: crate::NativeTreeMaterializationError,
+        /// Original dependent watcher cause, retained without replacing completion.
+        watch: crate::DemandError,
+    },
     /// Original host metadata cause, moved without formatting a diagnostic.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[error("filesystem engine failure: source demand failed: {0}")]

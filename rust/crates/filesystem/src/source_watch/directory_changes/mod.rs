@@ -93,7 +93,6 @@ struct Shared {
     /// The hub found the reads held; their holder wakes it on release.
     missed: AtomicBool,
     stopping: AtomicBool,
-    stop_completed: AtomicBool,
     /// A native retirement failed on its terminal credit; nothing retries it.
     parked: AtomicBool,
     ownership: SourcePayloadOwnership,
@@ -170,6 +169,8 @@ impl Drop for Shared {
 struct ReadsGuard<'a> {
     shared: &'a Shared,
     reads: Option<tokio::sync::MutexGuard<'a, Reads>>,
+    /// Publish only after releasing the cursor used by the physical suffix.
+    retired: bool,
 }
 impl std::ops::Deref for ReadsGuard<'_> {
     type Target = Reads;
@@ -189,6 +190,9 @@ impl std::ops::DerefMut for ReadsGuard<'_> {
 impl Drop for ReadsGuard<'_> {
     fn drop(&mut self) {
         drop(self.reads.take());
+        if self.retired {
+            self.shared.publish_retirement(true);
+        }
         // After the release: a hub that found the reads held set this first.
         if self.shared.missed.swap(false, Ordering::AcqRel) && hub::wake(self.shared).is_err() {
             self.shared.delivery.abandon();
@@ -200,6 +204,7 @@ impl Shared {
         ReadsGuard {
             shared: self,
             reads: Some(self.reads.lock()),
+            retired: false,
         }
     }
     /// The reads, unless another thread holds them.
@@ -208,6 +213,7 @@ impl Shared {
         Some(ReadsGuard {
             shared: self,
             reads: Some(reads),
+            retired: false,
         })
     }
     /// Publishes a packet or terminal state to the original waiters.
@@ -218,7 +224,7 @@ impl Shared {
     /// Every physical retirement ends in one of these terminal states.
     fn publish_retirement(&self, retired: bool) {
         if retired {
-            self.stop_completed.store(true, Ordering::Release);
+            self.delivery.finish_retirement();
         } else {
             self.parked.store(true, Ordering::Release);
         }
@@ -270,9 +276,6 @@ impl NativeSourceWatch {
 
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
-    }
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.shared.stop_completed.load(Ordering::Acquire)
     }
     pub(crate) fn platform_owned_bytes(&self) -> u64 {
         super::arc_control_bytes::<Shared>()

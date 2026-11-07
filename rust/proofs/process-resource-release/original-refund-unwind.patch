@@ -1,0 +1,15 @@
+diff --git b/rust/crates/native-runtime/src/process_tree/cleanup.rs a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+index 56d1d4a5e69..7189ee7fa2f 100644
+--- b/rust/crates/native-runtime/src/process_tree/cleanup.rs
++++ a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+@@ -39,9 +39,7 @@ impl<'a> Cleanup<'a> {
+ impl Drop for Cleanup<'_> {
+     fn drop(&mut self) {
+         if let (Some(meter), Some(token)) = (self.meter, self.token.take()) {
+-            crate::delivery::deliver(std::iter::once(token), |token| {
+-                meter.cancel_cleanup_write(token);
+-            });
++            meter.cancel_cleanup_write(token);
+         }
+     }
+ }

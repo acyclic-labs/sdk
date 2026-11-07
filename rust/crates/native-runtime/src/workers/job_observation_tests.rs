@@ -66,6 +66,7 @@ impl Visit for Fields {
 }
 
 struct SubscriberFailure {
+    panic: fn(&str) -> !,
     field: &'static str,
     worker: bool,
     occurrence: usize,
@@ -117,13 +118,16 @@ where
                 .unwrap_or_else(PoisonError::into_inner)
                 .take();
             if let Some(original) = original {
-                let mut state = original
-                    .try_lock()
-                    .unwrap_or_else(|_| panic!("callback under original completion lock"));
-                let Poll::Ready(result) = state.poll_result(Waker::noop()) else {
-                    panic!("original terminal not published")
-                };
-                *self.consumed.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+                let state = original.try_lock();
+                assert!(state.is_ok(), "callback under original completion lock");
+                if let Ok(mut state) = state {
+                    let result = state.poll_result(Waker::noop());
+                    assert!(result.is_ready(), "original terminal not published");
+                    if let Poll::Ready(result) = result {
+                        *self.consumed.lock().unwrap_or_else(PoisonError::into_inner) =
+                            Some(result);
+                    }
+                }
             }
         }
         if let Some(failure) = &self.failure
@@ -132,7 +136,7 @@ where
             && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
         {
             failure.panics.fetch_add(1, Ordering::SeqCst);
-            panic!("original subscriber control: {}", failure.field);
+            (failure.panic)(failure.field);
         }
     }
     fn on_close(&self, id: tracing::Id, context: LayerContext<'_, S>) {
@@ -150,7 +154,7 @@ where
             && failure.seen.fetch_add(1, Ordering::SeqCst) + 1 == failure.occurrence
         {
             failure.panics.fetch_add(1, Ordering::SeqCst);
-            panic!("original subscriber control: {}", failure.field);
+            (failure.panic)(failure.field);
         }
     }
 }
@@ -516,6 +520,7 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                 occurrence,
                 seen: AtomicUsize::new(0),
                 panics: AtomicUsize::new(0),
+                panic: |field| panic!("original subscriber control: {field}"),
             });
             let probe = Probe {
                 admission: Arc::clone(&workers.admission),

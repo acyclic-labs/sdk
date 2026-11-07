@@ -249,11 +249,26 @@ mod original {
     };
     use crate::demand::NativeDemandReadMeter;
     use std::os::windows::io::AsHandle;
+    fn observe_retirement(shared: &Arc<Shared>) -> std::sync::mpsc::Receiver<bool> {
+        let observer = Arc::downgrade(shared);
+        let (complete, completed) = std::sync::mpsc::channel();
+        *shared.delivery.after_retirement.lock().unwrap() = Some(Box::new(move || {
+            let observer = observer.upgrade().expect("live physical retirement owner");
+            complete
+                .send(
+                    observer.delivery.is_retired()
+                        && observer.reads.try_lock().is_some()
+                        && observer.cleanup.try_lock().is_ok(),
+                )
+                .unwrap();
+        }));
+        completed
+    }
     fn wait_retired(shared: &Shared) {
         assert!(
             shared
                 .wait_for(|| {
-                    if shared.stop_completed.load(Ordering::Acquire) {
+                    if shared.delivery.is_retired() {
                         Ok(true)
                     } else if shared.parked.load(Ordering::Acquire) {
                         Err(DemandError::NativeWorkUnavailable)
@@ -359,8 +374,13 @@ mod original {
             .native_wait_cancellation
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(wait.clone());
+        let retired = observe_retirement(&watch.shared);
         let result = watch.stop_with_cleanup_wait(&wait);
         assert!(matches!(result, Err(DemandError::Cancelled)), "{result:?}");
+        assert!(
+            retired.recv()?,
+            "physical publication releases original reads"
+        );
         assert!(wait.is_cancelled());
         assert!(watch.is_stopped());
         assert_retired(&watch.shared);
@@ -408,6 +428,7 @@ mod original {
         let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
         let watch = driver(&held, &mut work)?;
         let completion = Arc::clone(&watch.shared);
+        let retired = observe_retirement(&completion);
         let reads = completion.lock_reads();
         let before = birth.with_original_leaf(|work| work.work);
         let live = birth.with_original_leaf(|work| work.live_allocation_bytes());
@@ -415,6 +436,10 @@ mod original {
         birth.with_original_leaf(DemandWork::poison_native_original_work);
         drop(reads);
         drop(watch);
+        assert!(
+            retired.recv()?,
+            "physical publication releases original reads"
+        );
         wait_retired(&completion);
         no_growth(&birth, before, budget);
         birth.with_original_leaf(|work| {

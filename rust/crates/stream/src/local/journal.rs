@@ -234,9 +234,13 @@ impl Journal {
         })?;
         match work {
             Some(work) => {
-                lease.flush(|file| work.sync(|| sync_file(file, LocalDurability::FullFlush)))?
+                lease.flush(|file| {
+                    work.sync(|| file.sync_file(acyclic_native_runtime::Durability::Full))
+                })?;
             }
-            None => lease.flush(|file| sync_file(file, LocalDurability::FullFlush))?,
+            None => {
+                lease.flush(|file| file.sync_file(acyclic_native_runtime::Durability::Full))?;
+            }
         }
         self.epoch = epoch;
         self.operations = 0;

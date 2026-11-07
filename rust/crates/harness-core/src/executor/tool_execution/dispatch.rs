@@ -31,7 +31,10 @@ impl<'io> StockExecution<'io> {
         let dispatch = if started || replayed.is_some() {
             None
         } else {
-            match tool.executor.dispatch(invocation, context.as_ref()) {
+            match tool
+                .executor
+                .dispatch(invocation, context.as_ref(), self.native_work())
+            {
                 Ok(dispatch) => dispatch,
                 Err(refusal @ Error::Target(_)) => {
                     return self
@@ -139,7 +142,9 @@ impl<'io> StockExecution<'io> {
         } else if let Some(result) = composed {
             result
         } else {
-            let cancellation = tool.executor.cancellation(invocation, context.as_ref())?;
+            let cancellation =
+                tool.executor
+                    .cancellation(invocation, context.as_ref(), self.native_work())?;
             self.observe_tool_cancellation(
                 journal,
                 identity,

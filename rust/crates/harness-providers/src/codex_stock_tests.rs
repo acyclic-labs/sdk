@@ -124,7 +124,10 @@ async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_led
             assert!(custody.work().shares_allocation_context(&work));
             assert!(custody.work().shares_ledger(&work));
             assert_eq!(count.request_digest, request.request_digest());
-            assert_eq!(count.input_tokens, provider.usage.codex_estimate(&request)?);
+            assert_eq!(
+                count.input_tokens,
+                provider.accounting.usage.codex_estimate(&request)?
+            );
             assert_eq!(work.receipt().items_examined, prior + completed_items);
             drop((count, custody));
         } else {
