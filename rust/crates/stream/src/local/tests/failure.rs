@@ -125,7 +125,7 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 ),
                 Box::pin(
                     packet
-                        .finish(OwnedBytes::from_static(b"queued prepared record").into())
+                        .finish(crate::OwnedBytes::from_static(b"queued prepared record").into())
                         .map(observed),
                 ),
             ];
