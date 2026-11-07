@@ -923,7 +923,7 @@ const claims = {
     "failed input starved another ready subscription", [],
     { positive: [
       "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
-      "local::runtime::tests::retry::an_unchanged_guard_refusal_settles_instead_of_retrying_forever",
+      "local::runtime::tests::retry::guard_refusals_distinguish_unchanged_observations_from_source_changes",
     ] },
   ],
   "seeded-runtime-configuration": [
