@@ -113,10 +113,11 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         let error = provider.count_tokens(&request, 0).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
-        // Only a refusal carries its bounded body excerpt, as on dispatch.
+        // A refusal or a non-context 400 carries its bounded body excerpt, as on
+        // dispatch; an authorization failure never does.
         assert_eq!(
             error.to_string().contains("fixture-secret"),
-            code == acyclic_harness_core::wire::ErrorCode::Unavailable
+            code != acyclic_harness_core::wire::ErrorCode::Unauthorized
         );
     }
     for body in [

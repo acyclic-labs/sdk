@@ -5,6 +5,7 @@ use crate::{
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     model::{Model, ModelDispatch, ModelSampling, ToolCall},
     resources::ProviderRef,
+    tool::ToolDefinition,
 };
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -83,7 +84,14 @@ fn request(text: String) -> ModelRequest {
             },
         ],
         compose_tools: false,
-        tools: Vec::new(),
+        tools: vec![ToolDefinition {
+            name: "read".into(),
+            revision: "generated".into(),
+            description: "Read".into(),
+            input_schema: json!({"type":"object"}),
+            output_schema: json!({"type":"object"}),
+            projection_schema: json!({"type":"object"}),
+        }],
         sampling: ModelSampling::default(),
         max_output_tokens: None,
     }
@@ -224,7 +232,7 @@ fn codec_preserves_sdk_tool_links_and_original_evidence() -> Result<()> {
 
 #[test]
 fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<()> {
-    use crate::{conversation::Limits, model::PreparedModelRequest, tool::ToolDefinition};
+    use crate::{conversation::Limits, model::PreparedModelRequest};
     for arguments in [
         Value::Null,
         json!(false),
@@ -234,14 +242,6 @@ fn admitted_grouped_results_and_refused_arguments_remain_exportable() -> Result<
         json!({}),
     ] {
         let mut request = request("generated parallel calls".into());
-        request.tools = vec![ToolDefinition {
-            name: "read".into(),
-            revision: "generated".into(),
-            description: "Read".into(),
-            input_schema: json!({"type":"object"}),
-            output_schema: json!({"type":"object"}),
-            projection_schema: json!({"type":"object"}),
-        }];
         request.messages[1].content = ModelContent::Parts(
             (0..3)
                 .map(|index| {

@@ -8,22 +8,26 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
         .enable_all()
         .build()
         .map_err(storage)?;
+    let (_directory, _state, harness, publisher) =
+        runtime.block_on(super::observed_cost::cost_fixture())?;
     let mut observed = Vec::new();
     for once in [false, true] {
-        let (_directory, _state, harness, publisher) =
-            runtime.block_on(super::observed_cost::cost_fixture())?;
+        let path = if once {
+            "captured-once"
+        } else {
+            "captured-path"
+        };
         let bytes = vec![b'r'; 1024 * 1024];
         let operation = OperationId::new();
-        let started = std::time::Instant::now();
         let (file, _) = runtime.block_on(async {
             if once {
                 publisher
                     .stage_once(
                         operation,
-                        "captured-runtime-cost",
+                        path,
                         &bytes,
                         "text/plain",
-                        "captured-runtime-cost",
+                        path,
                         Default::default(),
                     )?
                     .await
@@ -31,10 +35,10 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
                 publisher
                     .stage(
                         operation,
-                        "captured-runtime-cost",
+                        path,
                         &bytes,
                         "text/plain",
-                        "captured-runtime-cost",
+                        path,
                         Default::default(),
                     )?
                     .await
@@ -54,7 +58,6 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
             .map_err(storage)?;
         let mut counts = Vec::new();
         for reference in [&file, &wire] {
-            let admitted = std::time::Instant::now();
             let (result, trace) = acyclic_test_support::differential::observe(
                 || (),
                 |()| {
@@ -70,38 +73,15 @@ fn captured_checkout_publications_keep_their_verified_payload_evidence() -> Resu
                 .into_iter()
                 .filter(|(operation, _)| *operation == "resolved content body")
                 .collect();
-            eprintln!(
-                "CAPTURED_PUBLICATION once={once} wire={} read_calls={} requested_bytes={} admission_us={}",
-                counts.len() == 1,
-                reads.len(),
-                reads.iter().map(|(_, n)| n).sum::<u64>(),
-                admitted.elapsed().as_micros()
-            );
             counts.push(reads.len());
         }
-        eprintln!(
-            "CAPTURED_PUBLICATION_TOTAL once={once} elapsed_us={}",
-            started.elapsed().as_micros()
-        );
         observed.push(counts);
-        runtime.block_on(harness.disconnect())?;
     }
     assert_eq!(
         observed,
         [vec![0, 1], vec![0, 1]],
         "local captured publications retain their evidence; serialized references require verification"
     );
-    Ok(())
-}
-
-#[test]
-fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
-    let (_directory, _state, harness, publisher) =
-        runtime.block_on(super::observed_cost::cost_fixture())?;
     let mut files = Vec::new();
     for byte in *b"ab" {
         files.push(runtime.block_on(async {
@@ -171,10 +151,6 @@ fn captured_publication_evidence_cannot_cross_a_same_length_rewrite() -> Result<
         reads.len(),
         1,
         "untrusted source metadata cannot mint publication evidence"
-    );
-    eprintln!(
-        "CAPTURED_REBIND_ADVERSARIAL changed_payload_rejected=true untrusted_source_reads={}",
-        reads.len()
     );
     runtime.block_on(harness.disconnect())?;
     Ok(())
