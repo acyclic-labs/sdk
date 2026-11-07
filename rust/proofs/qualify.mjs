@@ -171,7 +171,10 @@ const claims = {
     "cancelled journal append left its public follow parked", [],
     {
       runner: ["node", "rust/proofs/journal-follow-progress/run.mjs", "--cancellation"],
-      patchPath: "rust/proofs/journal-follow-progress/cancellation.patch",
+      mutations: [
+        { patch: "rust/proofs/journal-follow-progress/cancellation.patch", label: "missing-attempt-retirement", diagnostic: "cancelled journal append left its public follow parked" },
+        { patch: "rust/proofs/journal-follow-progress/cancellation-revision.patch", label: "missing-cancelled-revision-retirement", diagnostic: "cancelled journal append left its public follow parked" },
+      ],
       negativeExit: 1,
       failed: true,
       started: "journal public conditional cancellation START",
