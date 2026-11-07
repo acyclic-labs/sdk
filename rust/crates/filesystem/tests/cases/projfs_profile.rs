@@ -10,11 +10,17 @@ use std::time::Instant;
 #[path = "../support/native_access.rs"]
 mod native_access;
 
-#[tokio::test]
-async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT").is_some() {
-        return profile_external_client();
+#[test]
+fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(root) = std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT") {
+        profile_external_client(std::path::PathBuf::from(root))
+    } else {
+        profile_workload()
     }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn profile_workload() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("ACYCLIC_PROJFS_PROFILE_TRACING").is_some() {
         tracing::subscriber::set_global_default(
             tracing_subscriber::fmt()
@@ -154,10 +160,7 @@ fn phase(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn profile_external_client() -> Result<(), Box<dyn std::error::Error>> {
-    let root =
-        std::env::var_os("ACYCLIC_PROJFS_PROFILE_ROOT").ok_or("ProjFS client root missing")?;
-    let root = std::path::PathBuf::from(root);
+fn profile_external_client(root: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let (_, count) = profile_layout();
     phase("enumerate")?;
     let started = Instant::now();
