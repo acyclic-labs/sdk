@@ -28,7 +28,7 @@ proptest! {
             ToolRegistry::default(),
         ).with_compaction_policy(crate::context::CompactionPolicy::Disabled)
             .with_max_output_tokens(128).unwrap();
-        stock.limits.file_bytes = expected.len() as u64;
+        stock.limits.file_bytes = Some(expected.len() as u64);
         let check = |execution: &StockExecution<'_>| {
             let (bytes, digest, messages) = execution.summary_source_identity(&source).unwrap();
             assert_eq!(bytes.as_ref(), expected);
@@ -72,7 +72,7 @@ proptest! {
             });
             prop_assert!(observed.is_ok());
         }
-        stock.limits.file_bytes -= 1;
+        stock.limits.file_bytes = Some(expected.len() as u64 - 1);
         prop_assert!(matches!(StockExecution::ordinary(&stock).summary_source_identity(&source), Err(Error::Invalid(_))));
         for native in [false, true] {
             let observed = crate::test_support::accounted::accounted(native, 262_144, false, |io| {
