@@ -452,7 +452,10 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 /// path must fail the same oracle on both ordinary and larger terminal sizes.
 #[test]
 fn real_terminal_frame_cost() -> io::Result<()> {
+    use std::fmt::Write as _;
+
     const FRAMES: usize = 2;
+    let mut report = String::new();
     let (mut output, _guard) = real_terminal()?;
     for size in [Size::new(120, 40), Size::new(240, 70)] {
         let viewport = TerminalOptions {
@@ -497,9 +500,18 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             } else {
                 regions::one_native_submission(calls.get(), writes, FRAMES, false);
             }
+            writeln!(
+                report,
+                "{} {}x{} per_command={per_command} frames={FRAMES} submissions={} writes={writes}",
+                std::env::consts::OS,
+                size.width,
+                size.height,
+                calls.get()
+            )
+            .unwrap();
         }
     }
-    Ok(())
+    regions::publish_report(&report)
 }
 
 /// A frame far beyond any realistic screen (16 MiB) reaches the real console:

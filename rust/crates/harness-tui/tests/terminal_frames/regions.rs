@@ -112,6 +112,10 @@ fn real_terminal_region_cost() -> io::Result<()> {
             }
         }
     }
+    publish_report(&report)
+}
+
+pub(super) fn publish_report(report: &str) -> io::Result<()> {
     eprint!("{report}");
     if let Some(path) = std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT") {
         std::fs::write(path, report)?;
