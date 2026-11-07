@@ -1062,6 +1062,7 @@ async fn run<T: TurnDriver + ?Sized>(
     if let Some(end) = turn.drops {
         state.drop_before(end);
     }
+    let spawned = outs.len();
     outs.extend(turn.outs);
     let wait = match turn.wait {
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
@@ -1082,9 +1083,10 @@ async fn run<T: TurnDriver + ?Sized>(
         ),
         Wait::Until(until) => {
             // Only an open child can still settle; one already done has and
-            // counts now. A condition already holding continues at once and
-            // asks no one; one the open children can no longer meet waits
-            // only for its timeout, or continues at once without one.
+            // counts now. This step's own spawns are open children too, so
+            // apply them first: a wait on a child spawned in the same step
+            // asks it. Applying is idempotent for the step's later pass.
+            apply_spawns(state, outs, spawned, MAX_OPEN_CHILDREN);
             let open: BTreeSet<AgentPath> = until
                 .awaited
                 .intersection(&state.open_children)
@@ -1092,22 +1094,25 @@ async fn run<T: TurnDriver + ?Sized>(
                 .collect();
             let settled = u32::try_from(until.awaited.len() - open.len()).unwrap_or(u32::MAX);
             let need = until.need.saturating_sub(settled);
-            let reachable = usize::try_from(need).is_ok_and(|need| need <= open.len());
             let deadline = until
                 .timeout_ms
                 .map(|timeout| now_unix_ms.saturating_add(timeout));
-            if need == 0 || !(reachable || deadline.is_some()) {
-                (kernel::Wait::Continue, None, None)
-            } else {
-                if reachable {
-                    outs.extend(open.iter().map(|child| Out::Send {
-                        to: child.clone(),
-                        record: InboxRecord::Awaited,
-                    }));
-                    awaiting = (open, need);
-                }
-                (kernel::Wait::Await(deadline), None, None)
+            let sleep = until.awaited.is_empty();
+            let reachable = open.len();
+            let wait = kernel::until(need, reachable, sleep, deadline);
+            #[cfg(feature = "test-support")]
+            control_trace::record(
+                state,
+                Decision::Until(need, reachable, sleep, deadline, wait),
+            );
+            if matches!(wait, kernel::Wait::Await(_)) {
+                outs.extend(open.iter().map(|child| Out::Send {
+                    to: child.clone(),
+                    record: InboxRecord::Awaited,
+                }));
+                awaiting = (open, need);
             }
+            (wait, None, None)
         }
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),

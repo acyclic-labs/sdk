@@ -67,8 +67,8 @@ fn require_publication_time(
     require_publication_fence(publication.fence(), "volume")
 }
 
-/// Refuses a write outside its decision's validity interval, naming the
-/// fence, its interval and the clock reading that fell outside it.
+/// Refuses a write after its decision expires, naming the fence, its expiry
+/// and the clock reading that reached it.
 fn require_publication_fence(
     fence: Option<acyclic_fs::access::PolicyFence>,
     which: &str,
@@ -76,15 +76,11 @@ fn require_publication_fence(
     let now = access::access_now()?;
     match fence {
         Some(fence) if !fence.valid_at(now) => {
-            let (from, until) = fence.interval();
-            let until = until.map_or_else(|| "unbounded".to_owned(), |until| until.to_string());
-            let state = if now < from {
-                "not yet valid"
-            } else {
-                "expired"
-            };
+            let until = fence
+                .valid_until()
+                .map_or_else(|| "unbounded".to_owned(), |until| until.to_string());
             Err(Error::Unauthorized(format!(
-                "filesystem write authority {state}: {which} fence valid from {from} until {until}, now {now} (Unix seconds)"
+                "filesystem write authority expired: {which} fence valid until {until}, now {now} (Unix seconds)"
             )))
         }
         _ => Ok(()),
