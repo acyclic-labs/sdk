@@ -1,0 +1,9 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -550,5 +550,5 @@
+                                 ordinal,
+                             };
+-                            let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
++                            let lookup = tool_key(dispatch.operation_id, &call_id.clone(), io.as_ref())?;
+                             let slot = tools.get_or_try_insert_with(
+                                 lookup,

@@ -1,12 +1,9 @@
 use super::{error, model_error, to_js_json};
-use crate::ResolvedModel;
 use acyclic_harness_core::model::{ModelDispatch, ModelEvent};
 use acyclic_stream::BoxProviderStream;
-use futures::StreamExt as _;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::Arc,
     task::Poll,
 };
 use wasm_bindgen::prelude::*;
@@ -64,17 +61,11 @@ struct State {
 pub struct WasmModelStream(Rc<State>);
 
 pub(super) fn iterator(
-    provider: Arc<ResolvedModel>,
     prepared: Rc<crate::prepared::PreparedInput>,
     dispatch: ModelDispatch,
     signal: JsValue,
 ) -> JsValue {
-    let stream = Box::pin(async_stream::try_stream! {
-        let auth = crate::dispatch::authenticate(&provider).await?;
-        let events = crate::dispatch::generate_encoded(&provider, &prepared.request, dispatch, prepared.generation.clone(), prepared.cache, auth, crate::tool_names::Names::new(prepared.request.request()));
-        let mut events = core::pin::pin!(events);
-        while let Some(event) = events.next().await { yield event?; }
-    });
+    let stream = Box::pin(crate::prepared::PreparedInput::generate(prepared, dispatch));
     provider_iterator(
         WasmModelStream(Rc::new(State {
             stream: RefCell::new(Some(stream)),

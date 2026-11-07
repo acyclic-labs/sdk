@@ -1,0 +1,12 @@
+--- a/rust/crates/harness-core/src/model/recorded.rs
++++ b/rust/crates/harness-core/src/model/recorded.rs
+@@ -166,8 +166,5 @@
+                 Ok(result)
+             }
+-            Err(error) => {
+-                self.next.retire_if(key, |next| *next == 0);
+-                Err(error)
+-            }
++            Err(error) => Err(error),
+         }
+     }

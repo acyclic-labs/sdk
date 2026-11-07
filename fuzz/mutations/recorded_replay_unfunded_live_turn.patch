@@ -1,61 +1,9 @@
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -257,7 +257,7 @@
-     // Original source coordinates: copy the outcome only if it is requested.
-     tools: HashMap<(OperationId, String), ([u8; 32], usize, usize)>,
-     /// Turns that went live; each stays live.
--    live: FixedIndex<bool, crate::NativeCustody, 16>,
-+    live: std::collections::HashSet<OperationId>,
-     diverged: bool,
- }
- 
-@@ -297,10 +297,7 @@
-             )
-             .expect("original replay admission owns its registration");
-         *selection = Some(ReplaySelection::Live);
--        *replay
--            .live
--            .get_retained_mut(self.dispatch.operation_id.into_bytes(), |_| true, |_| {})
--            .expect("original live admission retains its funded turn slot") = true;
-+        replay.live.insert(self.dispatch.operation_id);
-         let first = !std::mem::replace(&mut replay.diverged, true);
-         self.accepted = true;
-         drop(replay);
-@@ -335,9 +332,6 @@
- }
- 
- /// Serves a [`Recording`] while requests match it, then the live provider.
--/// Native live-turn storage is admitted before calling that provider. Accepting
--/// its returned generation object only publishes into the retained turn slot;
--/// it never grows or resizes a membership table.
- pub struct RecordedModel {
-     live: Arc<dyn ModelProvider>,
-     recording: Arc<Recording>,
-@@ -421,11 +415,7 @@
-         }
-         // Retained dispatches and live turns cannot select another recording.
-         // Only a new replay candidate needs the request's semantic identity.
--        let key = if live
--            .get(dispatch.operation_id.into_bytes(), &mut CursorWork(work))?
--            .copied()
--            .unwrap_or(false)
--        {
-+        let key = if live.contains(&dispatch.operation_id) {
-             None
-         } else {
-             Some(request.replay_key()?)
-@@ -451,14 +441,6 @@
-         match output {
-             Some(output) => Ok(ReplayPreparation::Recorded(output)),
-             None => {
--                // Fund the permanent live-turn slot before invoking the live
--                // provider. Acceptance only publishes into retained storage;
--                // a refused builder leaves the original turn non-live.
--                live.get_or_try_insert_with(
--                    dispatch.operation_id.into_bytes(),
--                    &mut CursorWork(work),
--                    |_| Ok(false),
--                )?;
-                 *selection = Some(ReplaySelection::Pending);
-                 Ok(ReplayPreparation::Live(ReplayAdmission {
-                     owner: self,
+@@ -606,5 +606,5 @@
+                     let turn = live.get_or_try_insert_with(
+                         dispatch.operation_id.into_bytes(),
+-                        &mut NativeIndexWork(work),
++                        &mut NativeIndexWork(None),
+                         |_| Ok(LiveTurn::default()),
+                     )?;

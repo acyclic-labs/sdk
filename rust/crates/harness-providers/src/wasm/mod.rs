@@ -275,7 +275,7 @@ impl WasmModelProvider {
         let signal = Reflect::get(&request, &"signal".into())?;
         let prepared = cancel::run(
             async {
-                crate::prepared::PreparedInput::new(&self.provider, admitted)
+                crate::prepared::PreparedInput::new(self.provider.clone(), admitted)
                     .await
                     .map_err(model_error)
             },
@@ -283,7 +283,6 @@ impl WasmModelProvider {
         )
         .await?;
         Ok(WasmPreparedModelRequest {
-            provider: self.provider.clone(),
             prepared: Rc::new(prepared),
             signal,
         })
@@ -315,7 +314,6 @@ impl WasmModelProvider {
 /// Immutable preparation owned by one request; no registry/global cache.
 #[wasm_bindgen]
 pub struct WasmPreparedModelRequest {
-    provider: Arc<ResolvedModel>,
     prepared: Rc<crate::prepared::PreparedInput>,
     signal: JsValue,
 }
@@ -325,12 +323,7 @@ impl WasmPreparedModelRequest {
     #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "PublicModelTokenCount")]
     pub async fn count_tokens(&self) -> Result<JsValue, JsValue> {
         let count = cancel::run(
-            async {
-                self.prepared
-                    .count(&self.provider)
-                    .await
-                    .map_err(model_error)
-            },
+            async { self.prepared.count().await.map_err(model_error) },
             self.signal.clone(),
         )
         .await?;
@@ -366,7 +359,6 @@ impl WasmPreparedModelRequest {
             request_digest: self.prepared.request.request_digest(),
         };
         Ok(stream::iterator(
-            self.provider.clone(),
             self.prepared.clone(),
             dispatch,
             self.signal.clone(),

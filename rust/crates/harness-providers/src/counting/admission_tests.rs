@@ -410,3 +410,92 @@ async fn admission_within_the_ceiling_sends_no_count_request() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn local_admission_does_not_copy_transport_headers() -> Result<()> {
+    // Initialize the executor's thread-local wake owner outside the measurement.
+    futures::executor::block_on(async {});
+    let sends = Arc::new(Sends(std::sync::atomic::AtomicUsize::new(0)));
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::from([
+            ("openai".into(), "supplied-key".into()),
+            ("anthropic".into(), "supplied-key".into()),
+            ("gemini".into(), "supplied-key".into()),
+        ])),
+        sends.clone(),
+    );
+    // An OpenAI-family model served by the configurable Chat endpoint.
+    let mut local = registry.catalog()["vllm"].as_ref().clone();
+    local.models = registry.catalog()["openai"].models.clone();
+    local.token_counter = Some(crate::TokenCounterSpec {
+        path: "tokenize".into(),
+        adapter: Adapter::Chat,
+        response_field: crate::TokenCountField::Count,
+        framing_tokens: 0,
+    });
+    registry.register("vllm".into(), local)?;
+    for id in ["openai", "anthropic", "gemini", "vllm"] {
+        let model = registry.catalog()[id].models.keys().next().unwrap();
+        let selection = format!("{id}/{model}");
+        for native in [false, true] {
+            let measure = |registry: &Registry| {
+                let provider = registry.resolve(&selection).unwrap();
+                let (request, _) = request(&provider).unwrap();
+                let cancel = acyclic_fs::CancellationToken::new();
+                let work = acyclic_fs::NativeMaterializationWork::new(
+                    acyclic_fs::performance::work_budget(1_000_000, 4_000_000),
+                    &cancel,
+                )
+                .unwrap();
+                let retained = work.live_allocation_bytes();
+                let mut count = None;
+                let allocations = acyclic_test_support::measure(|| {
+                    count = Some(if native {
+                        let (count, custody) = futures::executor::block_on(
+                            provider
+                                .count_tokens_with_native_work(&request, u64::MAX, &work)
+                                .unwrap(),
+                        )
+                        .unwrap();
+                        (count, Some(custody))
+                    } else {
+                        (
+                            futures::executor::block_on(provider.count_tokens(&request, u64::MAX))
+                                .unwrap(),
+                            None,
+                        )
+                    });
+                });
+                let count = count.unwrap();
+                assert_eq!(count.0.request_digest, request.request_digest());
+                let observed = count.0.input_tokens;
+                drop(count);
+                assert_eq!(work.live_allocation_bytes(), retained);
+                (observed, allocations)
+            };
+            let (expected, baseline) = measure(&registry);
+            let mut config = registry.catalog()[id].as_ref().clone();
+            config
+                .headers
+                .insert("x-input-metadata".into(), "x".repeat(4096));
+            registry.register(id.into(), config.clone())?;
+            let (actual, with_headers) = measure(&registry);
+            assert_eq!(actual, expected);
+            eprintln!(
+                "local admission allocations: {id}, native={native}, baseline={:?}, configured={:?}",
+                (baseline.count_total, baseline.bytes_total),
+                (with_headers.count_total, with_headers.bytes_total)
+            );
+            assert_eq!(
+                (with_headers.count_total, with_headers.bytes_total),
+                (baseline.count_total, baseline.bytes_total),
+                "local admission must not copy unused transport headers: {id}, native={native}"
+            );
+            config.headers.clear();
+            registry.register(id.into(), config)?;
+        }
+    }
+    assert_eq!(sends.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    Ok(())
+}

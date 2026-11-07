@@ -63,25 +63,12 @@ fn pair(
     invalid: bool,
     restore_old_factory: bool,
 ) -> [(Output, Vec<(&'static str, u64)>); 2] {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            crate::executor::json::baseline::LEGACY.set(false);
-        }
-    }
-    let _reset = Reset;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let mut first = true;
     differential::pair::<_, _, (&'static str, u64)>(
-        || {
-            crate::executor::json::baseline::LEGACY.set(first);
-            first = false;
-            runtime.block_on(initialize(text, invalid))
-        },
+        || runtime.block_on(initialize(text, invalid)),
         |(journal, executor, input, calls), old| {
-            crate::executor::json::baseline::LEGACY.set(old);
             let mut result = None;
             let allocations = acyclic_test_support::measure(|| {
                 // Pinned here so the runtime never boxes it: the measured
@@ -131,8 +118,27 @@ fn pair(
     )
 }
 
-fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
-    let [(old, old_trace), (new, new_trace)] = pair(text, invalid, restore);
+fn physical(
+    old: acyclic_test_support::AllocationInfo,
+    new: acyclic_test_support::AllocationInfo,
+    invalid: bool,
+) -> TestCaseResult {
+    // Both factories use the production codec. Successful preparation must save
+    // allocation operations and total allocated bytes independently of encoding.
+    prop_assert!(
+        if invalid {
+            new.count_total <= old.count_total && new.bytes_total <= old.bytes_total
+        } else {
+            new.count_total < old.count_total && new.bytes_total < old.bytes_total
+        },
+        "preparation physical work did not improve: old={old:?}, new={new:?}"
+    );
+    Ok(())
+}
+
+fn check(text: &[String; 3], invalid: bool) -> TestCaseResult {
+    let [(old, old_trace), (new, new_trace)] = pair(text, invalid, false);
+    physical(old.4, new.4, invalid)?;
     let semantic = |trace: &Vec<(&'static str, u64)>| {
         trace
             .iter()
@@ -155,7 +161,6 @@ fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
             && old.1 == new.1
             && old.2 == new.2
             && old.3 == new.3
-            && (invalid || new.4.count_total < old.4.count_total)
             && semantic(&old_trace) == semantic(&new_trace)
             && preparations(&old_trace) == if invalid { 0 } else { 4 }
             && preparations(&new_trace) == if invalid { 0 } else { 1 }
@@ -171,18 +176,19 @@ proptest! {
     fn preparations_keep_full_requests_journal_bytes_errors_and_operation_trace(
         text in prop::array::uniform3("[a-z0-9\\x00é🦀]{0,16}"),
     ) {
-        for invalid in [false, true] { check(&text, invalid, false)?; }
+        for invalid in [false, true] { check(&text, invalid)?; }
     }
 }
 
 #[test]
 fn restoring_redundant_request_preparations_is_detected() {
     let text = std::array::from_fn(|_| String::new());
-    check(&text, false, false).unwrap();
-    let error = check(&text, false, true).unwrap_err();
+    check(&text, false).unwrap();
+    let [(old, _), (restored, _)] = pair(&text, false, true);
+    let error = physical(old.4, restored.4, false).unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("independent preparation differs or repeats removed work")
+            .contains("preparation physical work did not improve")
     );
 }

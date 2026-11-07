@@ -42,7 +42,7 @@ fn fixture(reads: usize) -> Vec<ModelMessage> {
     }
     messages
 }
-fn result_body(message: &ModelMessage) -> &str {
+fn result_body(message: &ModelMessage) -> &String {
     let ModelContent::Part(ModelContentPart::ToolResult {
         content: ToolResultContent::Json { value },
         ..
@@ -50,10 +50,10 @@ fn result_body(message: &ModelMessage) -> &str {
     else {
         panic!("result exchange lost")
     };
-    value
-        .get("text")
-        .and_then(Value::as_str)
-        .expect("read text")
+    match value.get("text") {
+        Some(Value::String(body)) => body,
+        _ => panic!("read text"),
+    }
 }
 #[test]
 fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
@@ -130,10 +130,11 @@ proptest! {
                 // that protocol separately, rather than fabricating its events.
                 prop_assert_eq!(trace.iter().filter(|(name,_)|*name=="verify").copied().collect::<Vec<_>>(),baseline_trace);
                 let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).copied().collect();
-                prop_assert_eq!(custody.len(),if native { 2*count } else { 0 });
-                for transfer in custody.chunks_exact(2) {
-                    prop_assert_eq!(transfer[0].0,"custody-take");
-                    prop_assert_eq!(transfer[1],("custody-absorb",result_body(&baseline[2]).len() as u64));
+                // Native formatting funds each output directly, then transfers its
+                // actual retained capacity into the preparation owner once.
+                prop_assert_eq!(custody.len(),if native { count } else { 0 });
+                for (transfer,message) in custody.iter().zip(output[2..].iter().step_by(2)) {
+                    prop_assert_eq!(*transfer,("custody-absorb",result_body(message).capacity() as u64));
                 }
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
             }

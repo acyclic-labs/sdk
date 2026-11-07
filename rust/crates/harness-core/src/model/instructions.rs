@@ -44,6 +44,8 @@ impl<'a> InstructionSource<'a> {
 
     /// Exact UTF-8 frame length, before reading its body.
     pub fn framed_bytes(self) -> Result<u64> {
+        #[cfg(any(test, feature = "test-support"))]
+        acyclic_differential::record(("instruction frame plans", 1u64));
         let overhead = "#  instructions for \n\n<INSTRUCTIONS>\n\n</INSTRUCTIONS>".len() as u64;
         self.file
             .descriptor()

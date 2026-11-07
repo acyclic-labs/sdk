@@ -50,17 +50,19 @@ const loadBinding = retryableOnce(async (): Promise<InferenceWasm> => {
   return module;
 });
 
-/** Validate generated protobuf bytes without JSON or safe-integer conversion. */
+/** Return the validated protobuf bytes without JSON or safe-integer conversion. */
 export async function validateContract<Schema extends DescMessage>(
   kind: string,
   schema: Schema,
   value: MessageShape<Schema>,
   expected: Uint8Array = empty,
   related: Uint8Array = empty,
-): Promise<void> {
+): Promise<Uint8Array> {
   const module = await loadBinding();
   try {
-    module.validate_customer_wire(kind, toBinary(schema, value), expected, related);
+    const bytes = toBinary(schema, value);
+    module.validate_customer_wire(kind, bytes, expected, related);
+    return bytes;
   } catch (error) {
     throw protocolError(error);
   }

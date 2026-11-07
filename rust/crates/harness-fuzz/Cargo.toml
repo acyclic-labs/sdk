@@ -101,6 +101,7 @@ native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-loca
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 native-input = ["dep:acyclic-harness", "dep:tempfile", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
 runtime = ["native-settings", "filesystem-local", "native-execution", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+replay = ["core", "acyclic-harness-core/filesystem"]
 # Harness sources included by `#[path]` gate native helpers on these features;
 # the fuzz runtime compiles them as the native harness it depends on does.
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
@@ -351,6 +352,14 @@ bench = false
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "recorded_replay"
+path = "fuzz_targets/recorded_replay.rs"
+required-features = ["replay"]
 test = false
 doc = false
 bench = false

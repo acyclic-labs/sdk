@@ -91,21 +91,11 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (mut bytes, nodes) = request.projection_shape();
-            for message in &request.request().messages {
-                bytes = bytes
-                    .checked_add(crate::files::extra_bytes(
-                        &message.content,
-                        provider.files.maximum_bytes,
-                    )? as u64)
-                    .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
-            }
-            crate::native::reserve(
+            crate::native::reserve_request(
+                provider,
+                request,
+                (auth.0.as_deref(), auth.1.as_deref()),
                 work,
-                bytes,
-                nodes,
-                auth.0.as_ref().map_or(0, |key| key.len() as u64)
-                    + auth.1.as_ref().map_or(0, |account| account.len() as u64),
             )
         })
         .transpose()?;
@@ -119,7 +109,7 @@ pub(crate) async fn count(
         // Retain table custody until after its projected generation is encoded.
         let _name_custody;
         let mut files =
-            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
+            crate::files::resolve(&provider.files, request, content_io.as_ref()).await?;
         let names = {
             let (names, custody) = crate::tool_names::Names::funded(request.request(), work)?;
             _name_custody = custody;
@@ -129,10 +119,9 @@ pub(crate) async fn count(
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
         let bytes = wire::body(generation, &provider.model.name, spec.adapter)?;
-        let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
-        Ok::<_, Error>((url, headers, bytes, plan))
+        Ok::<_, Error>((url, bytes, plan))
     }
     .await;
     #[cfg(not(target_arch = "wasm32"))]
@@ -145,10 +134,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, mut count) = prepared?;
-    drop(auth);
-    #[cfg(not(target_arch = "wasm32"))]
-    drop(auth_custody);
+    let (url, bytes, mut count) = prepared?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         count_custody = admission
@@ -171,6 +157,10 @@ pub(crate) async fn count(
         count.input_tokens = bound;
         return Ok((count, count_custody));
     }
+    let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
+    drop(auth);
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(auth_custody);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(hold) = admission.as_mut() {
         let retained = std::mem::size_of::<HttpRequest>()

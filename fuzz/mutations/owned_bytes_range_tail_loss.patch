@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/owned_bytes/unique.rs b/rust/crates/stream/src/owned_bytes/unique.rs
+index 5fd766506f..5c4bbaee90 100644
+--- a/rust/crates/stream/src/owned_bytes/unique.rs
++++ b/rust/crates/stream/src/owned_bytes/unique.rs
+@@ -186,7 +186,7 @@ fn replace(data: &mut Vec<u8>, range: std::ops::Range<usize>, parts: &[&[u8]], s
+             .unwrap_or_else(|| unreachable!("borrowed fragments retain their length"))
+     })
+     .take(size);
+-    drop(data.splice(range, bytes));
++    drop(data.splice(range.start..data.len(), bytes));
+ }
+ 
+ #[cfg(not(target_arch = "wasm32"))]

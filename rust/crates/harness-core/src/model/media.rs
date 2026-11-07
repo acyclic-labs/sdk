@@ -15,23 +15,13 @@ pub enum FileProjectionPolicy {
     Native(Box<NativeMediaPolicy>),
 }
 impl FileProjectionPolicy {
-    /// Source bytes projected by this policy, including instruction framing.
-    /// This planning operation never reads the pinned file.
-    pub fn projected_bytes(&self, file: &FileRef) -> Result<u64> {
-        match self {
-            Self::ProjectInstructions(source) => {
-                InstructionSource::with_identity(file, source).framed_bytes()
-            }
-            _ => Ok(file.descriptor().byte_length()),
-        }
-    }
-
-    /// Checks adapter-independent projection support and caller-provided credit.
-    /// Refusal precedes reading or allocating a pinned body.
-    pub fn validate_projection(&self, file: &FileRef, maximum: u64) -> Result<()> {
+    /// Admits projection support and caller-provided credit, returning the
+    /// projected source bytes including instruction framing, or zero for a
+    /// reference. Refusal precedes reading or allocating a pinned body.
+    pub fn projected_bytes(&self, file: &FileRef, maximum: u64) -> Result<u64> {
         let policy = self;
         match policy {
-            FileProjectionPolicy::Reference => (),
+            FileProjectionPolicy::Reference => return Ok(0),
             FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
                 if !FileProjectionPolicy::is_text(file.descriptor().media_type()) {
                     return Err(Error::Unsupported(
@@ -57,25 +47,27 @@ impl FileProjectionPolicy {
                 }
             }
         }
-        if !matches!(policy, FileProjectionPolicy::Reference) {
-            let bytes = policy.projected_bytes(file)?;
-            let mut byte_limit = maximum;
-            if let FileProjectionPolicy::Native(native) = policy {
-                byte_limit = byte_limit.min(native.maximum_bytes);
-                let work = native.maximum_work;
-                if bytes > work {
-                    return Err(Error::Invalid(
-                        "model files exceed projection work limit".into(),
-                    ));
-                }
+        let bytes = match policy {
+            Self::ProjectInstructions(source) => {
+                InstructionSource::with_identity(file, source).framed_bytes()?
             }
-            if bytes > byte_limit {
+            _ => file.descriptor().byte_length(),
+        };
+        let mut byte_limit = maximum;
+        if let FileProjectionPolicy::Native(native) = policy {
+            byte_limit = byte_limit.min(native.maximum_bytes);
+            if bytes > native.maximum_work {
                 return Err(Error::Invalid(
-                    "model files exceed projection byte limit".into(),
+                    "model files exceed projection work limit".into(),
                 ));
             }
         }
-        Ok(())
+        if bytes > byte_limit {
+            return Err(Error::Invalid(
+                "model files exceed projection byte limit".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Whether a file of `media_type` projects as bounded text

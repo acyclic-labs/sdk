@@ -39,7 +39,9 @@ pub(super) async fn seed(
         &mut None,
     )?;
     let host = FilesystemHost::new(
-        Fs::local(LocalOptions::new(directory)).await?,
+        Fs::local(LocalOptions::new(directory))
+            .await
+            .map_err(|error| format!("workspace seed filesystem open: {error}"))?,
         &provider,
         None,
     )?;
@@ -50,7 +52,11 @@ pub(super) async fn seed(
         VolumeOwner::Project("diff-e2e".into()),
         &mut None,
     )?;
-    let workspace = host.create_volume(&volume).await?.workspace;
+    let workspace = host
+        .create_volume(&volume)
+        .await
+        .map_err(|error| format!("workspace seed volume creation: {error}"))?
+        .workspace;
     let mut writes = vec![WorkspaceMutation::CreateDirectory {
         path: "/plans".into(),
     }];
@@ -59,7 +65,8 @@ pub(super) async fn seed(
         bytes: text.as_bytes().to_vec().into(),
     }));
     host.apply(&workspace, None, &writes, &IdempotencyKey::new("seed")?)
-        .await?;
+        .await
+        .map_err(|error| format!("workspace seed initial writes: {error}"))?;
     let issuer = AuthorityRoot::new(
         "diff-reader",
         [9; 32],
