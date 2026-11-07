@@ -47,6 +47,20 @@ pub fn check(bytes: &[u8]) {
         unknown(&captured[separator + 1..], &command),
         "captured writer recovery request refused"
     );
+    let captured = include_bytes!("../corpus/agent_controls/reply-bind-observation");
+    let separator = captured.iter().position(|byte| *byte == 0).unwrap();
+    let command = PreparedCommand::decode(&captured[..separator]).unwrap();
+    let reply = decode_agent_reply(&captured[separator + 1..], &command)
+        .expect("captured observation framing refused")
+        .expect("captured observation enrollment refused");
+    assert!(matches!(
+        reply,
+        AgentReply::Bound {
+            observation: Some(_),
+            ..
+        }
+    ));
+    success(&reply, &command);
     if let Ok(command) = PreparedCommand::from_bytes(bytes.to_vec()) {
         assert_eq!(command.command(), bytes);
         let decoded = command.decoded().unwrap();
