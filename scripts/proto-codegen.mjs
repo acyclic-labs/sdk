@@ -18,7 +18,7 @@ export function generate(args, { offline = false, stdio = "pipe" } = {}) {
   const commandArgs = binary === undefined ? cargoArguments(args, offline) : args;
   try {
     return execFileSync(binary ?? "cargo", commandArgs,
-      { cwd: root, encoding: "utf8", stdio, windowsHide: true });
+      { cwd: root, encoding: "utf8", stdio, maxBuffer: Infinity, windowsHide: true });
   } catch (cause) {
     const quote = value => `'${value.replaceAll("'", process.platform === "win32" ? "''" : "'\\''")}'`;
     const cargoArgs = binary === undefined ? commandArgs : cargoArguments(args, offline);
