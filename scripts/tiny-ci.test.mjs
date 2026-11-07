@@ -173,14 +173,8 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
-test('README approval guard runs on pull requests without manual dispatch',()=>{
- const guard=triggers(read('readme-guard.yml'));
- assert.match(guard,/^  pull_request_target:/m);
- assert.doesNotMatch(guard,/^  workflow_dispatch:/m);
-});
-
 test('heavy workflows are reachable only through the release caller',()=>{
- for(const name of workflows.filter(name=>![STATIC,'release.yml','readme-guard.yml'].includes(name))){
+ for(const name of workflows.filter(name=>![STATIC,'release.yml'].includes(name))){
   assert.match(triggers(read(name)),/workflow_call:/,name);
   assert.doesNotMatch(triggers(read(name)),/workflow_dispatch:/,name);
  }
