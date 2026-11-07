@@ -537,6 +537,7 @@ impl<M> Account<M> {
     }
 
     /// This account's medium.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn shared_medium(&self) -> Arc<M> {
         Arc::clone(&self.medium)
     }
@@ -548,6 +549,7 @@ impl<M> Account<M> {
     }
 
     /// The same account, sharing its state, over `medium`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
         Account {
             medium,

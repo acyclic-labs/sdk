@@ -414,7 +414,10 @@ use wait::WaitMeter;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod native_tests;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    any(test, feature = "native-watch", feature = "native-mount"),
+    not(target_arch = "wasm32")
+))]
 mod notification;
 #[cfg(test)]
 #[path = "../tests/cancellation.rs"]

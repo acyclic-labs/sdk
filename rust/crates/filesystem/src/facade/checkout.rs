@@ -151,7 +151,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .checkout_root(generation_root, accounting, cancellation)
             .await?;
         let authority_head = self
-            .fence_checkout(mode, authority_head, accounting, cancellation)
+            .fence_checkout(mode, authority_head, accounting)
             .await?;
         let CheckoutState {
             base_root,
@@ -343,7 +343,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         mode: CheckoutMode,
         mut authority_head: Option<Head>,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<Option<Head>, FsError> {
         if mode.access == AccessMode::ReadWrite
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter

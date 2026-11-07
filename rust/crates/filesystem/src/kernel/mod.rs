@@ -43,7 +43,9 @@ mod mark;
 mod merge;
 mod metadata;
 mod references;
-pub(crate) use references::{visit_object_references, visit_record_references};
+pub(crate) use references::visit_object_references;
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+pub(crate) use references::visit_record_references;
 mod mutation;
 mod namespace_path;
 mod path_access;
@@ -103,7 +105,6 @@ pub(crate) use persistent_point::split_allocation;
 pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
-pub(crate) use range::plan_extent_range_with_accounting;
 pub(crate) use rebase::{
     ClassifyRebaseFailure, CommitFootprint, Settled, classify_rebase_settling_with_accounting,
 };

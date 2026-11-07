@@ -15,6 +15,7 @@ pub(super) fn decode_publication_gate(
     Ok(Some(OperationId::from_bytes(operation)))
 }
 
+#[cfg(test)]
 pub(super) fn stream_key(
     domain: &[u8],
     identity: &[u8],

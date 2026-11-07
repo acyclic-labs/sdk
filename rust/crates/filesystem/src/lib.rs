@@ -63,7 +63,7 @@ pub mod access;
 mod arc_layout;
 mod operation_claim;
 mod sync;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 mod watch_queue;
 pub use acyclic_stream::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
