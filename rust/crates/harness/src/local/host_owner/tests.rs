@@ -127,6 +127,59 @@ async fn agy_native_session_lifecycle() -> Result<()> {
     native_session_lifecycle("agy").await
 }
 
+/// A failed, unawaited native notification cannot turn the next awaited
+/// admission into attach-only success. Both use the original capture writer.
+#[tokio::test]
+async fn native_tool_boundary_rechecks_failed_capture() -> Result<()> {
+    let fixture = Fixture::for_host("agy").await?;
+    let hook = |event: &str| HostAction::Hook {
+        host: "agy".into(),
+        event: event.into(),
+        input: json!({"task": fixture.parent}),
+    };
+    fixture
+        .owner
+        .dispatch(OperationId::new(), hook("ToolBoundary"))
+        .await?;
+    let mount_root = fixture.checkout.path().join(host_workspace::HOST_VIEW_ROOT);
+    let retained = fixture.checkout.path().join("retained-mount-root");
+    // Keep the admitted directory alive, but replace its visible name. The
+    // checkout identity is unchanged: attachment alone cannot detect this.
+    std::fs::rename(&mount_root, &retained).map_err(storage)?;
+    std::fs::create_dir(&mount_root).map_err(storage)?;
+    let attached = fixture
+        .owner
+        .dispatch(OperationId::new(), hook("SessionStart"))
+        .await;
+    let stopped = fixture
+        .owner
+        .dispatch(OperationId::new(), hook("Stop"))
+        .await;
+    let boundary = fixture
+        .owner
+        .dispatch(OperationId::new(), hook("ToolBoundary"))
+        .await;
+    // Restore the same admitted directory before teardown or a later attempt.
+    std::fs::remove_dir(&mount_root).map_err(storage)?;
+    std::fs::rename(&retained, &mount_root).map_err(storage)?;
+    attached?;
+    for result in [stopped, boundary] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::Unauthorized(reason))
+                    if reason == "host-admitted mount root was replaced"
+            ),
+            "native boundary admitted without retrying the original capture"
+        );
+    }
+    fixture
+        .owner
+        .dispatch(OperationId::new(), hook("ToolBoundary"))
+        .await?;
+    Ok(())
+}
+
 /// One child through spawn, follow-up, a failed write, an owner restart,
 /// interruption and merge: every turn is the child agent's own commit.
 async fn native_session_lifecycle(host: &str) -> Result<()> {

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/host_owner/events.rs b/rust/crates/harness/src/local/host_owner/events.rs
+--- a/rust/crates/harness/src/local/host_owner/events.rs
++++ b/rust/crates/harness/src/local/host_owner/events.rs
+@@ -81,7 +81,7 @@ impl HostWorkspaceOwner {
+                 .ok_or_else(|| Error::NotFound("native session reference absent".into()));
+         }
+         self.attach(&agent).await?;
+-        if matches!(event, "Stop" | "SessionEnd" | "ToolBoundary") {
++        if matches!(event, "Stop" | "SessionEnd") {
+             self.view(&agent)?.capture(operation).await?;
+             return Ok(json!({}));
+         }

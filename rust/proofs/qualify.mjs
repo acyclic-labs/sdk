@@ -15,6 +15,14 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-tool-capture": [
+    "rust/crates/harness/src/local/host_owner/events.rs", "acyclic-harness",
+    "local::host_owner::tests::native_tool_boundary_rechecks_failed_capture",
+    "native boundary admitted without retrying the original capture", nativeHarness,
+    { mutations: [
+      { patch: "rust/crates/harness-fuzz/mutations/native-tool-capture-omission.patch", label: "capture-omitted", diagnostic: "native boundary admitted without retrying the original capture" },
+    ] },
+  ],
   "compiled-prefix-invariant": [
     "rust/crates/collections/src/compiled_prefix.rs", "acyclic-collections",
     "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",

@@ -57,3 +57,16 @@ can therefore refuse a failed capture even when the host ignored an earlier
 attach-only mapping; the unchanged `native_input` oracle must reject it.
 This checks routing and input preservation. Successful capture and native
 termination after a capture failure require the installed-host control too.
+
+The shared workspace-owner control replaces its admitted mount directory while
+keeping the checkout and original directory alive. Session attachment remains
+valid, but both stop and the next tool boundary must return the original capture
+refusal. Restoring the same directory admits capture again. Its retained mutation
+omits the tool capture while leaving attachment and stop unchanged:
+
+```
+node rust/proofs/qualify.mjs native-tool-capture
+```
+
+This exercises the deployed owner and native filesystem admission. It does not
+invoke an external host or establish native termination or provider-request counts.
