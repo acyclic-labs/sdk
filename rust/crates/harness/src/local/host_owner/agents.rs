@@ -531,7 +531,7 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
 }
 
 /// Spawned session `reference` of `parent`: the spawn intent names it.
-pub(in crate::local) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
+pub(crate) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
     if reference.contains('/') {
         let child = AgentPath::try_from(reference.to_owned()).map_err(|_| {
             Error::Invalid("reference must be a local child name or a canonical AgentPath".into())

@@ -118,8 +118,8 @@ impl HostWorkspaceOwner {
         action: SessionAction,
         next: bool,
     ) -> Result<Value> {
-        self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
+        self.attach(parent).await?;
         if let SessionAction::Spawn { prompt } = &action {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;

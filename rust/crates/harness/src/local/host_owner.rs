@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod agents;
 mod events;
 mod sessions;
-pub(in crate::local) use agents::child;
+pub(crate) use agents::child;
 /// Exercises the production native session storage codecs.
 #[cfg(feature = "test-support")]
 pub use agents::validation::check_native_session_storage;
