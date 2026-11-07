@@ -15,6 +15,18 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "trust-anchor-producer-progress": [
+    "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
+    "trust_anchor::placeholder_anchor_recovers_on_key_publication_without_restart",
+    "lost anchor producer left its original trust feed parked", ["--features", "test-support"],
+    {
+      target: ["--test", "main"],
+      mutations: [
+        { patch: "rust/proofs/trust-anchor-producer-progress/retirement.patch", label: "discarded-anchor-producer-loss", diagnostic: "lost anchor producer left its original trust feed parked" },
+        { patch: "rust/proofs/trust-anchor-producer-progress/cause.patch", label: "replaced-anchor-loss-cause", diagnostic: "lost anchor producer lost its original fence cause" },
+      ],
+    },
+  ],
   "local-prepared-ingress-close": [
     "rust/crates/stream/src/native/prepared.rs", "acyclic-stream",
     "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
