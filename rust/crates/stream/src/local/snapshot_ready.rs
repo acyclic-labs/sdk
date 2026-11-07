@@ -177,6 +177,14 @@ fn compare<T: Send + Debug + Eq + 'static>(
     let candidate = run(candidate, 1);
     let (_, [baseline, candidate]) = acyclic_test_support::differential(old, candidate);
     assert_eq!(
+        candidate.count_total, 0,
+        "ready snapshots must allocate zero times"
+    );
+    assert_eq!(
+        candidate.bytes_total, 0,
+        "ready snapshots must allocate zero bytes"
+    );
+    assert_eq!(
         baseline.count_total,
         if label.starts_with("local_") {
             COUNT as u64
@@ -184,14 +192,6 @@ fn compare<T: Send + Debug + Eq + 'static>(
             0
         },
         "baseline allocation work changed"
-    );
-    assert_eq!(
-        candidate.count_total, 0,
-        "ready snapshots must allocate zero times"
-    );
-    assert_eq!(
-        candidate.bytes_total, 0,
-        "ready snapshots must allocate zero bytes"
     );
     (elapsed.get()[0], elapsed.get()[1])
 }

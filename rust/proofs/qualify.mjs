@@ -15,6 +15,22 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-ready-snapshot-allocation": [
+    "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
+    "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
+    "ready snapshots must allocate zero times", ["--no-default-features", "--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-ready-snapshot-allocation/mutation.patch", label: "boxed-original-local-snapshot", diagnostic: "ready snapshots must allocate zero times" },
+        { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked",
+          command: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "--no-default-features", "--features", "local,test-support", "--lib", "--", "--exact", "--nocapture",
+        "local::snapshot_ready::ready_snapshots_allocate_zero_and_match_independent_prefixes",
+        "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers"],
+      completed: ["2 passed; 0 failed"],
+    },
+  ],
   "trust-anchor-producer-progress": [
     "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
     "trust_anchor::placeholder_anchor_recovers_on_key_publication_without_restart",

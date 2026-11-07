@@ -740,29 +740,28 @@ impl LocalStream {
 
     // Snapshot operations have no asynchronous acknowledgement after mutation.
     // The shared stream driver owns observation outside its cancellable probe.
+    // This private probe stays inline; provider boundaries erase the outer future.
     fn accepted_snapshot<'a, T: 'a, F>(
         &'a self,
         read: impl FnOnce() -> F + Send + 'a,
-    ) -> crate::BoxProviderFuture<'a, Result<T, StreamError>>
+    ) -> impl Future<Output = Result<T, StreamError>> + Send + 'a
     where
         F: Future<Output = T> + Send + 'a,
     {
-        crate::erase_provider_future(|| {
-            let read = read();
-            async move {
+        let read = read();
+        async move {
+            self.check_available()?;
+            let mut failed = self.inner.failed.subscribe();
+            let read = std::pin::pin!(async {
+                let _visibility = self.inner.publication.read().await;
                 self.check_available()?;
-                let mut failed = self.inner.failed.subscribe();
-                let read = std::pin::pin!(async {
-                    let _visibility = self.inner.publication.read().await;
-                    self.check_available()?;
-                    Ok(read.await)
-                });
-                let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
-                match futures::future::select(unavailable, read).await {
-                    futures::future::Either::Left((error, _)) => Err(error),
-                    futures::future::Either::Right((result, _)) => result,
-                }
+                Ok(read.await)
+            });
+            let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+            match futures::future::select(unavailable, read).await {
+                futures::future::Either::Left((error, _)) => Err(error),
+                futures::future::Either::Right((result, _)) => result,
             }
-        })
+        }
     }
 }
