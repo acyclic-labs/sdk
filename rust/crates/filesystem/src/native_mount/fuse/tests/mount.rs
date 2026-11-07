@@ -33,19 +33,31 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
 
-    // Without the barrier the change still arrives, promptly.
+    // Follow the original source publication through physical kernel invalidation.
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.remove(&name("added"), None, work)
     })?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while added.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "a removal around the mount never reached the kernel"
-        );
-        std::thread::yield_now();
-    }
+    let work = fuse_fixture_work();
+    let target =
+        mounted_source
+            .view_stamp_with_meter(&work)?
+            .ok_or(NativeMountError::Lifecycle(
+                "committed source has no stable view stamp",
+            ))?;
+    session
+        .core
+        .wait_for_invalidation(session.core.state_to_finish(), Some(target), &work)?;
+    assert!(
+        !added.exists(),
+        "completed invalidation retained a removed entry"
+    );
     assert!(session.stop()?);
+    assert!(matches!(
+        session
+            .core
+            .wait_for_invalidation(session.core.state_to_finish(), Some(target), &work,),
+        Err(NativeMountError::Lifecycle("session is stopped"))
+    ));
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use std::os::windows::io::OwnedHandle as PipeHandle;
 fn readiness_channel() -> io::Result<(ServiceReadiness, ServiceReadySignal)> {
     let (reader, writer) = io::pipe()?;
     Ok((
-        ServiceReadiness(File::from(PipeHandle::from(reader))),
+        ServiceReadiness::from(File::from(PipeHandle::from(reader))),
         ServiceReadySignal(File::from(PipeHandle::from(writer))),
     ))
 }
