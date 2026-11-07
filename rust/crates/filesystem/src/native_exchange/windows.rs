@@ -1,9 +1,10 @@
-use super::{NativeExchangeError, Path, PathBuf};
+use super::{NativeExchangeError, Path};
 use crate::demand::{DemandError, SourceDemandReadWork};
 use crate::native_host::{self as host};
 use crate::{NativeRootIdentity, WorkCounters, WorkError};
 use std::io::{Read, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 
 pub(super) const ENTRY_WITNESS: &[u8; 32] = b"acyclic-entry-exchange-v2\0\0\0\0\0\0\0";
 
