@@ -28,10 +28,10 @@ use crate::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
+pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use events::ExecutionQuery;
 pub use history::HistoryPage;
 use std::sync::Arc;
 pub use usage_query::UsageQuery;

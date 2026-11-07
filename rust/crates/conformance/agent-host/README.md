@@ -74,3 +74,14 @@ The backend features admit one `tests/main.rs` executable: `local` selects the
 native module and `browser` selects the Wasm module. Both imply the test-admission
 feature `backend-tests`; enabling that marker alone refuses compilation with the
 backend recovery command instead of reporting an empty successful suite.
+
+The public execution-query vectors refine
+`acyclic_harness_client::ExecutionQuery::continuation` against original decoded
+pages. A short page without its actor settlement fence and a page with a
+continuation both retain their original input. Local conversations and hosted
+Session consumers use this same cursor rule. The retained
+`mutations/execution_query_settlement_loss.patch` removes the production fence;
+the existing `local::local_native` vector must then fail with
+`execution cursor retired an input without its actor fence`. This control
+derives its page from the real serving result; it introduces no alternate
+execution model or readiness loop.
