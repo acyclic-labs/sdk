@@ -35,6 +35,17 @@ const claims = {
     "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
     { target: ["--test", "seeded_runtime"] },
   ],
+  "merge-directory-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured merge-directory writer output was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-directory-admission/admission.patch", label: "writer-output-refused", diagnostic: "captured merge-directory writer output was refused" },
+        { patch: "rust/proofs/merge-directory-admission/version.patch", label: "future-version-admitted", diagnostic: "unsupported merge file version accepted by the shipped decoder" },
+      ],
+    },
+  ],
   "native-hook-ownership": [
     "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
     "foreign hook metadata was admitted", [],
@@ -279,7 +290,7 @@ if (claim === "--help" && extra.length === 0) {
       process.exit(2);
     }
   }
-  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, ...features, "--bin", options.fuzz.bin,
     "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
     `-artifact_prefix=target/${claim}/`];
