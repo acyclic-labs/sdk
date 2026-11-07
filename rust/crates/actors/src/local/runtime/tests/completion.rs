@@ -131,7 +131,11 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         })
         .await?;
         let calls = provider.requests().since(before);
-        assert_eq!(calls.control(), 1);
+        assert_eq!(
+            calls.control(),
+            1,
+            "completion added a control request outside its original idle cut"
+        );
         assert_eq!(calls.data(), 0);
         drop(serving);
     }
