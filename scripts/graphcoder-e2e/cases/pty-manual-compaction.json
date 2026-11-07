@@ -53,21 +53,8 @@
               "○"
             ]
           },
-          "prompt": "/compact refuse unmatched summary"
-        },
-        {
-          "when": {
-            "contains": [
-              "MANUAL_E2E_FIRST",
-              "○"
-            ],
-            "task_failure": "model HTTP status 409"
-          },
-          "prompt": "/compact preserve the fact",
-          "after_request": {
-            "path": "responses",
-            "step": null
-          }
+          "prompt": "/compact refuse unmatched summary",
+          "send": "\u001b[200~/compact preserve the fact\u001b[201~\r"
         },
         {
           "when": {
@@ -75,6 +62,9 @@
               "Compacted conversation",
               "○"
             ]
+          },
+          "assert": {
+            "task_failure": "model HTTP status 409"
           },
           "prompt": "after compact",
           "after_request": {
