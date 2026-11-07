@@ -69,10 +69,15 @@ fn original_driver_replacement_preserves_reentrant_publication_and_unwind() -> i
                 Some(&"original replacement observer retirement")
             );
         } else {
-            assert!(replacement.unwrap().is_pending());
+            assert!(matches!(replacement, Ok(Poll::Pending)));
         }
         assert_eq!(notified.0.load(Ordering::Acquire), 1);
-        assert!(publication.lock().unwrap().is_none());
+        assert!(
+            publication
+                .lock()
+                .map_err(|_| io::Error::other("original publication lock poisoned"))?
+                .is_none()
+        );
         assert!(matches!(
             Pin::new(&mut observation).poll(&mut Context::from_waker(&next)),
             Poll::Ready(Ok(37))
