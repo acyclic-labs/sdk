@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 /// the descriptor stays bound to that process even if its owner reaps it.
 /// Waiting and dropping the watch never signal or reap the child.
 #[cfg(target_os = "linux")]
-pub struct ChildExitWatch(OwnedFd);
+pub struct ChildExitWatch(ExitWatch<'static>);
 
 #[cfg(target_os = "linux")]
 impl ChildExitWatch {
@@ -21,24 +21,21 @@ impl ChildExitWatch {
             return Ok(None);
         }
         let id = child.id();
-        let fd = open(id, None)?.fd.take().ok_or_else(|| {
-            io::Error::other("process exit registration omitted its owned descriptor")
-        })?;
-        Ok(Some(Self(fd)))
+        Ok(Some(Self(open(id, None)?)))
     }
 
     /// Waits on this exact process's kernel exit event until the caller's
     /// absolute deadline. Readiness already available wins at the deadline.
     /// Returns `TimedOut` without terminating or reaping the process.
     pub fn wait_until(&self, deadline: Instant) -> io::Result<()> {
-        wait_event(self.0.as_raw_fd(), None, deadline)
+        wait_event(&self.0, deadline)
     }
 }
 
 #[cfg(target_os = "linux")]
 impl std::os::fd::AsFd for ChildExitWatch {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.0.as_fd()
+        self.0.fd.as_ref().expect("opened exit descriptor").as_fd()
     }
 }
 
@@ -245,7 +242,7 @@ fn register_event(watch: &ExitWatch<'_>, id: libc::id_t, flags: u32) -> io::Resu
 
 #[cfg(target_os = "linux")]
 fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::Result<ExitStatus> {
-    match wait_event(watch.as_raw_fd(), watch.meter, deadline) {
+    match wait_event(watch, deadline) {
         Ok(()) => platform::observe_exit_id(id, watch.meter)?
             .ok_or_else(|| io::Error::other("process exit notification has no status")),
         Err(error) if error.kind() == io::ErrorKind::TimedOut => {
@@ -256,22 +253,18 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
 }
 
 #[cfg(target_os = "linux")]
-fn wait_event(
-    fd: std::os::fd::RawFd,
-    meter: Option<&dyn crate::NativeReadMeter>,
-    deadline: Instant,
-) -> io::Result<()> {
+fn wait_event(watch: &ExitWatch<'_>, deadline: Instant) -> io::Result<()> {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let mut ready = libc::pollfd {
-            fd,
+            fd: watch.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         };
         let milliseconds =
             i32::try_from(remaining.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX);
         // SAFETY: one writable pollfd whose descriptor remains owned here.
-        let result = process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        let result = process_control_attempt(watch.meter, crate::NativeOperationKind::Read, || {
             // SAFETY: the retained descriptor and writable pollfd outlive this call.
             let count = unsafe { libc::poll(&raw mut ready, 1, milliseconds) };
             if count < 0 {
