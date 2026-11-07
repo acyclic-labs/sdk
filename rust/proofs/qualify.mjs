@@ -1267,6 +1267,10 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.fuzz ? {
+            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
+              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),

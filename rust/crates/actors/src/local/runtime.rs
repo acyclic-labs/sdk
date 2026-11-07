@@ -817,17 +817,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(true);
             }
             let now = self.clock.now_unix_ms();
-            let due = state
-                .alarm()
-                .pending()
-                .is_some_and(|deadline| deadline <= now);
-            // The alarm this attempt delivers is not also a due wake: on
-            // failure it would refire at once, redelivering forever.
-            if due {
-                slot.registration.deliver_alarm(state.alarm())?;
-            } else {
-                slot.registration.update_alarm(state.alarm())?;
-            }
+            let due = slot.registration.observe_delivery(state.alarm(), now)?;
             let (trigger, record) = match state.alarm().pending() {
                 Some(_) if due => (
                     Trigger::Alarm {
@@ -849,6 +839,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Claim only for an actual delivery. Idle events must not publish a
             // new epoch and wake themselves through their own state path.
+            // Its durable fence precedes external handler work, so a recovered
+            // runtime cannot race effects from the previous placement epoch.
             // The claim changes only the epoch; its receipt retains the exact
             // subscriptions and alarm that selected this immutable input.
             let snapshot = if inner.epoch == 0 {
