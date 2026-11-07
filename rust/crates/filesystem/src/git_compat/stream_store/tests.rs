@@ -93,3 +93,110 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn persisted_lineage_resolution_requires_original_read_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let budget = crate::performance::BOUNDARY_BUDGET;
+    let fs = crate::Fs::memory();
+    let root = fs
+        .create_workspace("persisted-admission-root", budget, &cancellation)
+        .await?
+        .value;
+    let (provider, _) = fs.authority_records(root.id().volume_id())?;
+    let graph = crate::WorkspaceGraph::new(StreamGitCompatStore::new(StreamAuthorityStore::new(
+        provider.clone(),
+    )));
+    graph.register_root(&root, budget, &cancellation).await?;
+    let child = graph
+        .fork(
+            &root,
+            "persisted-admission-child",
+            crate::IdempotencyKey::new(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let grandchild = graph
+        .fork(
+            &child,
+            "persisted-admission-grandchild",
+            crate::IdempotencyKey::new(),
+            budget,
+            &cancellation,
+        )
+        .await?
+        .value;
+    drop(graph);
+    // Recreate the shipped adapter over the same provider and production wire
+    // records. No test adapter can substitute its own accounting behavior.
+    let reopened = crate::WorkspaceGraph::new(StreamGitCompatStore::new(
+        StreamAuthorityStore::new(provider),
+    ));
+    let denied = WorkBudget {
+        backend_read_operations: 0,
+        ..budget
+    };
+    fn read_refusal(error: &crate::WorkspaceLineageError<StreamGitCompatStoreError>) -> bool {
+        let crate::WorkspaceLineageError::Store(StreamGitCompatStoreError::Authority(error)) =
+            error
+        else {
+            return false;
+        };
+        let work = match error {
+            AuthorityStoreError::Work(error) => error,
+            #[cfg(not(target_arch = "wasm32"))]
+            AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::Work(
+                error,
+            )) => error,
+            _ => return false,
+        };
+        matches!(
+            work,
+            crate::WorkError::BudgetExceeded {
+                counter: "backend_read_operations",
+                ..
+            }
+        )
+    }
+    let mut ordinary_refused = [false; 3];
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut native_refused = [false; 3];
+    for (index, id) in [root.id(), child.id(), grandchild.id()]
+        .into_iter()
+        .enumerate()
+    {
+        let result = reopened.resolve(id, denied, &cancellation).await;
+        ordinary_refused[index] = result
+            .as_ref()
+            .err()
+            .is_some_and(|failure| read_refusal(&failure.error));
+        if let Err(failure) = result {
+            assert_eq!(failure.work.backend_read_operations, 0);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let original = crate::NativeMaterializationWork::new(denied, &cancellation)
+                .map_err(|(error, _)| error)?;
+            let result = reopened.resolve(id, &original, &cancellation).await;
+            native_refused[index] = result
+                .as_ref()
+                .err()
+                .is_some_and(|error| read_refusal(error));
+            assert_eq!(original.receipt().backend_read_operations, 0);
+        }
+    }
+    assert_eq!(
+        ordinary_refused, [true; 3],
+        "persisted lineage escaped original ordinary read admission"
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    assert_eq!(
+        native_refused, [true; 3],
+        "persisted lineage escaped original native read admission"
+    );
+    Ok(())
+}
