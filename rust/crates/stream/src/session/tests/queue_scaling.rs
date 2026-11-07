@@ -50,7 +50,7 @@ fn scanned_ready(
 
 #[test]
 fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
-    for count in [8, 64, 512] {
+    for count in [1024, 4096, 8192] {
         let mut session = properties::empty_session(true);
         // The caller's explicit budget admits the fixture's many small frames.
         session.limits = Limits {
@@ -92,7 +92,9 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             .values()
             .flat_map(|c| c.pending.iter().map(|p| p.frame.wire().clone()))
             .collect();
-        for sequence in 0..64 {
+        // Exercise initial selection and selection after the same channel
+        // becomes ready again; repeated benchmark trials add no coverage.
+        for sequence in 0..2 {
             session.credit = wire::SessionWindow {
                 frames: 1,
                 bytes: crate::MAX_COMMAND_BYTES as u64,
@@ -117,7 +119,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             before.push_back(old);
             assert_eq!(session.head_visits - head_visits, 1);
             assert_eq!(session.pending_frames, count);
-            if sequence != 63 {
+            if sequence == 0 {
                 session
                     .record(
                         wire::SessionChannel {
@@ -129,17 +131,24 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                     .unwrap();
             }
         }
-        eprintln!("stalled={count} trials=64 head_visits={}->1", count + 1);
     }
 }
 
 #[test]
 fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     let mut session = properties::empty_session(false);
-    let mut other = properties::empty_session(false)
-        .channels
-        .remove(&1)
-        .unwrap();
+    let binding = session
+        .authority
+        .bind(
+            &session.slots,
+            0,
+            &crate::StreamPath::new("model").unwrap(),
+            Default::default(),
+            1,
+        )
+        .unwrap()
+        .0;
+    let mut other = properties::empty_channel(false, binding);
     other.credit = wire::SessionWindow {
         bytes: 1_000_000,
         frames: 100,
