@@ -110,7 +110,8 @@ pub fn local_harness_config(
 pub enum PromptOutcome {
     /// The turn settled; its conversation entry and decoded output.
     Settled(crate::agent::ConversationEntry, crate::executor::TurnOutput),
-    /// The turn failed, which ends the root agent.
+    /// The turn failed (the agent stays open), or a host failure ended the
+    /// root agent.
     Failed(String),
 }
 
@@ -123,7 +124,7 @@ pub async fn prompt_settled(
     id: &str,
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
-    use crate::agent::{AgentOutcome, Phase, Reply};
+    use crate::agent::{AgentOutcome, Phase, Reply, TurnOutcome};
     use crate::local::Event;
     let conversation =
         crate::local::agent_conversation::Conversation::open(harness.connect().await?);
@@ -166,6 +167,9 @@ pub async fn prompt_settled(
             }
         }
     };
+    if let TurnOutcome::Failed { message } = &entry.outcome {
+        return Ok(PromptOutcome::Failed(message.clone()));
+    }
     let bytes = harness
         .client_reader()?
         .read(&entry.output, 1 << 20, None, None)?

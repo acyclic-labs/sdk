@@ -1955,7 +1955,10 @@ where
         })
     }
 
-    fn answer<'a>(&'a self, child: &'a AgentPath) -> BoxFuture<'a, Result<Option<String>>> {
+    fn answer<'a>(
+        &'a self,
+        child: &'a AgentPath,
+    ) -> BoxFuture<'a, Result<Option<(String, crate::agent::TurnOutcome)>>> {
         Box::pin(async move {
             let Some(entry) = crate::agent::answer(&*self.stream, child)
                 .await
@@ -1963,6 +1966,7 @@ where
             else {
                 return Ok(None);
             };
+            let outcome = entry.outcome;
             let external = [entry.output];
             let authority = agent_authority(
                 &self.issuer,
@@ -1984,7 +1988,7 @@ where
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-            Ok(Some(output.text))
+            Ok(Some((output.text, outcome)))
         })
     }
 }

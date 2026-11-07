@@ -1,7 +1,7 @@
 pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
 use acyclic_native_runtime::signing_key::SigningCustody;
-use std::{fs, io::Read};
+use std::fs;
 #[cfg(any(test, feature = "native-execution"))]
 pub(in crate::local) mod exclusion;
 
@@ -50,8 +50,6 @@ thread_local! {
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: discard the volume component of a strong witness.
     pub(super) static DISCARD_VOLUME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Observe a contending real owner lock without blocking this test thread.
-    static TRY_OWNER_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -300,6 +298,11 @@ impl RootWitness {
 // f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
 // renumbers the device refuses attachment rather than trusting a copied token.
 
+/// The owner record's v2 name. A state directory still holding the v1 name is
+/// refused whole, without reading it: no older format is migrated.
+const RECORD: &str = "owner.v2";
+const V1_RECORD: &str = "owner.json";
+
 impl Owner {
     pub(super) fn open(
         directory: &Path,
@@ -316,12 +319,23 @@ impl Owner {
                 ));
             }
         };
-        let path = directory.join("owner.json");
+        let path = directory.join(RECORD);
         let workspace_identity = checkout.map(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
-        let owner = match Self::load(&path, custody) {
+        let owner = match Self::load(&path) {
             Ok(owner) => owner,
             Err(Error::NotFound(_)) => {
+                // Only a missing v2 record pays for the v1 probe.
+                match fs::symlink_metadata(directory.join(V1_RECORD)) {
+                    Ok(_) => {
+                        return Err(Error::Conflict(format!(
+                            "local state at {} uses an older format; remove that directory to start fresh",
+                            directory.display()
+                        )));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(storage(error)),
+                }
                 let project = match selection {
                     LocalProject::Volume { volume, .. } => volume.clone(),
                     LocalProject::Workspace(_) => VolumeRef::new(
@@ -337,12 +351,14 @@ impl Owner {
                         &mut None,
                     )?,
                 };
-                let key_ref =
-                    acyclic_native_runtime::signing_key::SigningKeyReference::create(custody)
-                        .map_err(storage)?;
+                // The reference derives this owner's seed from the account's
+                // one signing root, so an owner that loses publication leaves
+                // no custody behind.
                 let owner = Self {
-                    key: None,
-                    key_ref: Some(key_ref.reference()),
+                    key_ref: acyclic_native_runtime::signing_key::SigningKeyReference::create(
+                        custody,
+                    )
+                    .map_err(storage)?,
                     agent: AgentId::new(),
                     task: TaskId::new(),
                     project,
@@ -350,23 +366,16 @@ impl Owner {
                     workspace_identity,
                     workspace_incarnation,
                 };
-                if owner.publish_as(
-                    directory,
-                    &path,
-                    acyclic_native_runtime::RenameMode::NoReplace,
-                    Some(&key_ref),
-                )? {
+                if owner.publish(directory, &path)? {
                     owner
                 } else {
-                    Self::load(&path, custody)?
+                    Self::load(&path)?
                 }
             }
             Err(error) => return Err(error),
         };
         owner.project.validate(&mut None)?;
-        if owner.key_ref.is_none()
-            || owner.key.is_some()
-            || owner.agent.into_bytes() == [0; 16]
+        if owner.agent.into_bytes() == [0; 16]
             || owner.task.into_bytes() == [0; 16]
             || owner.project.class() != VolumeClass::Project
             || owner.project.provider().family() != "filesystem"
@@ -390,138 +399,38 @@ impl Owner {
         Ok(owner)
     }
 
-    fn load(path: &Path, custody: SigningCustody<'_>) -> Result<Self> {
-        // The lock's stable inode survives replacing owner.json. Hold it from
-        // before reading a legacy seed until publication or custody rollback,
-        // so another reader cannot publish a key this reader still owns.
-        let lock_path = path.with_extension("lock");
-        let file =
-            acyclic_native_runtime::private_file::open_or_create(&lock_path).map_err(|error| {
-                match error.kind() {
-                    std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
-                    _ => storage(error),
-                }
-            })?;
-        let acquire: fn(
-            fs::File,
-            acyclic_native_runtime::FileLockMode,
-        ) -> std::io::Result<acyclic_native_runtime::FileLock> =
-            acyclic_native_runtime::FileLock::acquire;
-        #[cfg(test)]
-        let acquire = if TRY_OWNER_LOCK.get() {
-            acyclic_native_runtime::FileLock::try_acquire
-        } else {
-            acquire
-        };
-        let _publication =
-            acquire(file, acyclic_native_runtime::FileLockMode::Exclusive).map_err(storage)?;
-        Self::load_record(path, custody)
-    }
-
-    fn load_record(path: &Path, custody: SigningCustody<'_>) -> Result<Self> {
+    fn load(path: &Path) -> Result<Self> {
         use acyclic_native_runtime::{owner_record, private_file};
-        let record = private_file::read_for_upgrade_with(path, 65_536, |file, length| {
-            let mut bytes = owner_record::SecretBytes(Vec::with_capacity(
-                usize::try_from(length + 1).map_err(std::io::Error::other)?,
-            ));
-            file.read_to_end(&mut bytes.0)?;
-            Ok::<_, std::io::Error>(bytes)
-        })
-        .map_err(|error| match error.kind() {
+        let record = private_file::read(path, 65_536).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => Error::NotFound("local owner".into()),
             std::io::ErrorKind::PermissionDenied => {
                 Error::Unauthorized("local owner is not private".into())
             }
             _ => storage(error),
         })?;
-        let legacy = record.0.first() == Some(&b'{');
-        let plain = if legacy {
-            record
-        } else {
-            owner_record::decode_with(&record.0, 65_536, None, |bytes| {
-                Ok::<_, std::io::Error>(owner_record::SecretBytes(bytes.to_vec()))
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?
-        };
-        let mut owner: Self = serde_json::from_slice(&plain.0)
-            .map_err(|_| Error::Invalid("invalid local owner record".into()))?;
-        let migrated = owner.retain_signing_custody(custody)?;
-        if legacy || migrated.is_some() {
-            let directory = path
-                .parent()
-                .ok_or_else(|| Error::Invalid("owner has no parent".into()))?;
-            owner.publish_as(
-                directory,
-                path,
-                acyclic_native_runtime::RenameMode::Replace,
-                migrated.as_ref(),
-            )?;
-        }
-        Ok(owner)
+        let plain = owner_record::decode_with(&record.0, 65_536, None, |bytes| {
+            Ok::<_, std::io::Error>(bytes.to_vec())
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        serde_json::from_slice(&plain)
+            .map_err(|_| Error::Invalid("invalid local owner record".into()))
     }
 
-    /// One migration for both former JSON files and framed private records.
-    /// This is reachable only after `private_file` authenticated the source descriptor.
-    fn retain_signing_custody(
-        &mut self,
-        custody: SigningCustody<'_>,
-    ) -> Result<Option<acyclic_native_runtime::signing_key::ProvisionalSigningKey>> {
-        match (self.key_ref, self.key.as_mut()) {
-            (Some(reference), None) => {
-                reference.with_seed(custody, |_| ()).map_err(storage)?;
-                Ok(None)
-            }
-            (None, Some(seed)) => {
-                if matches!(custody, SigningCustody::PrivateFile(_)) {
-                    return Err(Error::Unauthorized(
-                        "explicit custody requires an owner created in that store; recovery: use a fresh explicit-config state directory".into(),
-                    ));
-                }
-                let key =
-                    acyclic_native_runtime::signing_key::SigningKeyReference::retain(seed, custody)
-                        .map_err(storage)?;
-                self.key_ref = Some(key.reference());
-                acyclic_native_runtime::owner_record::clear_secret(seed);
-                self.key = None;
-                Ok(Some(key))
-            }
-            _ => Err(Error::Unauthorized(
-                "local owner signing custody is ambiguous or absent".into(),
-            )),
-        }
-    }
-
-    fn publish_as(
-        &self,
-        directory: &Path,
-        path: &Path,
-        mode: acyclic_native_runtime::RenameMode,
-        signing_key: Option<&acyclic_native_runtime::signing_key::ProvisionalSigningKey>,
-    ) -> Result<bool> {
+    /// Install this record only if no other opener published first.
+    fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
         use acyclic_native_runtime::{owner_record, private_file};
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
-        let plain = owner_record::SecretBytes(
-            serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?,
-        );
-        let bytes = owner_record::encode_with(&plain.0, 65_536, None, |parts| {
-            Ok::<_, std::io::Error>(owner_record::SecretBytes(parts.concat()))
+        let plain = serde_json::to_vec(self).map_err(|error| Error::Invalid(error.to_string()))?;
+        let bytes = owner_record::encode_with(&plain, 65_536, None, |parts| {
+            Ok::<_, std::io::Error>(parts.concat())
         })
         .map_err(storage)?;
-        let write = |file: &mut fs::File| acyclic_native_runtime::write_file_all(file, &bytes.0);
-        let observe = |stage| {
-            if let Some(key) = signing_key {
-                key.observe_publication(stage);
-            }
-            Ok(())
-        };
-        match mode {
-            acyclic_native_runtime::RenameMode::NoReplace => {
-                private_file::publish_new(path, &temporary, write, observe)
-            }
-            acyclic_native_runtime::RenameMode::Replace => {
-                private_file::publish(path, &temporary, mode, write, observe).map(|()| true)
-            }
-        }
+        private_file::publish_new(
+            path,
+            &temporary,
+            |file| acyclic_native_runtime::write_file_all(file, &bytes),
+            |_| Ok(()),
+        )
         .map_err(storage)
     }
 }

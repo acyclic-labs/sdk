@@ -1,0 +1,17 @@
+{
+  "id": "pty-killed-at-first-frame",
+  "workspace": {"kind": "plain", "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "second prompt"}, "text": ["SECOND_REPLY"]}
+  ]},
+  "inputs": [
+    {"mode": "pty", "killed": true, "actions": [
+      {"when": {"contains": ["GraphCoder"]}, "kill": true}
+    ]},
+    {"mode": "pty", "actions": [
+      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "second prompt"},
+      {"when": {"contains": ["SECOND_REPLY", "\u25cb"]}, "send": "\u0004"}
+    ]}
+  ],
+  "assert": {"requests": 1}
+}

@@ -1,26 +1,30 @@
-//! One credential entry owns a signing seed; persisted host metadata contains
-//! only its public opaque reference. Production selects native custody unless
-//! the owner explicitly requests private-file custody. Test and fixture
-//! builds replace only the native store, with process-local custody.
+//! One credential entry per OS account holds a random signing root. Every
+//! owner's signing seed is derived from that root and the owner's public
+//! reference, so creating owners never adds entries and abandoning one leaves
+//! nothing to retire. Persisted host metadata contains only the reference.
+//! Production selects native custody unless the owner explicitly requests
+//! private-file custody. Test and fixture builds replace only the native store.
 //!
-//! A freshly generated seed needs no shared lock namespace: its identity is
-//! new entropy that no other process can name before publication. Only an
-//! import of an existing seed, whose identity other owners may already hold,
-//! serializes on the OS account's own lock namespace (`credential_lock`).
-use crate::owner_record::{SecretBytes, new_key};
+//! The root is created once, if absent, and adopted when present. A native
+//! store overwrites on write, so creators serialize on the store's own lock
+//! namespace; a private-file entry is installed without replacement, so a
+//! losing creator adopts the winner's root. Reopening takes no lock.
+use crate::owner_record::new_key;
 use serde::{Deserialize, Serialize};
-use std::{
-    io,
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::{io, path::Path};
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
 mod file;
 
 #[cfg(not(any(test, feature = "test-support")))]
-const SERVICE: &str = "acyclic.authority.signing-seed.v1";
+const SERVICE: &str = "acyclic.authority.signing-root.v2";
+/// The account's only entry name, in every store.
+const ROOT: &str = "root";
+/// Derives an owner's signing seed from (root, owner nonce).
+const SEED_CONTEXT: &str = "acyclic.authority 2026-11-06 owner signing seed v2";
+/// Derives the public commitment that binds a reference to its root.
+const CHECK_CONTEXT: &str = "acyclic.authority 2026-11-06 signing root check v2";
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod fixture;
@@ -34,205 +38,110 @@ pub use fixture::FixtureCustody;
 pub enum SigningCustody<'a> {
     /// Use the application's configured native or explicit file policy.
     Configured,
-    /// Use the same private-file entry protocol in this absolute directory.
+    /// Use the same one-root-entry protocol in this absolute directory.
     PrivateFile(&'a Path),
 }
 
-/// Non-secret, content-bound reference to OS-owned signing custody.
+/// Non-secret owner reference: a random 16-byte owner nonce, then a 16-byte
+/// commitment to the root it was derived from. A replaced or recreated root
+/// is refused instead of silently deriving a different signing seed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SigningKeyReference([u8; 32]);
-
-/// A newly created entry belongs to its unpublished owner. Abandonment removes
-/// that entry; an existing entry and a published owner's entry are never retired.
-pub struct ProvisionalSigningKey {
-    reference: SigningKeyReference,
-    cleanup: AtomicBool,
-    entry: keyring::Entry,
-    // Declared after the entry: Drop deletes abandoned imported custody while
-    // its shared credential identity remains exclusively held across processes.
-    // A generated identity is exclusive by construction and holds no lock.
-    _transaction: Option<crate::FileLock>,
-}
-
-enum Selection {
-    Held(keyring::Entry, SecretBytes),
-    Vacant(keyring::Entry),
-}
 
 mod error;
 use error::failure;
 pub use error::{CustodyCause, CustodyFailure};
 
-#[cfg(test)]
-thread_local! {
-    static TRY_TRANSACTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-impl ProvisionalSigningKey {
-    /// Non-secret reference serialized into the owner's private record.
-    pub fn reference(&self) -> SigningKeyReference {
-        self.reference
-    }
-
-    /// Transfer custody at the actual namespace rename, including a later lost
-    /// durability acknowledgement. Removing the key then would destroy the owner.
-    pub fn observe_publication(&self, stage: crate::private_file::PublicationStage) {
-        if stage == crate::private_file::PublicationStage::Installed {
-            self.cleanup.store(false, Ordering::Release);
-        }
-    }
-}
-
-impl Drop for ProvisionalSigningKey {
-    fn drop(&mut self) {
-        if self.cleanup.load(Ordering::Acquire) {
-            // Keep the original backend handle: cleanup must not require another
-            // successful read or select a different store after a failed write.
-            let _ = self.entry.delete_credential();
-        }
-    }
-}
-
 fn unavailable() -> io::Error {
     failure("validate", CustodyCause::InvalidStoredSeed)
 }
 
+type Root = Zeroizing<[u8; 32]>;
+
+fn check(root: &Root) -> [u8; 16] {
+    let mut check = [0; 16];
+    check.copy_from_slice(&blake3::derive_key(CHECK_CONTEXT, &root[..])[..16]);
+    check
+}
+
 impl SigningKeyReference {
-    /// Generate a root seed once using the shared entropy seam and retain it in
-    /// the explicitly selected custody store before publishing its reference.
-    /// The fresh identity is unknown to every other process until this owner
-    /// publishes its reference, so no cross-process identity lock is needed.
-    /// Native-store failure never selects a different custody policy.
-    pub fn create(custody: SigningCustody<'_>) -> io::Result<ProvisionalSigningKey> {
-        let seed = Zeroizing::new(new_key()?);
-        Self::admit(&seed, None, custody)
+    /// Reference a new owner's signing seed in the selected store, creating
+    /// the account's root entry only if it is absent. Store failure never
+    /// selects a different custody policy.
+    pub fn create(custody: SigningCustody<'_>) -> io::Result<Self> {
+        let root = open_or_create(custody)?;
+        let mut reference = [0; 32];
+        crate::owner_record::fill_random(&mut reference[..16]).map_err(io::Error::other)?;
+        reference[16..].copy_from_slice(&check(&root));
+        Ok(Self(reference))
     }
 
-    /// Migrate an original seed read from an authenticated private descriptor.
-    /// This preserves its authority rather than generating replacement credentials.
-    /// The caller must keep this guard until actual owner publication. An
-    /// unsuccessful publication retires newly acquired custody on every exit.
-    pub fn retain(
-        seed: &[u8; 32],
-        custody: SigningCustody<'_>,
-    ) -> io::Result<ProvisionalSigningKey> {
-        if bool::from(seed.ct_eq(&[0; 32])) {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        // Copied owner records can carry one seed into independent state
-        // directories, so an import locks in the OS account's namespace.
-        let name = blake3::hash(seed).to_hex();
-        let file = crate::private_file::credential_lock(name.as_str())?;
-        let acquire: fn(std::fs::File, crate::FileLockMode) -> io::Result<crate::FileLock> =
-            crate::FileLock::acquire;
-        #[cfg(test)]
-        let acquire = if TRY_TRANSACTION.get() {
-            crate::FileLock::try_acquire
-        } else {
-            acquire
-        };
-        let transaction = acquire(file, crate::FileLockMode::Exclusive)?;
-        Self::admit(seed, Some(transaction), custody)
-    }
-
-    /// Store `seed`, or adopt its identical existing entry, and observe the
-    /// stored value before any reference can be published.
-    fn admit(
-        seed: &[u8; 32],
-        transaction: Option<crate::FileLock>,
-        custody: SigningCustody<'_>,
-    ) -> io::Result<ProvisionalSigningKey> {
-        let reference = Self(*blake3::hash(seed).as_bytes());
-        let entry = match reference.select(custody)? {
-            Selection::Held(entry, existing) => {
-                if !bool::from(existing.0.as_slice().ct_eq(seed)) {
-                    return Err(unavailable());
-                }
-                return Ok(ProvisionalSigningKey {
-                    reference,
-                    cleanup: AtomicBool::new(false),
-                    entry,
-                    _transaction: transaction,
-                });
-            }
-            Selection::Vacant(entry) => entry,
-        };
-        // Retain the selected handle and arm cleanup before a possibly lost
-        // write acknowledgement. No failure selects another backend.
-        let mut key = ProvisionalSigningKey {
-            reference,
-            cleanup: AtomicBool::new(true),
-            entry,
-            _transaction: None,
-        };
-        key.entry
-            .set_secret(seed)
-            .map_err(|error| error::backend("write", error))?;
-        // Observe a lost acknowledgement after the selected store actually
-        // accepted the write, including explicit private-file custody.
-        #[cfg(test)]
-        fixture::check_fault(
-            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
-            fixture::Fault::WriteAcknowledgement,
-        )
-        .map_err(|error| error::backend("write", error))?;
-        let stored = SecretBytes(
-            key.entry
-                .get_secret()
-                .map_err(|error| error::backend("verify", error))?,
-        );
-        #[cfg(test)]
-        fixture::check_fault(
-            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
-            fixture::Fault::StoredRead,
-        )
-        .map_err(|error| error::backend("verify", error))?;
-        if !bool::from(stored.0.as_slice().ct_eq(seed)) {
-            return Err(unavailable());
-        }
-        key._transaction = transaction;
-        Ok(key)
-    }
-
-    /// Borrow secret material only for bootstrap, then clear the OS output buffer
-    /// on success, refusal or unwind. The reference never carries seed bytes.
+    /// Borrow the derived seed only for bootstrap; it and the root are cleared
+    /// on success, refusal or unwind. A missing root is never regenerated.
     pub fn with_seed<T>(
         &self,
         custody: SigningCustody<'_>,
         consume: impl FnOnce(&[u8; 32]) -> T,
     ) -> io::Result<T> {
-        let Selection::Held(_entry, secret) = self.select(custody)? else {
-            return Err(failure("read", CustodyCause::MissingEntry));
-        };
-        let seed: &[u8; 32] = secret.0.as_slice().try_into().map_err(|_| unavailable())?;
-        if !bool::from(blake3::hash(seed).as_bytes().ct_eq(&self.0)) {
+        let root = read(&entry(custody)?.0)?
+            .ok_or_else(|| failure("read", CustodyCause::MissingEntry))?;
+        if !bool::from(check(&root)[..].ct_eq(&self.0[16..])) {
             return Err(unavailable());
         }
-        Ok(consume(seed))
+        let mut material = Zeroizing::new([0; 48]);
+        material[..32].copy_from_slice(&root[..]);
+        material[32..].copy_from_slice(&self.0[..16]);
+        let seed = Zeroizing::new(blake3::derive_key(SEED_CONTEXT, &material[..]));
+        Ok(consume(&seed))
     }
+}
 
-    /// Probe exactly the selected store. A refusal is never treated as absence.
-    fn select(&self, custody: SigningCustody<'_>) -> io::Result<Selection> {
-        let name = blake3::Hash::from_bytes(self.0).to_hex();
-        let entry = match custody {
-            SigningCustody::Configured => store(name.as_str())?,
-            SigningCustody::PrivateFile(directory) => {
-                file::entry_in(name.as_str(), directory.to_owned())?
-            }
+/// Read the root, or create it once under the store's creation discipline.
+fn open_or_create(custody: SigningCustody<'_>) -> io::Result<Root> {
+    let (entry, exclusive) = entry(custody)?;
+    if let Some(root) = read(&entry)? {
+        return Ok(root);
+    }
+    let _creation = (!exclusive).then(creation_lock).transpose()?;
+    if let Some(root) = read(&entry)? {
+        return Ok(root);
+    }
+    let root = Zeroizing::new(new_key()?);
+    if let Err(error) = entry.set_secret(&root[..]) {
+        // Only a no-replace store can lose a creation race; adopt its winner.
+        return match exclusive.then(|| read(&entry)).transpose()?.flatten() {
+            Some(winner) => Ok(winner),
+            None => Err(error::backend("write", error)),
         };
-        match entry.get_secret().map(SecretBytes) {
-            Ok(held) => Ok(Selection::Held(entry, held)),
-            Err(keyring::Error::NoEntry) => Ok(Selection::Vacant(entry)),
-            Err(error) => Err(error::backend("read", error)),
-        }
     }
+    // Observe the stored value before any reference to it can be published.
+    match read(&entry)? {
+        Some(stored) if bool::from(stored[..].ct_eq(&root[..])) => Ok(root),
+        _ => Err(unavailable()),
+    }
+}
 
-    #[cfg(test)]
-    fn entry(&self) -> io::Result<keyring::Entry> {
-        match self.select(SigningCustody::Configured)? {
-            Selection::Held(entry, _held) => Ok(entry),
-            Selection::Vacant(entry) => Ok(entry),
+/// Probe exactly the selected store. A refusal is never treated as absence.
+fn read(entry: &keyring::Entry) -> io::Result<Option<Root>> {
+    match entry.get_secret() {
+        Ok(secret) => {
+            let secret = Zeroizing::new(secret);
+            let root: [u8; 32] = secret.as_slice().try_into().map_err(|_| unavailable())?;
+            Ok(Some(Zeroizing::new(root)))
+        }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error::backend("read", error)),
+    }
+}
+
+/// The selected store's root entry, and whether that store installs it
+/// without replacement (private files) rather than overwriting (native).
+fn entry(custody: SigningCustody<'_>) -> io::Result<(keyring::Entry, bool)> {
+    match custody {
+        SigningCustody::Configured => store(),
+        SigningCustody::PrivateFile(directory) => {
+            Ok((file::entry_in(directory.to_owned())?, true))
         }
     }
 }
@@ -240,369 +149,167 @@ impl SigningKeyReference {
 /// One explicit process custody policy, shared by every native consumer and
 /// every build. Private files require an explicit owner choice; failures
 /// never change policy.
-fn store(name: &str) -> io::Result<keyring::Entry> {
+fn store() -> io::Result<(keyring::Entry, bool)> {
     match std::env::var_os("ACYCLIC_SIGNING_CUSTODY").as_deref() {
         None => {}
         Some(value) if value == "native" => {}
-        Some(value) if value == "private-file" => return file::entry(name),
+        Some(value) if value == "private-file" => return Ok((file::entry()?, true)),
         Some(_) => return Err(failure("select", CustodyCause::InvalidPolicy)),
     }
     if std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").is_some() {
         return Err(failure("select", CustodyCause::InvalidPolicy));
     }
-    native(name)
+    Ok((native()?, false))
 }
 
 /// Linux selects Secret Service with a session bus, otherwise the kernel store.
 #[cfg(not(any(test, feature = "test-support")))]
-fn native(name: &str) -> io::Result<keyring::Entry> {
+fn native() -> io::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     {
         if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
             let service =
-                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
+                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, ROOT)
                     .map_err(|error| error::backend("open", error))?;
             Ok(keyring::Entry::new_with_credential(Box::new(service)))
         } else {
             Ok(keyring::Entry::new_with_credential(Box::new(
-                crate::kernel_keyring::KernelKey::new(SERVICE, name),
+                crate::kernel_keyring::KernelKey::new(SERVICE, ROOT),
             )))
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        keyring::Entry::new(SERVICE, name).map_err(|error| error::backend("open", error))
+        keyring::Entry::new(SERVICE, ROOT).map_err(|error| error::backend("open", error))
     }
+}
+
+/// Native root creation serializes on the OS account's lock namespace.
+#[cfg(not(any(test, feature = "test-support")))]
+fn creation_lock() -> io::Result<crate::FileLock> {
+    crate::FileLock::acquire(
+        crate::private_file::credential_lock()?,
+        crate::FileLockMode::Exclusive,
+    )
 }
 
 /// Test and fixture builds stand the in-memory fixture store in for the OS
 /// store only; an explicit private-file selection reopens across processes.
 #[cfg(any(test, feature = "test-support"))]
-fn native(name: &str) -> io::Result<keyring::Entry> {
-    Ok(fixture::entry(name))
+fn native() -> io::Result<keyring::Entry> {
+    Ok(fixture::entry())
 }
+
+#[cfg(any(test, feature = "test-support"))]
+use fixture::creation_lock;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::private_file::{self, PublicationStage};
-    use std::io::Write as _;
 
+    /// Growth guard: owners in any number of fresh state directories share one
+    /// entry per store. The former per-owner protocol added one entry each.
     #[test]
-    fn shared_seed_publication_survives_another_owner_abandoning() -> io::Result<()> {
-        for former_unlocked in [true, false] {
-            let root = tempfile::tempdir()?;
-            let seed = Zeroizing::new(new_key()?);
-            let first = SigningKeyReference::retain(&seed, SigningCustody::Configured)?;
-            let reference = first.reference();
-            if former_unlocked {
-                // Actual former transaction: its cleanup guard outlived the
-                // acquisition, so another independently located owner entered.
-                first
-                    ._transaction
-                    .as_ref()
-                    .ok_or_else(|| io::Error::other("an import holds its identity lock"))?
-                    .unlock()?;
-            }
-            TRY_TRANSACTION.set(true);
-            let contender = SigningKeyReference::retain(&seed, SigningCustody::Configured);
-            TRY_TRANSACTION.set(false);
-            let publish = |key: &ProvisionalSigningKey| -> io::Result<()> {
-                let bytes = serde_json::to_vec(&key.reference()).map_err(io::Error::other)?;
-                assert!(private_file::publish_new(
-                    &root.path().join("copied-owner"),
-                    &root.path().join("copied-next"),
-                    |file| file.write_all(&bytes),
-                    |stage| {
-                        key.observe_publication(stage);
-                        Ok(())
-                    },
-                )?);
-                Ok(())
-            };
-            if former_unlocked {
-                let contender = contender?;
-                publish(&contender)?;
-            } else {
-                assert!(
-                    matches!(contender, Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-                );
-            }
-            let failed = private_file::publish_new(
-                &root.path().join("original-owner"),
-                &root.path().join("original-next"),
-                |_| Err(io::ErrorKind::Interrupted.into()),
-                |stage| {
-                    first.observe_publication(stage);
-                    Ok(())
-                },
-            );
-            assert!(failed.is_err());
-            drop(first);
-            if !former_unlocked {
-                let contender = SigningKeyReference::retain(&seed, SigningCustody::Configured)?;
-                publish(&contender)?;
-            }
-            assert!(root.path().join("copied-owner").is_file());
-            let reopened = reference.with_seed(SigningCustody::Configured, |stored| {
-                bool::from(stored.ct_eq(&*seed))
-            });
-            assert_eq!(
-                reopened.is_ok(),
-                !former_unlocked,
-                "abandonment deleted another published owner's credential"
-            );
-            if !former_unlocked {
-                assert!(reopened?);
-                reference
-                    .entry()?
-                    .delete_credential()
-                    .map_err(|_| unavailable())?;
-            }
-        }
-        Ok(())
-    }
-
-    /// GraphCoder startup creates custody under a read-only account profile.
-    /// A generated identity opens no lock path; an import of that same seed,
-    /// the negative control, still creates its account-namespace lock.
-    #[test]
-    fn generated_custody_opens_no_identity_lock_namespace() -> io::Result<()> {
-        let key = SigningKeyReference::create(SigningCustody::Configured)?;
-        let suffix = format!(
-            "-{}.lock",
-            blake3::Hash::from_bytes(key.reference().0).to_hex()
-        );
-        let locks = || -> io::Result<usize> {
-            let mut count = 0;
-            for entry in std::fs::read_dir(std::env::temp_dir())? {
-                count += usize::from(entry?.file_name().to_string_lossy().ends_with(&suffix));
-            }
-            Ok(count)
-        };
-        assert_eq!(locks()?, 0, "generated custody opened an identity lock");
-        let imported = key
-            .reference()
-            .with_seed(SigningCustody::Configured, |seed| {
-                SigningKeyReference::retain(seed, SigningCustody::Configured)
-            })??;
-        assert_eq!(locks()?, 1, "an import must serialize on its identity lock");
-        drop(imported);
-        drop(key);
-        Ok(())
-    }
-
-    #[test]
-    fn provisional_keys_follow_actual_owner_publication_at_every_cut() -> io::Result<()> {
-        for explicit_file in [false, true] {
-            for failure in [
-                Some(PublicationStage::Created),
-                Some(PublicationStage::Synced),
-                Some(PublicationStage::Installed),
-                Some(PublicationStage::Published),
-                None,
-            ] {
-                let root = tempfile::tempdir()?;
-                let directory = root.path().join("custody");
-                let custody = if explicit_file {
-                    SigningCustody::PrivateFile(&directory)
-                } else {
-                    SigningCustody::Configured
-                };
-                let key = SigningKeyReference::create(custody)?;
-                let reference = key.reference();
-                let path = root.path().join("owner");
-                let bytes = serde_json::to_vec(&reference).map_err(io::Error::other)?;
-                let result = private_file::publish_new(
-                    &path,
-                    &root.path().join("next"),
-                    |file| file.write_all(&bytes),
-                    |stage| {
-                        key.observe_publication(stage);
-                        if Some(stage) == failure {
-                            Err(io::ErrorKind::Interrupted.into())
-                        } else {
-                            Ok(())
-                        }
-                    },
-                );
-                assert_eq!(result.is_err(), failure.is_some());
-                drop(key);
-                if path.exists() {
-                    reference.with_seed(custody, |_| ())?;
-                    let other_directory = root.path().join("other-store");
-                    let other = if explicit_file {
-                        SigningCustody::Configured
-                    } else {
-                        SigningCustody::PrivateFile(&other_directory)
-                    };
-                    assert!(
-                        reference
-                            .with_seed(other, |_| panic!("custody fell back to another store"))
-                            .is_err()
-                    );
-                    // A failed read from another store cannot delete or replace
-                    // the actual published owner's original credential.
-                    reference.with_seed(custody, |_| ())?;
-                    let Selection::Held(entry, _) = reference.select(custody)? else {
-                        return Err(unavailable());
-                    };
-                    entry.delete_credential().map_err(|_| unavailable())?;
-                } else {
-                    assert!(matches!(reference.select(custody)?, Selection::Vacant(_)));
-                }
-            }
-        }
-        assert!(
-            SigningKeyReference::create(SigningCustody::PrivateFile(Path::new("relative")))
-                .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn losing_or_abandoned_creation_removes_only_its_own_new_entry() -> io::Result<()> {
-        let root = tempfile::tempdir()?;
-        let path = root.path().join("owner");
-        let winner = SigningKeyReference::create(SigningCustody::Configured)?;
-        let winner_ref = winner.reference();
-        assert!(private_file::publish_new(
-            &path,
-            &root.path().join("winner"),
-            |file| file.write_all(b"winner"),
-            |stage| {
-                winner.observe_publication(stage);
-                Ok(())
-            }
-        )?);
-        let loser = SigningKeyReference::create(SigningCustody::Configured)?;
-        let loser_ref = loser.reference();
-        assert!(!private_file::publish_new(
-            &path,
-            &root.path().join("loser"),
-            |file| file.write_all(b"loser"),
-            |stage| {
-                loser.observe_publication(stage);
-                Ok(())
-            }
-        )?);
-        drop(loser);
-        drop(winner);
-        assert!(matches!(
-            loser_ref.entry()?.get_secret(),
-            Err(keyring::Error::NoEntry)
-        ));
-        winner_ref.with_seed(SigningCustody::Configured, |_| ())?;
-        // Reopening existing custody does not give the new owner cleanup rights.
-        let existing = winner_ref.with_seed(SigningCustody::Configured, |seed| {
-            SigningKeyReference::retain(seed, SigningCustody::Configured)
-        })??;
-        assert!(!existing.cleanup.load(Ordering::Acquire));
-        drop(existing);
-        winner_ref.with_seed(SigningCustody::Configured, |_| ())?;
-        winner_ref
-            .entry()?
-            .delete_credential()
-            .map_err(|_| unavailable())?;
-
-        // Actual former create path retained an entry with no publication owner.
-        let seed = Zeroizing::new(new_key()?);
-        let former = SigningKeyReference::retain(&seed, SigningCustody::Configured)?;
-        let leaked = former.reference();
-        // The former bare-reference API had no abandonment owner.
-        former.cleanup.store(false, Ordering::Release);
-        drop(former);
-        assert!(leaked.with_seed(SigningCustody::Configured, |_| ()).is_ok());
-        leaked
-            .entry()?
-            .delete_credential()
-            .map_err(|_| unavailable())?;
-        let abandoned = SigningKeyReference::create(SigningCustody::Configured)?;
-        let abandoned_ref = abandoned.reference();
-        drop(abandoned);
-        assert!(matches!(
-            abandoned_ref.entry()?.get_secret(),
-            Err(keyring::Error::NoEntry)
-        ));
-        Ok(())
-    }
-
-    /// Preserve the selected custody policy, including immutable file entries.
-    #[test]
-    fn custody_retains_original_seed_and_rejects_missing_or_replaced_entries() -> io::Result<()> {
-        let seed = Zeroizing::new(new_key()?);
-        let key = SigningKeyReference::retain(&seed, SigningCustody::Configured)?;
-        let reference = key.reference();
-        let entry = reference.entry()?;
-        assert!(
-            reference.with_seed(SigningCustody::Configured, |loaded| bool::from(
-                loaded.ct_eq(&*seed)
-            ))?
-        );
-        // Negative control: the former config writer exposes the planted seed.
-        let plaintext_config = serde_json::to_vec(&*seed).map_err(io::Error::other)?;
-        let metadata = serde_json::to_vec(&reference).map_err(io::Error::other)?;
-        assert_ne!(metadata, plaintext_config);
-        assert!(
-            !metadata
-                .windows(seed.len())
-                .any(|window| window == seed.as_slice())
-        );
-        let replacement = Zeroizing::new(new_key()?);
-        // File custody deliberately refuses overwrites. Replace the entry
-        // through deletion and creation, as an external custodian could.
-        entry.delete_credential().map_err(|_| unavailable())?;
-        entry.set_secret(&*replacement).map_err(|_| unavailable())?;
-        assert!(
-            reference
-                .with_seed(SigningCustody::Configured, |_| panic!(
-                    "replaced seed reached bootstrap"
-                ))
-                .is_err()
-        );
-        entry.delete_credential().map_err(|_| unavailable())?;
-        assert!(
-            reference
-                .with_seed(SigningCustody::Configured, |_| panic!(
-                    "missing seed was regenerated"
-                ))
-                .is_err()
-        );
-        assert!(matches!(entry.get_secret(), Err(keyring::Error::NoEntry)));
-        Ok(())
-    }
-
-    #[test]
-    fn abandoned_keys_and_failed_custody_admission_leave_zero_entries() -> io::Result<()> {
+    fn owners_share_one_root_entry_and_derive_distinct_seeds() -> io::Result<()> {
         let root = tempfile::tempdir()?;
         let directory = root.path().join("custody");
         for custody in [
             SigningCustody::Configured,
             SigningCustody::PrivateFile(&directory),
         ] {
-            let mut references = Vec::new();
-            let key = SigningKeyReference::create(custody)?;
-            references.push(key.reference());
-            drop(key);
-
-            for fault in [
-                fixture::Fault::StoredRead,
-                fixture::Fault::WriteAcknowledgement,
-            ] {
-                let seed = Zeroizing::new(new_key()?);
-                let reference = SigningKeyReference(*blake3::hash(&*seed).as_bytes());
-                let name = blake3::Hash::from_bytes(reference.0).to_hex();
-                fixture::fail_once(name.as_str(), fault);
-                assert!(SigningKeyReference::retain(&seed, custody).is_err());
-                references.push(reference);
-            }
-            let retained = references.iter().try_fold(0, |count, reference| {
-                Ok::<_, io::Error>(
-                    count + usize::from(matches!(reference.select(custody)?, Selection::Held(..))),
-                )
-            })?;
-            assert_eq!(retained, 0, "abandoned or refused custody leaked an entry");
+            let references = (0..8)
+                .map(|_| SigningKeyReference::create(custody))
+                .collect::<io::Result<Vec<_>>>()?;
+            let mut seeds = references
+                .iter()
+                .map(|reference| reference.with_seed(custody, |seed| *seed))
+                .collect::<io::Result<Vec<_>>>()?;
+            assert_eq!(
+                references[0].with_seed(custody, |seed| *seed)?,
+                seeds[0],
+                "reopening changed an owner's seed"
+            );
+            seeds.sort_unstable();
+            seeds.dedup();
+            assert_eq!(seeds.len(), references.len(), "owners shared a seed");
         }
+        assert_eq!(fixture::local_entries(), 1);
+        assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
+        Ok(())
+    }
+
+    /// Concurrent first creators converge on one root in the no-replace store
+    /// and in the overwriting store guarded by the creation lock.
+    #[test]
+    fn concurrent_first_creation_adopts_one_root() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let directory = root.path().join("custody");
+        for custody in [
+            SigningCustody::Configured,
+            SigningCustody::PrivateFile(&directory),
+        ] {
+            let start = std::sync::Barrier::new(8);
+            let references = std::thread::scope(|scope| {
+                let workers = (0..8)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            start.wait();
+                            SigningKeyReference::create(custody)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                workers
+                    .into_iter()
+                    .map(|worker| worker.join().map_err(|_| io::Error::other("creator panicked"))?)
+                    .collect::<io::Result<Vec<_>>>()
+            })?;
+            for reference in references {
+                reference.with_seed(custody, |_| ())?;
+            }
+        }
+        assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
+        Ok(())
+    }
+
+    /// Preserve the selected custody policy: metadata never carries the root
+    /// or seed, another store never stands in, and a replaced or missing root
+    /// is refused rather than regenerated.
+    #[test]
+    fn custody_refuses_other_stores_and_replaced_or_missing_roots() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let directory = root.path().join("custody");
+        let custody = SigningCustody::PrivateFile(&directory);
+        let reference = SigningKeyReference::create(custody)?;
+        let seed = Zeroizing::new(reference.with_seed(custody, |seed| *seed)?);
+        let (entry, _) = entry(custody)?;
+        let stored = read(&entry)?.ok_or_else(unavailable)?;
+        assert_ne!(reference.0, *stored, "the reference carries the root");
+        assert_ne!(reference.0, *seed, "the reference carries the seed");
+        let other = root.path().join("other");
+        for wrong in [SigningCustody::Configured, SigningCustody::PrivateFile(&other)] {
+            assert!(
+                reference
+                    .with_seed(wrong, |_| panic!("custody fell back to another store"))
+                    .is_err()
+            );
+        }
+        // File custody refuses overwrites. Replace the entry through deletion
+        // and creation, as an external custodian could.
+        entry.delete_credential().map_err(|_| unavailable())?;
+        entry.set_secret(&new_key()?).map_err(|_| unavailable())?;
+        assert!(
+            reference
+                .with_seed(custody, |_| panic!("replaced root reached bootstrap"))
+                .is_err()
+        );
+        entry.delete_credential().map_err(|_| unavailable())?;
+        assert!(
+            reference
+                .with_seed(custody, |_| panic!("missing root was regenerated"))
+                .is_err()
+        );
+        assert!(read(&entry)?.is_none());
+        assert!(SigningKeyReference::create(SigningCustody::PrivateFile(Path::new("relative"))).is_err());
         Ok(())
     }
 }

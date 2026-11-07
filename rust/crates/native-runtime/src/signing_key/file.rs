@@ -1,4 +1,4 @@
-//! File adapter for the same seed-entry protocol. Private-file publication owns
+//! File adapter for the same one-root-entry protocol. Private-file publication owns
 //! permissions, atomic installation and durability on every supported OS.
 use crate::private_file;
 use keyring::{Error, credential::CredentialApi};
@@ -7,25 +7,23 @@ use std::{io, io::Write as _, path::PathBuf};
 #[derive(Debug)]
 struct Credential {
     directory: PathBuf,
-    name: String,
 }
 
-pub(super) fn entry(name: &str) -> io::Result<keyring::Entry> {
+pub(super) fn entry() -> io::Result<keyring::Entry> {
     let config = std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").map(PathBuf::from)
         .or_else(dirs::config_dir).filter(|path| path.is_absolute()).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound,
             "signing custody configuration directory unavailable; recovery: configure an absolute application configuration directory")
     })?;
-    entry_in(name, config.join("acyclic/signing-seeds"))
+    entry_in(config.join("acyclic/signing-root.v2"))
 }
 
-pub(super) fn entry_in(name: &str, directory: PathBuf) -> io::Result<keyring::Entry> {
+pub(super) fn entry_in(directory: PathBuf) -> io::Result<keyring::Entry> {
     if !directory.is_absolute() {
         return Err(super::failure("select", super::CustodyCause::InvalidPolicy));
     }
     Ok(keyring::Entry::new_with_credential(Box::new(Credential {
         directory,
-        name: name.into(),
     })))
 }
 
@@ -40,7 +38,7 @@ fn failure(error: io::Error) -> Error {
 impl CredentialApi for Credential {
     fn get_secret(&self) -> keyring::Result<Vec<u8>> {
         private_file::validate_directory(&self.directory).map_err(failure)?;
-        let secret = private_file::read(&self.directory.join(&self.name), 32).map_err(failure)?;
+        let secret = private_file::read(&self.directory.join(super::ROOT), 32).map_err(failure)?;
         if secret.0.len() != 32 {
             return Err(failure(io::ErrorKind::InvalidData.into()));
         }
@@ -60,7 +58,7 @@ impl CredentialApi for Credential {
         staged.as_file_mut().write_all(secret).map_err(failure)?;
         staged
             .publish(
-                &self.directory.join(&self.name),
+                &self.directory.join(super::ROOT),
                 crate::RenameMode::NoReplace,
             )
             .map_err(failure)
@@ -68,7 +66,7 @@ impl CredentialApi for Credential {
 
     fn delete_credential(&self) -> keyring::Result<()> {
         private_file::validate_directory(&self.directory).map_err(failure)?;
-        std::fs::remove_file(self.directory.join(&self.name)).map_err(failure)
+        std::fs::remove_file(self.directory.join(super::ROOT)).map_err(failure)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -87,12 +85,11 @@ mod tests {
         let root = tempfile::tempdir()?;
         let entry = Credential {
             directory: root.path().join("custody"),
-            name: "seed".into(),
         };
         let seed = SecretBytes(crate::owner_record::new_key()?.to_vec());
         assert!(matches!(entry.get_secret(), Err(Error::NoEntry)));
         entry.set_secret(&seed.0).map_err(io::Error::other)?;
-        let path = entry.directory.join("seed");
+        let path = entry.directory.join(super::super::ROOT);
         assert!(private_file::is_private(&private_file::open(
             &path, false
         )?)?);

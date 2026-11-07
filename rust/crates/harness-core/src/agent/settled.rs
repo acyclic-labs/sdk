@@ -88,10 +88,10 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         child: &'a AgentPath,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<Phase>>>;
 
-    /// The text `child`'s last own turn answered (see [`answer`]), read under
-    /// the turn's authority.
+    /// The text `child`'s last own turn answered (see [`answer`]) and how
+    /// that turn settled, read under the turn's authority.
     fn answer<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<String>>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<(String, super::TurnOutcome)>>>;
 }

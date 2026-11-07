@@ -21,7 +21,7 @@ pub enum CustodyCause {
     NativeStatus(i64),
     /// Non-secret backend detail when no numeric status is exposed.
     Backend(String),
-    /// The original reference is absent from the selected store.
+    /// The account's signing root is absent from the selected store.
     MissingEntry,
     /// The stored value does not match its reference or encoding.
     InvalidStoredSeed,

@@ -3,14 +3,14 @@ import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { environment } from "./graphcoder-e2e/scratch.mjs";
 
 export async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-"));
   const root = join(directory, "workspace"), settings = join(directory, "settings");
-  mkdirSync(root); mkdirSync(settings);
-  // Windows known-folder discovery verifies these beneath USERPROFILE.
-  mkdirSync(join(settings, "AppData", "Local"), { recursive: true });
-  mkdirSync(join(settings, "AppData", "Roaming"), { recursive: true });
+  mkdirSync(root);
+  // The shared scratch profile isolates per-user state and signing custody.
+  const env = environment(settings);
   let fail = false, calls = 0, release, releaseCount, observeCount, observeResponse, countTarget;
   let countBarrier = Promise.resolve();
   const counting = new Promise(resolve => { observeCount = resolve; });
@@ -49,7 +49,7 @@ export async function fixture() {
     token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
   } }));
   return {
-    root, settings, args: ["--workspace", root, "--settings-root", settings, "--model", "scripted/test", "--catalog", catalog],
+    root, settings, env, args: ["--workspace", root, "--settings-root", settings, "--model", "scripted/test", "--catalog", catalog],
     counting, responding,
     holdCount: text => { countTarget = text; countBarrier = new Promise(resolve => { releaseCount = resolve; }); },
     completeCount: () => releaseCount?.(),
