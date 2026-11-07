@@ -1,10 +1,14 @@
+diff --git a/rust/crates/harness-core/src/model/recorded.rs b/rust/crates/harness-core/src/model/recorded.rs
+index 58f353f01b5..f63f558ce5e 100644
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -574,7 +574,4 @@
-                         Ok(output) => output,
-                         Err(error) => {
--                            for lookup in staged {
--                                tools.retire_if(lookup, |slot| slot.selected.is_none());
--                            }
-                             return Err(error);
-                         }
+@@ -536,9 +536,6 @@ impl RecordedModel {
+                         let output = match output {
+                             Ok(output) => output,
+                             Err(error) => {
+-                                for lookup in staged {
+-                                    tools.retire_if(lookup, |slot| slot.selected.is_none());
+-                                }
+                                 return Err(error);
+                             }
+                         };

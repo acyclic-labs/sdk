@@ -1,6 +1,8 @@
---- a/rust/crates/harness-core/src/model/recorded.rs
-+++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -204,7 +204,7 @@
+diff --git a/rust/crates/harness-core/src/lib.rs b/rust/crates/harness-core/src/lib.rs
+index 3b7a41a8fb5..cef2e052b1c 100644
+--- a/rust/crates/harness-core/src/lib.rs
++++ b/rust/crates/harness-core/src/lib.rs
+@@ -172,7 +172,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
          let _ = (self.0, items);
          #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
          if let Some(original) = self.0 {

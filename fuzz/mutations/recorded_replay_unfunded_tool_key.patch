@@ -1,9 +1,13 @@
+diff --git a/rust/crates/harness-core/src/model/recorded.rs b/rust/crates/harness-core/src/model/recorded.rs
+index 58f353f01b5..084a41c2ea8 100644
 --- a/rust/crates/harness-core/src/model/recorded.rs
 +++ b/rust/crates/harness-core/src/model/recorded.rs
-@@ -550,5 +550,5 @@
-                                 ordinal,
-                             };
--                            let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
-+                            let lookup = tool_key(dispatch.operation_id, &call_id.clone(), io.as_ref())?;
-                             let slot = tools.get_or_try_insert_with(
-                                 lookup,
+@@ -512,7 +512,7 @@ impl RecordedModel {
+                                     index,
+                                     ordinal,
+                                 };
+-                                let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
++                                let lookup = tool_key(dispatch.operation_id, &call_id.clone(), io.as_ref())?;
+                                 let slot = tools.get_or_try_insert_with(
+                                     lookup,
+                                     &mut NativeIndexWork(work),
