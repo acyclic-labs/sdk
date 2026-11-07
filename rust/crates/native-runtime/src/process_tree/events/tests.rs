@@ -1,6 +1,74 @@
 use super::*;
 use std::time::Duration;
 
+#[cfg(unix)]
+#[test]
+fn native_producer_retains_original_consumer_panic() -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+
+    struct Payload(Arc<AtomicBool>);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    struct Panicking(Arc<AtomicBool>);
+    impl Wake for Panicking {
+        fn wake(self: Arc<Self>) {
+            std::panic::panic_any(Payload(Arc::clone(&self.0)));
+        }
+    }
+
+    let hub = Hub {
+        poller: platform::Poller::new()?,
+        registry: Mutex::new(Registry::default()),
+        stride: 1,
+        service_failure: Arc::new(OnceLock::new()),
+        locks: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let (reader, mut writer) = std::os::unix::net::UnixStream::pair()?;
+    let (quiet, _retained_writer) = std::os::unix::net::UnixStream::pair()?;
+    let payload_dropped = Arc::new(AtomicBool::new(false));
+    let mut trigger = arm_on(&hub, &[Source::Readable(reader.as_fd())], None)?;
+    let pending = arm_on(&hub, &[Source::Readable(quiet.as_fd())], None)?;
+    let waker = Waker::from(Arc::new(Panicking(Arc::clone(&payload_dropped))));
+    assert!(
+        Pin::new(&mut trigger)
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let outcome = std::thread::scope(|scope| {
+        let owner = scope.spawn(|| hub.run());
+        // The real original native queue supplies readiness. The consumer's
+        // panic is reached from its production dispatch, not a direct wake.
+        let emitted = writer.write_all(b"x");
+        drop(writer);
+        emitted?;
+        let outcome = pending.block();
+        assert!(
+            owner.join().is_ok(),
+            "native producer lost typed panic custody"
+        );
+        Ok::<_, io::Error>(outcome)
+    })?;
+    let ProcessWaitOutcome::ServiceFailed(original) = outcome else {
+        panic!("native producer omitted original consumer failure");
+    };
+    assert_eq!(original.kind(), io::ErrorKind::Other);
+    assert_eq!(original.to_string(), "TaskPanicked");
+    assert!(!payload_dropped.load(Ordering::Acquire));
+    let ProcessWaitOutcome::ServiceFailed(late) = arm_on(&hub, &[], None)?.block() else {
+        panic!("late native observer lost original consumer failure");
+    };
+    assert!(Arc::ptr_eq(&original, &late));
+    assert!(Arc::ptr_eq(
+        &original,
+        hub.service_failure.get().ok_or(io::ErrorKind::NotFound)?
+    ));
+    Ok(())
+}
+
 #[test]
 fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Result<()> {
     // Dispatch owns deadline admission. Advance that same production cut

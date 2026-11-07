@@ -45,3 +45,32 @@ original pipe input, producer-drop EOF and owner retirement. Its existing
 ordinary-select negative requires EINVAL at the same high descriptor. The
 consumer properties use real PTYs and force the same select fallback. Failure
 to provision the original high descriptor is an explicit error, never a skip.
+
+The descriptor-capacity census is
+`rg -n 'RLIMIT_NOFILE|skipped:' rust/crates/harness-tui/src/term`.
+Both missing-capacity paths refuse: an insufficient hard limit returns
+`Unsupported`, and a failed `setrlimit` preserves its OS error kind. Neither
+path reports a passing readiness property. Successful checks perform the same
+resource-limit read, conditional limit update and PTY operations as before;
+there is no additional syscall, wait, allocation or copy on that path.
+
+On Linux, a real child-process hard limit exercises the refusal without
+changing the parent shell's capacity. `original-descriptor-skips.patch`
+restores the exact original test file from
+`96804b393d7457c820bf6581dd8a1f7bb84f300d`. Its false pass is the negative
+control; it must print `skipped: RLIMIT_NOFILE` without exercising the PTY.
+
+```sh
+git apply rust/proofs/terminal-source-ownership/original-descriptor-skips.patch
+# Original bug: exits successfully and prints skipped: RLIMIT_NOFILE.
+prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --features tui --lib --success-output final -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+git apply -R rust/proofs/terminal-source-ownership/original-descriptor-skips.patch
+# Require test failure with Unsupported and the descriptor-capacity recovery command.
+prlimit --nofile=1500:1500 cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+# Require a pass with the original offered capacity restored.
+cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'
+```
+
+This control exercises the hard-limit refusal. The security-policy-dependent
+`setrlimit` failure is propagated through the same test result; it is not
+claimed as a separately exercised native failure.
