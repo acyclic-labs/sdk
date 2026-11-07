@@ -46,7 +46,7 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         let decoded = callback_path::components(&wide);
         assert_eq!(decoded.as_ref(), Some(&raw_parts));
     }
-    if input.len() % 2 != 0 {
+    if !input.len().is_multiple_of(2) {
         return;
     }
     let wide = input
