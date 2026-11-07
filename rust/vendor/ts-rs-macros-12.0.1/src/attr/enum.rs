@@ -293,6 +293,7 @@ impl_parse! {
         "try_from" => {
             let _: Type = parse_assign_from_str(input)?;
         },
+        "deny_unknown_fields" => {},
 
         // parse #[serde(crate = "...")] to not emit a warning
         "crate" => {
