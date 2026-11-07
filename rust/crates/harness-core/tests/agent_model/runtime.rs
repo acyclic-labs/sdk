@@ -1176,7 +1176,9 @@ async fn reply_waits_require_original_committed_requests() -> Result {
     let waiting = host.spawned(&child, child_inbox, &descendant_spawn);
     tokio::pin!(waiting);
     assert!(futures::poll!(&mut waiting).is_pending());
-    assert!(host.runtime().drain().await.is_empty());
+    // A child created by the parent's commit has not joined this manually
+    // driven runtime yet. Use the public event-owned admission for that child.
+    host.drain(&child).await?;
     let outcome = match futures::poll!(&mut waiting) {
         std::task::Poll::Ready(result) => result?,
         std::task::Poll::Pending => {
