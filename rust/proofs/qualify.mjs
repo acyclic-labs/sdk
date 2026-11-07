@@ -40,6 +40,13 @@ const claims = {
     ["--no-default-features", "--features", "filesystem-local,native-execution"],
     { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
   ],
+  "native-added-metadata": [
+    "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "step=codex merge right child",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/filesystem/fuzz/mutations/added_metadata_observation.patch" },
+  ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
     "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating",

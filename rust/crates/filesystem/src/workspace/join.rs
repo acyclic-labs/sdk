@@ -15,6 +15,10 @@ pub enum JoinHistory {
 }
 
 /// Side-effect-free join builder.
+///
+/// When matching independent additions converge, unavailable metadata does not
+/// contradict an exact observation from the other side. Conflicting exact
+/// authored values remain conflicts; timestamps retain the later observation.
 pub struct JoinBuilder<A: 'static, O: 'static> {
     pub(super) source: Workspace<A, O>,
     pub(super) target: Workspace<A, O>,

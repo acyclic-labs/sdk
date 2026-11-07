@@ -375,13 +375,6 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
         LocalHarness::open(LocalHarnessConfig::native_host(&cwd).state_directory(state.path()))
             .await?,
     );
-    let repository = local.workspace().map(|workspace| {
-        (
-            workspace.view.workspace().id(),
-            workspace.store.clone(),
-            workspace.filesystem.clone(),
-        )
-    });
     let (ready, readiness) = tokio::sync::oneshot::channel();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let mut server = tokio::spawn(async move {
@@ -418,70 +411,6 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
             format!("owner={retirement:?}; fixture={result:?}")
         )
     );
-    if result.is_err()
-        && let Some((workspace, store, filesystem)) = repository
-    {
-        let pending = acyclic_fs::GitCompatRepository::new(workspace, store.clone())
-            .pending_transition()
-            .await;
-        eprintln!("native {host} original checkout transition: {pending:?}");
-        let details: Result = async {
-            let Some(pending) = pending? else {
-                return Ok(());
-            };
-            let acyclic_fs::GitFilesystemAction::Join {
-                target_tree,
-                source_workspace,
-                ..
-            } = pending.action
-            else {
-                return Ok(());
-            };
-            let resolver = (filesystem, acyclic_fs::WorkspaceGraph::new(store));
-            let target = acyclic_fs::WorkspaceResolver::resolve(&resolver, workspace).await?;
-            let source =
-                acyclic_fs::WorkspaceResolver::resolve(&resolver, source_workspace).await?;
-            let work = acyclic_fs::WorkBudget::UNBOUNDED;
-            let cancel = acyclic_fs::CancellationToken::new();
-            let ours = target
-                .generation(target_tree.authored_generation(), work, &cancel)
-                .await?
-                .value;
-            let theirs = source.head(work, &cancel).await?.value;
-            let plan = source
-                .join_into(&target)
-                .git_metadata()
-                .plan_for_replay_at(
-                    &theirs,
-                    &ours,
-                    acyclic_fs::IdempotencyKey::from_bytes(pending.id.operation_id().into_bytes()),
-                    work,
-                    &cancel,
-                )
-                .await?
-                .value;
-            let ancestor = acyclic_fs::WorkspaceResolver::resolve(
-                &resolver,
-                plan.common_ancestor_workspace_id(),
-            )
-            .await?;
-            let base = ancestor
-                .generation(plan.common_ancestor(), work, &cancel)
-                .await?
-                .value;
-            for (side, generation) in [("base", base), ("ours", ours), ("theirs", theirs)] {
-                for path in ["/left.txt", "/nested.txt", "/right.txt"] {
-                    let entry = generation.stat(path, work, &cancel).await;
-                    eprintln!("native {host} original merge {side} {path}: {entry:?}");
-                    let content = generation.read(path, 64, work, &cancel).await;
-                    eprintln!("native {host} original merge {side} {path} content: {content:?}");
-                }
-            }
-            Ok(())
-        }
-        .await;
-        eprintln!("native {host} original merge inspection: {details:?}");
-    }
     result
 }
 
