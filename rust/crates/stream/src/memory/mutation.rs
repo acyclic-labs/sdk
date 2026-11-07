@@ -113,9 +113,13 @@ fn retain(
     };
     let entry = Retained {
         fact,
-        replay_left: None,
-        replay_right: None,
-        replay_height: 1,
+        // A first leaf has no branch. Its dormant original slot is populated
+        // before any Branch link can select it; there is no second allocation.
+        replay_branch: ReplayBranch {
+            bit: 0,
+            left: RetainedIndexLink::Leaf(0),
+            right: RetainedIndexLink::Leaf(0),
+        },
         commit_branch: None,
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
@@ -136,8 +140,7 @@ fn retain(
             state.insert_commit(index, probe);
         }
         if keyed {
-            state.replay_root =
-                Some(state.insert_replay(state.replay_root, index, &mut || probe(1)));
+            state.insert_replay(index, probe);
             state.replay_count += 1;
         }
     }

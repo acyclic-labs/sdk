@@ -2,8 +2,8 @@
 struct State {
     paths: Namespace,
     signals: crate::interest::Interests<StreamPath, Signals>,
-    replay_root: Option<usize>,
-    commit_root: Option<CommitLink>,
+    replay_root: Option<RetainedIndexLink>,
+    commit_root: Option<RetainedIndexLink>,
     replay_count: usize,
     retained: Vec<Retained>,
     path_bytes: usize,
@@ -26,23 +26,6 @@ impl State {
         self.paths.get(path).map(|path| path.tail)
     }
 
-    fn replay<E>(
-        &self,
-        key: &[u8],
-        mut probe: impl FnMut() -> Result<(), E>,
-    ) -> Result<Option<&Retained>, E> {
-        let mut next = self.replay_root;
-        while let Some(index) = next {
-            probe()?;
-            let entry = self.replay_entry(index);
-            match entry.replay.as_deref().cmp(&Some(key)) {
-                std::cmp::Ordering::Equal => return Ok(Some(entry)),
-                std::cmp::Ordering::Less => next = entry.replay_right,
-                std::cmp::Ordering::Greater => next = entry.replay_left,
-            }
-        }
-        Ok(None)
-    }
     fn replay_count(&self) -> usize {
         self.replay_count
     }

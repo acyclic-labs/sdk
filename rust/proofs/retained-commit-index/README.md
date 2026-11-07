@@ -26,7 +26,7 @@ its output allocation/copy funding.
 
 Restoration also runs the existing every-key-bit property, original native
 append/coordinated/fork publication refusals, and prepared completion through
-62 interleavings after original allocation/work exhaustion and cancellation.
+318 interleavings after original allocation/work exhaustion and cancellation.
 The shared collection's original adversarial-width and refused-publication
 properties cover both boxed cursor adapters, including keys wider than256bits,
 zero width, cancelled retirement and retained funding. No parallel model or
@@ -39,5 +39,8 @@ barriers, transport calls, locks or tasks. The original retained branch layout
 stays compact; byte/offset coordinates are expanded only on the stack. This
 control establishes fixed-width selection and comparison accounting, not full
 request cost. Mutation search inside an envelope, output allocation/copy
-accounting, variable-width replay AVL lookup, retained-vector growth, all-platform
+accounting, retained-vector growth, all-platform
 execution and deployment topology remain separate obligations.
+
+Variable-width replay selection and its prepaid original reservations are
+covered by the [binary replay control](../replay-index/README.md).

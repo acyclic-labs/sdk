@@ -12,7 +12,7 @@ const COMMIT_INDEX_PROBES: u64 = match radix::insertion_examinations(32) {
 };
 
 #[derive(Clone, Copy)]
-enum CommitLink {
+enum RetainedIndexLink {
     Leaf(usize),
     Branch(usize),
 }
@@ -20,15 +20,15 @@ enum CommitLink {
 #[derive(Clone, Copy)]
 struct CommitBranch {
     bit: usize,
-    left: CommitLink,
-    right: CommitLink,
+    left: RetainedIndexLink,
+    right: RetainedIndexLink,
 }
 
 // This adapter borrows only the original inventory. Selection and bit/key
 // interpretation are the same implementation used by the boxed FixedIndex.
 struct CommitCursor<'a> {
     state: &'a State,
-    link: Option<CommitLink>,
+    link: Option<RetainedIndexLink>,
     parent: Option<(usize, bool)>,
 }
 
@@ -39,7 +39,7 @@ impl RadixCursor for CommitCursor<'_> {
 
     fn branch_bit(&self) -> Option<BranchBit> {
         match self.link {
-            Some(CommitLink::Branch(index)) => {
+            Some(RetainedIndexLink::Branch(index)) => {
                 Some(BranchBit::from_bit(self.state.commit_branch(index).bit))
             }
             _ => None,
@@ -47,7 +47,7 @@ impl RadixCursor for CommitCursor<'_> {
     }
 
     fn child(self, high: bool) -> Self {
-        let Some(CommitLink::Branch(index)) = self.link else {
+        let Some(RetainedIndexLink::Branch(index)) = self.link else {
             unreachable!("selection descends from an existing branch")
         };
         let branch = self.state.commit_branch(index);
@@ -95,7 +95,7 @@ impl State {
         };
         let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;
         match selected.link {
-            Some(CommitLink::Leaf(index)) => {
+            Some(RetainedIndexLink::Leaf(index)) => {
                 observe(32)?;
                 Ok(self
                     .replay_entry(index)
@@ -109,7 +109,7 @@ impl State {
 
     fn insert_commit(&mut self, index: usize, probe: &mut impl FnMut(u64)) {
         if self.commit_root.is_none() {
-            self.commit_root = Some(CommitLink::Leaf(index));
+            self.commit_root = Some(RetainedIndexLink::Leaf(index));
             return;
         }
         probe(1);
@@ -123,7 +123,7 @@ impl State {
                 Ok(selected) => selected,
                 Err(never) => match never {},
             };
-        let Some(CommitLink::Leaf(other)) = selected.link else {
+        let Some(RetainedIndexLink::Leaf(other)) = selected.link else {
             unreachable!("selection returns a retained commit leaf")
         };
         observe(32).unwrap_or_else(|never| match never {});
@@ -142,7 +142,7 @@ impl State {
             .link
             .unwrap_or_else(|| unreachable!("a selected subtree is nonempty"));
         let parent = selected.parent;
-        let leaf = CommitLink::Leaf(index);
+        let leaf = RetainedIndexLink::Leaf(index);
         let (left, right) = if bit.high(key.as_bytes()) {
             (next, leaf)
         } else {
@@ -155,7 +155,7 @@ impl State {
             left,
             right,
         });
-        let link = CommitLink::Branch(index);
+        let link = RetainedIndexLink::Branch(index);
         if let Some((index, right)) = parent {
             let branch = self
                 .replay_entry_mut(index)

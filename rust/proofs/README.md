@@ -161,8 +161,11 @@ cross-platform coverage.
 The [retained commit index control](retained-commit-index/README.md) binds
 Streams' original retained slots and the shared boxed index to one radix
 selection loop. It challenges original comparison admission and retains
-prepared completion after cancellation; variable-width replay and whole-request
-cost remain open.
+prepared completion after cancellation. The [binary replay control](replay-index/README.md)
+extends the same traversal to borrowed variable-width identities, exact prefix
+and trailing-zero comparisons, snapshot rebuild and prepaid completion/recovery
+after interleaved growth. Whole-request cost remains a separate obligation.
+
 Run `node rust/proofs/qualify.mjs conversation-observation` to challenge the
 native parent/child volume property with the original duplicate-settlement
 observation path, then restore the exact production source and rerun the same
