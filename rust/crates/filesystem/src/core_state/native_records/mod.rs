@@ -114,6 +114,24 @@ pub(super) fn clone_native_record_value(
     cxl: &CancellationToken,
 ) -> Result<Owned<RecordValue>, Error> {
     check(work, cxl)?;
+    if let RecordValue::Lineage(lineage) = value {
+        let owned = crate::lineage::copy_record(
+            lineage,
+            &mut crate::kernel::KernelAccounting::native(work, cxl),
+        )
+        .map_err(|error| match error {
+            crate::FsError::NativeKernel(error) => Error::from(error),
+            error => Error::LazyWork(error.into()),
+        })?;
+        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
+            owned.allocation
+        else {
+            return Err(NativeError::MissingCustody.into());
+        };
+        let owned = (RecordValue::Lineage(owned.value), allocation);
+        check(work, cxl)?;
+        return Ok(owned);
+    }
     let mut copied = 0_u64;
     let mut operations = 0_u64;
     let mut buffer = |bytes: &[u8]| -> Result<(), Error> {
@@ -148,12 +166,6 @@ pub(super) fn clone_native_record_value(
                     mount.to_str().ok_or(Error::Integrity)?;
                     buffer(mount.as_os_str().as_encoded_bytes())?;
                 }
-            }
-        }
-        RecordValue::Lineage(lineage) => {
-            buffer(lineage.workspace_name.as_bytes())?;
-            if let Some(parent) = &lineage.parent_workspace_name {
-                buffer(parent.as_bytes())?;
             }
         }
         RecordValue::Children(children) => {

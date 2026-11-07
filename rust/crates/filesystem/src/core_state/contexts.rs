@@ -300,7 +300,10 @@ impl LocalCoreStateStore {
         id: T::Id,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
         if self.inspection {
-            return self.load_inspected_logged::<T>(id).await;
+            return self
+                .load_inspected_logged::<T>(id)
+                .await
+                .map(|value| value.map(|(value, _)| value));
         }
         let work = self.journal_work.as_ref();
         if let Some(work) = work {
@@ -326,34 +329,6 @@ impl LocalCoreStateStore {
             root.with_log(|log| {
                 log.get::<T>(&root, id, None, None)
                     .map(|record| record.map(|(value, _)| value))
-            })
-        })
-        .await
-    }
-
-    /// Commits `replacement` only while the record is at `expected_revision`
-    pub(super) async fn compare_and_swap_logged<T: Logged + Revisioned>(
-        &self,
-        id: T::Id,
-        expected_revision: u64,
-        replacement: T,
-    ) -> Result<bool, LocalCoreStateStoreError> {
-        self.transaction(move |root| {
-            let root = &root;
-            root.with_log(|log| {
-                if log
-                    .get::<T>(root, id, None, None)?
-                    .map(|(value, _)| value)
-                    .as_ref()
-                    .map_or(0, T::revision)
-                    != expected_revision
-                {
-                    return Ok(false);
-                }
-                let mut change = Change::default();
-                change.put((T::key(id), Some(replacement.into_value())).into())?;
-                log.commit(root, change)?;
-                Ok(true)
             })
         })
         .await
@@ -629,6 +604,27 @@ impl LocalCoreStateStore {
         native_records::check(original, cancellation)
             .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
+        if self.inspection {
+            return native_records::cancellable(
+                original.clone(),
+                cancellation,
+                |original| async move {
+                    self.materialization(original)
+                        .load_inspected_logged::<WorkspaceLineageRecord>(workspace_id)
+                        .await?
+                        .map(|(value, allocation)| {
+                            Ok((
+                                value,
+                                allocation
+                                    .ok_or(crate::NativeTreeMaterializationError::MissingCustody)?,
+                            ))
+                        })
+                        .transpose()
+                },
+            )
+            .await
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None));
+        }
         native_records::transaction!(self, original.clone(), cancellation, |root, log, work| {
             native_records::load::<WorkspaceLineageRecord>(
                 &root,

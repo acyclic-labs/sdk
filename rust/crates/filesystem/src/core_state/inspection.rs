@@ -67,7 +67,7 @@ impl LocalCoreStateStore {
     pub(super) async fn load_inspected_logged<T: Logged>(
         &self,
         id: T::Id,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+    ) -> Result<Option<(T, Option<crate::NativeAllocation>)>, LocalCoreStateStoreError> {
         self.read_transaction(move |root| {
             let read = |maximum| {
                 let control = root
@@ -79,14 +79,18 @@ impl LocalCoreStateStore {
                     Ok(log) => log,
                     Err(error) if is_missing(&error) => {
                         let paths = T::key(id).paths(&root)?;
-                        return records::read_recoverable_mode::<Option<T>>(&paths, false)
-                            .map(|value| value.and_then(|(value, _)| value));
+                        return records::read_recoverable_mode::<Option<T>>(&paths, false).map(
+                            |value| {
+                                value.and_then(|(value, allocation)| {
+                                    value.map(|value| (value, allocation))
+                                })
+                            },
+                        );
                     }
                     Err(error) => return Err(error),
                 };
                 log.residents_control = control;
                 log.get::<T>(&root, id, None, None)
-                    .map(|value| value.map(|(value, _)| value))
             };
             match &root.admission {
                 Admission::Owned(owner) => {
@@ -95,9 +99,9 @@ impl LocalCoreStateStore {
                         return Err(LocalCoreStateStoreError::DurabilityPoisoned);
                     }
                     match slot.as_mut() {
-                        Some(log) if !owner.pending.load(Ordering::Acquire) => log
-                            .get::<T>(&root, id, None, None)
-                            .map(|value| value.map(|(value, _)| value)),
+                        Some(log) if !owner.pending.load(Ordering::Acquire) => {
+                            log.get::<T>(&root, id, None, None)
+                        }
                         Some(log) => read(Some(log.flushed)),
                         None => read(None),
                     }

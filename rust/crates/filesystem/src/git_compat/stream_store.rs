@@ -312,6 +312,10 @@ impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatSto
             .map_err(crate::async_storage::authority_error)
             .map_err(StreamGitCompatStoreError::from)
             .map_err(crate::WorkspaceLineageError::Store)?;
+        let mut work = work
+            .scope()
+            .map_err(StreamGitCompatStoreError::from)
+            .map_err(crate::WorkspaceLineageError::Store)?;
         let (value, _) = self
             .read::<WorkspaceLineageRecord>(id, "lineage", &mut work)
             .await
@@ -351,6 +355,10 @@ impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatSto
         }
         let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)
             .map_err(crate::async_storage::authority_error)
+            .map_err(StreamGitCompatStoreError::from)
+            .map_err(crate::WorkspaceLineageError::Store)?;
+        let mut work = work
+            .scope()
             .map_err(StreamGitCompatStoreError::from)
             .map_err(crate::WorkspaceLineageError::Store)?;
         self.replace(id, "lineage", expected, Some(replacement), &mut work)
