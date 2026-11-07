@@ -150,6 +150,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         wait: Option<&CancellationToken>,
     ) -> Result<(), MountSourceError> {
         self.cancel_cleanup_with_join(wait, SourceRetirementWait::Caller)
+            .map(|retired| retired.map_failure(MountSourceError::NativeWork))
             .and_then(MountSourceRetirement::into_result)
             .map(|_| ())
     }
@@ -158,7 +159,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self,
         wait: Option<&CancellationToken>,
         _join: SourceRetirementWait,
-    ) -> Result<MountSourceRetirement, MountSourceError> {
+    ) -> Result<MountSourceRetirement<crate::NativeTreeMaterializationError>, MountSourceError>
+    {
         if self.capture_retired() {
             return Ok(MountSourceRetirement {
                 changed: false,
@@ -208,12 +210,10 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .ok_or(MountSourceError::NativeWork(
                             crate::NativeTreeMaterializationError::InvalidLayout,
                         ))?;
-                    let recorded = final_credit
-                        .record_completed(crate::WorkCounters {
-                            items_examined: 1,
-                            ..crate::WorkCounters::UNCHARGED
-                        })
-                        .map_err(MountSourceError::NativeWork);
+                    let recorded = final_credit.record_completed(crate::WorkCounters {
+                        items_examined: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    });
                     drop(poll_credit);
                     recorded
                 } else {

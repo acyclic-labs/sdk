@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tools/native/mod.rs
++++ b/rust/crates/harness-core/src/tools/native/mod.rs
+@@ -189,7 +189,7 @@
+         for ((name, implementation, definition, arguments), capability) in
+             self.0.iter().zip(capabilities)
+         {
+-            let Some(capability) = capability else {
++            let Some(capability) = tools.get_shared(name, None, None)?.cloned() else {
+                 continue;
+             };
+             let original = implementation

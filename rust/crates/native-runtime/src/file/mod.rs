@@ -27,6 +27,8 @@ pub(crate) use destination::ReadDestination;
 #[cfg(all(test, target_vendor = "apple", not(loom)))]
 mod device_tests;
 mod operations;
+pub(crate) use durable::flush_cached_data;
+pub(crate) use operations::{sync_cached_data, sync_cached_file};
 mod range;
 mod scope;
 mod write_validation;
@@ -40,6 +42,34 @@ pub use operations::{
     sync_filesystem, sync_parent, write_all_at,
 };
 pub use range::AsyncRangeReader;
+
+/// Evidence retained by one physical cached descriptor, never by its path.
+#[cfg(target_vendor = "apple")]
+pub(crate) type FlushState = crate::device_flush::HeldDevice;
+#[cfg(not(target_vendor = "apple"))]
+pub(crate) type FlushState = ();
+
+/// Samples only previously resolved device evidence, after the native barrier.
+pub(crate) fn cached_ordered_cut(state: &FlushState) -> Option<u64> {
+    #[cfg(all(target_vendor = "apple", not(loom)))]
+    return state.ordered_cut();
+    #[cfg(not(all(target_vendor = "apple", not(loom))))]
+    {
+        let _ = state;
+        None
+    }
+}
+
+/// Coverage belongs to the retained physical descriptor's original device.
+pub(crate) fn cached_flush_covers(state: &FlushState, cut: u64) -> bool {
+    #[cfg(all(target_vendor = "apple", not(loom)))]
+    return state.covers(cut);
+    #[cfg(not(all(target_vendor = "apple", not(loom))))]
+    {
+        let _ = (state, cut);
+        false
+    }
+}
 
 /// One original file descriptor and its owner-bound durability evidence.
 ///

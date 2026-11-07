@@ -210,7 +210,7 @@ where
     fn shutdown_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, MountSourceError> {
+    ) -> Result<MountSourceRetirement, MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         self.shutdown_with_cleanup_wait(work.cancellation())
@@ -219,18 +219,19 @@ where
     fn shutdown_with_cleanup_wait(
         &self,
         wait: &CancellationToken,
-    ) -> Result<bool, MountSourceError> {
-        self.cancel_cleanup_with_join(Some(wait), SourceRetirementWait::Caller)?
-            .into_result()
+    ) -> Result<MountSourceRetirement, MountSourceError> {
+        self.cancel_cleanup_with_join(Some(wait), SourceRetirementWait::Caller)
+            .map(|retired| retired.map_failure(MountSourceError::NativeWork))
     }
 
-    fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
-        self.cancel_cleanup_with_join(None, SourceRetirementWait::Caller)?
-            .into_result()
+    fn shutdown_accepted_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
+        self.cancel_cleanup_with_join(None, SourceRetirementWait::Caller)
+            .map(|retired| retired.map_failure(MountSourceError::NativeWork))
     }
 
     fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         self.cancel_cleanup_with_join(None, SourceRetirementWait::Physical)
+            .map(|retired| retired.map_failure(MountSourceError::NativeWork))
     }
 
     fn supports_posix_named_attributes(&self) -> bool {

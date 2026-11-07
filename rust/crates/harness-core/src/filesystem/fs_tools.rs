@@ -281,8 +281,17 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Too
         &'a self,
         context: Option<&'a ToolContext>,
         invocation: &'a ToolInvocation,
+        work: crate::NativeWork<'a>,
     ) -> Option<BoxProviderFuture<'a, Result<()>>> {
         Some(Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "filesystem replay requires its ordinary provider context",
+                });
+            }
+            let _ = work;
             let context = context.ok_or_else(|| {
                 Error::Unauthorized("filesystem replay has no task context".into())
             })?;

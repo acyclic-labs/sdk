@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/mod.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/mod.rs
+@@ -546,7 +546,7 @@
+             }
+             registry.next = registry
+                 .next
+-                .checked_add(hub.stride)
++                .checked_add(1)
+                 .filter(|token| *token != usize::MAX)
+                 .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
+             entry.token = registry.next;

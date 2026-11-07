@@ -121,6 +121,7 @@ impl StdioMcpTransport {
             let input = tree
                 .take_stdin()
                 .ok_or_else(|| Error::Invalid("MCP stdin pipe missing".into()))?;
+            #[cfg(unix)]
             let output = tree
                 .take_stdout()
                 .ok_or_else(|| Error::Invalid("MCP stdout pipe missing".into()))?;
@@ -133,7 +134,7 @@ impl StdioMcpTransport {
             let output =
                 tokio::process::ChildStdout::from_std(output).map_err(Error::process_io)?;
             #[cfg(windows)]
-            let output = acyclic_native_runtime::ProcessPipeReader::from_stdout(output)
+            let output = acyclic_native_runtime::ProcessPipeReader::take_stdout(tree)
                 .map_err(Error::process_io)?;
             Self::bind(output, input, maximum_bytes, timeout, Some(process)).await
         })

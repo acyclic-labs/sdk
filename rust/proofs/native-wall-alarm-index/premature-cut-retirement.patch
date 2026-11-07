@@ -1,0 +1,11 @@
+--- a/rust/crates/collections/src/prefix.rs
++++ b/rust/crates/collections/src/prefix.rs
+@@ -168,6 +168,8 @@
+         let (selected, retained, parent) =
+             split_through(self.root.take(), &through, boundary, selected, &mut visit);
+         self.root = retained;
++        drop(parent);
++        let parent = None;
+         ExtractedPrefix {
+             entries: FixedIndex { root: selected },
+             parent,

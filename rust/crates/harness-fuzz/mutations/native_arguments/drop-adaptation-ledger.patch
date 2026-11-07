@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/tools/native/adapter.rs b/rust/crates/harness-core/src/tools/native/adapter.rs
+--- a/rust/crates/harness-core/src/tools/native/adapter.rs
++++ b/rust/crates/harness-core/src/tools/native/adapter.rs
+@@ -29,6 +29,7 @@ impl Adapter {
+         work: crate::NativeWork<'_>,
+     ) -> Result<CanonicalInvocation> {
+         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
++        let work: crate::NativeWork<'_> = None;
+         let io = work
+             .map(crate::executor::PreparationIo::from_native_work)
+             .transpose()?;

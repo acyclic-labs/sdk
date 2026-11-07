@@ -102,13 +102,14 @@ impl std::fmt::Debug for NativeMountDrainProof {
         formatter
             .debug_struct("NativeMountDrainProof")
             .field("producer", &self.failures.producer)
+            .field("source", &self.failures.source)
             .field("cleanup", &self.failures.cleanup)
             .finish_non_exhaustive()
     }
 }
 
 impl NativeMountDrainProof {
-    /// Completes retirement without discarding either retained terminal cause.
+    /// Completes retirement without discarding any retained terminal cause.
     pub fn into_result(self) -> Result<(), MountLifecycleError> {
         if self.failures.is_empty() {
             Ok(())
@@ -117,11 +118,9 @@ impl NativeMountDrainProof {
         }
     }
 
-    /// Takes the preserved producer failure and any distinct cleanup failure.
-    pub fn take_retained_capture_failure(
-        &mut self,
-    ) -> Option<(NativeMountError, Option<NativeMountError>)> {
-        self.failures.take_pair()
+    /// Takes the next preserved producer, source, or cleanup failure.
+    pub fn take_terminal_failure(&mut self) -> Option<NativeMountError> {
+        self.failures.take()
     }
 }
 

@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/source_watch/inotify/hub.rs
++++ b/rust/crates/filesystem/src/source_watch/inotify/hub.rs
+@@ -532,7 +532,6 @@
+     fn route_forever(&'static self) {
+         // Also publishes loss if routing unwinds. The guard drops after any
+         // routing lock, so terminal callbacks can withdraw their own watches.
+-        let _ended = RouterEnded(self);
+         let mut descriptor = libc::pollfd {
+             fd: self.descriptor.as_raw_fd(),
+             events: libc::POLLIN,

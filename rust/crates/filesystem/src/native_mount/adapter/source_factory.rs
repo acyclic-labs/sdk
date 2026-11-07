@@ -100,9 +100,11 @@ impl<A, O> CheckoutMountSource<A, O> {
     where
         Self: Send + Sync + 'static,
     {
-        if !self.native_original.as_ref().is_some_and(|stored| {
-            stored.shares_ledger(original) && stored.shares_resource_allowance(original)
-        }) {
+        if !self
+            .native_original
+            .as_ref()
+            .is_some_and(|stored| stored.shares_allocation_context(original))
+        {
             return Err(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             )

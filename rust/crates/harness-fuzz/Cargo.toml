@@ -1,4 +1,5 @@
 [package]
+autotests = false
 license.workspace = true
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
@@ -7,6 +8,13 @@ publish = false
 
 [package.metadata]
 cargo-fuzz = true
+
+# Integration tests also build every enabled binary, even with test = false.
+[lib]
+path = "tests/lib.rs"
+doc = false
+doctest = false
+bench = false
 
 [[bin]]
 name = "native_answer"
@@ -89,6 +97,7 @@ mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
+native-arguments = ["core", "acyclic-harness-core/filesystem"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
@@ -99,7 +108,6 @@ runtime = ["native-settings", "filesystem-local", "native-execution", "native-in
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
 filesystem-local = []
 native-execution = []
-
 
 [dependencies]
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
@@ -139,8 +147,24 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_arguments"
+path = "fuzz_targets/native_arguments.rs"
+required-features = ["native-arguments"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_workspace"
 path = "fuzz_targets/native_workspace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_patch_hooks"
+path = "fuzz_targets/native_patch_hooks.rs"
+required-features = ["native-arguments"]
 test = false
 doc = false
 bench = false

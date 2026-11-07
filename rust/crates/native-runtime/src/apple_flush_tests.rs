@@ -32,11 +32,11 @@ pub(super) fn intercept(command: i32) -> io::Result<i32> {
     })
 }
 
-fn observe(
+fn observe<T>(
     errors: &[i32],
     weaken_full: bool,
-    flush: impl FnOnce() -> io::Result<()>,
-) -> (io::Result<()>, Vec<i32>) {
+    flush: impl FnOnce() -> io::Result<T>,
+) -> (io::Result<T>, Vec<i32>) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -116,7 +116,7 @@ fn interrupted_flush_returns_after_one_admitted_attempt() -> io::Result<()> {
         assert_eq!(calls, [first]);
         assert_eq!(admissions, 1);
         let (result, calls) = observe(&[], false, || sync_once(&file, durability, None, || Ok(())));
-        result?;
+        assert_eq!(result?, durability);
         assert_eq!(calls, expected);
     }
     Ok(())
@@ -179,7 +179,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
             Ok(())
         })
     });
-    result?;
+    assert_eq!(result?, Durability::Full);
     assert_eq!(calls, [libc::F_BARRIERFSYNC, 0, libc::F_FULLFSYNC]);
     assert_eq!(admissions, 2);
     let mut admissions = 0;

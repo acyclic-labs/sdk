@@ -8,7 +8,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("missing corpus destination")?;
     std::fs::create_dir_all(&directory)?;
     for (name, bytes) in native_owner_record::seeds()? {
-        native_owner_record::check_retained(&bytes);
+        native_owner_record::check_retained(&bytes)?;
         std::fs::write(std::path::Path::new(&directory).join(name), bytes)?;
     }
     Ok(())

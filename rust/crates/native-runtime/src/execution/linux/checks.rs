@@ -104,8 +104,13 @@ const ARCH: u32 = 0xc000_003e;
 #[cfg(target_arch = "aarch64")]
 const ARCH: u32 = 0xc000_00b7;
 
-fn evaluate(code: &[Instruction], arch: u32, syscall: u32, arguments: [u64; 6]) -> u32 {
-    evaluate_work(code, arch, syscall, arguments).0
+fn evaluate(
+    code: &[Instruction],
+    arch: u32,
+    syscall: u32,
+    arguments: [u64; 6],
+) -> Result<u32, TestCaseError> {
+    Ok(evaluate_work(code, arch, syscall, arguments)?.0)
 }
 
 fn evaluate_work(
@@ -113,7 +118,7 @@ fn evaluate_work(
     arch: u32,
     syscall: u32,
     arguments: [u64; 6],
-) -> (u32, usize) {
+) -> Result<(u32, usize), TestCaseError> {
     let mut accumulator = 0;
     let mut at = 0;
     let mut steps = 0;
@@ -128,7 +133,11 @@ fn evaluate_work(
                         let offset = (offset - 16) as usize;
                         (arguments[offset / 8] >> ((offset % 8) * 8)) as u32
                     }
-                    offset => panic!("invalid seccomp data load at {offset}"),
+                    offset => {
+                        return Err(TestCaseError::fail(format!(
+                            "invalid seccomp data load at {offset}"
+                        )));
+                    }
                 };
             }
             EQUAL | GREATER_EQUAL | GREATER => {
@@ -143,16 +152,20 @@ fn evaluate_work(
             }
             JUMP => at += instruction.k as usize,
             AND => accumulator &= instruction.k,
-            RETURN => return (instruction.k, steps),
-            opcode => panic!("unchecked filter instruction {opcode}"),
+            RETURN => return Ok((instruction.k, steps)),
+            opcode => {
+                return Err(TestCaseError::fail(format!(
+                    "unchecked filter instruction {opcode}"
+                )));
+            }
         }
         at += 1;
     }
-    panic!("filter fell through without a verdict");
+    Err(TestCaseError::fail("filter fell through without a verdict"))
 }
 
 #[test]
-fn syscall_dispatch_preserves_classification_with_bounded_work() {
+fn syscall_dispatch_preserves_classification_with_bounded_work() -> Result<(), TestCaseError> {
     const fn dispatch<const N: usize>() -> Filter<N> {
         let mut code = Filter::new();
         code.push(instruction(LOAD, 0, 0, 0));
@@ -170,7 +183,7 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
     // largest future number. The unchanged declaration is the independent
     // classification oracle; range generation cannot widen it unnoticed.
     for call in (0..=last + 1).chain([u32::MAX]) {
-        let (result, steps) = evaluate_work(&CODE, ARCH, call, [0; 6]);
+        let (result, steps) = evaluate_work(&CODE, ARCH, call, [0; 6])?;
         assert_eq!(
             result,
             if ALLOWED_SYSCALLS.contains(&libc::c_long::from(call)) {
@@ -191,7 +204,7 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
         verdict(&mut linear, *call, ALLOW);
     }
     linear.push(instruction(RETURN, 0, 0, DENY));
-    assert!(evaluate_work(&linear.instructions, ARCH, u32::MAX, [0; 6]).1 > bound);
+    assert!(evaluate_work(&linear.instructions, ARCH, u32::MAX, [0; 6])?.1 > bound);
     assert!(CODE.len() < linear.len);
     eprintln!(
         "syscall dispatch: instructions {} -> {}, maximum steps {} -> {maximum}, bound={bound}",
@@ -199,6 +212,7 @@ fn syscall_dispatch_preserves_classification_with_bounded_work() {
         CODE.len(),
         ALLOWED_SYSCALLS.len() + 2
     );
+    Ok(())
 }
 
 proptest! {
@@ -212,7 +226,7 @@ proptest! {
             && ![libc::SYS_read, libc::SYS_write, libc::SYS_fcntl,
                 libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid,
                 libc::SYS_clone3].contains(&(i64::from(syscall))) {
-            prop_assert_eq!(evaluate(code, ARCH, syscall, arguments), DENY);
+            prop_assert_eq!(evaluate(code, ARCH, syscall, arguments)?, DENY);
         }
         for call in [libc::SYS_shmget, libc::SYS_shmat, libc::SYS_shmctl,
             libc::SYS_msgget, libc::SYS_msgsnd, libc::SYS_msgrcv, libc::SYS_msgctl,
@@ -220,26 +234,26 @@ proptest! {
             libc::SYS_mq_open, libc::SYS_mq_unlink, libc::SYS_process_vm_writev,
             libc::SYS_process_madvise, libc::SYS_process_mrelease,
             libc::SYS_setpgid, libc::SYS_setsid] {
-            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments), DENY);
+            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments)?, DENY);
         }
         for call in [libc::SYS_prlimit64, libc::SYS_getpgid, libc::SYS_getsid] {
             for pid in [arguments[0], 0, 1, u64::MAX] {
                 let mut selected = arguments;
                 selected[0] = pid;
-                prop_assert_eq!(evaluate(code, ARCH, call as u32, selected),
+                prop_assert_eq!(evaluate(code, ARCH, call as u32, selected)?,
                     if pid as u32 == 0 { ALLOW } else { DENY });
             }
         }
         for command in [libc::F_SETOWN, libc::F_GETOWN, libc::F_SETLEASE] {
             let mut control = arguments;
             control[1] = command as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control), DENY);
+            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control)?, DENY);
         }
         for command in [libc::F_GETFD, libc::F_SETFD, libc::F_GETFL, libc::F_SETFL,
             libc::F_DUPFD_CLOEXEC] {
             let mut control = arguments;
             control[1] = command as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control), ALLOW);
+            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_fcntl as u32, control)?, ALLOW);
         }
         // Restore a permissive default in the actual generated program.
         // The same host IPC operation is then admitted without any path or FD.
@@ -249,7 +263,7 @@ proptest! {
                 instruction.k = ALLOW;
             }
         }
-        prop_assert_eq!(evaluate(&permissive, ARCH, libc::SYS_shmat as u32, arguments), ALLOW);
+        prop_assert_eq!(evaluate(&permissive, ARCH, libc::SYS_shmat as u32, arguments)?, ALLOW);
     }
 
     #[test]
@@ -264,13 +278,13 @@ proptest! {
             (libc::SYS_sendmmsg, 3)] {
             let mut arguments = [0; 6];
             arguments[argument] = u64::from(flags);
-            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments),
+            prop_assert_eq!(evaluate(code, ARCH, call as u32, arguments)?,
                 if flags & libc::MSG_FASTOPEN as u32 == 0 { ALLOW } else { DENY });
         }
         let mut arguments = [0; 6];
         arguments[1] = u64::from(level) | (u64::from(flags) << 32);
         arguments[2] = u64::from(option) | (u64::from(flags.rotate_left(16)) << 32);
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments),
+        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?,
             if level == libc::IPPROTO_TCP as u32 && option == libc::TCP_FASTOPEN_CONNECT as u32 {
                 DENY
             } else {
@@ -278,13 +292,13 @@ proptest! {
             });
         arguments[1] = libc::IPPROTO_TCP as u64;
         arguments[2] = libc::TCP_FASTOPEN_CONNECT as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments), DENY);
+        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?, DENY);
         // The same real filter generator retains this option without a port
         // ceiling; a blanket setsockopt refusal would also reject NODELAY.
         let unrestricted = filter(&ExecutionNetwork::On).unwrap();
-        prop_assert_eq!(evaluate(unrestricted, ARCH, libc::SYS_setsockopt as u32, arguments), ALLOW);
+        prop_assert_eq!(evaluate(unrestricted, ARCH, libc::SYS_setsockopt as u32, arguments)?, ALLOW);
         arguments[2] = libc::TCP_NODELAY as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments), ALLOW);
+        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_setsockopt as u32, arguments)?, ALLOW);
     }
 
     // Generated programs must not admit a second syscall ABI, x32 numbers,
@@ -303,22 +317,22 @@ proptest! {
         };
         let code = filter(&network).unwrap();
         if architecture != ARCH {
-            prop_assert_eq!(evaluate(code, architecture, syscall, arguments), 0x8000_0000);
+            prop_assert_eq!(evaluate(code, architecture, syscall, arguments)?, 0x8000_0000);
         }
-        prop_assert_eq!(evaluate(code, ARCH, syscall | 0x4000_0000, arguments), DENY);
+        prop_assert_eq!(evaluate(code, ARCH, syscall | 0x4000_0000, arguments)?, DENY);
         for syscall in [libc::SYS_ptrace, libc::SYS_setns, libc::SYS_mount, libc::SYS_socketpair] {
-            prop_assert_eq!(evaluate(code, ARCH, syscall as u32, arguments), DENY);
+            prop_assert_eq!(evaluate(code, ARCH, syscall as u32, arguments)?, DENY);
         }
         for flag in [libc::CLONE_NEWUSER, libc::CLONE_NEWNET, libc::CLONE_NEWPID, libc::CLONE_PARENT] {
             let mut clone = arguments;
             clone[0] |= flag as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone), DENY);
+            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone)?, DENY);
         }
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone3 as u32, arguments),
+        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone3 as u32, arguments)?,
             0x0005_0000 | libc::ENOSYS as u32);
         let mut socket = arguments;
         socket[0] = libc::AF_UNIX as u64;
-        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket), DENY);
+        prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket)?, DENY);
     }
 
     #[test]
@@ -347,16 +361,16 @@ proptest! {
             socket[2] = libc::IPPROTO_TCP as u64;
             for family in [family, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_UNIX as u32] {
                 socket[0] = u64::from(family);
-                prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket),
+                prop_assert_eq!(evaluate(code, ARCH, libc::SYS_socket as u32, socket)?,
                     if enabled && (family == libc::AF_INET as u32 || family == libc::AF_INET6 as u32) { ALLOW } else { DENY });
             }
             let mut clone = [0; 6];
             clone[0] = (libc::CLONE_VM | libc::CLONE_FS | libc::CLONE_FILES
                 | libc::CLONE_SIGHAND | libc::CLONE_THREAD | libc::CLONE_SYSVSEM) as u64;
-            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone), ALLOW);
+            prop_assert_eq!(evaluate(code, ARCH, libc::SYS_clone as u32, clone)?, ALLOW);
             if !enabled {
                 for syscall in [libc::SYS_socket, libc::SYS_connect, libc::SYS_socketpair] {
-                    prop_assert_eq!(evaluate(code, ARCH, syscall as u32, [0; 6]), DENY);
+                    prop_assert_eq!(evaluate(code, ARCH, syscall as u32, [0; 6])?, DENY);
                 }
             }
         }

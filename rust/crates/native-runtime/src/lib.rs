@@ -14,6 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
+mod delivery;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+mod host_index;
 mod sync;
 use sync::Mutex as CompletionMutex;
 
@@ -107,7 +110,7 @@ pub use claim::{ClaimCheck, StoreClaim, StoreClaimRelease, StoreHandle};
 mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
-    DescriptorCost, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
+    DescriptorCost, FileFlush, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
     cached_descriptor_capacity, cached_descriptors,
 };
 mod ownership;

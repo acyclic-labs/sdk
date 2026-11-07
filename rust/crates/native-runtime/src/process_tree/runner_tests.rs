@@ -426,8 +426,8 @@ fn security_owner() {
     let current_runner = runner_pid().expect("current runner");
     let original = fs::read_to_string("/proc/thread-self/status").expect("owner status");
     if field(&original, "NoNewPrivs:").ends_with('0') {
-        // SAFETY: irreversible restriction confined to this helper process.
         assert_eq!(
+            // SAFETY: irreversible restriction confined to this helper process.
             unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
             0
         );
@@ -521,8 +521,8 @@ fn landlock_owner() {
     let (root, custody) = custody();
     let path = root.path().join("protected");
     fs::write(&path, b"original bytes").expect("protected file");
-    // SAFETY: irreversible restriction confined to this original helper.
     assert_eq!(
+        // SAFETY: irreversible restriction confined to this original helper.
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
         0
     );
@@ -570,8 +570,8 @@ fn landlock_owner() {
     // SAFETY: the successful syscall transferred this descriptor.
     let rules = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).expect("ruleset fd")) };
     // No allow rules: deny truncation for this thread and future children.
-    // SAFETY: live ruleset descriptor and zero flags, after NoNewPrivs.
     assert_eq!(
+        // SAFETY: live ruleset descriptor and zero flags, after NoNewPrivs.
         unsafe { libc::syscall(libc::SYS_landlock_restrict_self, rules.as_raw_fd(), 0) },
         0
     );

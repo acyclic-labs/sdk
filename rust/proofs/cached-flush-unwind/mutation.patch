@@ -1,0 +1,21 @@
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -468,12 +468,12 @@
+         flush: impl FnOnce(&F::File, &F::FlushState) -> io::Result<(R, Completion)>,
+     ) -> io::Result<R> {
+         let _flushing = self.flushing.lock().unwrap_or_else(PoisonError::into_inner);
+-        // Cleared first; every later-completing write restores its own marker.
+-        let mut unflushed = Unflushed {
+-            dirty: &self.unsynced,
+-            restore: self.unsynced.swap(0, Ordering::AcqRel),
+-        };
+-        let (flushed, completed) = flush(&self.file, &self.flush_state)?;
++        // Error-only restoration retains normal returns but loses unwind.
++        let restore = self.unsynced.swap(0, Ordering::AcqRel);
++        let (flushed, completed) = flush(&self.file, &self.flush_state).inspect_err(|_| {
++            drop(Unflushed { dirty: &self.unsynced, restore });
++        })?;
++        let mut unflushed = Unflushed { dirty: &self.unsynced, restore };
+         unflushed.restore = match completed {
+             Completion::Full => 0,
+             Completion::Ordered(cut) if unflushed.restore != 0 => cut,

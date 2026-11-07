@@ -29,11 +29,13 @@ impl SyncProgress {
     }
 }
 
-fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<SyncCompletion> {
-    acyclic_native_runtime::sync_data(file, native_durability(durability))?;
-    Ok(match durability {
-        LocalDurability::FullFlush => SyncCompletion::Flushed(DeviceFlushed),
-        LocalDurability::Barrier => SyncCompletion::Ordered,
+fn sync_file_data(
+    file: &acyclic_native_runtime::FileFlush<'_>,
+    durability: LocalDurability,
+) -> std::io::Result<SyncCompletion> {
+    Ok(match file.sync_data(native_durability(durability))? {
+        acyclic_native_runtime::Durability::Full => SyncCompletion::Flushed(DeviceFlushed),
+        acyclic_native_runtime::Durability::Barrier => SyncCompletion::Ordered,
     })
 }
 

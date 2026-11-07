@@ -3,14 +3,14 @@
 mod native_owner_record;
 
 #[test]
-fn retained_owner_corpus_satisfies_the_shared_oracle() {
-    native_owner_record::check(&[]);
+fn retained_owner_corpus_satisfies_the_shared_oracle() -> std::io::Result<()> {
+    native_owner_record::check(&[])?;
     let corpus = [
         include_bytes!("owner_codec/corpus/minimal").as_slice(),
         include_bytes!("owner_codec/corpus/binary").as_slice(),
         include_bytes!("owner_codec/corpus/text").as_slice(),
     ];
-    let produced = native_owner_record::seeds().unwrap();
+    let produced = native_owner_record::seeds()?;
     assert_eq!(produced.len(), corpus.len());
     for ((name, encoded), bytes) in produced.into_iter().zip(corpus) {
         // Retained Unix writer bytes are portable parser inputs. Windows DPAPI
@@ -19,8 +19,9 @@ fn retained_owner_corpus_satisfies_the_shared_oracle() {
         assert_eq!(encoded, bytes, "original owner corpus changed: {name}");
         #[cfg(windows)]
         let _ = name;
-        native_owner_record::check_retained(bytes);
+        native_owner_record::check_retained(bytes)?;
         #[cfg(windows)]
-        native_owner_record::check_retained(&encoded);
+        native_owner_record::check_retained(&encoded)?;
     }
+    Ok(())
 }

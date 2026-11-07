@@ -37,6 +37,7 @@ impl std::error::Error for RenderError {}
 pub struct Header {
     target: Provenance,
     prefix: Vec<u8>,
+    summary_prefix: Option<Vec<u8>>,
     summary_permitted: bool,
     summary_artifact: Option<usize>,
 }
@@ -47,6 +48,8 @@ impl Header {
     /// `None` selects portable text and is the alloy default. Changing that
     /// choice requires another epoch, just like changing the root fields.
     /// Call controls are never part of the header: [`Tail`] encodes them.
+    /// An explicit summary declaration choice is encoded here too, only when
+    /// it differs. Rendering selects those frozen bytes without filtering tools.
     ///
     /// # Errors
     /// Refuses another renderer version or an invalid target.
@@ -60,23 +63,39 @@ impl Header {
         if version != RENDERER_VERSION {
             return Err(RenderError::InvalidItem("unsupported renderer version"));
         }
+        let prefix = Self::prefix(target.family, fields, fields.tools())?;
+        let summary_prefix = fields
+            .summary_tools()
+            .map(|tools| Self::prefix(target.family, fields, Some(tools)))
+            .transpose()?;
+        Ok(Self {
+            summary_permitted: summary_prefix.is_some()
+                || target.family != Family::Gemini
+                || !fields.server_tools(),
+            target,
+            prefix,
+            summary_prefix,
+            summary_artifact,
+        })
+    }
+
+    fn prefix(
+        family: Family,
+        fields: &Fields,
+        tools: Option<&RawValue>,
+    ) -> Result<Vec<u8>, RenderError> {
         let mut prefix = vec![b'{'];
         for (name, value) in fields.header() {
             entry(&mut prefix, name, value)?;
             prefix.push(b',');
         }
-        if let Some(tools) = fields.tools() {
+        if let Some(tools) = tools {
             entry(&mut prefix, "tools", tools)?;
             prefix.push(b',');
         }
-        serde_json::to_writer(&mut prefix, target.family.input()).map_err(RenderError::Json)?;
+        serde_json::to_writer(&mut prefix, family.input()).map_err(RenderError::Json)?;
         prefix.extend_from_slice(b":[");
-        Ok(Self {
-            summary_permitted: target.family != Family::Gemini || !fields.server_tools(),
-            target,
-            prefix,
-            summary_artifact,
-        })
+        Ok(prefix)
     }
     /// Stable prefix before the conversation array, with no per-request state.
     pub fn bytes(&self) -> &[u8] {
@@ -363,14 +382,15 @@ pub fn render<S: Segment>(
 }
 
 /// Appends one transient summary instruction to the selected epoch range and
-/// disables tool invocation through the summary [`Tail`]. The header and prior
-/// item bytes are identical to ordinary rendering, except a final Gemini user
+/// disables tool invocation through the summary [`Tail`]. An explicitly admitted
+/// summary header can omit server tools; otherwise the header and prior item
+/// bytes are identical to ordinary rendering, except a final Gemini user
 /// turn gains a transient part before its closing array delimiter. Provider cache hits are a
 /// separate guarantee (Anthropic tool-choice changes invalidate message caching).
 ///
 /// # Errors
-/// Refuses Gemini built-in tools before writing any request bytes: its function
-/// calling control cannot disable those tools. Other failures are the same as
+/// Refuses retained Gemini built-in tools before writing any request bytes: its
+/// function calling control cannot disable those tools. Other failures are the same as
 /// [`render`]. No summary instruction is persisted as conversation history.
 pub fn render_summary<S: Segment>(
     header: &Header,
@@ -428,9 +448,12 @@ fn render_request<S: Segment>(
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
     let mut writer = crate::sink::Sink(writer);
-    writer
-        .write_all(header.bytes())
-        .map_err(RenderError::Write)?;
+    let prefix = if summary.is_some() {
+        header.summary_prefix.as_deref().unwrap_or(header.bytes())
+    } else {
+        header.bytes()
+    };
+    writer.write_all(prefix).map_err(RenderError::Write)?;
     let mut separator = b"".as_slice();
     let mut write = |item: S, instruction: Option<&str>| {
         let mut element = Element {

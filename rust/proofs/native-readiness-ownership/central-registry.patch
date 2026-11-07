@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/pool.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/pool.rs
+@@ -70,7 +70,7 @@
+     }
+ 
+     fn owner(&self, key: usize) -> &Hub {
+-        &self.hubs[key % self.hubs.len()]
++        &self.hubs[0]
+     }
+ 
+     #[cfg(unix)]

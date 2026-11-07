@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/wall_alarm.rs
++++ b/rust/crates/native-runtime/src/wall_alarm.rs
+@@ -78,7 +78,7 @@
+ 
+     fn key((deadline, token): (u64, u64)) -> [u8; 16] {
+         let mut key = [0; 16];
+-        key[..8].copy_from_slice(&deadline.to_be_bytes());
++        key[..8].copy_from_slice(&deadline.to_le_bytes());
+         key[8..].copy_from_slice(&token.to_be_bytes());
+         key
+     }

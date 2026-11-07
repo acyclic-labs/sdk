@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-core/src/tools/native/mod.rs b/rust/crates/harness-core/src/tools/native/mod.rs
+index e8f33b8d65..d9c14a786c 100644
+--- a/rust/crates/harness-core/src/tools/native/mod.rs
++++ b/rust/crates/harness-core/src/tools/native/mod.rs
+@@ -142,11 +142,6 @@ impl NativeTools {
+         definitions: impl IntoIterator<Item = (crate::profile::ToolRevision, ToolDefinition)>,
+     ) -> Result<Self> {
+         Self::from_entries(definitions.into_iter().map(|(revision, definition)| {
+-            if revision.variant != definition.name || revision.revision != definition.revision {
+-                return Err(Error::Invalid(
+-                    "native declaration identity differs from its mapping".into(),
+-                ));
+-            }
+             Ok((revision, definition))
+         }))
+     }

@@ -22,7 +22,7 @@ impl std::fmt::Display for PrefixTooLong {
 
 impl std::error::Error for PrefixTooLong {}
 
-/// An extracted subtree and its original physical backing and funding.
+/// An extracted ordered prefix and its original physical backing and funding.
 ///
 /// The redundant parent branch remains here, funded and allocated, until this
 /// value is destroyed or consumed. Extraction can therefore run under an
@@ -122,6 +122,58 @@ impl<V, A, const N: usize, F: FnMut(u64)> Drop for ExtractedEntries<V, A, N, F> 
 }
 
 impl<V, A, const N: usize> FixedIndex<V, A, N> {
+    /// Extracts all original keys less than or equal to `through`.
+    ///
+    /// Like byte-prefix extraction, this is infallible retained-owner cleanup:
+    /// cancellation cannot strand owners, and no new work or funding is admitted.
+    /// It allocates nothing, copies no key or value, and retires no backing. The
+    /// returned owner retains the one redundant branch until outside the lock.
+    /// Both resulting indexes preserve their original search invariants.
+    ///
+    /// One descent locates the cut's original comparison leaf. Only branches
+    /// before its first differing bit can straddle the cut; a second descent
+    /// relinks those branches. At most `17N + 3` nodes/key bytes are observed,
+    /// independent of the population on either side. The bounded descent uses
+    /// O(N) stack space, not O(population) space. Delivery uses the existing
+    /// allocation-free, constant-space owned iterator over extracted nodes.
+    pub fn extract_through(
+        &mut self,
+        through: [u8; N],
+        mut visit: impl FnMut(u64),
+    ) -> ExtractedPrefix<V, A, N> {
+        let mut cursor = self.root.as_ref();
+        let (boundary, selected) = loop {
+            let Some(node) = cursor else {
+                return ExtractedPrefix {
+                    entries: FixedIndex::default(),
+                    parent: None,
+                };
+            };
+            visit(1);
+            match node.kind.as_ref() {
+                Kind::Leaf { key, .. } => {
+                    visit(N as u64 + 1);
+                    let boundary = difference(key, &through);
+                    break (boundary, boundary.is_none_or(|bit| !high(key, bit)));
+                }
+                Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                } => {
+                    cursor = if high(&through, *bit) { upper } else { low }.as_ref();
+                }
+            }
+        };
+        let (selected, retained, parent) =
+            split_through(self.root.take(), &through, boundary, selected, &mut visit);
+        self.root = retained;
+        ExtractedPrefix {
+            entries: FixedIndex { root: selected },
+            parent,
+        }
+    }
+
     /// Extracts every key starting with the exact original byte prefix.
     ///
     /// This is retained-owner cleanup: the caller serializes the original
@@ -250,5 +302,53 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
                 parent: None,
             }
         }
+    }
+}
+
+// Coordinates strictly increase on the original cut path. All other links move
+// intact. Exactly one branch becomes redundant when a nonempty tree is split
+// into two nonempty trees; the original owner defers its backing retirement.
+fn split_through<V, A, const N: usize>(
+    mut root: Link<V, A, N>,
+    through: &[u8; N],
+    boundary: Option<Bit>,
+    selected: bool,
+    visit: &mut impl FnMut(u64),
+) -> (Link<V, A, N>, Link<V, A, N>, Link<V, A, N>) {
+    let Some(node) = root.as_mut() else {
+        return (None, None, None);
+    };
+    visit(1);
+    if let Kind::Branch {
+        bit,
+        low,
+        high: upper,
+    } = node.kind.as_mut()
+        && boundary.is_none_or(|boundary| *bit < boundary)
+    {
+        if high(through, *bit) {
+            let (below, above, parent) =
+                split_through(upper.take(), through, boundary, selected, visit);
+            *upper = below;
+            if upper.is_none() {
+                debug_assert!(parent.is_none());
+                let below = low.take();
+                return (below, above, root);
+            }
+            return (root, above, parent);
+        }
+        let (below, above, parent) = split_through(low.take(), through, boundary, selected, visit);
+        *low = above;
+        if low.is_none() {
+            debug_assert!(parent.is_none());
+            let above = upper.take();
+            return (below, above, root);
+        }
+        return (below, root, parent);
+    }
+    if selected {
+        (root, None, None)
+    } else {
+        (None, root, None)
     }
 }

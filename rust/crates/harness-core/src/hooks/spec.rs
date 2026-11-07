@@ -180,6 +180,8 @@ pub struct RequestMatch {
     #[cfg_attr(feature = "hooks", ts(optional))]
     pub command: Option<String>,
     /// A regular expression over a `read`, `write` or `edit` request's path.
+    /// For atomic edits it selects any affected path, including move destinations;
+    /// the hook receives the complete ordered `paths` list instead of `path`.
     #[cfg_attr(feature = "hooks", ts(optional))]
     pub path: Option<String>,
 }

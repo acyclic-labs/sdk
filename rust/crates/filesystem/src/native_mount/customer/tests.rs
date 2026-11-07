@@ -49,14 +49,14 @@ async fn completed_lazy_retirement_does_not_recheck_a_later_cancelled_waiter()
     view.cancel_with_cleanup_wait(&crate::CancellationToken::new())?;
     assert!(view.physically_retired()?);
     view.cancel_with_cleanup_wait(&cancelled)?;
-    assert!(!view.shutdown_with_cleanup_wait(&cancelled)?);
-    assert!(!view.shutdown_accepted_cleanup()?);
+    assert!(!view.shutdown_with_cleanup_wait(&cancelled)?.into_result()?);
+    assert!(!view.shutdown_accepted_cleanup()?.into_result()?);
     assert!(view.physically_retired()?);
     Ok(())
 }
 
 #[tokio::test]
-async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
+async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::tests::retirement::{Fixture, retired};
 
@@ -107,11 +107,20 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
         std::fs::read(root.path()).expect_err("a directory cannot be read as cleanup bytes");
     let producer_code = producer.raw_os_error();
     let cleanup_code = cleanup.raw_os_error();
+    let source_failure = std::io::Write::write_all(
+        &mut std::fs::File::open(root.path().join("authored"))?,
+        b"not-written",
+    )
+    .expect_err("source descriptor is read-only");
+    let source_code = source_failure.raw_os_error();
     session.terminal_failures = super::super::retirement::TerminalFailures {
         producer: Some(producer.into()),
+        source: Some(source_failure.into()),
         cleanup: Some(cleanup.into()),
     };
-    session.retained_source = Some(source.clone());
+    session.retained_source = Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+        source.clone(),
+    ));
     assert!(session.take_retired_failures().is_none());
     let mount = LazyMount {
         source,
@@ -136,14 +145,12 @@ async fn retired_mount_proof_preserves_both_terminal_causes_on_every_os()
     else {
         return Err("retirement completion changed the original failure owner".into());
     };
-    let (first, second) = proof
-        .take_retained_capture_failure()
-        .ok_or("drain proof lost the namespace outcomes")?;
-    assert!(matches!(first, NativeMountError::Io(cause) if cause.raw_os_error() == producer_code));
-    assert!(
-        matches!(second, Some(NativeMountError::Io(cause)) if cause.raw_os_error() == cleanup_code)
-    );
-    assert!(proof.take_retained_capture_failure().is_none());
+    for code in [producer_code, source_code, cleanup_code] {
+        assert!(
+            matches!(proof.take_terminal_failure(), Some(NativeMountError::Io(cause)) if cause.raw_os_error() == code)
+        );
+    }
+    assert!(proof.take_terminal_failure().is_none());
     proof.into_result()?;
     assert_eq!(
         retirement_work.receipt().allocation_operations,
@@ -363,8 +370,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(std::fs::read_dir(rejected_root.path())?.count(), 0);
     let ordinary_job =
         job.with_source_io_lease(ordinary_source.native_source_io_lease(ordinary_source.clone())?)?;
-    assert!(ordinary_job.shares_ledger(&job));
-    assert!(ordinary_job.shares_resource_allowance(&job));
+    assert!(ordinary_job.shares_allocation_context(&job));
     assert!(!ordinary_job.shares_ledger(&work));
     drop(ordinary_job);
     ordinary_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
@@ -382,8 +388,7 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(job.receipt(), before_foreign_job);
     let native_job =
         work.with_source_io_lease(native_source.native_source_io_lease(native_source.clone())?)?;
-    assert!(native_job.shares_ledger(&work));
-    assert!(native_job.shares_resource_allowance(&work));
+    assert!(native_job.shares_allocation_context(&work));
     drop(native_job);
     native_source.cancel_cleanup(Some(&crate::CancellationToken::new()))?;
     assert!(ordinary_source.capture_retired());
@@ -787,8 +792,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             PublicationPermit::Unrestricted,
             &publication,
             move |actual: &crate::NativeMaterializationWork| {
-                assert!(actual.shares_ledger(&guard_original));
-                assert!(actual.shares_resource_allowance(&guard_original));
+                assert!(actual.shares_allocation_context(&guard_original));
                 std::future::ready(Ok::<(), MountLifecycleError>(()))
             },
         )

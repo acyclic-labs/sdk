@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -88,7 +88,7 @@
+             .lock()
+             .unwrap_or_else(PoisonError::into_inner)
+             .started
+-            .checked_add(1)
++            .checked_add(0)
+             .filter(|cut| *cut < u64::MAX)
+     }
+ 

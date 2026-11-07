@@ -1,0 +1,12 @@
+--- a/rust/crates/native-runtime/src/wall_alarm.rs
++++ b/rust/crates/native-runtime/src/wall_alarm.rs
+@@ -84,8 +84,7 @@
+     }
+ 
+     fn remove(&mut self, key: (u64, u64)) -> Option<AlarmCallback> {
+-        completed(self.entries.remove(Self::key(key), &mut Work(&self.counts)))
+-            .map(|entry| entry.into_parts().1)
++        completed(self.entries.get(Self::key(key), &mut Work(&self.counts))).cloned()
+     }
+ 
+     fn first(&self) -> Option<u64> {

@@ -1,0 +1,11 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/windows_create/tests.rs b/rust/crates/native-runtime/src/process_tree/windows_create/tests.rs
+--- a/rust/crates/native-runtime/src/process_tree/windows_create/tests.rs
++++ b/rust/crates/native-runtime/src/process_tree/windows_create/tests.rs
+@@ -417,7 +417,6 @@
+     let mut out = std::io::stdout().lock();
+     // libtest's uncaptured test label need not end with a newline. Frame the
+     // first report before any probe waits for input or a console event.
+-    writeln!(out)?;
+     match mode.to_string_lossy().as_ref() {
+         "conin-file" | "conin-console" => {
+             let name: Vec<u16> = "CONIN$".encode_utf16().chain([0]).collect();

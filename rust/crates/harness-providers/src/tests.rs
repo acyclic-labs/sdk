@@ -353,7 +353,7 @@ pub(super) fn provider_with(
     ResolvedModel {
         credential_scope: None,
         files: crate::files::Files::default(),
-        estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(adapter)),
+        accounting: crate::resolved::Accounting::new(adapter),
         model: Model {
             provider: "fixture".into(),
             name: "model".into(),
@@ -384,7 +384,6 @@ pub(super) fn provider_with(
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
-        usage: std::sync::Arc::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
     }

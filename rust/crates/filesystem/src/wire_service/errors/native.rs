@@ -75,7 +75,10 @@ pub(super) fn mount_code(error: &crate::native_mount::MountSourceError) -> Code 
         E::Indeterminate | E::ServicesNotInitialized => Code::Unavailable,
         E::Cancelled => Code::Cancelled,
         E::Work(_) | E::Allocation(_) => Code::ResourceExhausted,
-        E::NativeWork(error) => native_code(error),
+        E::NativeWork(error)
+        | E::RetirementFinalization {
+            completion: error, ..
+        } => native_code(error),
         E::Demand(error) => kernel::demand_code(error),
         E::NativeRecordJson(_, _) | E::NativeRecordCorrupt(_, _) => Code::DataLoss,
         E::ServiceUnavailable(error) => io_code(error),

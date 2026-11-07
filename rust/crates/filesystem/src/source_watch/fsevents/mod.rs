@@ -159,54 +159,38 @@ impl NativeSourceWatch {
             .map_err(crate::demand::native_demand_read_error)
     }
 
-    pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
+    pub(super) fn stop_driver<W: SourceDemandReadWork>(
         &self,
         work: &mut W,
-    ) -> Result<(), DemandError> {
-        work.check()?;
-        self.delivery().ensure_stop_available()?;
-        let mut custody = self.stream.lock();
-        let Some(stream) = custody.as_mut() else {
-            return Ok(());
-        };
-        let result = stream.stop_with_work(work);
-        if stream.is_stopped() {
-            *custody = None;
-        }
-        result
-    }
-
-    pub(super) fn cleanup(
-        &self,
         wait: Option<&crate::CancellationToken>,
+        prepaid: bool,
     ) -> Result<(), DemandError> {
-        check_wait(wait)?;
-        let mut work = self
-            .delivery()
-            .original
-            .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?
-            .clone();
+        if !prepaid {
+            work.check()?;
+        }
         self.delivery().ensure_stop_available()?;
         let mut custody = self.stream.lock_with_wait(wait)?;
         check_wait(wait)?;
         let Some(stream) = custody.as_mut() else {
             return Ok(());
         };
-        stream.ensure_cleanup_wait_available(&work)?;
-        let result = stream.cleanup_admitted(&mut work);
+        let retirement = if prepaid {
+            stream.ensure_cleanup_wait_available(work)?;
+            stream.cleanup_admitted(work)
+        } else {
+            stream.stop_with_work(work)
+        };
         if stream.is_stopped() {
             *custody = None;
         }
-        if !self.is_stopped() {
+        drop(custody);
+        let result = retirement.complete();
+        if prepaid && !self.is_stopped() {
             return result.and(Err(DemandError::WorkerUnavailable));
         }
-        result.and(check_wait(wait))
+        result
     }
 
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.shared.stream_bytes.load(Ordering::Acquire) == 0
-    }
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
@@ -240,7 +224,9 @@ impl Drop for NativeSourceWatch {
             let mut work = self.shared.delivery.callback_work();
             if let Some(stream) = self.stream.get_mut().take() {
                 let mut stream = stream;
-                let _ = stream.cleanup_admitted(&mut work);
+                let retirement = stream.cleanup_admitted(&mut work);
+                drop(stream);
+                let _ = retirement.complete();
             }
         }
     }
@@ -257,6 +243,7 @@ impl crate::fsevents::StreamTerminal for Shared {
         }
         self.delivery.notify_lost();
         self.stream_bytes.store(0, Ordering::Release);
+        self.delivery.finish_retirement();
         self.delivery.sink.delivery_lost();
     }
 }

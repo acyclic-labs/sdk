@@ -3,17 +3,25 @@ use super::*;
 /// Acknowledgement that the source's accepted physical producers have retired.
 /// A terminal reporting failure does not revoke that acknowledgement.
 #[derive(Debug)]
-pub struct MountSourceRetirement {
+#[must_use = "consume both physical acknowledgement and the original terminal outcome"]
+pub struct MountSourceRetirement<E = MountSourceError> {
     /// Whether this operation performed retirement rather than observing it.
     pub changed: bool,
     /// The original terminal failure, retained after physical completion.
-    pub failure: Option<MountSourceError>,
+    pub failure: Option<E>,
 }
 
-impl MountSourceRetirement {
+impl<E> MountSourceRetirement<E> {
     /// Projects the caller-visible result without changing physical custody.
-    pub fn into_result(self) -> Result<bool, MountSourceError> {
+    pub fn into_result(self) -> Result<bool, E> {
         self.failure.map_or(Ok(self.changed), Err)
+    }
+    /// Transfers the original failure without changing physical acknowledgement.
+    pub fn map_failure<F>(self, map: impl FnOnce(E) -> F) -> MountSourceRetirement<F> {
+        MountSourceRetirement {
+            changed: self.changed,
+            failure: self.failure.map(map),
+        }
     }
 }
 
@@ -300,20 +308,21 @@ pub trait MountFilesystem: Send + Sync + 'static {
         stamp: ViewStamp,
         work: &NativeMaterializationWork,
     ) -> Result<bool, MountSourceError>;
-    /// Stops the actual owned source watcher; success confirms physical quiescence (or that this source owns no active watcher).
+    /// Stops the actual source producers. `Ok` confirms physical quiescence,
+    /// including when the packet retains a terminal reporting failure.
     fn shutdown_with_meter(
         &self,
         work: &NativeMaterializationWork,
-    ) -> Result<bool, MountSourceError>;
+    ) -> Result<MountSourceRetirement, MountSourceError>;
     /// Retires this held source using only its constructor-owned cleanup credit.
     fn shutdown_with_cleanup_wait(
         &self,
         _wait: &crate::CancellationToken,
-    ) -> Result<bool, MountSourceError> {
+    ) -> Result<MountSourceRetirement, MountSourceError> {
         Err(MountSourceError::NativeUnsupported)
     }
     /// Completes this source's already accepted physical retirement.
-    fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
+    fn shutdown_accepted_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         Err(MountSourceError::NativeUnsupported)
     }
     /// Joins accepted source I/O from the existing physical retirement worker.
@@ -322,10 +331,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// terminal failure. `Err` supplies no acknowledgement; custody stays held.
     fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         self.shutdown_accepted_cleanup()
-            .map(|changed| MountSourceRetirement {
-                changed,
-                failure: None,
-            })
     }
     /// Traverses actual changes to this file identity under original limits.
     fn node_unchanged_since_with_meter(

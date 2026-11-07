@@ -281,7 +281,10 @@ pub(crate) fn workspace_bounded_error(
             Cause::Cancelled => Some(WorkspaceError::Cancelled(crate::CancellationError)),
             Cause::Filesystem(cause) => workspace_bounded_error(cause),
             Cause::NamespacePath(cause) => workspace_bounded_error(cause),
-            Cause::NativeWork(cause) => workspace_bounded_error(cause),
+            Cause::NativeWork(cause)
+            | Cause::RetirementFinalization {
+                completion: cause, ..
+            } => workspace_bounded_error(cause),
             _ => None,
         };
     }

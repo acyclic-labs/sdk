@@ -17,14 +17,14 @@ pub(super) struct Poller {
 /// closing a pipe or the exit of its process removes the rest.
 pub(super) struct Registration;
 
-fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: u64) -> libc::kevent {
+fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: usize) -> libc::kevent {
     libc::kevent {
         ident,
         filter,
         flags,
         fflags,
         data: 0,
-        udata: std::ptr::without_provenance_mut(usize::try_from(token).unwrap_or(usize::MAX)),
+        udata: std::ptr::without_provenance_mut(token),
     }
 }
 
@@ -108,7 +108,7 @@ impl Poller {
     pub(super) fn register(
         &self,
         source: Source<'_>,
-        token: u64,
+        token: usize,
     ) -> io::Result<Option<Registration>> {
         let flags = libc::EV_ADD | libc::EV_ONESHOT;
         let event = match source {
@@ -149,7 +149,7 @@ impl Poller {
         self.apply(&change(WAKE, libc::EVFILT_USER, 0, libc::NOTE_TRIGGER, 0))
     }
 
-    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<usize>) -> io::Result<()> {
         let timeout = timeout.map(|timeout| libc::timespec {
             tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
             tv_nsec: libc::c_long::from(timeout.subsec_nanos()),
@@ -180,7 +180,7 @@ impl Poller {
                 ));
             }
             if event.filter != libc::EVFILT_USER {
-                ready.push(event.udata.addr() as u64);
+                ready.push(event.udata.addr());
             }
         }
         Ok(())

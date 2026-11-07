@@ -2,7 +2,7 @@
 //! the model run the same code.
 
 use crate::sync::Mutex;
-use crate::sync::atomic::{AtomicBool, Ordering, Ordering::SeqCst, fence};
+use crate::sync::atomic::{AtomicU64, Ordering, Ordering::SeqCst, fence};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -13,13 +13,38 @@ use std::sync::{Arc, PoisonError, Weak};
 pub(super) trait Files: Send + Sync + Sized + 'static {
     type File: Send + Sync;
     type Identity: Copy + Eq + std::fmt::Debug + Send + Sync;
+    type FlushState: Default + Send + Sync;
 
     /// Opens the existing file at `path`, never creating or truncating it.
     fn reopen(&self, path: &Path, access: Access) -> io::Result<Self::File>;
     fn identity(&self, file: &Self::File) -> io::Result<Self::Identity>;
     /// Makes every write through `file` durable before it closes.
-    fn flush(&self, file: &Self::File) -> io::Result<()>;
+    fn flush(
+        &self,
+        file: &Self::File,
+        state: &Self::FlushState,
+        ordered: Option<u64>,
+    ) -> io::Result<()>;
 }
+
+/// Completion of an operation on the original physical descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Completion {
+    Full,
+    /// A later successful drain at this cut covers the staged writes.
+    Ordered(u64),
+    Unchanged,
+}
+
+impl Completion {
+    pub(super) fn ordered(cut: Option<u64>) -> Self {
+        cut.map_or(Self::Unchanged, Self::Ordered)
+    }
+}
+
+/// Zero is clean; every other value is a cut except this unconditionally dirty
+/// marker. Native cuts exclude both sentinels, including counter exhaustion.
+const UNFLUSHED: u64 = u64::MAX;
 
 /// How a cached file reopens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,9 +306,9 @@ impl<F: Files> Lease<F> {
                 "discard requires the only file lease",
             ));
         }
-        self.handle.unsynced.store(true, Ordering::Release);
+        self.handle.unsynced.store(UNFLUSHED, Ordering::Release);
         discard(self.handle.file())?;
-        self.handle.unsynced.store(false, Ordering::Release);
+        self.handle.unsynced.store(0, Ordering::Release);
         Ok(())
     }
 }
@@ -341,15 +366,37 @@ struct State<F: Files> {
 /// closes, whoever closes it last.
 pub(super) struct Handle<F: Files> {
     file: F::File,
+    flush_state: F::FlushState,
     cache: Arc<Cache<F>>,
-    /// Written since the last flush.
-    unsynced: AtomicBool,
+    /// Zero when clean, UNFLUSHED after a write, otherwise a device drain cut.
+    unsynced: AtomicU64,
     /// Whether closing must flush.
     durable: bool,
     lost: Arc<Mutex<Option<io::ErrorKind>>>,
     /// Held across each flush, so that a flush which reports success ran
     /// after any earlier flush of this descriptor had kept its failure.
     flushing: Mutex<()>,
+}
+
+/// Keeps unfinished callback writes on the original descriptor until flush.
+struct Unflushed<'a> {
+    dirty: &'a AtomicU64,
+    restore: u64,
+}
+
+impl Drop for Unflushed<'_> {
+    fn drop(&mut self) {
+        match self.restore {
+            0 => {}
+            UNFLUSHED => self.dirty.store(UNFLUSHED, Ordering::Release),
+            cut => {
+                // A later-completing write supersedes this ordered cut.
+                let _ = self
+                    .dirty
+                    .compare_exchange(0, cut, Ordering::Release, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// Fails when a write to the file was lost as a descriptor closed.
@@ -376,7 +423,7 @@ impl<F: Files> Handle<F> {
 
     /// Whether closing this descriptor must flush it.
     fn dirty(&self) -> bool {
-        self.durable && self.unsynced.load(Ordering::Acquire)
+        self.durable && self.unsynced.load(Ordering::Acquire) != 0
     }
 
     /// Flushes the writes made through this descriptor before it closes.
@@ -385,9 +432,16 @@ impl<F: Files> Handle<F> {
     /// failure here is kept for the file's every later use and flush.
     fn close_flush(&self) {
         let _flushing = self.flushing.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.durable
-            && self.unsynced.swap(false, Ordering::AcqRel)
-            && let Err(error) = self.cache.files.flush(&self.file)
+        if !self.durable {
+            return;
+        }
+        let dirty = self.unsynced.swap(0, Ordering::AcqRel);
+        if dirty != 0
+            && let Err(error) = self.cache.files.flush(
+                &self.file,
+                &self.flush_state,
+                (dirty != UNFLUSHED).then_some(dirty),
+            )
         {
             self.lost
                 .lock()
@@ -396,24 +450,35 @@ impl<F: Files> Handle<F> {
         }
     }
 
-    /// Marks the writes `write` makes, before it makes them.
+    /// Marks the callback's writes before its borrowed descriptor is released.
+    /// A flush during the callback cannot retire writes that finish later.
     pub(super) fn write<R>(&self, write: impl FnOnce(&F::File) -> io::Result<R>) -> io::Result<R> {
-        self.unsynced.store(true, Ordering::Release);
+        let _unflushed = Unflushed {
+            dirty: &self.unsynced,
+            restore: UNFLUSHED,
+        };
         write(&self.file)
     }
 
-    /// Runs `flush`, which makes every earlier write durable. It fails when
-    /// a write to the file was lost as a descriptor closed, even if `flush`
-    /// itself succeeds.
-    pub(super) fn flush<R>(&self, flush: impl FnOnce(&F::File) -> io::Result<R>) -> io::Result<R> {
+    /// Runs `flush`, whose completion says whether earlier writes are durable.
+    /// Fails when a write was lost as a descriptor closed, even if the callback
+    /// succeeds. Ordering, failure or unwind retains the earlier writes' flush.
+    pub(super) fn flush<R>(
+        &self,
+        flush: impl FnOnce(&F::File, &F::FlushState) -> io::Result<(R, Completion)>,
+    ) -> io::Result<R> {
         let _flushing = self.flushing.lock().unwrap_or_else(PoisonError::into_inner);
-        // Cleared first, so a write racing the flush stays marked.
-        let unsynced = self.unsynced.swap(false, Ordering::AcqRel);
-        let flushed = flush(&self.file).inspect_err(|_| {
-            if unsynced {
-                self.unsynced.store(true, Ordering::Release);
-            }
-        })?;
+        // Cleared first; every later-completing write restores its own marker.
+        let mut unflushed = Unflushed {
+            dirty: &self.unsynced,
+            restore: self.unsynced.swap(0, Ordering::AcqRel),
+        };
+        let (flushed, completed) = flush(&self.file, &self.flush_state)?;
+        unflushed.restore = match completed {
+            Completion::Full => 0,
+            Completion::Ordered(cut) if unflushed.restore != 0 => cut,
+            Completion::Ordered(_) | Completion::Unchanged => unflushed.restore,
+        };
         check_lost(&self.lost)?;
         Ok(flushed)
     }
@@ -473,8 +538,9 @@ impl<F: Files> Entry<F> {
     fn handle(&self, file: F::File) -> crate::sync::Arc<Handle<F>> {
         crate::sync::Arc::new(Handle {
             file,
+            flush_state: Default::default(),
             cache: Arc::clone(&self.cache),
-            unsynced: AtomicBool::new(false),
+            unsynced: AtomicU64::new(0),
             durable: self.durable,
             lost: Arc::clone(&self.lost),
             flushing: Mutex::new(()),

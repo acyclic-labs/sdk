@@ -1,4 +1,5 @@
 [package]
+autotests = false
 license.workspace = true
 name = "acyclic-sdk-fuzz"
 version = "0.0.0"
@@ -7,6 +8,13 @@ publish = false
 
 [package.metadata]
 cargo-fuzz = true
+
+# Integration tests also build every enabled binary, even with test = false.
+[lib]
+path = "tests/lib.rs"
+doc = false
+doctest = false
+bench = false
 
 [features]
 proto-descriptors = ["dep:acyclic-proto-build", "dep:prost", "dep:prost-reflect"]
@@ -67,10 +75,6 @@ test = false
 doc = false
 bench = false
 
-[[test]]
-name = "observation_slo"
-required-features = ["observation"]
-
 [[bin]]
 name = "git_path"
 required-features = ["native"]
@@ -115,11 +119,6 @@ bench = false
 arrayvec = { version = "0.7.8", default-features = false }
 acyclic-test-support = { path = "../crates/test-support" }
 proptest.workspace = true
-
-[[test]]
-name = "local_hotpath_quantiles"
-path = "tests/local_hotpath_quantiles.rs"
-required-features = ["local-hotpath-quantiles"]
 
 [[bin]]
 name = "inbox_record"
@@ -168,11 +167,6 @@ test = false
 doc = false
 bench = false
 
-[[test]]
-name = "local_hotpath_options"
-required-features = ["local-hotpath-options"]
-path = "tests/local_hotpath_options.rs"
-
 [[bin]]
 name = "native_owner_record"
 required-features = ["owner-record"]
@@ -180,7 +174,3 @@ path = "fuzz_targets/native_owner_record.rs"
 test = false
 doc = false
 bench = false
-
-[[test]]
-name = "grpc_codegen"
-required-features = ["grpc-codegen"]

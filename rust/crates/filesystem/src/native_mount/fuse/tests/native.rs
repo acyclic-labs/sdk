@@ -647,9 +647,10 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
         identity: None,
         cleanup: birth_cleanup,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(Arc::clone(&core.source)),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                Arc::clone(&core.source),
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
         }),
         failure: crate::native_mount::retirement::TerminalFailures::default(),

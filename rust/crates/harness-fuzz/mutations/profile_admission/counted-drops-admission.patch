@@ -1,0 +1,15 @@
+--- a/rust/crates/harness-core/src/model/conformance/counted.rs
++++ b/rust/crates/harness-core/src/model/conformance/counted.rs
+@@ -34,12 +34,0 @@
+-    #[cfg(feature = "filesystem")]
+-    fn admit_profile(
+-        &self,
+-        model: &Model,
+-        profile: &crate::profile::AgentProfile<'_>,
+-    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+-        let (model, provider) = self.inner().admit_profile(model, profile)?;
+-        Ok((
+-            model,
+-            Arc::new(Counted::with_ledger(provider, self.ledger())),
+-        ))
+-    }

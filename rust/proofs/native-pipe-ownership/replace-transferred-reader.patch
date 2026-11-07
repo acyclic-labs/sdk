@@ -1,0 +1,16 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/stdio.rs b/rust/crates/native-runtime/src/process_tree/stdio.rs
+--- a/rust/crates/native-runtime/src/process_tree/stdio.rs
++++ b/rust/crates/native-runtime/src/process_tree/stdio.rs
+@@ -20,10 +20,8 @@ impl ProcessPipeReader {
+     /// Cancels the previous observation before moving its pending native read.
+     pub fn take_stdout(tree: &mut super::ProcessTree) -> io::Result<Self> {
+         let pipe = tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?;
+-        let operation = match tree.readers[0].take() {
+-            Some(operation) => operation,
+-            None => events::PipeOperation::reader(&pipe)?,
+-        };
++        let _previous = tree.readers[0].take();
++        let operation = events::PipeOperation::reader(&pipe)?;
+         Ok(Self {
+             wait: None,
+             pipe,

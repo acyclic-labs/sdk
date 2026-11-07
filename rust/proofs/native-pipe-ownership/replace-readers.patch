@@ -1,0 +1,12 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/pump.rs b/rust/crates/native-runtime/src/process_tree/pump.rs
+--- a/rust/crates/native-runtime/src/process_tree/pump.rs
++++ b/rust/crates/native-runtime/src/process_tree/pump.rs
+@@ -280,6 +280,8 @@
+                 .map_err(ProcessCaptureFailure::before_capture)?;
+         }
+         #[cfg(windows)]
++        { tree.readers = [None, None]; }
++        #[cfg(windows)]
+         tree.prepare_output_readers()
+             .map_err(ProcessCaptureFailure::before_capture)?;
+         let child = tree.child.as_mut().ok_or_else(|| {

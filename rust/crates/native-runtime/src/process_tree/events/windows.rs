@@ -1,4 +1,4 @@
-//! Windows readiness: one I/O completion port. Pipe readiness is an
+//! Windows readiness: one I/O completion port per producer. Pipe readiness is an
 //! overlapped zero-byte read, stdin progress is an overlapped write, and a
 //! process exit is a registered thread-pool wait that posts to the port.
 
@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -37,28 +37,41 @@ pub(super) struct Poller {
     port: OwnedHandle,
 }
 
-/// A registered process wait, unregistered when its wait is dropped.
-pub(super) struct Registration(Option<HANDLE>);
+/// Original native interest, released only by its owning observation.
+pub(super) enum Registration {
+    Process(HANDLE),
+    Pipe(Arc<PipeOperation>, usize),
+}
 
-// SAFETY: a registered wait handle has no thread affinity, and only the one
-// owning Registration unregisters it.
+// SAFETY: a registered wait handle has no thread affinity; the pipe operation
+// is Send + Sync. Only this original Registration releases its own interest.
 unsafe impl Send for Registration {}
-// SAFETY: shared access never touches the handle; only Drop does.
+// SAFETY: shared access never touches the handle or changes the pipe claim.
 unsafe impl Sync for Registration {}
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        if let Some(wait) = self.0.take() {
-            // SAFETY: this owned registration is released once. A null
-            // completion event returns at once; a callback still running
-            // posts only a token, which the hub ignores once disarmed.
-            unsafe { UnregisterWaitEx(wait, std::ptr::null_mut()) };
+        match self {
+            Self::Process(wait) => {
+                // SAFETY: this owned registration is released once. A null
+                // completion event returns at once; a callback still running
+                // posts only a token, which the hub ignores once disarmed.
+                unsafe { UnregisterWaitEx(*wait, std::ptr::null_mut()) };
+            }
+            Self::Pipe(operation, token) => {
+                // A transfer may already have retired this observation and
+                // admitted a successor. Never withdraw that successor's token.
+                let _ =
+                    operation
+                        .token
+                        .compare_exchange(*token, 0, Ordering::SeqCst, Ordering::SeqCst);
+            }
         }
     }
 }
 
 unsafe extern "system" fn exited(context: *mut c_void, _timed_out: bool) {
-    if let Ok(hub) = super::hub() {
+    if let Some(hub) = super::pool::completion(context.addr()) {
         post_exit(hub, context);
     }
 }
@@ -90,9 +103,10 @@ enum Kind {
 pub(in crate::process_tree) struct PipeOperation {
     overlapped: UnsafeCell<OVERLAPPED>,
     handle: HANDLE,
+    owner: &'static super::Hub,
     kind: Kind,
     pending: AtomicBool,
-    token: AtomicU64,
+    token: AtomicUsize,
     // Tuple fields retire in order: storage, then its original allocation credit.
     buffer: UnsafeCell<(Vec<u8>, Option<crate::ReadAllocation>)>,
     result: Mutex<Option<io::Result<usize>>>,
@@ -106,14 +120,35 @@ unsafe impl Send for PipeOperation {}
 // SAFETY: as above; every other field is atomic or locked.
 unsafe impl Sync for PipeOperation {}
 
-fn port() -> io::Result<HANDLE> {
-    super::Events::start().map(|events| events._hub.poller.port.as_raw_handle())
-}
-
 impl PipeOperation {
+    pub(super) fn owner(&self) -> &'static super::Hub {
+        self.owner
+    }
+
+    /// Withdraws the previous observation before the original pipe changes owner.
+    /// The overlapped operation remains live for its eventual native completion.
+    pub(in crate::process_tree) fn retire(&self) {
+        let token = self.token.swap(0, Ordering::SeqCst);
+        if token == 0 {
+            return;
+        }
+        let signal = self
+            .owner
+            .registry()
+            .remove(token)
+            .map(|armed| armed.signal);
+        if let Some(signal) = signal {
+            signal.settle(super::ProcessWaitOutcome::Cancelled);
+        }
+    }
+
     fn associate(handle: HANDLE, kind: Kind) -> io::Result<Arc<Self>> {
+        let events = super::Events::start()?;
+        let owner = events._pool.handle(handle);
         // SAFETY: the caller's live pipe handle joins the hub's owned port.
-        if unsafe { CreateIoCompletionPort(handle, port()?, PIPE_KEY, 0) }.is_null() {
+        if unsafe { CreateIoCompletionPort(handle, owner.poller.port.as_raw_handle(), PIPE_KEY, 0) }
+            .is_null()
+        {
             return Err(io::Error::last_os_error());
         }
         // A synchronous success completes inline and posts nothing, and the
@@ -126,9 +161,10 @@ impl PipeOperation {
             // SAFETY: an all-zero OVERLAPPED is its documented initial value.
             overlapped: UnsafeCell::new(unsafe { std::mem::zeroed() }),
             handle,
+            owner,
             kind,
             pending: AtomicBool::new(false),
-            token: AtomicU64::new(0),
+            token: AtomicUsize::new(0),
             buffer: UnsafeCell::new((Vec::new(), None)),
             result: Mutex::new(None),
             write_reservation: Mutex::new(None),
@@ -282,10 +318,20 @@ impl PipeOperation {
             .take()
     }
 
-    fn arm(self: &Arc<Self>, token: u64) -> io::Result<Option<Registration>> {
-        self.token.store(token, Ordering::SeqCst);
+    fn arm(self: &Arc<Self>, token: usize) -> io::Result<Option<Registration>> {
+        self.token
+            .compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "native pipe already has a live observation; drop it before rearming",
+                )
+            })?;
+        // This original registration owns rollback even when readiness is
+        // immediate or native admission refuses. Retain the pending operation.
+        let registration = Registration::Pipe(Arc::clone(self), token);
         if self.pending() {
-            return Ok(Some(Registration(None)));
+            return Ok(Some(registration));
         }
         if self.kind == Kind::Write {
             // Nothing in flight: the writer has a result or room to write.
@@ -298,13 +344,13 @@ impl PipeOperation {
             // operation owns until the read completes; so does the OVERLAPPED.
             unsafe { ReadFile(self.handle, empty, 0, std::ptr::null_mut(), overlapped) }
         }) {
-            Ok(None) => Ok(Some(Registration(None))),
+            Ok(None) => Ok(Some(registration)),
             // Data, end of file or a broken pipe: the reader observes it now.
             Ok(Some(_)) | Err(_) => Ok(None),
         }
     }
 
-    fn complete(&self, entry: &OVERLAPPED_ENTRY) -> u64 {
+    fn complete(&self, entry: &OVERLAPPED_ENTRY) -> usize {
         if self.kind == Kind::Write {
             let status: NTSTATUS = u32::try_from(entry.Internal & 0xFFFF_FFFF)
                 .unwrap_or(u32::MAX)
@@ -352,7 +398,7 @@ impl Poller {
     pub(super) fn register(
         &self,
         source: Source<'_>,
-        token: u64,
+        token: usize,
     ) -> io::Result<Option<Registration>> {
         match source {
             Source::Exit(object) => {
@@ -365,7 +411,7 @@ impl Poller {
                         &raw mut wait,
                         object.as_raw_handle(),
                         Some(exited),
-                        std::ptr::without_provenance(usize::try_from(token).unwrap_or(usize::MAX)),
+                        std::ptr::without_provenance(token),
                         INFINITE,
                         WT_EXECUTEONLYONCE | WT_EXECUTEINWAITTHREAD,
                     )
@@ -373,7 +419,7 @@ impl Poller {
                 {
                     return Err(io::Error::last_os_error());
                 }
-                Ok(Some(Registration(Some(wait))))
+                Ok(Some(Registration::Process(wait)))
             }
             Source::Pipe(operation) => operation.arm(token),
         }
@@ -391,7 +437,7 @@ impl Poller {
         }
     }
 
-    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<usize>) -> io::Result<()> {
         let milliseconds = timeout.map_or(INFINITE, |timeout| {
             u32::try_from(timeout.as_nanos().div_ceil(1_000_000))
                 .unwrap_or(INFINITE - 1)
@@ -421,7 +467,7 @@ impl Poller {
         }
         for entry in entries.iter().take(removed as usize) {
             match entry.lpCompletionKey {
-                EXIT_KEY => ready.push(entry.lpOverlapped.addr() as u64),
+                EXIT_KEY => ready.push(entry.lpOverlapped.addr()),
                 PIPE_KEY => {
                     // SAFETY: every pipe packet carries the OVERLAPPED of a
                     // PipeOperation, the first field of that repr(C) struct,
@@ -459,6 +505,9 @@ mod tests {
         let hub = Hub {
             poller: Poller::refused_wait()?,
             registry: Mutex::new(Registry::default()),
+            stride: 1,
+            service_failure: Arc::new(std::sync::OnceLock::new()),
+            locks: AtomicUsize::new(0),
         };
         let mut active = arm_on(&hub, &[], None)?;
         let mut early = arm_on(&hub, &[], None)?;
@@ -466,7 +515,7 @@ mod tests {
         let waker = Waker::from(Arc::clone(&notification));
         let mut context = Context::from_waker(&waker);
         assert!(Pin::new(&mut active).poll(&mut context).is_pending());
-        let token = usize::try_from(active.token).map_err(io::Error::other)?;
+        let token = active.first.as_ref().unwrap().token;
         let context_token = std::ptr::without_provenance_mut::<c_void>(token);
 
         // Negative: the former callback discarded this exact failed post.
@@ -506,7 +555,7 @@ mod tests {
         let registry = hub.registry();
         assert!(registry.armed.is_empty());
         assert!(registry.positions.is_empty());
-        assert!(registry.timers.is_empty());
+        assert!(registry.timers.first().is_none());
         Ok(())
     }
 }

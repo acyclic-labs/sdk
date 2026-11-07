@@ -1,0 +1,17 @@
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -473,12 +473,8 @@
+             dirty: &self.unsynced,
+             restore: self.unsynced.swap(0, Ordering::AcqRel),
+         };
+-        let (flushed, completed) = flush(&self.file, &self.flush_state)?;
+-        unflushed.restore = match completed {
+-            Completion::Full => 0,
+-            Completion::Ordered(cut) if unflushed.restore != 0 => cut,
+-            Completion::Ordered(_) | Completion::Unchanged => unflushed.restore,
+-        };
++        let (flushed, _) = flush(&self.file, &self.flush_state)?;
++        unflushed.restore = 0;
+         check_lost(&self.lost)?;
+         Ok(flushed)
+     }

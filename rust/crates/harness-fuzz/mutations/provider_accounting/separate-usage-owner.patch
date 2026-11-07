@@ -1,0 +1,19 @@
+--- a/rust/crates/harness-providers/src/resolved.rs
++++ b/rust/crates/harness-providers/src/resolved.rs
+@@ -10,14 +10,14 @@
+ /// copies retain this owner together, without separate allocation/refcounts.
+ pub(crate) struct Accounting {
+     pub(crate) estimator: crate::accounting::TokenEstimator,
+-    pub(crate) usage: crate::usage_count::Counter,
++    pub(crate) usage: Box<crate::usage_count::Counter>,
+ }
+ 
+ impl Accounting {
+     pub(crate) fn new(adapter: Adapter) -> Arc<Self> {
+         Arc::new(Self {
+             estimator: crate::accounting::TokenEstimator::new(adapter),
+-            usage: crate::usage_count::Counter::default(),
++            usage: Box::default(),
+         })
+     }
+ }

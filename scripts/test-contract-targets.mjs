@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { buildContractTargets, captureContractCommand, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
+import { buildContractTargets, captureContractCommand, ContractTargetCollision, contractTargetOutputs, runContractTarget } from "./contract-targets.mjs";
 import { fuzz as fuzzContractJson } from "./contract-targets.fuzz.mjs";
 
 test("contract command refusals retain original native diagnostics and terminal metadata", () => {
@@ -210,7 +210,7 @@ test("contract binaries use exact Cargo identities and current source/configurat
     return result.stdout;
   };
   try {
-    put("Cargo.toml", '[workspace]\nmembers = ["alpha", "beta", "dependency"]\nresolver = "2"\n');
+    put("Cargo.toml", '[workspace]\nmembers = ["alpha", "beta", "dependency", "gamma"]\nresolver = "2"\n');
     // Force the artifact directory outside the default root, as CI does.
     mkdirSync(join(root, ".cargo"));
     put(".cargo/config.toml", '[build]\ntarget-dir = "configured-target"\n');
@@ -224,6 +224,10 @@ test("contract binaries use exact Cargo identities and current source/configurat
       put(`${name}/src/main.rs`, `fn main() { println!("${name}:{}:{}", ${name}::value(), dependency::value()); }\n`);
       writeFileSync(join(root, name, "Cargo.toml"), '\n[dependencies]\ndependency = { path = "../dependency" }\n', { flag: "a" });
     }
+    // gamma's example has beta's example name: Cargo links both to one path.
+    mkdirSync(join(root, "gamma", "examples"), { recursive: true });
+    put("gamma/Cargo.toml", '[package]\nname = "gamma"\nversion = "0.1.0"\nedition = "2024"\n');
+    put("gamma/examples/contract.rs", 'fn main() { println!("gamma"); }\n');
     command(["generate-lockfile", "--offline"]);
     const targets = [["alpha", "bin", "contract"], ["beta", "example", "contract"]];
     const report = {};
@@ -308,6 +312,10 @@ test("contract binaries use exact Cargo identities and current source/configurat
     }
     emit([...messages, messages[first]]);
     assert.throws(replay, /duplicate Rust contract artifact/);
+    // Two requested targets answered by one executable path are refused, not
+    // run twice as whichever target Cargo linked last.
+    emit(messages.map((message, index) => index === second ? { ...message, executable: binaries[0] } : message));
+    assert.throws(replay, error => error instanceof ContractTargetCollision && error.output === binaries[0]);
     put("artifacts.jsonl", recorded.messages[first].slice(0, -1));
     assert.throws(replay, error => error.cause instanceof SyntaxError && /STEP_FAILED contract-artifact:/.test(error.message));
     const previousRustc = process.env.RUSTC;
@@ -361,6 +369,14 @@ test("contract binaries use exact Cargo identities and current source/configurat
       JSON.parse = parse;
     }
     assert.throws(() => buildContractTargets(root, [...targets, targets[0]], cargo), /duplicate Rust contract target/);
+    const colliding = {};
+    assert.throws(() => buildContractTargets(root, [...targets, ["gamma", "example", "contract"]], cargo, colliding), error => {
+      assert.ok(error instanceof ContractTargetCollision);
+      assert.deepEqual(error.targets, [["beta", "example", "contract"], ["gamma", "example", "contract"]]);
+      assert.match(error.message, /STEP_FAILED contract-collision:.*recovery:/);
+      return true;
+    });
+    assert.equal(colliding.phase, "metadata", "a colliding target set must be refused before Cargo builds it");
     assert.throws(() => buildContractTargets(root, [["alpha", "bin", "absent"]], cargo), /unknown Rust contract target/);
     assert.throws(() => buildContractTargets(root, [["alpha", "lib", "alpha"]], cargo), /unknown Rust contract target/);
   } finally {

@@ -460,6 +460,8 @@ fn inherited_report_port_joins_the_selected_real_process() {
             unsafe_code,
             reason = "transfers the original report socket into the selected child before exec"
         )]
+        // SAFETY: only async-signal-safe descriptor remapping runs in the child;
+        // the retained socket remains live until the original spawn completes.
         unsafe {
             command.pre_exec(move || {
                 if libc::dup2(descriptor, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {

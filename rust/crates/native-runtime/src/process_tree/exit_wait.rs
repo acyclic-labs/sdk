@@ -1,4 +1,5 @@
 //! Direct-child exit notification leaves the leader unreaped for tree cleanup.
+use super::cleanup::{Cleanup, Resource};
 use super::*;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -35,7 +36,7 @@ impl ChildExitWatch {
 #[cfg(target_os = "linux")]
 impl std::os::fd::AsFd for ChildExitWatch {
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.0.fd.as_ref().expect("opened exit descriptor").as_fd()
+        self.0.fd.as_fd()
     }
 }
 
@@ -96,26 +97,13 @@ pub(super) fn wait_metered(
 }
 
 pub(super) struct ExitWatch<'a> {
-    fd: Option<OwnedFd>,
+    fd: Resource<'a, OwnedFd>,
     meter: Option<&'a dyn crate::NativeReadMeter>,
-    cleanup: Option<u64>,
 }
 
 impl AsRawFd for ExitWatch<'_> {
     fn as_raw_fd(&self) -> std::os::fd::RawFd {
-        self.fd.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-    }
-}
-
-impl Drop for ExitWatch<'_> {
-    fn drop(&mut self) {
-        if let (Some(meter), Some(cleanup)) = (self.meter, self.cleanup.take()) {
-            if self.fd.is_some() {
-                let _ = meter.record_cleanup_write(cleanup);
-            } else {
-                meter.cancel_cleanup_write(cleanup);
-            }
-        }
+        self.fd.as_raw_fd()
     }
 }
 
@@ -134,7 +122,12 @@ pub(super) fn open_member(
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<ExitWatch<'_>> {
     let watch = open_watch(id, meter)?;
-    register_event(&watch, id, libc::NOTE_EXIT)?;
+    // A group member is not necessarily our child. Without a registered
+    // producer we cannot waitid it, infer group emptiness or wait on this
+    // empty queue. Preserve the native refusal and original tree custody.
+    complete_registration(register_event(&watch, id, libc::NOTE_EXIT)?, || {
+        Err(io::Error::from_raw_os_error(libc::ESRCH))
+    })?;
     Ok(watch)
 }
 
@@ -142,18 +135,15 @@ fn open_watch(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<ExitWatch<'_>> {
-    let mut watch = ExitWatch {
-        fd: None,
-        meter,
-        cleanup: meter
-            .map(crate::NativeReadMeter::reserve_cleanup_write)
-            .transpose()?,
-    };
+    let cleanup = Cleanup::new(meter)?;
     let (opened, recorded) =
         pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
             open_descriptor_for(id)
         })?;
-    watch.fd = Some(opened?);
+    let watch = ExitWatch {
+        fd: cleanup.adopt(opened?),
+        meter,
+    };
     // Retain the descriptor and its prepaid close before late accounting can
     // fail. Every successful open has one physical release on this ledger.
     recorded?;

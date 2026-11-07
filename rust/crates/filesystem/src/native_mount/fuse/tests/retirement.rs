@@ -19,7 +19,9 @@ enum Retirement {
 fn failed_worker_retires_its_destination_before_reporting_both_causes()
 -> Result<(), Box<dyn std::error::Error>> {
     for metered in [false, true] {
-        terminal_worker_retires_destination(false, metered)?;
+        for physical in [false, true] {
+            terminal_worker_retires_destination(false, metered, physical)?;
+        }
     }
     Ok(())
 }
@@ -28,7 +30,9 @@ fn failed_worker_retires_its_destination_before_reporting_both_causes()
 fn panicked_worker_retires_its_destination_without_losing_its_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     for metered in [false, true] {
-        terminal_worker_retires_destination(true, metered)?;
+        for physical in [false, true] {
+            terminal_worker_retires_destination(true, metered, physical)?;
+        }
     }
     Ok(())
 }
@@ -36,6 +40,7 @@ fn panicked_worker_retires_its_destination_without_losing_its_payload()
 fn terminal_worker_retires_destination(
     panicked: bool,
     metered: bool,
+    physical: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::native_mount::tests::retirement::{Fixture, retired};
 
@@ -73,11 +78,10 @@ fn terminal_worker_retires_destination(
         retirement: Some(crate::native_mount::NativeMountRetirement {
             retained_source: None,
             destination_guard: session.destination_guard.take(),
-            startup_source_watch: None,
             terminal_source_failure: Some(cleanup_error.into()),
         }),
         cleanup: work.reserve_work(crate::WorkCounters {
-            backend_read_operations: 1,
+            backend_read_operations: 2,
             ..crate::WorkCounters::UNCHARGED
         })?,
         failure: crate::native_mount::retirement::TerminalFailures::default(),
@@ -89,9 +93,27 @@ fn terminal_worker_retires_destination(
         )?,
     }));
     let before = work.receipt();
-    // The real physical owner must return after the failed worker and source
-    // have exited. The old early-return path parks here with the fence held.
-    run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
+    if physical {
+        run_fuse_session((Arc::clone(&core), Arc::clone(&state)));
+    }
+    session.driver = Some(super::super::FuseSession {
+        core,
+        state: Arc::clone(&state),
+        invalidator: Some(std::thread::spawn(|| {
+            panic!("retained FUSE invalidator panic")
+        })),
+    });
+    let wait = crate::CancellationToken::new();
+    let stop = if metered {
+        NativeSessionStopWork::Meter(&work)
+    } else {
+        NativeSessionStopWork::AcceptedWait(&wait)
+    };
+    let first = session
+        .stop_with_context(&stop)
+        .expect_err("worker error was lost during cleanup");
+    assert!(session.driver.is_none(), "terminal cause kept the driver");
+    assert!(session.cleanup_state().cleanup_complete());
     assert!(
         state
             .lock()
@@ -99,21 +121,6 @@ fn terminal_worker_retires_destination(
             .is_retired()
     );
     retired(root.path(), &fence, before, &work)?;
-    let mut facade = super::super::FuseSession {
-        core,
-        state,
-        invalidator: None,
-    };
-    let wait = crate::CancellationToken::new();
-    let stop = if metered {
-        NativeSessionStopWork::Meter(&work)
-    } else {
-        NativeSessionStopWork::AcceptedWait(&wait)
-    };
-    let mut outcomes = facade.stop(&stop)?;
-    let first = outcomes
-        .take()
-        .ok_or("worker error was lost during cleanup")?;
     if panicked {
         let NativeMountError::DriverPanicked { panic, .. } = first else {
             panic!("worker panic changed to {first:?}");
@@ -128,14 +135,25 @@ fn terminal_worker_retires_destination(
             matches!(first, NativeMountError::Io(ref cause) if cause.kind() == std::io::ErrorKind::NotFound)
         );
     }
-    let second = outcomes
-        .take()
-        .ok_or("source error was lost during cleanup")?;
+    let second = session
+        .stop_with_context(&stop)
+        .expect_err("source error was lost during cleanup");
     assert!(
         matches!(second, NativeMountError::Io(ref cause) if cause.raw_os_error() == cleanup_code)
     );
-    assert!(outcomes.is_empty());
-    assert!(facade.stop(&stop)?.is_empty());
+    let third = session
+        .stop_with_context(&stop)
+        .expect_err("invalidator panic was lost during cleanup");
+    let NativeMountError::DriverPanicked { operation, panic } = third else {
+        panic!("invalidator panic changed to {third:?}");
+    };
+    assert_eq!(operation, "FUSE invalidator");
+    let payload = panic.into_inner().map_err(|_| "panic payload poisoned")?;
+    assert_eq!(
+        payload.downcast_ref::<&str>(),
+        Some(&"retained FUSE invalidator panic")
+    );
+    assert!(!session.stop_with_context(&stop)?);
     assert_eq!(
         work.receipt().allocation_operations,
         before.allocation_operations
@@ -171,9 +189,10 @@ pub(in crate::native_mount) fn retire_source_in_physical_loop(
         notifier: None,
         identity: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                source,
+            )),
             destination_guard: None,
-            startup_source_watch: None,
             terminal_source_failure: None,
         }),
         cleanup: work.reserve_work(crate::WorkCounters::UNCHARGED)?,
@@ -333,9 +352,10 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         notifier: None,
         identity: None,
         retirement: Some(crate::native_mount::NativeMountRetirement {
-            retained_source: Some(retained_source),
+            retained_source: Some(crate::native_mount::retirement::RetainedSource::Filesystem(
+                retained_source,
+            )),
             destination_guard: session.destination_guard.take(),
-            startup_source_watch: None,
             terminal_source_failure: None,
         }),
         cleanup,

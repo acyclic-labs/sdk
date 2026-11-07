@@ -15,7 +15,6 @@ fn nfs_callback_protocol_cases() {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "requires a live macOS NFS mount"]
 fn macos_explicit_file_fsync_reaches_mount_source() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write as _;
 

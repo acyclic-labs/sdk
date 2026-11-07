@@ -5,7 +5,7 @@ use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
-    Foundation::{ERROR_NOT_FOUND, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+    Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     Storage::FileSystem::ReadFile,
     System::{
         Console::{
@@ -120,16 +120,14 @@ pub fn console_break() -> io::Result<()> {
     Ok(())
 }
 
-/// Request cancellation on a live worker. The owner still waits for its ack;
-/// `ERROR_NOT_FOUND` alone does not fence a submission that has not started yet.
+/// Request cancellation of a worker's synchronous I/O. The caller must retain
+/// the original worker and wait for its completion acknowledgement: this request
+/// alone does not fence a submission that has not reached the OS yet.
 pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
-    // SAFETY: JoinHandle owns a live thread handle throughout this call.
-    let result = unsafe { CancelSynchronousIo(worker.as_raw_handle() as HANDLE) };
-    let code = io::Error::last_os_error().raw_os_error();
-    if result == 0 && code.and_then(|code| u32::try_from(code).ok()) != Some(ERROR_NOT_FOUND) {
-        // Cancellation is retried until the worker acknowledges completion.
-        std::thread::yield_now();
-    }
+    // SAFETY: JoinHandle retains the original thread handle throughout this call.
+    // Completion, including a raced or unsuccessful request, belongs to the
+    // owner's acknowledgement path rather than the cancellation return value.
+    let _ = unsafe { CancelSynchronousIo(worker.as_raw_handle() as HANDLE) };
 }
 
 /// Read VT bytes directly into the caller's buffer. A native call consumes at

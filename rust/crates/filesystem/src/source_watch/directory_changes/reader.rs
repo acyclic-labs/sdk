@@ -44,13 +44,13 @@ impl Shared {
             // Retirement that had to wait for a cancelled read goes on here.
             if self.delivery.original.is_some() {
                 self.retire_native(&mut reads);
-            } else if !self.stop_completed.load(Ordering::Acquire) {
+            } else if !self.delivery.is_retired() {
                 let mut work = self.delivery.callback_work();
                 if let Err(error) = self.retire(&mut reads, &mut work) {
                     self.delivery.failed_with_work(error, &mut work);
                 }
                 if self.retired(&reads) {
-                    self.publish_retirement(true);
+                    reads.retired = true;
                 }
             }
             return;
@@ -110,7 +110,7 @@ impl Shared {
     /// Whether a packet for this stopping watch may have retirement to go
     /// on with: a native owner needs a credit, or its owner's drop.
     fn resumes_retirement(&self) -> bool {
-        if self.stop_completed.load(Ordering::Acquire) {
+        if self.delivery.is_retired() {
             return false;
         }
         self.delivery.original.is_none()

@@ -1,7 +1,7 @@
 //! The production descriptor cache under every interleaving of use, eviction
 //! and close, on simulated files whose flushes can fail.
 
-use super::cache::{Access, Cache, Entry, Files};
+use super::cache::{Access, Cache, Completion, Entry, Files};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -92,6 +92,7 @@ impl Drop for SimFile {
 impl Files for Sim {
     type File = SimFile;
     type Identity = u64;
+    type FlushState = ();
 
     fn reopen(&self, path: &Path, _: Access) -> io::Result<SimFile> {
         let identity = self
@@ -107,7 +108,7 @@ impl Files for Sim {
         Ok(file.identity)
     }
 
-    fn flush(&self, file: &SimFile) -> io::Result<()> {
+    fn flush(&self, file: &SimFile, _: &(), _: Option<u64>) -> io::Result<()> {
         let mut world = self.world();
         world.flushes += 1;
         let unflushed = world.unflushed.insert(file.id, 0).unwrap_or_default();
@@ -344,7 +345,10 @@ fn a_flush_never_succeeds_past_a_failed_close() {
                 file.write();
                 Ok(())
             })?;
-            lease.flush(|file| sim.flush(file))
+            lease.flush(|file, state| {
+                sim.flush(file, state, None)
+                    .map(|()| ((), Completion::Full))
+            })
         })();
         join(evicting)??;
         check(

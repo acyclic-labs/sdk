@@ -137,7 +137,8 @@ for (const name of targets) {
     "--remap-path-prefix", `${cargoHome}=/cargo/home`,
   ];
   const buildArgs = [
-    "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
+    "rustc", "--lib", "--crate-type", "cdylib", ...selection,
+    "--target", "wasm32-unknown-unknown", "--profile", profile, "--locked",
     "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ];
   let compilerInvocation, originalReceipt;

@@ -48,7 +48,7 @@ fn account_source<T>(
     if let Some(native) = context.native_source_work() {
         let stop = native.cancellation();
         return operation(
-            &mut crate::kernel::KernelAccounting::native(&native, stop),
+            &mut crate::kernel::KernelAccounting::native(native, stop),
             stop,
         );
     }

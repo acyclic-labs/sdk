@@ -46,3 +46,16 @@ settlement query`. After exact source restoration, the same scenario must pass.
 The scenario counts actual native stream head reads, checks the root observer's
 settled cursor, and retains the original parent/child volume, context and
 authority assertions. Explicit replay cursors keep their original semantics.
+
+`settings-generation-refresh.patch` restores settings admission's independent
+home-generation lookup. Apply it from the repository root, then run from `rust`:
+
+```sh
+cargo test --locked -p acyclic-harness --lib --features filesystem-local,hooks,test-support local::agent_settings::tests::a_settings_tree_keeps_one_generation_across_concurrent_home_edits -- --exact
+```
+
+It must reach `settings admission refreshed its pinned home generation`.
+The scenario edits real home modules and imports after pinning their tree,
+then checks both plugin and agent admission through their production entry
+points. A fresh admission must observe the edits. Reverse the patch with
+`git apply -R`; the same scenario must pass with the shared snapshot restored.
