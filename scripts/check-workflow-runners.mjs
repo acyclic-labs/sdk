@@ -63,6 +63,7 @@ const expected = [
   ".github\\workflows\\release.yml:ubuntu-24.04",
   ".github\\workflows\\release.yml:ubuntu-24.04",
   ".github\\workflows\\release.yml:ubuntu-24.04",
+  ".github\\workflows\\release.yml:ubuntu-24.04",
   ".github\\workflows\\sdk-generator.yml:ubuntu-24.04",
 ];
 if (process.platform !== "win32") {
