@@ -1,6 +1,43 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transaction<A, O> {
+    /// Publishes within the caller's retained accounting, including failed work.
+    pub(super) async fn commit_with_accounting(
+        &mut self,
+        permit: crate::PublicationPermit,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<TransactionCommit<A, O>, WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            return self
+                .commit_with_native_work(
+                    None,
+                    permit,
+                    original,
+                    cancellation,
+                    &mut |_: &crate::NativeMaterializationWork| {
+                        std::future::ready(Ok::<(), WorkspaceError>(()))
+                    },
+                )
+                .await;
+        }
+        let committed = self
+            .commit(
+                None,
+                permit,
+                accounting.remaining()?,
+                cancellation,
+                publication_ready,
+            )
+            .await;
+        let (allocations, spent, _, _) = accounting
+            .standalone_parts()
+            .ok_or(crate::WorkError::Overflow)?;
+        let live = allocations.live_bytes();
+        merge_workspace_backend(committed, spent, live).map(|receipt| receipt.value)
+    }
+
     /// Publishes this private candidate under the supplied limits and seal.
     /// An unchanged candidate still seals this transaction's idempotency key.
     pub async fn commit<E, F, Fut>(
