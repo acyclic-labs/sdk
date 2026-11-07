@@ -148,6 +148,10 @@ it samples the shared mount owner, excluding descendant host-runtime resources.
 Mount growth counts actual OS registrations beneath this fixture's root through
 the shared mount-custody reader. The namespace-wide OS mount count remains a
 diagnostic: concurrent fixtures can add mounts outside this root.
+`python3 plugin/tests/hosts/scale-mount-custody.py ACYCLIC GRAPHCODER pi MODE`
+qualifies this boundary with a real concurrent FUSE registration: `namespace`
+restores the old oracle and must refuse a foreign mount, `foreign` must pass,
+and `owned` must refuse an extra mount inside the fixture.
 Each child acknowledges the hold barrier before and after each sample; the
 same N sessions remain alive through the 2N sample. Releasing and waiting for
 children before sampling must fail that barrier. The per-child-mount
