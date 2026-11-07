@@ -24,10 +24,10 @@ struct Inner {
     core: MemoryStream,
     session: Mutex<Replicated<PgJournal>>,
     failed: AtomicBool,
-    failure: watch::Sender<bool>,
+    failure: watch::Sender<Failure>,
     // Dropping the owner closes both connections and their drivers. No task
     // retains the owner while idle, so this does not form a reference cycle.
-    tasks: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -46,6 +46,37 @@ impl Drop for Inner {
 #[derive(Clone)]
 pub struct PostgresStream {
     inner: Arc<Inner>,
+}
+
+struct Failure {
+    retired: bool,
+    owner: std::sync::Weak<Inner>,
+}
+
+// Connection drivers must run during initialization, before the provider
+// exists. The original failure cell joins their retirement with owner binding.
+struct ConnectionOwner(watch::Sender<Failure>);
+
+impl ConnectionOwner {
+    fn retire(failure: &watch::Sender<Failure>) {
+        let mut owner = None;
+        failure.send_modify(|failure| {
+            failure.retired = true;
+            owner = failure.owner.upgrade();
+            if let Some(inner) = &owner {
+                inner.failed.store(true, Ordering::Release);
+            }
+        });
+        if let Some(inner) = owner {
+            inner.core.revisions.close();
+        }
+    }
+}
+
+impl Drop for ConnectionOwner {
+    fn drop(&mut self) {
+        Self::retire(&self.0);
+    }
 }
 
 // The replica's only refresh producer must publish retirement even if its
@@ -82,7 +113,13 @@ impl PostgresStream {
         let (client, connection) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
+        let (failure, _) = watch::channel(Failure {
+            retired: false,
+            owner: std::sync::Weak::new(),
+        });
+        let query_owner = ConnectionOwner(failure.clone());
         let driver = tokio::spawn(async move {
+            let _owner = query_owner;
             let _ = connection.await;
         });
         client
@@ -128,7 +165,9 @@ impl PostgresStream {
             .map_err(unavailable)?;
         let (wake, wakes) = watch::channel(());
         let notified_namespace = namespace.to_owned();
+        let notification_owner = ConnectionOwner(failure.clone());
         let notification_driver = tokio::spawn(async move {
+            let _owner = notification_owner;
             while let Some(message) =
                 futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
             {
@@ -173,7 +212,6 @@ impl PostgresStream {
             crate::AppliedRevisions::storage_scope("postgres", &location),
             u128::from_be_bytes(generation),
         );
-        let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
             session: Mutex::new(
                 Replicated::new(
@@ -194,12 +232,18 @@ impl PostgresStream {
             core,
             failed: AtomicBool::new(false),
             failure,
-            tasks: std::sync::Mutex::new(vec![
-                driver.abort_handle(),
-                notification_driver.abort_handle(),
-            ]),
+            tasks: std::sync::Mutex::new(vec![driver, notification_driver]),
         });
         let provider = Self { inner };
+        let mut retired = false;
+        provider.inner.failure.send_if_modified(|failure| {
+            failure.owner = Arc::downgrade(&provider.inner);
+            retired = failure.retired;
+            false
+        });
+        if retired {
+            provider.fail();
+        }
         // LISTEN is active before the initial catch-up, closing the startup gap.
         provider.refresh().await?;
         let owner = RefreshOwner(Arc::downgrade(&provider.inner));
@@ -238,15 +282,12 @@ impl PostgresStream {
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(refresh.abort_handle());
+            .push(refresh);
         Ok(provider)
     }
 
     fn fail(&self) {
-        self.inner.failed.store(true, Ordering::Release);
-        self.inner.failure.send_replace(true);
-        // Parked revision waits end too: this replica serves nothing more.
-        self.inner.core.revisions.close();
+        ConnectionOwner::retire(&self.inner.failure);
     }
 
     fn check(&self) -> Result<(), StreamError> {
@@ -319,7 +360,7 @@ impl PostgresStream {
                 if ended {
                     return None;
                 }
-                if *failure.borrow() {
+                if failure.borrow().retired {
                     return Some((
                         Err(StreamError::Unavailable),
                         (records, failure, true, owner),

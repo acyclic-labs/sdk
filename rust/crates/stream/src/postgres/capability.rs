@@ -221,6 +221,9 @@ async fn publication_uses_only_required_sql_observations()
 
     // Negative control: the cached refusal is false at the server. No LISTEN
     // delivery or background task is allowed to repair the cache for this call.
+    writer
+        .wait_applied(&RevisionCut::of(replica.provider.revisions.current()))
+        .await?;
     append(&writer, "remote").await?;
     let remote = AppendRequest {
         path: StreamPath::new("remote")?,
@@ -258,6 +261,9 @@ async fn publication_uses_only_required_sql_observations()
             ..
         }))
     ));
+    writer
+        .wait_applied(&RevisionCut::of(replica.provider.revisions.current()))
+        .await?;
     append(&writer, "other").await?;
     sql_case(&replica, "stale-cas").await?;
     let competing = AppendRequest {
@@ -388,6 +394,9 @@ async fn publication_uses_only_required_sql_observations()
         idempotency_key: IdempotencyKey::unique(),
         ..original.clone()
     };
+    writer
+        .wait_applied(&RevisionCut::of(replica.provider.revisions.current()))
+        .await?;
     let remote = writer.append(unseen.clone()).await?;
     assert!(
         replica
@@ -610,6 +619,12 @@ async fn stale_publication_returns_without_retaining_the_losing_identity()
         ..request
     };
     let accepted = provider.append(corrected.clone()).await?;
+    let AppendOutcome::Committed(receipt) = &accepted else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    writer
+        .wait_applied(&RevisionCut::of(receipt.revision.clone()))
+        .await?;
     assert_eq!(writer.append(corrected).await?, accepted);
     Ok(())
 }
@@ -678,66 +693,81 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
 fn refresh_producer_retirement_ends_public_waits()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
-    for park in [true, false] {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let remote = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let namespace = format!("refresh-retirement-{}", uuid::Uuid::new_v4());
-        let provider = runtime.block_on(PostgresStream::connect(&database, &namespace))?;
-        let writer = remote.block_on(PostgresStream::connect(&database, &namespace))?;
-        remote.block_on(append(&writer, "retirement"))?;
-        let path = StreamPath::new("retirement")?;
-        if park {
-            let mut follow = runtime.block_on(provider.follow(FollowRequest {
-                progress: true,
-                ..FollowRequest::new(path.clone(), 1)
-            }))?;
-            assert!(matches!(
-                runtime.block_on(follow.next()),
-                Some(Ok(FollowUpdate::Opening { tail: 1 }))
-            ));
-            let mut next = follow.next();
-            assert!(
-                runtime
-                    .block_on(async { (&mut next).now_or_never() })
-                    .is_none()
-            );
+    for producer in 0..4 {
+        for park in [true, false] {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let remote = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let namespace = format!("refresh-retirement-{}", uuid::Uuid::new_v4());
+            let provider = runtime.block_on(PostgresStream::connect(&database, &namespace))?;
+            let retire = |runtime: &tokio::runtime::Runtime| {
+                let task = provider
+                    .inner
+                    .tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(producer);
+                task.abort();
+                assert!(
+                    runtime
+                        .block_on(task)
+                        .is_err_and(|error| error.is_cancelled())
+                );
+            };
+            let writer = remote.block_on(PostgresStream::connect(&database, &namespace))?;
+            remote.block_on(append(&writer, "retirement"))?;
+            let path = StreamPath::new("retirement")?;
+            if park {
+                let mut follow = runtime.block_on(provider.follow(FollowRequest {
+                    progress: true,
+                    ..FollowRequest::new(path.clone(), 1)
+                }))?;
+                assert!(matches!(
+                    runtime.block_on(follow.next()),
+                    Some(Ok(FollowUpdate::Opening { tail: 1 }))
+                ));
+                let mut next = follow.next();
+                assert!(
+                    runtime
+                        .block_on(async { (&mut next).now_or_never() })
+                        .is_none()
+                );
 
-            let mut future = provider.inner.core.revisions.current();
-            future.index += 1;
-            let cut = RevisionCut::of(future);
-            let mut waits: [BoxProviderFuture<'_, Result<(), StreamError>>; 3] = [
-                Box::pin(provider.wait_applied(&cut).map(|result| result.map(|_| ()))),
-                Box::pin(
-                    provider
-                        .heads(HeadsRequest {
-                            retained: Default::default(),
-                            durable_through: None,
-                            projection: HeadProjection::Tail,
-                            paths: [path.clone()].into(),
-                            children: None,
-                            limit: 1,
-                            at_least: cut.clone(),
-                        })
-                        .map(|result| result.map(|_| ())),
-                ),
-                Box::pin(
-                    provider
-                        .read(ReadRequest {
-                            path: path.clone(),
-                            from: 0,
-                            limit: 1,
-                            key: None,
-                            at_least: cut.clone(),
-                        })
-                        .map(|result| result.map(|_| ())),
-                ),
-            ];
-            for waiting in &mut waits {
-                runtime.block_on(async {
+                let mut future = provider.inner.core.revisions.current();
+                future.index += 1;
+                let cut = RevisionCut::of(future);
+                let mut waits: [BoxProviderFuture<'_, Result<(), StreamError>>; 3] = [
+                    Box::pin(provider.wait_applied(&cut).map(|result| result.map(|_| ()))),
+                    Box::pin(
+                        provider
+                            .heads(HeadsRequest {
+                                retained: Default::default(),
+                                durable_through: None,
+                                projection: HeadProjection::Tail,
+                                paths: [path.clone()].into(),
+                                children: None,
+                                limit: 1,
+                                at_least: cut.clone(),
+                            })
+                            .map(|result| result.map(|_| ())),
+                    ),
+                    Box::pin(
+                        provider
+                            .read(ReadRequest {
+                                path: path.clone(),
+                                from: 0,
+                                limit: 1,
+                                key: None,
+                                at_least: cut.clone(),
+                            })
+                            .map(|result| result.map(|_| ())),
+                    ),
+                ];
+                for waiting in &mut waits {
+                    runtime.block_on(async {
                     // Poll the public operation first. Its refresh takes the
                     // FIFO session mutex; reacquiring that mutex joins the real
                     // SQL response before we inspect the revision park.
@@ -748,48 +778,57 @@ fn refresh_producer_retirement_ends_public_waits()
                     }
                     assert!(waiting.as_mut().now_or_never().is_none());
                 });
+                }
+                // Retire each original producer independently, then the executor.
+                // The provider, cursor and remote writer remain alive throughout.
+                if producer == 3 {
+                    drop(runtime);
+                } else {
+                    retire(&runtime);
+                }
+                for waiting in &mut waits {
+                    assert_eq!(
+                        waiting.as_mut().now_or_never(),
+                        Some(Err(StreamError::Unavailable)),
+                        "retired refresh producer left a public revision wait parked"
+                    );
+                }
+                assert!(matches!(
+                    next.now_or_never(),
+                    Some(Some(Err(StreamError::Unavailable)))
+                ));
+            } else {
+                // connect returns immediately after spawning refresh on this
+                // current-thread executor; the producer has never been polled.
+                if producer == 3 {
+                    drop(runtime);
+                } else {
+                    retire(&runtime);
+                }
             }
-            // Runtime destruction synchronously retires its actual tasks.
-            // The provider, cursor and remote writer remain alive throughout.
-            drop(runtime);
-            for waiting in &mut waits {
-                assert_eq!(
-                    waiting.as_mut().now_or_never(),
-                    Some(Err(StreamError::Unavailable)),
-                    "retired refresh producer left a public revision wait parked"
-                );
-            }
+            assert_eq!(
+                provider
+                    .wait_applied(&RevisionCut::default())
+                    .now_or_never(),
+                Some(Err(StreamError::Unavailable)),
+                "retired refresh producer served a later observer"
+            );
             assert!(matches!(
-                next.now_or_never(),
-                Some(Some(Err(StreamError::Unavailable)))
+                provider.tail(path.clone()).now_or_never(),
+                Some(Err(StreamError::Unavailable))
             ));
-        } else {
-            // connect returns immediately after spawning refresh on this
-            // current-thread executor; the producer has never been polled.
-            drop(runtime);
+            // The authority still makes progress through another member. Its
+            // successful conditional publication cannot resurrect the lost replica.
+            assert!(matches!(
+                remote.block_on(writer.append(AppendRequest {
+                    path,
+                    records: vec!["later".into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::unique(),
+                }))?,
+                AppendOutcome::Committed(_)
+            ));
         }
-        assert_eq!(
-            provider
-                .wait_applied(&RevisionCut::default())
-                .now_or_never(),
-            Some(Err(StreamError::Unavailable)),
-            "retired refresh producer served a later observer"
-        );
-        assert!(matches!(
-            provider.tail(path.clone()).now_or_never(),
-            Some(Err(StreamError::Unavailable))
-        ));
-        // The authority still makes progress through another member. Its
-        // successful conditional publication cannot resurrect the lost replica.
-        assert!(matches!(
-            remote.block_on(writer.append(AppendRequest {
-                path,
-                records: vec!["later".into()],
-                if_tail: Some(1),
-                idempotency_key: IdempotencyKey::unique(),
-            }))?,
-            AppendOutcome::Committed(_)
-        ));
     }
     Ok(())
 }
