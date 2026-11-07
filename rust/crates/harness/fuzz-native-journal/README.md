@@ -69,7 +69,7 @@ actual step and commit lowering with oversized approval and archive identities.
 Both must settle as a bounded failure before publishing any driver effect.
 `mutations/native_intent_frame_guard.patch` removes those production guards and
 must fail this unchanged control. Run it with
-`cargo test -p acyclic-harness-core --test main agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects -- --exact`.
+`cargo test -p acyclic-harness-core --features test-support --test main agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects -- --exact`.
 
 The corpus contains explicitly authored user references, including `first`
 (the input used by the real-owner receipt control), parent/current paths,

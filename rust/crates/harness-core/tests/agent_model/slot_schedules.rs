@@ -4,6 +4,7 @@ use super::*;
 
 #[tokio::test]
 async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
+    #[cfg(feature = "test-support")]
     for length in [129, 255, MAX_RECORD_BYTES] {
         acyclic_harness_core::agent::codec_fuzz::check(&vec![b'a'; length]);
     }
