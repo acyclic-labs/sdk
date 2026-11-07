@@ -14,6 +14,7 @@
 use super::{
     Connection, Event,
     agent_conversation::{Conversation, Settlement, UsageScope},
+    read_regular_file,
 };
 use crate::{
     Error, Result,
@@ -107,18 +108,19 @@ fn invalid(message: impl std::fmt::Display) -> Error {
 }
 
 impl Study {
-    /// Reads and admits the arms file and the files it names.
+    /// Reads and admits regular arms, scorer and price files.
     ///
     /// # Errors
     /// An unreadable or invalid arms, scorer or price file, or a pilot
     /// policy exceeded without a recorded approval.
     pub fn load(path: &Path) -> Result<Self> {
-        let bytes =
-            std::fs::read(path).map_err(|error| invalid(format!("{}: {error}", path.display())))?;
+        let bytes = read_regular_file(path)
+            .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
         let directory = path.parent().unwrap_or_else(|| Path::new("."));
         let read = |name: &str| {
             let file = directory.join(name);
-            std::fs::read(&file).map_err(|error| invalid(format!("{}: {error}", file.display())))
+            read_regular_file(&file)
+                .map_err(|error| invalid(format!("{}: {error}", file.display())))
         };
         let file: ArmsFile = serde_json::from_slice(&bytes).map_err(invalid)?;
         let scorer = Scorer::decode(&read(&file.scorer)?).map_err(invalid)?;
