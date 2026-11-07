@@ -1,8 +1,5 @@
 use super::Snapshot;
-#[cfg(loom)]
-use crate::change::sync::Mutex as SyncMutex;
-#[cfg(not(loom))]
-use std::sync::Mutex as SyncMutex;
+use crate::query_sync::SyncMutex;
 use std::{
     future::{Future, poll_fn},
     sync::{Arc, PoisonError},
