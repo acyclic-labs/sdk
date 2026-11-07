@@ -48,6 +48,24 @@ pub struct PostgresStream {
     inner: Arc<Inner>,
 }
 
+// The replica's only refresh producer must publish retirement even if its
+// executor drops the task before its first poll or while it is parked.
+struct RefreshOwner(std::sync::Weak<Inner>);
+
+impl RefreshOwner {
+    fn provider(&self) -> Option<PostgresStream> {
+        self.0.upgrade().map(|inner| PostgresStream { inner })
+    }
+}
+
+impl Drop for RefreshOwner {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider() {
+            provider.fail();
+        }
+    }
+}
+
 fn unavailable(error: impl std::fmt::Display) -> StreamError {
     tracing::error!(%error, "Postgres Stream operation failed; reopen PostgresStream::connect with the same database and namespace");
     StreamError::Unavailable
@@ -184,7 +202,7 @@ impl PostgresStream {
         let provider = Self { inner };
         // LISTEN is active before the initial catch-up, closing the startup gap.
         provider.refresh().await?;
-        let weak = Arc::downgrade(&provider.inner);
+        let owner = RefreshOwner(Arc::downgrade(&provider.inner));
         let refresh = tokio::spawn(async move {
             // Keep the LISTEN client alive, but never the provider owner.
             let _listener = listener;
@@ -192,10 +210,10 @@ impl PostgresStream {
                 // The registered event owns no provider or connection. Release
                 // the replica lock and its strong owner before parking.
                 let changed = {
-                    let Some(inner) = weak.upgrade() else {
+                    let Some(provider) = owner.provider() else {
                         return;
                     };
-                    let mut replica = inner.session.lock().await;
+                    let mut replica = provider.inner.session.lock().await;
                     if replica.is_failed() {
                         Err(StreamError::Unavailable)
                     } else {
@@ -207,12 +225,10 @@ impl PostgresStream {
                     Ok(changed) => changed.await,
                     Err(error) => Err(error),
                 };
-                let Some(inner) = weak.upgrade() else {
+                let Some(provider) = owner.provider() else {
                     return;
                 };
-                let provider = Self { inner };
                 if result.is_err() || provider.refresh().await.is_err() {
-                    provider.fail();
                     return;
                 }
             }

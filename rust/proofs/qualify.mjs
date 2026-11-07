@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "postgres-refresh-progress": [
+    "rust/crates/stream/src/postgres.rs", "acyclic-stream",
+    "postgres::capability::refresh_producer_retirement_ends_public_waits",
+    "retired refresh producer left a public revision wait parked", ["--features", "postgres"],
+    {
+      mutations: [
+        { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/unpolled.patch", label: "late-retirement-custody", diagnostic: "retired refresh producer served a later observer" },
+      ],
+    },
+  ],
   "backed-retention": [
     "rust/crates/stream/src/owned_bytes/mod.rs", "acyclic-stream",
     "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
