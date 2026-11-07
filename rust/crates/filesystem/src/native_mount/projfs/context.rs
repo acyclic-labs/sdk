@@ -3,6 +3,10 @@ use super::{MountSourceError, NativeMountError, Runtime, lock_recover, size_of};
 pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 
 impl crate::native_mount::shared::metering::MeteredView for Runtime {
+    fn source(&self) -> &dyn crate::native_mount::MountFilesystem {
+        self.source.as_ref()
+    }
+
     fn activate(&self, work: &crate::NativeMaterializationWork) -> Result<u64, NativeMountError> {
         lock_recover(&self.active_work).enter(work)
     }

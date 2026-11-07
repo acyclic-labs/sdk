@@ -103,8 +103,18 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let identity = mount
         .native_root_identity()
         .ok_or("mount lost its root identity")?;
-    let io_work = new_work(WorkBudget::UNBOUNDED)?;
+    let io_work = mount.native_work()?;
     let foreign = new_work(WorkBudget::UNBOUNDED)?;
+    // Refuse a foreign invocation before it can become a fatal callback cause.
+    assert!(
+        matches!(
+            mount.begin_original_work(&foreign),
+            Err(MountLifecycleError::Native(
+                NativeMountError::ControlPending
+            ))
+        ),
+        "foreign invocation must be refused before callback activation"
+    );
     let original_scope = mount.begin_original_work(&io_work)?;
     assert!(matches!(
         mount.begin_original_work(&foreign),

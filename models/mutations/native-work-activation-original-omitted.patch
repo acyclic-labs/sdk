@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/native_mount/shared/metering.rs b/rust/crates/filesystem/src/native_mount/shared/metering.rs
+--- a/rust/crates/filesystem/src/native_mount/shared/metering.rs
++++ b/rust/crates/filesystem/src/native_mount/shared/metering.rs
+@@ -139,7 +139,6 @@ impl NativeMountWorkScope {
+ 
+     fn enter(view: Arc<dyn MeteredView>, work: &Work) -> Result<Self, NativeMountError> {
+         work.admit(WorkCounters::UNCHARGED)?;
+-        source_original(view.source(), Some(work))?;
+         let generation = view.activate(work)?;
+         Ok(Self {
+             view,

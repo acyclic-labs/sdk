@@ -3,6 +3,10 @@ use super::*;
 pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 
 impl crate::native_mount::shared::metering::MeteredView for DarwinMountContext {
+    fn source(&self) -> &dyn MountFilesystem {
+        self.source.as_ref()
+    }
+
     fn activate(&self, work: &Work) -> Result<u64, NativeMountError> {
         self.startup_meter
             .lock()

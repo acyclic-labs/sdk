@@ -94,6 +94,7 @@ where
     }
 
     /// Binds mounted callbacks to the original physical I/O owner.
+    /// A foreign invocation is refused before callback activation.
     pub fn begin_original_work(
         &self,
         work: &NativeMaterializationWork,
