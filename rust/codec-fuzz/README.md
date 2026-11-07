@@ -1059,3 +1059,11 @@ service rejection. `negative-controls/stream_native_refusal.patch` removes
 that original diagnostic from the shared native conversion; the same control
 must reject it. This Rust component control does not establish Node ABI or
 platform qualification.
+
+`mutations/objects-conflated-observations.patch` restores the physical operation
+recorder's conflation of version observations with ranged reads. The existing
+repeat-put property must reject it. Fresh-put and usage checks share that same
+recorder and public Objects engine: returned byte lengths are measured separately
+from call counts, without claiming decoded bytes, allocated backing or backend
+copies. The volatile MemoryMedium fixture does not establish disk durability or
+the performance of another provider.
