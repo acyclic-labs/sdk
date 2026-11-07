@@ -343,7 +343,7 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
         #[cfg(not(target_arch = "wasm32"))]
         decoder_custody(&genuine, authority_id, record)?;
         let mut archive = Archive {
-            empty: crate::LogicalObjectStore::new(Arc::new(empty)),
+            empty: crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(empty))),
             authority: authority_id,
             digest: record.digest,
             evidence: genuine.clone(),

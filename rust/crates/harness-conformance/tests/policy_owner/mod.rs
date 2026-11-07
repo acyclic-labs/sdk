@@ -11,7 +11,7 @@ struct Session(Arc<LocalStream>, OperationClaims);
 
 fn object_store() -> acyclic_fs::MemoryObjectBackend {
     let provider = acyclic_objects::MemoryObjects::memory();
-    acyclic_fs::LogicalObjectStore::new(Arc::new(provider))
+    acyclic_fs::shared_objects(acyclic_fs::LogicalObjectStore::new(Arc::new(provider)))
 }
 
 #[async_trait::async_trait]

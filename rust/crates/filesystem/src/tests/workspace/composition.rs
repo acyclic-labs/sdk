@@ -25,7 +25,7 @@ fn placed_at(stream: &Arc<MemoryStream>, root: &str) -> Result<PlacedFs, Box<dyn
     let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Fs::new(
         StreamAuthorityStore::with_placement(Arc::clone(stream), AuthorityPlacement::new(root)?),
-        crate::LogicalObjectStore::new(Arc::new(objects)),
+        crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
         crate::EmbeddedCapabilities::MEMORY,
     ))
 }

@@ -89,7 +89,7 @@ impl Default for Objects {
     fn default() -> Self {
         let objects = acyclic_objects::MemoryObjects::memory();
         Self {
-            inner: crate::MemoryObjectBackend::new(Arc::new(objects)),
+            inner: crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
             reads: AtomicUsize::new(0),
             data_reads: AtomicUsize::new(0),
             pause: crate::sync::Mutex::new(None),

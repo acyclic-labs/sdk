@@ -282,8 +282,8 @@ pub type MemoryAuthorityBackend =
     crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
 
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
-/// Filesystem object adapter backed by the public in-memory Objects provider.
-pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
+/// Shared filesystem object adapter backed by the public in-memory Objects provider.
+pub type MemoryObjectBackend = crate::SharedObjectStore;
 
 #[cfg(test)]
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -314,12 +314,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
 }
 
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
-impl
-    Fs<
-        crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-        crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
-    >
-{
+impl Fs<MemoryAuthorityBackend, MemoryObjectBackend> {
     /// Creates the deterministic infrastructure-free composition from the exact public reference
     #[must_use]
     pub fn memory() -> Self {
@@ -338,7 +333,7 @@ impl
     ) -> Self {
         Self::new(
             crate::distributed::StreamAuthorityStore::new(stream),
-            crate::LogicalObjectStore::new(objects),
+            crate::shared_objects(crate::LogicalObjectStore::new(objects)),
             EmbeddedCapabilities::MEMORY,
         )
     }

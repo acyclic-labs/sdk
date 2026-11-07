@@ -32,7 +32,7 @@ pub(super) fn blob_text(complete: bool) -> String {
 
 #[derive(Clone)]
 pub(super) struct CountingObjects {
-    inner: Arc<MemoryObjectBackend>,
+    inner: MemoryObjectBackend,
     pub(super) reads: Arc<AtomicUsize>,
     pub(super) content_reads: Arc<AtomicUsize>,
     pause: Arc<Mutex<Option<ReadPause>>>,
@@ -42,7 +42,9 @@ impl Default for CountingObjects {
     fn default() -> Self {
         let objects = acyclic_objects::MemoryObjects::memory();
         Self {
-            inner: Arc::new(MemoryObjectBackend::new(Arc::new(objects))),
+            inner: acyclic_fs::shared_objects(acyclic_fs::LogicalObjectStore::new(Arc::new(
+                objects,
+            ))),
             reads: Arc::default(),
             content_reads: Arc::default(),
             pause: Arc::default(),

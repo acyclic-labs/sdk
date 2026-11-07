@@ -29,7 +29,7 @@ fn fixture() -> (
     (
         Fs::from_memory_providers(stream.clone(), objects.clone()),
         StreamAuthorityStore::new(stream),
-        crate::LogicalObjectStore::new(objects),
+        crate::shared_objects(crate::LogicalObjectStore::new(objects)),
     )
 }
 

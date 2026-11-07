@@ -257,7 +257,9 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     let fs = Fs::new(
         MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
         CancelAfterPut {
-            inner: MemoryObjectBackend::new(Arc::new(objects)),
+            inner: acyclic_fs::shared_objects(acyclic_fs::LogicalObjectStore::new(Arc::new(
+                objects,
+            ))),
             armed: armed.clone(),
             observed: observed.clone(),
         },
