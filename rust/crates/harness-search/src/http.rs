@@ -11,7 +11,7 @@ const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 /// Exa's typed POST /search adapter.
 pub struct Exa(HttpSearch);
 
-/// TinyFish's typed GET / adapter.
+/// `TinyFish`'s typed GET / adapter.
 pub struct TinyFish(HttpSearch);
 
 struct HttpSearch {
