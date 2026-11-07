@@ -22,6 +22,16 @@ fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }
 
+async fn register_record<S: WorkspaceLineageStore>(
+    graph: &WorkspaceGraph<S>,
+    record: WorkspaceLineageRecord,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Retained<WorkspaceLineageRecord>, WorkspaceLineageError<S::Error>> {
+    let owned = copy_record(&record, accounting).map_err(WorkspaceError::from)?;
+    let record = Retained::from_owned(owned, accounting).map_err(WorkspaceError::from)?;
+    graph.register(record, accounting).await
+}
+
 #[tokio::test]
 async fn malformed_lineage_shape_never_enters_the_graph() {
     let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
@@ -39,15 +49,15 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
     };
 
     assert!(matches!(
-        graph
-            .register(
-                malformed,
-                &mut crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+        register_record(
+            &graph,
+            malformed,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
             )
-            .await,
+        )
+        .await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
 }
@@ -66,18 +76,23 @@ impl ObservedStore {
 impl WorkspaceLineageStore for ObservedStore {
     type Error = MemoryWorkspaceLineageStoreError;
 
-    async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
+    async fn load(
+        &self,
+        id: WorkspaceId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Retained<WorkspaceLineageRecord>>, WorkspaceLineageError<Self::Error>> {
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.load(id).await
+        self.inner.load(id, accounting).await
     }
 
     async fn compare_and_swap(
         &self,
         id: WorkspaceId,
         revision: u64,
-        replacement: WorkspaceLineageRecord,
-    ) -> Result<bool, Self::Error> {
+        replacement: &WorkspaceLineageRecord,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceLineageError<Self::Error>> {
         if self
             .contend
             .swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -85,11 +100,13 @@ impl WorkspaceLineageStore for ObservedStore {
             // A real competing conditional publication wins before ours.
             assert!(
                 self.inner
-                    .compare_and_swap(id, revision, replacement.clone())
+                    .compare_and_swap(id, revision, replacement, accounting)
                     .await?
             );
         }
-        self.inner.compare_and_swap(id, revision, replacement).await
+        self.inner
+            .compare_and_swap(id, revision, replacement, accounting)
+            .await
     }
 }
 
@@ -108,26 +125,26 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
             "registered-child",
         ),
     ] {
-        graph
-            .register(
-                WorkspaceLineageRecord {
-                    version: LINEAGE_VERSION,
-                    revision: 1,
-                    ready: true,
-                    workspace_id: id,
-                    workspace_name: name.into(),
-                    parent_workspace_id: Some(parent),
-                    parent_workspace_name: Some(parent_name.into()),
-                    fork_generation: generation(1),
-                    initial_generation: generation(2),
-                },
-                &mut crate::kernel::KernelAccounting::standalone(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                ),
-            )
-            .await
-            .unwrap();
+        register_record(
+            &graph,
+            WorkspaceLineageRecord {
+                version: LINEAGE_VERSION,
+                revision: 1,
+                ready: true,
+                workspace_id: id,
+                workspace_name: name.into(),
+                parent_workspace_id: Some(parent),
+                parent_workspace_name: Some(parent_name.into()),
+                fork_generation: generation(1),
+                initial_generation: generation(2),
+            },
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
     }
     graph.store().take_reads();
     graph
@@ -243,7 +260,15 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
         assert!(
             graph
                 .store()
-                .compare_and_swap(id, 0, record.clone())
+                .compare_and_swap(
+                    id,
+                    0,
+                    &record,
+                    &mut KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                )
                 .await
                 .unwrap()
         );
@@ -272,15 +297,15 @@ async fn descendant_authorization_stops_at_the_authenticated_anchor() {
                 .store()
                 .contend
                 .store(contend, std::sync::atomic::Ordering::Relaxed);
-            let result = graph
-                .register(
-                    promotion,
-                    &mut crate::kernel::KernelAccounting::standalone(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    ),
-                )
-                .await;
+            let result = register_record(
+                &graph,
+                promotion,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
+            .await;
             if contend {
                 assert!(matches!(result, Err(WorkspaceLineageError::Contended)));
             } else {
@@ -361,16 +386,16 @@ async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         fork_generation: parent_head.id(),
         initial_generation: parent_head.id(),
     };
-    graph
-        .register(
-            planned,
-            &mut crate::kernel::KernelAccounting::standalone(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            ),
-        )
-        .await
-        .expect("persist fork intent");
+    register_record(
+        &graph,
+        planned,
+        &mut crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("persist fork intent");
     assert!(matches!(
         graph
             .resolve(

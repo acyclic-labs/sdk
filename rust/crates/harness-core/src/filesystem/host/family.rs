@@ -375,6 +375,13 @@ mod tests {
                 let store = MemoryWorkspaceLineageStore::new();
                 let id = |index: u8| { let mut bytes = seed; bytes[0] = index; WorkspaceId::from_bytes(bytes) };
                 let generation = GenerationId::new(Digest::from_bytes([1; 32]));
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let mut accounting = acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation: &cancellation,
+                };
                 for index in 0..=depth + 1 {
                     let parent = (index > 1).then(|| id(index - 1));
                     let record = WorkspaceLineageRecord {
@@ -384,7 +391,7 @@ mod tests {
                         parent_workspace_name: parent.map(|_| format!("workspace-{}", index - 1)),
                         fork_generation: generation, initial_generation: generation,
                     };
-                    assert!(store.compare_and_swap(id(index), 0, record).await.unwrap());
+                    assert!(store.compare_and_swap(id(index), 0, &record, &mut accounting).await.unwrap());
                 }
                 let graph = WorkspaceGraph::new(store);
                 let owner = if missing { id(9) } else if foreign { id(0) } else { id(depth + 1) };

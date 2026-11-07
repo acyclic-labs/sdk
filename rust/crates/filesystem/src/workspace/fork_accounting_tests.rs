@@ -197,7 +197,9 @@ async fn fork_preserves_original_accounting_through_the_authority_boundary()
                 } else {
                     initial.work.backend_read_operations
                 };
-                let expected_reads = parent_proof.work.backend_read_operations
+                // One admitted observation of the process-local lineage record.
+                let expected_reads = 1
+                    + parent_proof.work.backend_read_operations
                     + selected_reads
                     + ancestry.work.backend_read_operations;
                 for native_registration in [false, true] {
@@ -434,19 +436,55 @@ async fn lineage_resolution_uses_original_name_validation_work()
     let (record, spent, live, baseline) = graph
         .resolve(grandchild.id(), &original, &cancellation)
         .await;
-    assert_eq!(record?.parent_workspace_id, Some(child.id()));
+    let record = record?;
+    assert_eq!(record.parent_workspace_id, Some(child.id()));
+    let copied = (grandchild.name().as_str().len() + child.name().as_str().len()) as u64;
+    let retained = (record.workspace_name.capacity()
+        + record.parent_workspace_name.as_ref().unwrap().capacity()) as u64;
+    assert!(
+        record
+            .allocation
+            .standalone_ledger()
+            .zip(
+                original
+                    .held
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .allocation
+                    .standalone_ledger()
+            )
+            .is_some_and(|(returned, original)| Arc::ptr_eq(returned, original)),
+        "lineage load replaced the original ledger"
+    );
     assert_eq!(
         spent.items_examined,
         required + 1,
         "lineage validation detached from original accounting"
     );
     assert_eq!(
-        live, baseline,
-        "lineage validation retained temporary names"
+        live,
+        baseline + retained,
+        "lineage names lost original credit"
     );
     assert_eq!(
-        spent.bytes_copied, 0,
-        "lineage validation copied temporary names"
+        spent.bytes_copied, copied,
+        "only returned names require copies"
+    );
+    drop(record);
+    assert_eq!(
+        original
+            .held
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .0
+            .allocation
+            .standalone_live_bytes(),
+        Some(baseline)
     );
     let no_allocations = graph
         .resolve(
@@ -457,15 +495,28 @@ async fn lineage_resolution_uses_original_name_validation_work()
             },
             &cancellation,
         )
-        .await?;
+        .await
+        .err()
+        .ok_or("lineage names escaped allocation admission")?;
+    assert!(matches!(
+        no_allocations.error,
+        crate::WorkspaceLineageError::Workspace(WorkspaceError::Work(
+            crate::WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }
+        ))
+    ));
     assert_eq!(no_allocations.work.allocation_operations, 0);
     let native =
         crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let native_before = native.receipt();
     let native_live = native.live_allocation_bytes();
-    graph
+    let native_record = graph
         .authorize_join(grandchild.id(), child.id(), &native, &cancellation)
         .await?;
+    assert_eq!(native.live_allocation_bytes(), native_live + retained);
+    drop(native_record);
     assert_eq!(
         native.receipt().items_examined,
         required,
@@ -474,9 +525,12 @@ async fn lineage_resolution_uses_original_name_validation_work()
     assert_eq!(native.live_allocation_bytes(), native_live);
     assert_eq!(
         native.receipt().allocation_operations,
-        native_before.allocation_operations
+        native_before.allocation_operations + 2
     );
-    assert_eq!(native.receipt().bytes_copied, native_before.bytes_copied);
+    assert_eq!(
+        native.receipt().bytes_copied,
+        native_before.bytes_copied + copied
+    );
     assert!(matches!(
         graph
             .authorize_join(grandchild.id(), root.id(), budget, &cancellation)
@@ -501,7 +555,8 @@ async fn lineage_resolution_uses_original_name_validation_work()
             .allocation
             .standalone_live_bytes()
             .ok_or("missing original lineage collection ledger")?
-            >= (chain.value.capacity() * std::mem::size_of::<crate::WorkspaceLineageRecord>())
+            >= (chain.value.capacity()
+                * std::mem::size_of::<crate::kernel::Retained<crate::WorkspaceLineageRecord>>())
                 as u64,
         "ordinary lineage ancestry collection lost original backing credit"
     );
@@ -509,8 +564,9 @@ async fn lineage_resolution_uses_original_name_validation_work()
         .ancestors(grandchild.id(), 3, &native, &cancellation)
         .await?;
     assert_eq!(native_chain.len(), 2);
-    let collection_bytes =
-        (native_chain.capacity() * std::mem::size_of::<crate::WorkspaceLineageRecord>()) as u64;
+    let collection_bytes = (native_chain.capacity()
+        * std::mem::size_of::<crate::kernel::Retained<crate::WorkspaceLineageRecord>>())
+        as u64;
     assert!(
         native.live_allocation_bytes() >= native_live + collection_bytes,
         "lineage ancestry collection lost original backing credit"
@@ -592,18 +648,29 @@ async fn lineage_resolution_uses_original_name_validation_work()
                     ))
                 ));
             }
-            assert_eq!(failure.work.backend_read_operations, 0);
-            assert_eq!(failure.work.allocation_operations, 0);
+            assert_eq!(failure.work.items_examined, 0);
+            failure.work.verify(constrained)?;
         }
     }
     // Corrupt a real persisted edge: the fixed-width visited index must end
     // the walk with the cycle error before spending the caller's whole budget.
-    let mut cycle = graph.resolve(root.id(), budget, &cancellation).await?.value;
+    let record = graph.resolve(root.id(), budget, &cancellation).await?.value;
+    let mut cycle = (*record).clone();
     cycle.revision += 1;
     cycle.parent_workspace_id = Some(grandchild.id());
     cycle.parent_workspace_name = Some(grandchild.name().as_str().to_owned());
     assert!(
-        crate::WorkspaceLineageStore::compare_and_swap(graph.store(), root.id(), 1, cycle).await?
+        crate::WorkspaceLineageStore::compare_and_swap(
+            graph.store(),
+            root.id(),
+            1,
+            &(cycle),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await?
     );
     let failure = graph
         .authorize_descendant(

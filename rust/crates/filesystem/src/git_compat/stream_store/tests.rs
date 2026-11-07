@@ -169,6 +169,29 @@ async fn persisted_lineage_resolution_requires_original_read_admission()
         .into_iter()
         .enumerate()
     {
+        let mut accounting = KernelAccounting::standalone(budget, &cancellation);
+        let earlier = crate::kernel::RetainedAllocation::claim(73, 1, &mut accounting)?;
+        let baseline = earlier
+            .standalone_live_bytes()
+            .ok_or("missing original ledger")?;
+        let loaded = WorkspaceLineageStore::load(reopened.store(), id, &mut accounting)
+            .await?
+            .ok_or("missing persisted lineage")?;
+        assert!(
+            loaded
+                .allocation
+                .standalone_ledger()
+                .zip(earlier.standalone_ledger())
+                .is_some_and(|(returned, original)| Arc::ptr_eq(returned, original))
+        );
+        let retained = loaded.workspace_name.capacity()
+            + loaded
+                .parent_workspace_name
+                .as_ref()
+                .map_or(0, String::capacity);
+        assert!(earlier.standalone_live_bytes().unwrap() >= baseline + retained as u64);
+        drop(loaded);
+        assert_eq!(earlier.standalone_live_bytes(), Some(baseline));
         let result = reopened.resolve(id, denied, &cancellation).await;
         ordinary_refused[index] = result
             .as_ref()

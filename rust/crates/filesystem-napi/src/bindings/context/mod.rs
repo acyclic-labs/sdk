@@ -37,7 +37,7 @@ impl NativeWorkspaceGraph {
             self.inner,
             register_root(&workspace.inner)
         ))
-        .map(native_workspace_lineage_record)
+        .map(|record| native_workspace_lineage_record(&record))
     }
 
     #[napi]
@@ -71,7 +71,7 @@ impl NativeWorkspaceGraph {
                 WorkspaceId::from_bytes(fixed_16(&parent_workspace_id)?),
             )
         ))
-        .map(native_workspace_lineage_record)
+        .map(|record| native_workspace_lineage_record(&record))
     }
 
     #[napi]
@@ -89,25 +89,24 @@ impl NativeWorkspaceGraph {
         .map(|records| {
             records
                 .iter()
-                .cloned()
-                .map(native_workspace_lineage_record)
+                .map(|record| native_workspace_lineage_record(record))
                 .collect()
         })
     }
 }
 
 pub(in crate::bindings) fn native_workspace_lineage_record(
-    record: WorkspaceLineageRecord,
+    record: &WorkspaceLineageRecord,
 ) -> NativeWorkspaceLineageRecord {
     NativeWorkspaceLineageRecord {
         version: record.version,
         revision: bigint(record.revision),
         workspace_id: Buffer::from(record.workspace_id.into_bytes().to_vec()),
-        workspace_name: record.workspace_name,
+        workspace_name: record.workspace_name.clone(),
         parent_workspace_id: record
             .parent_workspace_id
             .map(|id| Buffer::from(id.into_bytes().to_vec())),
-        parent_workspace_name: record.parent_workspace_name,
+        parent_workspace_name: record.parent_workspace_name.clone(),
         fork_generation: Buffer::from(record.fork_generation.to_bytes().to_vec()),
         initial_generation: Buffer::from(record.initial_generation.to_bytes().to_vec()),
     }

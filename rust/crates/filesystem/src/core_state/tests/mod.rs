@@ -246,12 +246,12 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
     let mut child = workspace_context(&source, CRASH_CHILD, 1, WorkspaceContextState::Active);
     child.parent_context_id = Some(CRASH_PARENT);
     let committed = futures::executor::block_on(async {
-        match step {
-            0 => WorkspaceContextStore::list(store).await.map(|_| true),
+        Ok::<_, Box<dyn std::error::Error>>(match step {
+            0 => WorkspaceContextStore::list(store).await.map(|_| true)?,
             1 => {
                 store
                     .compare_and_swap_many(BTreeMap::from([(CRASH_PARENT, 0)]), vec![parent], false)
-                    .await
+                    .await?
             }
             2 => {
                 store
@@ -260,11 +260,20 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                         vec![child],
                         false,
                     )
-                    .await
+                    .await?
             }
             3 => {
-                WorkspaceLineageStore::compare_and_swap(store, CRASH_WORKSPACE, 0, crash_lineage())
-                    .await
+                WorkspaceLineageStore::compare_and_swap(
+                    store,
+                    CRASH_WORKSPACE,
+                    0,
+                    &(crash_lineage()),
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    ),
+                )
+                .await?
             }
             4 => store
                 .compare_and_swap_lazy_workspace(
@@ -274,13 +283,13 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                     &mut unbounded_accounting(&crate::CancellationToken::new()),
                 )
                 .await
-                .map_err(LocalCoreStateStoreError::LazyWork),
+                .map_err(LocalCoreStateStoreError::LazyWork)?,
             5 => {
                 child.revision = 2;
                 child.state = WorkspaceContextState::Frozen;
                 store
                     .compare_and_swap_many(BTreeMap::from([(CRASH_CHILD, 1)]), vec![child], false)
-                    .await
+                    .await?
             }
             6 => store
                 .compare_and_swap_lazy_workspace(
@@ -290,11 +299,11 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
                     &mut unbounded_accounting(&crate::CancellationToken::new()),
                 )
                 .await
-                .map_err(LocalCoreStateStoreError::LazyWork),
+                .map_err(LocalCoreStateStoreError::LazyWork)?,
             _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
                 .await
-                .map(|outcome| matches!(outcome, WorkspaceContextDiscardOutcome::Discarded(_))),
-        }
+                .map(|outcome| matches!(outcome, WorkspaceContextDiscardOutcome::Discarded(_)))?,
+        })
     })
     .unwrap();
     assert!(committed, "crash script step {step} was rejected");

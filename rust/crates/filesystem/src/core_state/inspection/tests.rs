@@ -53,18 +53,35 @@ async fn cold_wal_replay_is_private_and_missing_records_create_nothing() {
     let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     let record = super::super::tests::crash_lineage();
     assert!(
-        WorkspaceLineageStore::compare_and_swap(&owner, record.workspace_id, 0, record.clone())
-            .await
-            .unwrap()
+        WorkspaceLineageStore::compare_and_swap(
+            &owner,
+            record.workspace_id,
+            0,
+            &record,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
     );
     drop(owner);
     let store = LocalCoreStateStore::new(directory.path()).inspecting();
     let before = files(directory.path());
     assert_eq!(
-        WorkspaceLineageStore::load(&store, record.workspace_id)
-            .await
-            .unwrap(),
-        Some(record.clone())
+        WorkspaceLineageStore::load(
+            &store,
+            record.workspace_id,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&record)
     );
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
@@ -74,10 +91,15 @@ async fn cold_wal_replay_is_private_and_missing_records_create_nothing() {
     let work = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     let native = store.materialization(work.clone());
     assert_eq!(
-        WorkspaceLineageStore::load(&native, record.workspace_id)
-            .await
-            .unwrap(),
-        Some(record)
+        WorkspaceLineageStore::load(
+            &native,
+            record.workspace_id,
+            &mut crate::kernel::KernelAccounting::native(&work, &cancellation)
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&record)
     );
     assert_eq!(
         work.receipt().durability_operations,
@@ -85,10 +107,17 @@ async fn cold_wal_replay_is_private_and_missing_records_create_nothing() {
         "native inspection must not admit or execute a durability barrier"
     );
     assert!(
-        WorkspaceLineageStore::load(&store, WorkspaceId::from_bytes([99; 16]))
-            .await
-            .unwrap()
-            .is_none()
+        WorkspaceLineageStore::load(
+            &store,
+            WorkspaceId::from_bytes([99; 16]),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     assert!(
         GitCompatStore::load(&store, WorkspaceId::from_bytes([99; 16]))
@@ -138,9 +167,18 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
     let owner = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     let first = super::super::tests::crash_lineage();
     assert!(
-        WorkspaceLineageStore::compare_and_swap(&owner, first.workspace_id, 0, first.clone())
-            .await
-            .unwrap()
+        WorkspaceLineageStore::compare_and_swap(
+            &owner,
+            first.workspace_id,
+            0,
+            &first,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
     );
     let mut second = first.clone();
     second.revision += 1;
@@ -150,7 +188,11 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
             &deferred,
             first.workspace_id,
             first.revision,
-            second.clone()
+            &second,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
         )
         .await
         .unwrap()
@@ -162,10 +204,18 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
     let before = files(directory.path());
     let selected = owner.inspecting();
     assert_eq!(
-        WorkspaceLineageStore::load(&selected, first.workspace_id)
-            .await
-            .unwrap(),
-        Some(first.clone())
+        WorkspaceLineageStore::load(
+            &selected,
+            first.workspace_id,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&first)
     );
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
@@ -175,10 +225,15 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
     let work = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     let native = selected.materialization(work.clone());
     assert_eq!(
-        WorkspaceLineageStore::load(&native, first.workspace_id)
-            .await
-            .unwrap(),
-        Some(first.clone())
+        WorkspaceLineageStore::load(
+            &native,
+            first.workspace_id,
+            &mut crate::kernel::KernelAccounting::native(&work, &cancellation)
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&first)
     );
     assert_eq!(work.receipt().durability_operations, 0);
     assert_eq!(control.log().as_ref().unwrap().flushed, flushed);
@@ -189,7 +244,11 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
             &selected,
             first.workspace_id,
             first.revision,
-            second.clone()
+            &second,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
         )
         .await
         .is_err(),
@@ -197,9 +256,17 @@ async fn inspection_neither_flushes_nor_exposes_a_deferred_after_image() {
     );
     durability.commit().await.unwrap();
     assert_eq!(
-        WorkspaceLineageStore::load(&selected, first.workspace_id)
-            .await
-            .unwrap(),
-        Some(second)
+        WorkspaceLineageStore::load(
+            &selected,
+            first.workspace_id,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&second)
     );
 }

@@ -90,16 +90,29 @@ mod tests {
         };
         let value = super::super::tests::crash_lineage();
         assert!(
-            WorkspaceLineageStore::compare_and_swap(store, value.workspace_id, 0, value.clone())
-                .await
-                .unwrap()
+            WorkspaceLineageStore::compare_and_swap(
+                store,
+                value.workspace_id,
+                0,
+                &value,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
+            .await
+            .unwrap()
         );
         let mut peak = 0;
         for index in 0..queries {
             assert!(
                 WorkspaceLineageStore::load(
                     store,
-                    WorkspaceId::from_bytes([128 + index as u8; 16])
+                    WorkspaceId::from_bytes([128 + index as u8; 16]),
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
                 )
                 .await
                 .unwrap()
@@ -108,10 +121,18 @@ mod tests {
             peak = peak.max(owner.residents.read().unwrap().len());
         }
         assert_eq!(
-            WorkspaceLineageStore::load(store, value.workspace_id)
-                .await
-                .unwrap(),
-            Some(value)
+            WorkspaceLineageStore::load(
+                store,
+                value.workspace_id,
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
+            .await
+            .unwrap()
+            .as_deref(),
+            Some(&value)
         );
         peak
     }
@@ -129,7 +150,7 @@ mod tests {
                     drop((bounded, old));
                     let reopened = LocalCoreStateStore::open_shared_owner(root.path().join("bounded")).unwrap();
                     let value = super::super::tests::crash_lineage();
-                    assert_eq!(WorkspaceLineageStore::load(&reopened, value.workspace_id).await.unwrap(), Some(value));
+                    assert_eq!(WorkspaceLineageStore::load(&reopened, value.workspace_id, &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await.unwrap().as_deref(), Some(&value));
                     peaks
                 });
             bounded_cache(bounded)?;

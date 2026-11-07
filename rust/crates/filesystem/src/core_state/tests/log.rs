@@ -8,22 +8,45 @@ async fn committed_change_survives_a_failing_checkpoint() {
         assert!(swap_binding(&owner, revision - 1, lazy_state(workspace(), revision)).await);
     }
     assert!(
-        WorkspaceLineageStore::load(&owner, CRASH_WORKSPACE)
-            .await
-            .unwrap()
-            .is_none()
+        WorkspaceLineageStore::load(
+            &owner,
+            CRASH_WORKSPACE,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     std::fs::write(directory.path().join(LINEAGE_FAMILY), b"obstacle").unwrap();
     let record = crash_lineage();
     assert!(
-        WorkspaceLineageStore::compare_and_swap(&owner, CRASH_WORKSPACE, 0, record.clone())
-            .await
-            .unwrap()
+        WorkspaceLineageStore::compare_and_swap(
+            &owner,
+            CRASH_WORKSPACE,
+            0,
+            &record,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
     );
     assert!(
-        WorkspaceLineageStore::load(&owner, CRASH_WORKSPACE)
-            .await
-            .is_ok(),
+        WorkspaceLineageStore::load(
+            &owner,
+            CRASH_WORKSPACE,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .is_ok(),
         "resident reads need no checkpoint"
     );
     assert!(
@@ -49,10 +72,18 @@ async fn committed_change_survives_a_failing_checkpoint() {
     );
     drop(owner);
     assert_eq!(
-        WorkspaceLineageStore::load(&LocalCoreStateStore::new(directory.path()), CRASH_WORKSPACE)
-            .await
-            .unwrap(),
-        Some(record)
+        WorkspaceLineageStore::load(
+            &LocalCoreStateStore::new(directory.path()),
+            CRASH_WORKSPACE,
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .as_deref(),
+        Some(&record)
     );
 }
 

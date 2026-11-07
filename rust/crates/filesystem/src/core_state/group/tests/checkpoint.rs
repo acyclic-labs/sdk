@@ -15,10 +15,21 @@ fn admitted_owner(
     }
 }
 
-async fn put(store: &LocalCoreStateStore, agent: u8) -> Result<bool, LocalCoreStateStoreError> {
+async fn put(
+    store: &LocalCoreStateStore,
+    agent: u8,
+) -> Result<bool, crate::WorkspaceLineageError<LocalCoreStateStoreError>> {
     let mut record = super::super::super::tests::crash_lineage();
     record.workspace_id = WorkspaceId::from_bytes([agent; 16]);
-    WorkspaceLineageStore::compare_and_swap(store, record.workspace_id, 0, record).await
+    let cancellation = crate::CancellationToken::new();
+    let mut accounting = match &store.journal_work {
+        Some(original) => crate::kernel::KernelAccounting::native(original, &cancellation),
+        None => {
+            crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation)
+        }
+    };
+    WorkspaceLineageStore::compare_and_swap(store, record.workspace_id, 0, &record, &mut accounting)
+        .await
 }
 
 async fn pending(store: &LocalCoreStateStore) -> DeferredDurability {
@@ -32,7 +43,7 @@ async fn pending(store: &LocalCoreStateStore) -> DeferredDurability {
 async fn scheduled_put(
     schedule: &Schedule,
     store: &LocalCoreStateStore,
-) -> Result<bool, LocalCoreStateStoreError> {
+) -> Result<bool, crate::WorkspaceLineageError<LocalCoreStateStoreError>> {
     schedule.scope(put(store, 99)).await
 }
 
@@ -81,24 +92,46 @@ async fn checkpoint_barrier_failure_fences_cached_reads_until_reopen() {
             schedule.storage_fault().unwrap().operation,
             "file:sync_data"
         );
-        let LocalCoreStateStoreError::Io(cause) = result.unwrap_err() else {
+        let crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::Io(cause)) =
+            result.unwrap_err()
+        else {
             panic!("checkpoint erased the original physical barrier failure");
         };
         assert!(cause.get_ref().is_some_and(|cause| {
             cause.is::<acyclic_native_runtime::testing::InjectedStorageFault>()
         }));
-        let read = WorkspaceLineageStore::load(&owner, WorkspaceId::from_bytes([1; 16])).await;
+        let read = WorkspaceLineageStore::load(
+            &owner,
+            WorkspaceId::from_bytes([1; 16]),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            ),
+        )
+        .await;
         assert!(
-            matches!(read, Err(LocalCoreStateStoreError::DurabilityPoisoned)),
+            matches!(
+                read,
+                Err(crate::WorkspaceLineageError::Store(
+                    LocalCoreStateStoreError::DurabilityPoisoned
+                ))
+            ),
             "a checkpoint barrier failure must fence later reads until reopen: {read:?}"
         );
         drop((guard, owner));
         let reopened = LocalCoreStateStore::open_owned(directory.path()).unwrap();
         assert!(
-            WorkspaceLineageStore::load(&reopened, WorkspaceId::from_bytes([99; 16]))
-                .await
-                .unwrap()
-                .is_none(),
+            WorkspaceLineageStore::load(
+                &reopened,
+                WorkspaceId::from_bytes([99; 16]),
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
+            .await
+            .unwrap()
+            .is_none(),
             "failed checkpoint must precede the next append"
         );
     }
@@ -151,15 +184,30 @@ async fn uncertain_checkpoint_reset_fences_the_owner_until_reopen() {
             driver.abort();
             let _ = driver.await;
             assert_eq!(schedule.storage_fault().unwrap().operation, "file:truncate");
-            let LocalCoreStateStoreError::Io(cause) = result.unwrap_err() else {
+            let crate::WorkspaceLineageError::Store(LocalCoreStateStoreError::Io(cause)) =
+                result.unwrap_err()
+            else {
                 panic!("checkpoint reset erased its original native error");
             };
             assert!(cause.get_ref().is_some_and(|cause| {
                 cause.is::<acyclic_native_runtime::testing::InjectedStorageFault>()
             }));
-            let read = WorkspaceLineageStore::load(&owner, WorkspaceId::from_bytes([1; 16])).await;
+            let read = WorkspaceLineageStore::load(
+                &owner,
+                WorkspaceId::from_bytes([1; 16]),
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                ),
+            )
+            .await;
             assert!(
-                matches!(read, Err(LocalCoreStateStoreError::DurabilityPoisoned)),
+                matches!(
+                    read,
+                    Err(crate::WorkspaceLineageError::Store(
+                        LocalCoreStateStoreError::DurabilityPoisoned
+                    ))
+                ),
                 "uncertain WAL reset must fence the cached owner: native={native} fault={fault:?} read={read:?}"
             );
             drop((guard, owner));
@@ -168,7 +216,11 @@ async fn uncertain_checkpoint_reset_fences_the_owner_until_reopen() {
                 assert!(
                     WorkspaceLineageStore::load(
                         &reopened,
-                        WorkspaceId::from_bytes([u8::try_from(agent).unwrap(); 16])
+                        WorkspaceId::from_bytes([u8::try_from(agent).unwrap(); 16]),
+                        &mut crate::kernel::KernelAccounting::standalone(
+                            crate::WorkBudget::UNBOUNDED,
+                            &crate::CancellationToken::new()
+                        )
                     )
                     .await
                     .unwrap()
@@ -176,10 +228,17 @@ async fn uncertain_checkpoint_reset_fences_the_owner_until_reopen() {
                 );
             }
             assert!(
-                WorkspaceLineageStore::load(&reopened, WorkspaceId::from_bytes([99; 16]))
-                    .await
-                    .unwrap()
-                    .is_none()
+                WorkspaceLineageStore::load(
+                    &reopened,
+                    WorkspaceId::from_bytes([99; 16]),
+                    &mut crate::kernel::KernelAccounting::standalone(
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new()
+                    )
+                )
+                .await
+                .unwrap()
+                .is_none()
             );
         }
         work.receipt().verify(budget).unwrap();

@@ -28,6 +28,12 @@ revisioned!(
     crate::WorkspaceLineageRecord,
 );
 
+impl<T: Revisioned> Revisioned for crate::kernel::Retained<T> {
+    fn revision(&self) -> u64 {
+        self.value.revision()
+    }
+}
+
 /// Revision stored under `key`, with zero meaning absent.
 pub(crate) fn stored_revision<K: Ord, V: Revisioned>(records: &BTreeMap<K, V>, key: &K) -> u64 {
     records.get(key).map_or(0, Revisioned::revision)
@@ -66,7 +72,15 @@ impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
     where
         V: Clone,
     {
-        self.locked(|records| records.get(key).cloned())
+        self.load_with(key, Clone::clone)
+    }
+
+    pub(crate) fn load_with<T>(
+        &self,
+        key: &K,
+        copy: impl FnOnce(&V) -> T,
+    ) -> Result<Option<T>, Poisoned> {
+        self.locked(|records| records.get(key).map(copy))
     }
 
     /// Replaces `key` only at `expected` (zero means absent).

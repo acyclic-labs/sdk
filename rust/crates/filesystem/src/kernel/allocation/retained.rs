@@ -429,6 +429,15 @@ pub struct Retained<T> {
     pub(crate) allocation: RetainedAllocation,
 }
 
+impl<T: std::fmt::Debug> std::fmt::Debug for Retained<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("Retained")
+            .field(&self.value)
+            .finish()
+    }
+}
+
 struct RetainedBytes<T> {
     bytes: Vec<u8>,
     _custody: T,

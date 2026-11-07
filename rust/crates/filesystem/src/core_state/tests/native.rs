@@ -79,26 +79,51 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
     for expected in [true, false] {
         assert_eq!(
-            store
-                .compare_lineage(id, 0, paid_lineage(&value, &work, &cxl), &work, &cxl,)
-                .await
-                .unwrap(),
-            expected,
+            WorkspaceLineageStore::compare_and_swap(
+                &store,
+                id,
+                0,
+                &value,
+                &mut crate::kernel::KernelAccounting::native(&work, &cxl)
+            )
+            .await
+            .unwrap(),
+            expected
         );
-        if expected {
-            let loaded = store.load_lineage(id, &work, &cxl).await.unwrap().unwrap();
-            assert_eq!(loaded.0, value);
-            assert!(loaded.1.work().shares_allocation_context(&work));
-        }
     }
     drop(store);
     let reopened = LocalCoreStateStore::new(directory.path());
-    let loaded = reopened
-        .load_lineage(id, &work, &cxl)
+    let loaded = WorkspaceLineageStore::load(
+        &reopened,
+        id,
+        &mut crate::kernel::KernelAccounting::native(&work, &cxl),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(*loaded, value);
+    let live = work.live_allocation_bytes();
+    let bytes = loaded.workspace_name.capacity() as u64;
+    drop(loaded);
+    assert_eq!(work.live_allocation_bytes(), live - bytes);
+    let mut ordinary = crate::kernel::KernelAccounting::standalone(finite_budget(), &cxl);
+    let earlier = crate::kernel::RetainedAllocation::claim(73, 1, &mut ordinary).unwrap();
+    let baseline = earlier.standalone_live_bytes().unwrap();
+    let loaded = WorkspaceLineageStore::load(&reopened, id, &mut ordinary)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.0, value);
+    assert_eq!(*loaded, value);
+    assert!(
+        loaded
+            .allocation
+            .standalone_ledger()
+            .zip(earlier.standalone_ledger())
+            .is_some_and(|(returned, original)| Arc::ptr_eq(returned, original))
+    );
+    assert!(earlier.standalone_live_bytes().unwrap() >= baseline + bytes);
+    drop(loaded);
+    assert_eq!(earlier.standalone_live_bytes(), Some(baseline));
     work.receipt().verify(finite_budget()).unwrap();
 }
 
@@ -127,17 +152,17 @@ async fn native_lineage_cancellation_owns_physical_completion() {
             .unwrap();
             let mut value = lineage(id);
             value.workspace_name = "native-owned-input".repeat(4096);
-            let replacement = paid_lineage(&value, &work, &request_cxl);
-            let funded = work.live_allocation_bytes();
+            let funded = work.live_allocation_bytes() + value.workspace_name.len() as u64;
             let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
             let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
             let before = work.receipt().allocation_operations;
-            let mut publish = Box::pin(schedule.scope(store.compare_lineage(
+            let mut accounting = crate::kernel::KernelAccounting::native(&work, &request_cxl);
+            let mut publish = Box::pin(schedule.scope(WorkspaceLineageStore::compare_and_swap(
+                &store,
                 id,
                 0,
-                replacement,
-                &work,
-                &request_cxl,
+                &value,
+                &mut accounting,
             )));
             assert!(futures::poll!(publish.as_mut()).is_pending());
             let allocations = work.receipt().allocation_operations - before;
@@ -159,11 +184,8 @@ async fn native_lineage_cancellation_owns_physical_completion() {
             }
             let cancelled = matches!(
                 futures::poll!(publish.as_mut()),
-                Poll::Ready(Err((
-                    crate::lineage::WorkspaceLineageError::Store(
-                        LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Cancelled)
-                    ),
-                    None
+                Poll::Ready(Err(crate::lineage::WorkspaceLineageError::Store(
+                    LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::Cancelled)
                 )))
             );
             drop(publish);

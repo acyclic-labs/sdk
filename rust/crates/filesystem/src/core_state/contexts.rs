@@ -1,4 +1,5 @@
 use super::*;
+use crate::WorkspaceError;
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -6,18 +7,68 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
     async fn load(
         &self,
         workspace_id: WorkspaceId,
-    ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        self.load_logged(workspace_id).await
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<
+        Option<crate::kernel::Retained<WorkspaceLineageRecord>>,
+        crate::WorkspaceLineageError<Self::Error>,
+    > {
+        use crate::kernel::allocation::retained::NativeAccounting;
+        use crate::kernel::{Owned, Retained};
+        let cancellation = accounting.cancellation().clone();
+        let owner = NativeAccounting::take(accounting).map_err(WorkspaceError::from)?;
+        // An error may withdraw the observer before the producer retires. Never
+        // restore the ordinary branch on that edge; its observer retains it.
+        let result = self
+            .load_lineage(workspace_id, &owner.work, &cancellation)
+            .await
+            .map_err(|(error, _custody)| error)?;
+        let result = result
+            .map(|(value, allocation)| {
+                let bytes = allocation.bytes();
+                let allocation = owner.return_allocation(allocation, bytes)?;
+                Ok::<_, crate::FsError>(Owned::new(value, allocation, bytes))
+            })
+            .transpose()
+            .map_err(WorkspaceError::from)?;
+        owner.restore(accounting).map_err(WorkspaceError::from)?;
+        result
+            .map(|owned| Retained::from_owned(owned, accounting))
+            .transpose()
+            .map_err(WorkspaceError::from)
+            .map_err(Into::into)
     }
 
     async fn compare_and_swap(
         &self,
         workspace_id: WorkspaceId,
         expected_revision: u64,
-        replacement: WorkspaceLineageRecord,
-    ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
+        replacement: &WorkspaceLineageRecord,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<bool, crate::WorkspaceLineageError<Self::Error>> {
+        use crate::kernel::allocation::retained::NativeAccounting;
+        use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+        let cancellation = accounting.cancellation().clone();
+        let owner = NativeAccounting::take(accounting).map_err(WorkspaceError::from)?;
+        let owned = crate::lineage::copy_record(
+            replacement,
+            &mut KernelAccounting::native(&owner.work, &cancellation),
+        )
+        .map_err(WorkspaceError::from)?;
+        let KernelOwnedAllocation::NativeOriginal(allocation) = owned.allocation else {
+            return Err(crate::WorkspaceLineageError::IncompatibleState);
+        };
+        let result = self
+            .compare_lineage(
+                workspace_id,
+                expected_revision,
+                (owned.value, allocation),
+                &owner.work,
+                &cancellation,
+            )
             .await
+            .map_err(|(error, _custody)| error)?;
+        owner.restore(accounting).map_err(WorkspaceError::from)?;
+        Ok(result)
     }
 }
 

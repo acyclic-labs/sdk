@@ -2,6 +2,7 @@
 use super::*;
 use crate::distributed::state_record::{CompanionKind, StateRecord};
 use crate::distributed::{AuthorityProvider, AuthorizedObservation};
+use crate::kernel::{KernelAccounting, Retained};
 use crate::{
     AuthorityStoreError, AuthorityWork, FilesystemCommit, FilesystemCommitOutcome,
     StreamAuthorityStore, WorkspaceLineageRecord, WorkspaceLineageStore,
@@ -67,11 +68,38 @@ impl std::fmt::Debug for StreamGitCompatStoreError {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Envelope<T> {
+pub(crate) struct Envelope<T> {
     version: u32,
     workspace: WorkspaceId,
     revision: u64,
     value: Option<T>,
+}
+
+#[cfg(feature = "test-support")]
+impl Envelope<WorkspaceLineageRecord> {
+    pub(crate) fn retained_lineage_bytes(&self) -> u64 {
+        self.value.as_ref().map_or(0, |record| {
+            (record.workspace_name.capacity()
+                + record
+                    .parent_workspace_name
+                    .as_ref()
+                    .map_or(0, String::capacity)) as u64
+        })
+    }
+}
+
+/// The persisted envelope writer shared by publication and corpus capture.
+pub(crate) fn encode_record<T: Serialize>(
+    workspace: WorkspaceId,
+    revision: u64,
+    value: Option<&T>,
+) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&Envelope {
+        version: 1,
+        workspace,
+        revision,
+        value,
+    })
 }
 
 impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
@@ -87,7 +115,8 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         id: WorkspaceId,
         family: &str,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<Envelope<T>>, AuthorizedObservation), StreamGitCompatStoreError> {
+    ) -> Result<(Option<Retained<Envelope<T>>>, AuthorizedObservation), StreamGitCompatStoreError>
+    {
         let observed = self
             .authority
             .observe_record(Self::path(id, family)?, work)
@@ -103,7 +132,20 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
                 else {
                     return Err(StreamGitCompatStoreError::Incompatible);
                 };
-                let envelope: Envelope<T> = serde_json::from_slice(&payload)?;
+                let envelope = crate::kernel::serde_decode::from_slice::<Envelope<T>>(
+                    &payload,
+                    &mut work.accounting(),
+                )
+                .map_err(|error| match error {
+                    crate::kernel::serde_decode::MetadataDecodeError::Codec(error) => {
+                        StreamGitCompatStoreError::Codec(error)
+                    }
+                    crate::kernel::serde_decode::MetadataDecodeError::Work(error) => {
+                        StreamGitCompatStoreError::Authority(crate::async_storage::authority_error(
+                            error,
+                        ))
+                    }
+                })?;
                 if envelope.version != 1 || envelope.workspace != id || envelope.revision == 0 {
                     return Err(StreamGitCompatStoreError::Incompatible);
                 }
@@ -118,16 +160,15 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         id: WorkspaceId,
         family: &str,
         expected: u64,
-        replacement: Option<T>,
+        replacement: Option<&T>,
+        work: &mut AuthorityWork<'_>,
     ) -> Result<bool, StreamGitCompatStoreError> {
-        let cancellation = CancellationToken::new();
-        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let (current, observation) = self.read::<T>(id, family, &mut work).await?;
+        let (current, observation) = self.read::<T>(id, family, work).await?;
         // A tombstone is logically absent, but its exact physical head still
         // fences recreation. Old creates can never overwrite a later history.
         if current
             .as_ref()
-            .filter(|entry| entry.value.is_some())
+            .filter(|entry| entry.value.value.is_some())
             .map_or(0, |entry| entry.revision)
             != expected
         {
@@ -136,12 +177,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
         let revision = expected
             .checked_add(1)
             .ok_or(StreamGitCompatStoreError::Incompatible)?;
-        let payload = serde_json::to_vec(&Envelope {
-            version: 1,
-            workspace: id,
-            revision,
-            value: replacement,
-        })?;
+        let payload = encode_record(id, revision, replacement)?;
         let mut hash = blake3::Hasher::new();
         hash.update(b"acyclic-fs-stream-git-state-v1\0");
         match observation.condition() {
@@ -186,11 +222,10 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
             &observation,
             &record,
             crate::PublicationHold::none(),
-            &mut work,
+            work,
         )?;
-        self.authority
-            .seal_observed(&mut commit, &[], None, &mut work)?;
-        match self.authority.submit(commit, &mut work).await? {
+        self.authority.seal_observed(&mut commit, &[], None, work)?;
+        match self.authority.submit(commit, work).await? {
             FilesystemCommitOutcome::Committed(_) => Ok(true),
             FilesystemCommitOutcome::Rejected(_) => Ok(false),
             FilesystemCommitOutcome::Unknown { commit, error } => {
@@ -198,7 +233,7 @@ impl<P: AuthorityProvider + ?Sized> StreamGitCompatStore<P> {
                 // stays an error; no retry at a newer head or polling is allowed.
                 match self
                     .authority
-                    .reconcile_record(path, sequence, &key, &record, &mut work)
+                    .reconcile_record(path, sequence, &key, &record, work)
                     .await
                 {
                     Ok(_) => {
@@ -219,14 +254,14 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
         let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let (value, _) = self.read::<GitCompatState>(id, "refs", &mut work).await?;
         match value {
-            Some(Envelope {
-                revision,
-                value: Some(state),
-                ..
-            }) if state.revision != revision || state.version != STATE_VERSION => {
+            Some(envelope)
+                if envelope.value.value.as_ref().is_some_and(|state| {
+                    state.revision != envelope.revision || state.version != STATE_VERSION
+                }) =>
+            {
                 Err(Self::Error::Incompatible)
             }
-            Some(envelope) => Ok(envelope.value),
+            Some(envelope) => Ok(envelope.value.value),
             None => Ok(None),
         }
     }
@@ -241,7 +276,10 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
         {
             return Err(Self::Error::Incompatible);
         }
-        self.replace(id, "refs", expected, Some(replacement)).await
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        self.replace(id, "refs", expected, Some(&replacement), &mut work)
+            .await
     }
     async fn compare_and_delete(
         &self,
@@ -251,7 +289,9 @@ impl<P: AuthorityProvider + ?Sized> GitCompatStore for StreamGitCompatStore<P> {
         if expected == 0 {
             return Ok(false);
         }
-        self.replace::<GitCompatState>(id, "refs", expected, None)
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        self.replace::<GitCompatState>(id, "refs", expected, None, &mut work)
             .await
     }
 }
@@ -261,37 +301,60 @@ mod tests;
 
 impl<P: AuthorityProvider + ?Sized> WorkspaceLineageStore for StreamGitCompatStore<P> {
     type Error = StreamGitCompatStoreError;
-    async fn load(&self, id: WorkspaceId) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        let cancellation = CancellationToken::new();
-        let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+
+    async fn load(
+        &self,
+        id: WorkspaceId,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<Retained<WorkspaceLineageRecord>>, crate::WorkspaceLineageError<Self::Error>>
+    {
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)
+            .map_err(crate::async_storage::authority_error)
+            .map_err(StreamGitCompatStoreError::from)
+            .map_err(crate::WorkspaceLineageError::Store)?;
         let (value, _) = self
             .read::<WorkspaceLineageRecord>(id, "lineage", &mut work)
-            .await?;
+            .await
+            .map_err(crate::WorkspaceLineageError::Store)?;
         match value {
-            Some(Envelope {
-                revision,
-                value: Some(state),
-                ..
-            }) if state.revision != revision || state.workspace_id != id => {
-                Err(Self::Error::Incompatible)
+            Some(envelope)
+                if envelope.value.value.as_ref().is_some_and(|state| {
+                    state.revision != envelope.revision || state.workspace_id != id
+                }) =>
+            {
+                Err(crate::WorkspaceLineageError::Store(
+                    Self::Error::Incompatible,
+                ))
             }
-            Some(envelope) => Ok(envelope.value),
+            Some(envelope) => Ok(envelope
+                .value
+                .value
+                .map(|record| envelope.allocation.into_value(record))),
             None => Ok(None),
         }
     }
+
     async fn compare_and_swap(
         &self,
         id: WorkspaceId,
         expected: u64,
-        replacement: WorkspaceLineageRecord,
-    ) -> Result<bool, Self::Error> {
+        replacement: &WorkspaceLineageRecord,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, crate::WorkspaceLineageError<Self::Error>> {
         if replacement.version != 1
             || replacement.workspace_id != id
-            || replacement.revision != expected.checked_add(1).ok_or(Self::Error::Incompatible)?
+            || Some(replacement.revision) != expected.checked_add(1)
         {
-            return Err(Self::Error::Incompatible);
+            return Err(crate::WorkspaceLineageError::Store(
+                Self::Error::Incompatible,
+            ));
         }
-        self.replace(id, "lineage", expected, Some(replacement))
+        let mut work = crate::async_storage::AuthorityFrame::borrow(accounting)
+            .map_err(crate::async_storage::authority_error)
+            .map_err(StreamGitCompatStoreError::from)
+            .map_err(crate::WorkspaceLineageError::Store)?;
+        self.replace(id, "lineage", expected, Some(replacement), &mut work)
             .await
+            .map_err(crate::WorkspaceLineageError::Store)
     }
 }

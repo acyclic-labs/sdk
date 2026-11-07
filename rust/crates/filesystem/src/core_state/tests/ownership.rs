@@ -4,7 +4,14 @@ use super::*;
 fn local_transactions_work_without_a_tokio_runtime() {
     let directory = tempfile::tempdir().unwrap();
     let store = LocalCoreStateStore::new(directory.path());
-    let result = futures::executor::block_on(WorkspaceLineageStore::load(&store, workspace()));
+    let result = futures::executor::block_on(WorkspaceLineageStore::load(
+        &store,
+        workspace(),
+        &mut crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        ),
+    ));
     assert!(result.unwrap().is_none());
 }
 
@@ -43,7 +50,19 @@ async fn owner_excludes_every_other_store_in_its_process() {
         directory.path()
     )));
     assert!(is_ownership_conflict(
-        &WorkspaceLineageStore::load(&shared, workspace()).await
+        &WorkspaceLineageStore::load(
+            &shared,
+            workspace(),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .map_err(|error| match error {
+            crate::WorkspaceLineageError::Store(error) => error,
+            other => panic!("unexpected lineage error: {other}"),
+        })
     ));
     assert!(matches!(
         shared
@@ -57,15 +76,36 @@ async fn owner_excludes_every_other_store_in_its_process() {
 
     drop(owner);
     assert!(
-        is_ownership_conflict(&WorkspaceLineageStore::load(&shared, workspace()).await),
+        is_ownership_conflict(
+            &WorkspaceLineageStore::load(
+                &shared,
+                workspace(),
+                &mut crate::kernel::KernelAccounting::standalone(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new()
+                )
+            )
+            .await
+            .map_err(|error| match error {
+                crate::WorkspaceLineageError::Store(error) => error,
+                other => panic!("unexpected lineage error: {other}"),
+            })
+        ),
         "a clone keeps the namespace owned"
     );
     drop(clone);
     assert!(
-        WorkspaceLineageStore::load(&shared, workspace())
-            .await
-            .unwrap()
-            .is_none()
+        WorkspaceLineageStore::load(
+            &shared,
+            workspace(),
+            &mut crate::kernel::KernelAccounting::standalone(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new()
+            )
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 
     let admitted = shared.namespace().unwrap();

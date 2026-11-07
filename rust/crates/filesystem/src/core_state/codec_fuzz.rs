@@ -160,7 +160,16 @@ pub fn check(bytes: &[u8]) -> bool {
         Option<ContextChildCount>,
         Option<ContextChildIndex>,
         Option<WorkspaceLineageRecord>,
-        Option<LazyWorkspaceState>
+        Option<LazyWorkspaceState>,
+        crate::git_compat::stream_store::Envelope<GitCompatState>
+    );
+    assert!(
+        check_type::<crate::git_compat::stream_store::Envelope<WorkspaceLineageRecord>>(
+            bytes,
+            &work,
+            |envelope| envelope.retained_lineage_bytes()
+        ),
+        "persisted lineage envelope custody; recovery: cargo run --example capture"
     );
     assert!(
         check_type::<bytes::Bytes>(bytes, &work, |value| value.len() as u64),
@@ -258,6 +267,16 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
         let mut encoded = Vec::new();
         RecordValue::write_checkpoint(value.as_ref(), &mut encoded, None)?;
         seeds.push((name.into(), encoded));
+        if let Some(RecordValue::Lineage(lineage)) = &value {
+            seeds.push((
+                "stream-lineage-child".into(),
+                crate::git_compat::stream_store::encode_record(
+                    lineage.workspace_id,
+                    lineage.revision,
+                    Some(lineage),
+                )?,
+            ));
+        }
     }
     let mut git = GitCompatState::new("main", parent);
     git.revision = 1;
@@ -274,6 +293,14 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LocalCoreStateStoreError> {
     let mut encoded = Vec::new();
     write_buffered_json(&mut encoded, &git)?;
     seeds.push(("core-git-branches".into(), encoded));
+    seeds.push((
+        "stream-git-branches".into(),
+        crate::git_compat::stream_store::encode_record(parent, git.revision, Some(&git))?,
+    ));
+    seeds.push((
+        "stream-lineage-tombstone".into(),
+        crate::git_compat::stream_store::encode_record::<WorkspaceLineageRecord>(child, 3, None)?,
+    ));
     let mut encoded = Vec::new();
     write_buffered_json(
         &mut encoded,
