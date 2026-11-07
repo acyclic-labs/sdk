@@ -57,10 +57,13 @@ pub fn exercise(source: &str) {
         }
         syn::Data::Union(_) => return,
     }
+    let Ok(serde_input) = syn_serde::parse_str::<syn_serde::DeriveInput>(source) else {
+        return;
+    };
     let cx = Ctxt::new();
     let container = ast::Container::from_ast(
         &cx,
-        &input,
+        &serde_input,
         Derive::Serialize,
         &syn::Ident::new("__private", proc_macro2::Span::call_site()),
     );
@@ -77,10 +80,15 @@ pub fn exercise(source: &str) {
     else {
         return;
     };
-    let expected = fields.iter().find(|field| field.attrs.transparent());
+    let expected = fields.iter().position(|field| field.attrs.transparent());
     let actual = StructAttr::transparent_field(&data.fields);
     match (expected, actual) {
-        (Some(expected), Ok(actual)) => assert_eq!(expected.original, actual),
+        (Some(expected), Ok(actual)) => assert_eq!(
+            Some(expected),
+            data.fields
+                .iter()
+                .position(|field| std::ptr::eq(field, actual))
+        ),
         _ => panic!("transparent serialization differs from the checked Serde AST"),
     }
 }
