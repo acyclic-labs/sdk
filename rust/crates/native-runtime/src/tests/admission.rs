@@ -798,7 +798,7 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     assert!(
         workers
             .sender
-            .try_send(filler.pending.take().expect("original queue owner"))
+            .try_send(filler.pending.take().ok_or(io::ErrorKind::BrokenPipe)?)
             .is_ok()
     );
     workers
@@ -811,15 +811,8 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     let mut waiter = None;
     let notified = Arc::new(Count(AtomicU64::new(0)));
     let waker = Waker::from(notified.clone());
-    assert!(
-        crate::workers::poll_submission_with(
-            &workers,
-            &mut pending,
-            &mut waiter,
-            &Context::from_waker(&waker),
-        )
-        .is_pending()
-    );
+    let context = Context::from_waker(&waker);
+    assert!(poll_submission_with(&workers, &mut pending, &mut waiter, &context).is_pending());
     let submission = Arc::new(Mutex::new((pending, waiter)));
     let reenter = {
         let workers = workers.clone();
@@ -841,15 +834,8 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
                 .queued_jobs += 1;
             let mut submission = submission.lock().expect("original queue owner");
             let (pending, waiter) = &mut *submission;
-            assert!(
-                crate::workers::poll_submission_with(
-                    &workers,
-                    pending,
-                    waiter,
-                    &Context::from_waker(&waker),
-                )
-                .is_pending()
-            );
+            let context = Context::from_waker(&waker);
+            assert!(poll_submission_with(&workers, pending, waiter, &context).is_pending());
             drop(submission);
             // The real owner has reinstalled its consumed observer while the
             // channel is full. This original receive releases that capacity
@@ -862,15 +848,8 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     let mut later = run_blocking_io(|| (), None)?;
     let mut pending = later.pending.take();
     let mut waiter = None;
-    assert!(
-        crate::workers::poll_submission_with(
-            &workers,
-            &mut pending,
-            &mut waiter,
-            &Context::from_waker(&reenter),
-        )
-        .is_pending()
-    );
+    let context = Context::from_waker(&reenter);
+    assert!(poll_submission_with(&workers, &mut pending, &mut waiter, &context).is_pending());
     let filler = crate::workers::receive_job(&receiver, &workers.admission)
         .ok_or(io::ErrorKind::BrokenPipe)?;
     wake_capacity_waiter(filler.run());
@@ -881,15 +860,13 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     );
     remove_capacity_waiter(&workers, waiter.take());
     drop(pending);
-    let mut submission = submission.lock().expect("original queue owner");
+    let mut submission = submission
+        .lock()
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let (pending, waiter) = &mut *submission;
+    let context = Context::from_waker(&waker);
     assert!(matches!(
-        crate::workers::poll_submission_with(
-            &workers,
-            pending,
-            waiter,
-            &Context::from_waker(&waker),
-        ),
+        poll_submission_with(&workers, pending, waiter, &context),
         Poll::Ready(Ok(()))
     ));
     let accepted = crate::workers::receive_job(&receiver, &workers.admission)

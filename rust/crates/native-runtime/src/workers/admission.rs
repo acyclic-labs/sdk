@@ -201,6 +201,7 @@ pub(crate) fn poll_submission_with(
     // Declare the owner before the guard so callback unwind also unlocks
     // admission before retiring this node.
     let retired;
+    let prepared;
     let mut displaced = None;
     let mut admission = workers
         .admission
@@ -224,14 +225,11 @@ pub(crate) fn poll_submission_with(
             if registered {
                 Err(mpsc::TrySendError::Full(job))
             } else {
-                // RawWaker callbacks and node allocation may reenter admission.
-                // Rejoin the serialized capacity event with one transfer after
-                // preparing the observer: a release during clone cannot pass
-                // registration unnoticed. Accepted and unchanged polls keep
-                // their single transfer and never clone an observer.
+                // Prepare callbacks outside admission, then retry the transfer
+                // so capacity released during preparation cannot go unnoticed.
                 job.set_queued(false);
                 drop(admission);
-                displaced = Some(context.waker().clone());
+                prepared = context.waker().clone();
                 let node = waiter.get_or_insert_with(|| capacity_waiter(prepaid.take()));
                 admission = workers
                     .admission
@@ -239,12 +237,11 @@ pub(crate) fn poll_submission_with(
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 job.set_queued(true);
                 let submission = workers.sender.try_send(job);
-                if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
-                    displaced = admission.register_existing(
-                        node,
-                        displaced.take().expect("prepared capacity observer"),
-                    );
-                }
+                displaced = if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
+                    admission.register_existing(node, prepared)
+                } else {
+                    Some(prepared)
+                };
                 submission
             }
         }

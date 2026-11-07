@@ -1,6 +1,6 @@
 --- a/rust/crates/native-runtime/src/workers/admission.rs
 +++ b/rust/crates/native-runtime/src/workers/admission.rs
-@@ -258,7 +258,7 @@
+@@ -255,7 +255,7 @@
                  .as_ref()
                  .and_then(|node| admission.retire_owner(node));
              drop(admission);
@@ -9,7 +9,7 @@
              drop(retired);
              drop(displaced);
              if let Some(observation) = observation {
-@@ -286,7 +286,7 @@
+@@ -283,7 +283,7 @@
                  .as_ref()
                  .and_then(|node| admission.retire_owner(node));
              drop(admission);
@@ -18,7 +18,7 @@
              drop(retired);
              drop(displaced);
              let error = io::Error::from(io::ErrorKind::BrokenPipe);
-@@ -308,7 +308,7 @@
+@@ -305,7 +305,7 @@
          .unwrap_or_else(std::sync::PoisonError::into_inner);
      let next = admission.retire_owner(&waiter);
      drop(admission);

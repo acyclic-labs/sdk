@@ -105,13 +105,14 @@
              queued: false,
              _allocation: allocation,
          }),
-@@ -198,69 +200,24 @@
+@@ -198,66 +200,24 @@
      }
      let observation = job.queue_observation();
      job.stage(1);
 -    // Declare the owner before the guard so callback unwind also unlocks
 -    // admission before retiring this node.
 -    let retired;
+-    let prepared;
 -    let mut displaced = None;
      let mut admission = workers
          .admission
@@ -142,14 +143,11 @@
 -            if registered {
 -                Err(mpsc::TrySendError::Full(job))
 -            } else {
--                // RawWaker callbacks and node allocation may reenter admission.
--                // Rejoin the serialized capacity event with one transfer after
--                // preparing the observer: a release during clone cannot pass
--                // registration unnoticed. Accepted and unchanged polls keep
--                // their single transfer and never clone an observer.
+-                // Prepare callbacks outside admission, then retry the transfer
+-                // so capacity released during preparation cannot go unnoticed.
 -                job.set_queued(false);
 -                drop(admission);
--                displaced = Some(context.waker().clone());
+-                prepared = context.waker().clone();
 -                let node = waiter.get_or_insert_with(|| capacity_waiter(prepaid.take()));
 -                admission = workers
 -                    .admission
@@ -157,12 +155,11 @@
 -                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 -                job.set_queued(true);
 -                let submission = workers.sender.try_send(job);
--                if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
--                    displaced = admission.register_existing(
--                        node,
--                        displaced.take().expect("prepared capacity observer"),
--                    );
--                }
+-                displaced = if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
+-                    admission.register_existing(node, prepared)
+-                } else {
+-                    Some(prepared)
+-                };
 -                submission
 -            }
 -        }
@@ -185,7 +182,7 @@
              if let Some(observation) = observation {
                  obs::project(move || {
                      observation.record("native.queued", true);
-@@ -268,31 +225,39 @@
+@@ -265,31 +225,39 @@
                  });
              }
              drop(prepaid);
@@ -235,7 +232,7 @@
              Poll::Ready(Err(error))
          }
      }
-@@ -306,10 +271,9 @@
+@@ -303,10 +271,9 @@
          .admission
          .lock()
          .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -247,7 +244,7 @@
  }
  
  pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
-@@ -347,16 +311,16 @@
+@@ -344,16 +311,16 @@
                  admission.notifying = false;
                  return;
              };
