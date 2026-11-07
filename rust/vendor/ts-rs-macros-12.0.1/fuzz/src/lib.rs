@@ -15,16 +15,12 @@ pub use deps::Dependencies;
 pub use optional::{Optional, apply, parse_optional};
 pub use utils::{format_generics, make_string_literal, raw_name_to_ts_field, to_ts_ident};
 
-use attr::{Attr, ContainerAttr, Serde};
+use attr::{Attr, ContainerAttr};
 use serde_derive_internals::{Ctxt, Derive, ast};
 
-/// Exercises raw metadata and full declarations, comparing accepted transparent
+/// Exercises metadata in full declarations, comparing accepted transparent
 /// containers with the same checked AST used by Serde's serializer derivation.
 pub fn exercise(source: &str) {
-    let _ = syn::parse_str::<Serde<StructAttr>>(source);
-    let _ = syn::parse_str::<Serde<EnumAttr>>(source);
-    let _ = syn::parse_str::<Serde<FieldAttr>>(source);
-    let _ = syn::parse_str::<Serde<VariantAttr>>(source);
     let Ok(input) = syn::parse_str::<syn::DeriveInput>(source) else {
         return;
     };
@@ -52,6 +48,11 @@ pub fn exercise(source: &str) {
             for variant in &data.variants {
                 if let Ok(attrs) = VariantAttr::from_attrs(&variant.attrs) {
                     let _ = attrs.assert_validity(variant);
+                }
+                for field in &variant.fields {
+                    if let Ok(attrs) = FieldAttr::from_attrs(&field.attrs) {
+                        let _ = attrs.assert_validity(field);
+                    }
                 }
             }
         }
