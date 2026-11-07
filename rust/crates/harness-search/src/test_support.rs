@@ -73,12 +73,11 @@ impl SearchProvider for ScriptedSearchProvider {
             if &step.request != request {
                 return Err(crate::error(Some(work), "scripted search request mismatch"));
             }
-            let response = match &step.response {
-                Some(response) => crate::native::copy_response(response, work)?,
-                None => {
-                    steps.pop_front();
-                    return Err(crate::rejection(Some(work), "scripted search rejected"));
-                }
+            let response = if let Some(response) = &step.response {
+                crate::native::copy_response(response, work)?
+            } else {
+                steps.pop_front();
+                return Err(crate::rejection(Some(work), "scripted search rejected"));
             };
             steps.pop_front();
             Ok(response)
