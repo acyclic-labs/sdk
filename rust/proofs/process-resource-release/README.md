@@ -77,3 +77,34 @@ cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree:
 
 Restore the original-source patch even when qualification fails. Compilation
 failure does not replace the required semantic negative-control assertion.
+
+## Accounting during an existing unwind
+
+The same original-descriptor property runs in an isolated copy of the real test
+binary. It covers both normal return and caller unwind, with and without a
+panic from the original cleanup-accounting callback. It requires the descriptor
+to be physically closed and accounted exactly once in every case. When the
+caller already unwinds, its original panic payload must survive cleanup.
+
+`original-accounting-unwind.patch` restores `cleanup.rs` exactly to
+`108093b46f0ad0f10d85e801e3bf6e74eb1aa4c5`, keeping the stronger property.
+That source aborts when accounting panics during the caller's unwind. The
+shared terminal-delivery primitive now completes the same single callback;
+it propagates an ordinary callback panic and preserves an existing unwind.
+There are still one native close and one accounting attempt, with no added
+syscall, allocation, copy, round trip, barrier or wait. The fixed one-item
+iterator neither retries the callback nor grows with process-tree size.
+
+```sh
+git apply --check rust/proofs/process-resource-release/original-accounting-unwind.patch
+git apply rust/proofs/process-resource-release/original-accounting-unwind.patch
+cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
+# Require original cleanup callback failure and panic in a destructor during cleanup.
+git apply -R rust/proofs/process-resource-release/original-accounting-unwind.patch
+cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
+# Require a pass, including preservation of the original caller panic.
+```
+
+Restore the patch after any failure. The isolated process makes the original
+abort finite; an unrelated compiler failure does not qualify this control.
+This checks release accounting, not cancellation of an unused reservation.

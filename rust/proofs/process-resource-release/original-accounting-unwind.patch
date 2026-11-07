@@ -1,0 +1,16 @@
+diff --git b/rust/crates/native-runtime/src/process_tree/cleanup.rs a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+index 7189ee7fa2f..cb4e0a53367 100644
+--- b/rust/crates/native-runtime/src/process_tree/cleanup.rs
++++ a/rust/crates/native-runtime/src/process_tree/cleanup.rs
+@@ -63,10 +63,6 @@ struct Released<'a>(Cleanup<'a>);
+ 
+ impl Drop for Released<'_> {
+     fn drop(&mut self) {
+-        // Preserve an existing unwind while completing this original callback.
+-        // Normal callback failure still unwinds after the native owner released.
+-        crate::delivery::deliver(std::iter::once(()), |()| {
+-            let _ = self.0.record();
+-        });
++        let _ = self.0.record();
+     }
+ }

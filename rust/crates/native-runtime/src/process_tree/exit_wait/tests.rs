@@ -125,8 +125,13 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
 
 #[test]
 fn exit_watch_prepays_and_records_its_descriptor_release() -> io::Result<()> {
+    if crate::delivery::isolated()? {
+        return Ok(());
+    }
     let mut tree = child("0")?;
-    for panic_after_recording in [false, true] {
+    for (panic_after_recording, caller_unwinds) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let descriptor = std::sync::Arc::new(std::sync::atomic::AtomicI32::new(-1));
         let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
@@ -156,8 +161,22 @@ fn exit_watch_prepays_and_records_its_descriptor_release() -> io::Result<()> {
         let watch = open(tree.owned_child_id()?, Some(&meter))?;
         descriptor.store(watch.as_raw_fd(), Ordering::Release);
         assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
-        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(watch)));
-        assert_eq!(dropped.is_err(), panic_after_recording);
+        let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _watch = watch;
+            if caller_unwinds {
+                std::panic::panic_any("original caller unwind");
+            }
+        }));
+        assert_eq!(dropped.is_err(), panic_after_recording || caller_unwinds);
+        if caller_unwinds {
+            assert_eq!(
+                dropped
+                    .err()
+                    .and_then(|panic| panic.downcast::<&str>().ok()),
+                Some(Box::new("original caller unwind")),
+                "resource accounting replaced the original caller unwind"
+            );
+        }
         assert!(
             released.load(Ordering::Acquire),
             "cleanup accounting preceded the original descriptor release"

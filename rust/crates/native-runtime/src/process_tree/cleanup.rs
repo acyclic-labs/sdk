@@ -63,6 +63,10 @@ struct Released<'a>(Cleanup<'a>);
 
 impl Drop for Released<'_> {
     fn drop(&mut self) {
-        let _ = self.0.record();
+        // Preserve an existing unwind while completing this original callback.
+        // Normal callback failure still unwinds after the native owner released.
+        crate::delivery::deliver(std::iter::once(()), |()| {
+            let _ = self.0.record();
+        });
     }
 }
