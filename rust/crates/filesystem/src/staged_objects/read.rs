@@ -125,10 +125,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let read = match entry {
                 PlannedRead::Ready(read) => read,
                 PlannedRead::Private => {
-                    in_frame(
-                        scope.original,
-                        self.read_private(request.object_id, request.maximum_bytes, &mut scope),
-                    )
+                    in_frame(scope.original, || {
+                        self.read_private(request.object_id, request.maximum_bytes, &mut scope)
+                    })
                     .await?
                 }
                 PlannedRead::Durable => durable
