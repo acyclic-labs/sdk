@@ -96,7 +96,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
         if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
-            return in_frame(native, async {
+            return in_frame(native, || async {
                 let unswept = self.collection.unswept().await;
                 self.collection.writing(&unswept, [object.object_id()]);
                 self.inner.put_hashed(object, work).await
@@ -110,7 +110,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         if !overflowing {
             return Ok(());
         }
-        in_frame(native, self.relieve_window(work)).await
+        in_frame(native, || self.relieve_window(work)).await
     }
     async fn put_many(
         &self,
@@ -146,7 +146,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        in_frame(work.original, self.flush(scope, work)).await
+        in_frame(work.original, || self.flush(scope, work)).await
     }
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         Some(&self.collection)
@@ -187,18 +187,16 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             // Durable immutable reads must remain independent of a concurrent
             // publication, including synchronous native callbacks.
             Lookup::Absent => {
-                return in_frame(
-                    work.original,
-                    self.inner.read(object_id, maximum_bytes, work),
-                )
+                return in_frame(work.original, || {
+                    self.inner.read(object_id, maximum_bytes, work)
+                })
                 .await;
             }
             Lookup::Spilled { .. } => {}
         }
-        in_frame(
-            work.original,
-            self.read_private(object_id, maximum_bytes, work),
-        )
+        in_frame(work.original, || {
+            self.read_private(object_id, maximum_bytes, work)
+        })
         .await
     }
     async fn read_many(

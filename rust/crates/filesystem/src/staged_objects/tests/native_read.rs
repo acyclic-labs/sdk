@@ -9,13 +9,15 @@ async fn native_spill_alias_retains_actual_buffer_after_cache_and_store_drop()
     let (id, bytes) = spill_fixture(&store, &token).await?;
     let work =
         NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
-    let read = store
-        .read(
-            id,
-            bytes.len() as u64,
-            &mut crate::AuthorityWork::native(&work, &token),
-        )
-        .await?;
+    let mut reading_work = crate::AuthorityWork::native(&work, &token);
+    let reading = store.read(id, bytes.len() as u64, &mut reading_work);
+    let caller_bytes = std::mem::size_of_val(&reading);
+    assert!(
+        caller_bytes <= 1024,
+        "staged read caller retained {caller_bytes} bytes instead of its owned frame"
+    );
+    eprintln!("staged read caller: {caller_bytes} bytes");
+    let read = reading.await?;
     assert_eq!(read.bytes, bytes);
     let alias = read.bytes.clone();
     let held = work.live_allocation_bytes();

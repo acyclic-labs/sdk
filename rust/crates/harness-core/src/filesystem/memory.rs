@@ -207,100 +207,108 @@ impl<
     }
 
     /// Binds the canonical journal and files to caller-selected service providers.
-    pub async fn from_providers(
+    #[inline(never)]
+    pub fn from_providers<'a>(
         agent: AgentId,
         maximum_file_bytes: u64,
         filesystem: Fs<A, O>,
         stream: Arc<P>,
-    ) -> Result<Self> {
-        let (host, volume) = new_memory_content(agent, maximum_file_bytes, filesystem).await?;
-        let conversation = Authority {
-            kind: AggregateKind::Conversation,
-            id: ConversationId::new().to_string(),
-        };
-        let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
-        let issuer = AuthorityRoot::new("local-harness", key, conversation.clone());
-        let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
-        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
-        let scope = issuer.bootstrap_scope(
-            "owner",
-            &Capabilities::new([
-                capability::CONVERSATION_BIND.to_owned(),
-                capability::CONVERSATION_APPEND.to_owned(),
-                capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
-                capability::INTERACTION_OPEN.to_owned(),
-                read_capability.clone(),
-                write_capability.clone(),
-            ]),
-            Some(agent),
-            &mut None,
-        )?;
-        let verifier = issuer.verifier(&mut None)?;
-        let input = FilesystemContentVerifier::new(
-            Arc::clone(&host),
-            &verifier,
-            &scope,
-            maximum_file_bytes,
-            None,
-        )?;
-        // Approvals are the agent's own files on its private volume, as for
-        // every hosted agent; only where those files live differs.
-        let approval_files: Arc<dyn ApprovalFiles> = Arc::new(AgentInternalFiles::new(
-            Arc::clone(&host),
-            volume.clone(),
-            crate::conversation::ContentGrant::verify(
+    ) -> BoxFuture<'a, Result<Self>>
+    where
+        P: 'a,
+    {
+        // One cold owner keeps filesystem initialization out of every caller's
+        // future layout. Established operations need no such allocation.
+        Box::pin(async move {
+            let (host, volume) = new_memory_content(agent, maximum_file_bytes, filesystem).await?;
+            let conversation = Authority {
+                kind: AggregateKind::Conversation,
+                id: ConversationId::new().to_string(),
+            };
+            let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
+            let issuer = AuthorityRoot::new("local-harness", key, conversation.clone());
+            let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
+            let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
+            let scope = issuer.bootstrap_scope(
+                "owner",
+                &Capabilities::new([
+                    capability::CONVERSATION_BIND.to_owned(),
+                    capability::CONVERSATION_APPEND.to_owned(),
+                    capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
+                    capability::INTERACTION_OPEN.to_owned(),
+                    read_capability.clone(),
+                    write_capability.clone(),
+                ]),
+                Some(agent),
+                &mut None,
+            )?;
+            let verifier = issuer.verifier(&mut None)?;
+            let input = FilesystemContentVerifier::new(
+                Arc::clone(&host),
                 &verifier,
                 &scope,
-                &volume,
-                VolumeOperation::Write,
-                u64::MAX,
-                &mut None,
-            )?,
-        ));
-        let approvals = agent_approvals(
-            &approval_files,
-            ApprovalPolicy::default(),
-            maximum_file_bytes,
-        )?;
-        let journal = Arc::new(
-            FilesystemExecutionJournal::new(
-                stream.clone(),
+                maximum_file_bytes,
+                None,
+            )?;
+            // Approvals are the agent's own files on its private volume, as for
+            // every hosted agent; only where those files live differs.
+            let approval_files: Arc<dyn ApprovalFiles> = Arc::new(AgentInternalFiles::new(
                 Arc::clone(&host),
-                crate::filesystem::FilesystemJournalBinding {
-                    volume: &volume,
-                    verifier: &verifier,
-                    scope: &scope,
-                    io: None,
-                },
-            )?
-            .with_input_verifier(input.clone())
-            .with_agent_approvals(Arc::clone(&approvals)),
-        );
-        let publisher = FilesystemContentPublisher::new(
-            Arc::clone(&host),
-            &volume,
-            &verifier,
-            &scope,
-            maximum_file_bytes,
-            None,
-        )?;
-        Ok(Self {
-            journal,
-            approval_files,
-            approvals,
-            content_verifier: input,
-            publisher,
-            host,
-            volume,
-            #[cfg(test)]
-            read_capability,
-            #[cfg(test)]
-            write_capability,
-            scope,
-            issuer,
-            stream,
-            conversation,
-            maximum_file_bytes,
+                volume.clone(),
+                crate::conversation::ContentGrant::verify(
+                    &verifier,
+                    &scope,
+                    &volume,
+                    VolumeOperation::Write,
+                    u64::MAX,
+                    &mut None,
+                )?,
+            ));
+            let approvals = agent_approvals(
+                &approval_files,
+                ApprovalPolicy::default(),
+                maximum_file_bytes,
+            )?;
+            let journal = Arc::new(
+                FilesystemExecutionJournal::new(
+                    stream.clone(),
+                    Arc::clone(&host),
+                    crate::filesystem::FilesystemJournalBinding {
+                        volume: &volume,
+                        verifier: &verifier,
+                        scope: &scope,
+                        io: None,
+                    },
+                )?
+                .with_input_verifier(input.clone())
+                .with_agent_approvals(Arc::clone(&approvals)),
+            );
+            let publisher = FilesystemContentPublisher::new(
+                Arc::clone(&host),
+                &volume,
+                &verifier,
+                &scope,
+                maximum_file_bytes,
+                None,
+            )?;
+            Ok(Self {
+                journal,
+                approval_files,
+                approvals,
+                content_verifier: input,
+                publisher,
+                host,
+                volume,
+                #[cfg(test)]
+                read_capability,
+                #[cfg(test)]
+                write_capability,
+                scope,
+                issuer,
+                stream,
+                conversation,
+                maximum_file_bytes,
+            })
         })
     }
 

@@ -4,6 +4,9 @@
 
 use production::{Admit, Admitted, CONTINUE_NOW, Cascade, Control, MAX_FANOUT, Mode, Pick, Wait};
 
+#[path = "agent_control_contract.rs"]
+mod contract;
+
 const STEPS: usize = 6;
 const MAX_CHILDREN: usize = 2 * MAX_FANOUT + 1;
 
@@ -13,6 +16,7 @@ struct Kernel {
     admit: fn(Control, Admit) -> Admitted,
     pick: fn(Control, bool, bool, bool) -> Pick,
     settle: fn(Control, Wait) -> (Control, bool),
+    report: fn(Control) -> (Control, bool),
     cascade: fn(Control, usize) -> Cascade,
     alarm: fn(Control, bool, bool, usize) -> Option<u64>,
     satisfy: fn(Control) -> Control,
@@ -22,6 +26,7 @@ const PRODUCTION: Kernel = Kernel {
     admit: production::admit,
     pick: production::pick,
     settle: production::settle,
+    report: production::report,
     cascade: production::cascade,
     alarm: production::alarm,
     satisfy: production::satisfy,
@@ -148,17 +153,12 @@ fn check_alarm(kernel: Kernel, model: &Model) {
         assert!(deadline >= CONTINUE_NOW, "alarm is not a real deadline");
     }
     let control = model.control;
-    let runnable = if control.closed {
-        model.pending > 0
-    } else {
-        match control.mode {
-            Mode::Done => false,
-            Mode::Approval => control.turn && model.approval_queued,
-            Mode::Running => control.turn,
-            Mode::Await(deadline) => control.turn && deadline.is_some(),
-            Mode::Idle => model.queued > 0,
-        }
-    };
+    let runnable = contract::runnable(
+        control,
+        model.queued > 0,
+        model.approval_queued,
+        model.pending,
+    );
     assert!(set.is_some() == runnable, "lost or spurious wake-up");
     if control.closed || matches!(control.mode, Mode::Done) {
         assert!(!control.turn, "turn retained after completion or archive");
@@ -178,7 +178,28 @@ fn exactly_once_and_never_loses_a_wake(kernel: Kernel) {
     for _ in 0..STEPS {
         let closed_before = model.control.closed;
         step(kernel, &mut model, any_wake(), open_children);
+        // The shipping checkpoint boundary drops growing input and the turn
+        // before reporting an oversized state. Already closed/done states keep
+        // their original terminal owner.
+        if kani::any::<bool>() {
+            model.queued = 0;
+            model.approval_queued = false;
+            model.control.turn = false;
+            if !model.control.closed && !matches!(model.control.mode, Mode::Done) {
+                let (next, send) = (kernel.report)(model.control);
+                assert!(
+                    matches!(next.mode, Mode::Done),
+                    "shed did not settle terminal"
+                );
+                model.control = next;
+                model.reports += u8::from(send);
+            }
+        }
         assert!(model.reports <= 1, "ChildDone sent twice");
+        assert!(
+            model.control.reported == (model.reports == 1),
+            "terminal marker and original report disagree"
+        );
         if closed_before {
             assert!(model.control.closed, "archive reopened");
         }

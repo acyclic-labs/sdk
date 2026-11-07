@@ -128,9 +128,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Checkout<A, O>, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .checkout_accounted(selector, mode, &mut accounting, cancellation)
-            .await;
+        let result = async {
+            crate::heap_future::in_borrowed_frame!(&mut accounting, |accounting| async move {
+                self.checkout_accounted(selector, mode, accounting, cancellation)
+                    .await
+            })
+        }
+        .await;
         budget.finish(result, &accounting)
     }
 
@@ -151,7 +155,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             .checkout_root(generation_root, accounting, cancellation)
             .await?;
         let authority_head = self
-            .fence_checkout(mode, authority_head, accounting, cancellation)
+            .fence_checkout(mode, authority_head, accounting)
             .await?;
         let CheckoutState {
             base_root,
@@ -343,7 +347,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         mode: CheckoutMode,
         mut authority_head: Option<Head>,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<Option<Head>, FsError> {
         if mode.access == AccessMode::ReadWrite
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter

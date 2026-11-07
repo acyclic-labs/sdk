@@ -49,65 +49,71 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let inputs = self.capture_inputs(source_root, paths, identity, scope, work)?;
-        let paths = &inputs.0;
-        let options = &inputs.1;
-        let baseline = baseline.as_ref();
-        let cancellation = work.cancellation();
-        cancellation
-            .check()
-            .map_err(|_| MountSourceError::Cancelled)?;
-        self.cancellation
-            .check()
-            .map_err(|_| MountSourceError::Cancelled)?;
-        let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
-        for _ in 0..3 {
-            let mut carrier = NativeDemandCarrier::Native(work);
-            let mut candidate = self
-                .checkout
-                .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
-                .await?;
-            match scope {
-                HostCaptureScope::ExactPaths => {
-                    capture_paths_batched(
-                        &mut candidate.checkout,
-                        paths,
-                        options,
-                        64,
-                        cancellation,
-                        baseline,
-                        work,
-                    )
-                    .await
+        // All capture callers share this admitted frame; candidate reconciliation
+        // and installation must not become part of each caller's poll frame.
+        native_future(work, || async move {
+            let inputs = self.capture_inputs(source_root, paths, identity, scope, work)?;
+            let paths = &inputs.0;
+            let options = &inputs.1;
+            let baseline = baseline.as_ref();
+            let cancellation = work.cancellation();
+            cancellation
+                .check()
+                .map_err(|_| MountSourceError::Cancelled)?;
+            self.cancellation
+                .check()
+                .map_err(|_| MountSourceError::Cancelled)?;
+            let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
+            for _ in 0..3 {
+                let mut carrier = NativeDemandCarrier::Native(work);
+                let mut candidate = self
+                    .checkout
+                    .candidate(None, &mut carrier, cancellation, Some(&self.cancellation))
+                    .await?;
+                match scope {
+                    HostCaptureScope::ExactPaths => {
+                        capture_paths_batched(
+                            &mut candidate.checkout,
+                            paths,
+                            options,
+                            64,
+                            cancellation,
+                            baseline,
+                            work,
+                        )
+                        .await
+                    }
+                    HostCaptureScope::Subtree => {
+                        capture_subtrees_with_native_work(
+                            &mut candidate.checkout,
+                            std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
+                            options,
+                            &crate::CapturePolicy::default(),
+                            cancellation,
+                            baseline,
+                            work,
+                        )
+                        .await
+                    }
                 }
-                HostCaptureScope::Subtree => {
-                    capture_subtrees_with_native_work(
-                        &mut candidate.checkout,
-                        std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
-                        options,
-                        &crate::CapturePolicy::default(),
-                        cancellation,
-                        baseline,
-                        work,
-                    )
-                    .await
+                .map_err(|failure| MountSourceError::from(failure.error))?;
+                let scope = match scope {
+                    HostCaptureScope::ExactPaths => InstallScope::Paths(paths),
+                    HostCaptureScope::Subtree => {
+                        InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?)
+                    }
+                };
+                if self
+                    .install_capture(candidate, scope, &mut carrier, cancellation)
+                    .await?
+                {
+                    return Ok(());
                 }
             }
-            .map_err(|failure| MountSourceError::from(failure.error))?;
-            let scope = match scope {
-                HostCaptureScope::ExactPaths => InstallScope::Paths(paths),
-                HostCaptureScope::Subtree => {
-                    InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?)
-                }
-            };
-            if self
-                .install_capture(candidate, scope, &mut carrier, cancellation)
-                .await?
-            {
-                return Ok(());
-            }
-        }
-        Err(MountSourceError::Stale)
+            Err(MountSourceError::Stale)
+        })
+        .map_err(MountSourceError::from)?
+        .await
     }
 
     pub(super) async fn install_capture(

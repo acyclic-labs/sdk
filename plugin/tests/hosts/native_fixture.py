@@ -7,12 +7,16 @@ import subprocess
 
 
 def fixture_environment(root, variables=None):
+    variables = dict(variables or {})
+    launch = os.environ.copy()
+    if "PATH" in variables:
+        launch["PATH"] = variables.pop("PATH")
     bridge = Path(__file__).resolve().parents[3] / "scripts/graphcoder-e2e/scratch.mjs"
     command = ["node", str(bridge), "profile", str(Path(root).resolve())]
     recovery = "node scripts/graphcoder-e2e/scratch.mjs profile ABSOLUTE_SETTINGS"
     if not bridge.is_file():
         raise RuntimeError(f"step=admit shared fixture profile bridge {bridge}; recovery: restore the admitted scratch.mjs, then {recovery}")
-    result = subprocess.run(command, env={"PATH": os.environ["PATH"]},
+    result = subprocess.run(command, env=launch,
                             capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(f"step=create shared fixture profile: {result.stderr}; recovery: {recovery}")
@@ -22,10 +26,9 @@ def fixture_environment(root, variables=None):
             raise ValueError("profile is not an environment object")
     except (ValueError, TypeError) as error:
         raise RuntimeError(f"step=decode shared fixture profile: {error}; recovery: {recovery}") from error
-    variables = variables or {}
     if profile.keys() & variables.keys():
         raise RuntimeError(f"step=admit native fixture variables; recovery: remove profile overrides and use {recovery}")
-    return {"PATH": os.environ["PATH"], **profile, **variables}
+    return {**profile, **variables}
 
 
 def start_workspace_owner(binary, workspace, state, root, env, log):
@@ -38,8 +41,8 @@ def start_workspace_owner(binary, workspace, state, root, env, log):
     except OSError as error:
         raise RuntimeError(f"step=start shared workspace owner: {error}; recovery command: {recovery}") from error
     try:
-        # The shared bridge arms its original filesystem watch before launch.
-        # Its stdout closes if that watch or the original owner fails.
+        # The shared bridge joins the selected owner's serving-ready event.
+        # Its stdout closes if that process ends before becoming ready.
         event = json.loads(owner.stdout.readline())
         if event != {"event": "workspace-owner-ready"}:
             raise ValueError(f"unexpected readiness event: {event}")

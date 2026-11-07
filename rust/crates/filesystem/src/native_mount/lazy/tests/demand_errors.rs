@@ -13,6 +13,9 @@ fn demand_causes_keep_their_type_without_a_diagnostic_allocation() {
     use std::error::Error;
     for lazy in [false, true] {
         for cause in [
+            DemandError::StaleSource,
+            DemandError::StaleVersion,
+            DemandError::StaleCursor,
             DemandError::NativeWorkUnavailable,
             DemandError::OriginalWorkPoisoned,
             DemandError::WorkerUnavailable,
@@ -58,27 +61,81 @@ fn observation_causes_keep_their_original_box_without_allocating() {
 
 #[test]
 fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
-    use crate::native_mount::shared::outcome::{CallbackFailure, source_failure};
-    for lazy in [false, true] {
-        for (cause, expected) in [
-            (DemandError::Cancelled, CallbackFailure::Cancelled),
-            (DemandError::StaleSource, CallbackFailure::Stale),
-            (DemandError::StaleVersion, CallbackFailure::Stale),
-            (DemandError::StaleCursor, CallbackFailure::Stale),
-            (DemandError::Absent, CallbackFailure::NotFound),
-            (DemandError::NotDirectory, CallbackFailure::NotDirectory),
+    use crate::native_mount::shared::outcome::{
+        CallbackFailure, callback_failure, source_refusal, stops_mount,
+    };
+    for transport in 0..3 {
+        for (cause, expected, terminal) in [
+            (DemandError::Cancelled, CallbackFailure::Cancelled, true),
+            #[cfg(feature = "native-watch")]
+            (
+                DemandError::Observation(Box::new(crate::watch::NativeWatchError::Cancelled(
+                    crate::CancellationError,
+                ))),
+                CallbackFailure::Cancelled,
+                true,
+            ),
+            (DemandError::StaleSource, CallbackFailure::Stale, false),
+            (DemandError::StaleVersion, CallbackFailure::Stale, false),
+            (DemandError::StaleCursor, CallbackFailure::Stale, false),
+            (DemandError::Absent, CallbackFailure::NotFound, false),
+            (
+                DemandError::NotDirectory,
+                CallbackFailure::NotDirectory,
+                false,
+            ),
+            (DemandError::CursorBusy, CallbackFailure::Io, false),
+            (
+                DemandError::NativeWorkUnavailable,
+                CallbackFailure::Io,
+                true,
+            ),
+            (
+                DemandError::Allocation(Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err()),
+                CallbackFailure::OutOfMemory,
+                true,
+            ),
+            #[cfg(feature = "native-watch")]
+            (
+                DemandError::Observation(Box::new(
+                    crate::watch::NativeWatchError::BoundedObservationUnavailable,
+                )),
+                CallbackFailure::Io,
+                true,
+            ),
             (
                 DemandError::Work(crate::WorkError::Overflow),
                 CallbackFailure::Io,
+                true,
             ),
             (
                 DemandError::Mount(Box::new(MountSourceError::AccessDenied)),
                 CallbackFailure::Denied,
+                false,
+            ),
+            (
+                DemandError::Mount(Box::new(MountSourceError::MutationFinalization {
+                    primary: Box::new(Some(MountSourceError::Stale)),
+                    cleanup: Box::new(Some(DemandError::Cancelled)),
+                    custody: None,
+                })),
+                CallbackFailure::Stale,
+                true,
             ),
         ] {
-            let converted = convert(cause, lazy);
-            assert_eq!(source_failure(&converted), expected, "{converted:?}");
-            let callback = NativeMountError::Source(converted);
+            let callback = if transport < 2 {
+                NativeMountError::Source(convert(cause, transport == 1))
+            } else {
+                NativeMountError::Demand(cause)
+            };
+            let allocations = acyclic_test_support::measure(|| {
+                assert_eq!(callback_failure(&callback), expected, "{callback:?}");
+                assert_eq!(stops_mount(&callback), terminal, "{callback:?}");
+                if let NativeMountError::Source(error) = &callback {
+                    assert_eq!(source_refusal(error), (!terminal).then_some(expected));
+                }
+            });
+            assert_eq!(allocations.count_total, 0);
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             assert_eq!(
                 crate::native_mount::callback_errno(&callback),
@@ -102,6 +159,7 @@ fn lazy_and_direct_demand_conversion_use_the_same_callback_semantics() {
                     CallbackFailure::NotFound => 2,
                     CallbackFailure::NotDirectory => 267,
                     CallbackFailure::Denied => 5,
+                    CallbackFailure::OutOfMemory => 8,
                     CallbackFailure::Io => 1117,
                     _ => unreachable!("fixture uses explicit Windows statuses"),
                 };
@@ -119,18 +177,39 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let absent = root.path().join("not-created");
-    for lazy in [false, true] {
+    let transports = if cfg!(feature = "native-watch") { 6 } else { 3 };
+    for transport in 0..transports {
         // Capture the actual host failure; no fabricated OS-tool fixture.
         let error = std::fs::File::open(&absent).expect_err("fixture path is absent");
         let code = error.raw_os_error().ok_or("host open has no native code")?;
-        let converted = convert(DemandError::Io(error), lazy);
+        let cause = match transport / 3 {
+            #[cfg(feature = "native-watch")]
+            1 => DemandError::Observation(Box::new(crate::watch::NativeWatchError::Io(error))),
+            _ => DemandError::Io(error),
+        };
+        let callback = if transport % 3 < 2 {
+            NativeMountError::Source(convert(cause, transport % 3 == 1))
+        } else {
+            NativeMountError::Demand(cause)
+        };
         assert_eq!(
-            crate::native_mount::shared::outcome::source_failure(&converted),
+            crate::native_mount::shared::outcome::callback_failure(&callback),
             crate::native_mount::shared::outcome::CallbackFailure::Os(code)
         );
-        assert!(
-            matches!(converted, MountSourceError::Io(error, None) if error.raw_os_error() == Some(code))
-        );
+        let retained = match &callback {
+            NativeMountError::Source(MountSourceError::Io(error, None))
+            | NativeMountError::Demand(DemandError::Io(error)) => error,
+            #[cfg(feature = "native-watch")]
+            NativeMountError::Demand(DemandError::Observation(error)) => match error.as_ref() {
+                crate::watch::NativeWatchError::Io(error) => error,
+                _ => panic!("original OS cause was replaced: {callback:?}"),
+            },
+            _ => panic!("original OS cause was replaced: {callback:?}"),
+        };
+        assert_eq!(retained.raw_os_error(), Some(code));
+        assert!(!crate::native_mount::shared::outcome::stops_mount(
+            &callback
+        ));
     }
     Ok(())
 }
@@ -138,6 +217,9 @@ fn real_demand_io_keeps_its_host_code_through_both_conversions()
 #[test]
 fn demand_round_trips_do_not_nest_transports_or_allocate() {
     for cause in [
+        DemandError::StaleSource,
+        DemandError::StaleVersion,
+        DemandError::StaleCursor,
         DemandError::NativeWorkUnavailable,
         DemandError::OriginalWorkPoisoned,
         DemandError::WorkerUnavailable,

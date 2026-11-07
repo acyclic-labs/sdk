@@ -30,7 +30,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// is checked before `assets` is called, so later edits and deletions win.
     /// Existing bindings are preserved; any publication conflict is returned
     /// without retrying. This trusted setup API does not grant model authority.
-    pub async fn seed_once<F>(
+    pub fn seed_once<F>(
+        &self,
+        reference: &WorkspaceRef,
+        key: &IdempotencyKey,
+        assets: F,
+    ) -> impl Future<Output = Result<GenerationRef>>
+    where
+        F: FnOnce() -> Result<Vec<(String, acyclic_stream::OwnedBytes)>>,
+    {
+        Box::pin(self.initialize_seed(reference, key, assets))
+    }
+
+    async fn initialize_seed<F>(
         &self,
         reference: &WorkspaceRef,
         key: &IdempotencyKey,
@@ -86,7 +98,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // Stable evidence also records an operation when every file existed.
         // Its identity deliberately excludes the current embedded asset bytes.
         const DOMAIN: &[u8] = b"acyclic harness seed once v1";
-        let generation = Self::commit_contextual_publication(
+        let publication = Self::commit_contextual_publication(
             transaction,
             &io,
             workspaces::FilePublication::Replace(None),
@@ -95,8 +107,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 acyclic_stream::OwnedBytes::from_static(DOMAIN),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )),
-        )
-        .await?;
+        )?;
+        let generation = publication.await?;
         self.generation_ref_id(generation.id(), Some(&io))
     }
 }
@@ -135,24 +147,30 @@ mod tests {
         )
         .await?;
         let key = IdempotencyKey::new("built-in-skills-v1")?;
-        let original = host
-            .seed_once(&reference, &key, || {
-                Ok(vec![
-                    (
-                        "/skills/existing/SKILL.md".into(),
-                        acyclic_stream::OwnedBytes::from_static(b"default"),
-                    ),
-                    (
-                        "/skills/edited/SKILL.md".into(),
-                        acyclic_stream::OwnedBytes::from_static(b"original"),
-                    ),
-                    (
-                        "/skills/deleted/SKILL.md".into(),
-                        acyclic_stream::OwnedBytes::from_static(b"original"),
-                    ),
-                ])
-            })
-            .await?;
+        let initialization = host.seed_once(&reference, &key, || {
+            Ok(vec![
+                (
+                    "/skills/existing/SKILL.md".into(),
+                    acyclic_stream::OwnedBytes::from_static(b"default"),
+                ),
+                (
+                    "/skills/edited/SKILL.md".into(),
+                    acyclic_stream::OwnedBytes::from_static(b"original"),
+                ),
+                (
+                    "/skills/deleted/SKILL.md".into(),
+                    acyclic_stream::OwnedBytes::from_static(b"original"),
+                ),
+            ])
+        });
+        let bytes = std::mem::size_of_val(&initialization);
+        assert_eq!(
+            bytes,
+            std::mem::size_of::<usize>(),
+            "seed caller retained its transaction body"
+        );
+        eprintln!("seed initialization future: {bytes} bytes");
+        let original = initialization.await?;
         assert_eq!(
             host.read(&reference, None, "/skills/existing/SKILL.md", 64, None)
                 .await?

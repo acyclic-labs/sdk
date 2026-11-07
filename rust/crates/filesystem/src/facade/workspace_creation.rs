@@ -285,29 +285,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = (async {
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
-            let (creation, _) = self
-                .read_creation(id.volume_id(), &mut accounting, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?;
-            validate_volume_capabilities(creation.config, self.inner.capabilities)?;
-            let volume = Volume {
-                fs: self.clone(),
-                id: id.volume_id(),
-                config: creation.config,
-            };
-            self.workspace_head_state(&volume, &mut accounting, cancellation)
-                .await?;
-            Ok(crate::Workspace {
-                name,
-                id,
-                volume,
-                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                source: None,
-                access: None,
+        let result = async {
+            crate::heap_future::in_borrowed_frame!(&mut accounting, |accounting| async move {
+                let (name, id) = self.workspace_name(name.as_ref(), accounting, cancellation)?;
+                let (creation, _) = self
+                    .read_creation(id.volume_id(), accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::from)?;
+                validate_volume_capabilities(creation.config, self.inner.capabilities)?;
+                let volume = Volume {
+                    fs: self.clone(),
+                    id: id.volume_id(),
+                    config: creation.config,
+                };
+                self.workspace_head_state(&volume, accounting, cancellation)
+                    .await?;
+                Ok(crate::Workspace {
+                    name,
+                    id,
+                    volume,
+                    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                    source: None,
+                    access: None,
+                })
             })
-        })
+        }
         .await;
         budget.finish(result, &accounting)
     }

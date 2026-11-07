@@ -449,6 +449,25 @@ encoder and cross-language vector inputs. When admitting an identity format,
 copy that output to `../crates/auth/tests/fixtures/resource-identity-v1.json`;
 the shared tests compare the fixture and never rewrite it.
 
+The generated regression `corpus/harness_codecs/mcp-http-invalid-utf8-frontier`
+is the original 17-byte libFuzzer output, not an external server capture (SHA-256
+`ad0c10f954ef7361515f067c5c48ca235db5f8e13a5b21385691731a766bb0e8`).
+Replay it with the existing `harness_codecs` target. The existing body control
+also passes these bytes through that target's shared HTTP/SSE oracle when
+`test-support` is enabled. It checks the admitted prefix, payload identity and
+source-poll count through the production byte frontier. From the repository root:
+
+```sh
+cargo nextest run --locked -p acyclic-harness-core --no-default-features --features filesystem-local,test-support,mcp-http --lib -E 'test(=mcp::http::body::tests::frontier_borrows_prefix_and_settles_without_another_source_poll)'
+```
+
+The retained `mutations/mcp-http-discard-prefix.patch`,
+`mutations/mcp-http-overflow-repoll.patch` and `mutations/mcp-http-prefix-copy.patch`
+restore production prefix loss, extra source demand and a payload copy,
+respectively. Apply each independently with `git apply`, require the same body
+control to fail, then reverse it with `git apply -R` and require success. These
+finite checks do not establish native HTTP retirement or all transport branches.
+
 External MCP captures use published server processes. `corpus/EXTERNAL.tsv`
 records exact bytes; `captures/` retains requests, stdout, dependency identities,
 HTTP status/headers and each expected codec/method. Positive replay must reach

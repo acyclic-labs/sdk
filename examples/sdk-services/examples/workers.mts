@@ -14,6 +14,6 @@ const published = await workers.entries.publishDeployment(intent, {
 }, "deploy-example-worker");
 const { deployment } = await workers.deploy(published);
 if (!deployment) throw new Error("deploy returned no deployment");
-console.log(await workers.invoke({ workerName: deployment.name, accountId: new Uint8Array(), method: "GET", url: "/", headers: [], body: new Uint8Array() }));
-await workers.delete({ workerName: deployment.name, accountId: new Uint8Array(), idempotencyKey: "delete-worker" });
+console.log(await workers.invoke({ workerName: deployment.name, accountId: deployment.accountId, method: "GET", url: "/", headers: [], body: new Uint8Array(), deploymentEnvelope: new Uint8Array() }));
+await workers.delete({ workerName: deployment.name, accountId: deployment.accountId, idempotencyKey: "delete-worker" });
 await workers.entries.release(intent);
