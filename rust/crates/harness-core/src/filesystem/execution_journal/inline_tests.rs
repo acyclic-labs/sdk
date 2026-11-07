@@ -453,6 +453,8 @@ async fn terminal_usage_keeps_one_original_commit_and_refuses_foreign_or_partial
             ModelEvent::Completed { metadata } => metadata,
             _ => unreachable!(),
         }),
+        started_at: None,
+        completed_at: None,
         latency_ns: Some(123),
     };
     let partial = ModelEvent::Content {

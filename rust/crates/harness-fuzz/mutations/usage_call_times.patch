@@ -22,3 +22,27 @@ diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/har
                              latency_ns,
                              #[cfg(feature = "research")]
                              provider_request_id: metadata["provider_request_id"].as_str(),
+diff --git a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
+--- a/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
++++ b/rust/crates/harness-core/src/executor/metrics/inspect/tests.rs
+@@ -549,8 +549,6 @@
+         sampling: request.sampling,
+         max_output_tokens: None,
+         tokens: super::super::super::ModelTokenUsage::reported(&metadata),
+-        started_at: None,
+-        completed_at: None,
+         latency_ns: None,
+         provider_request_id: Some("generated-request"),
+         system_fingerprint: None,
+diff --git a/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs b/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
+--- a/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
++++ b/rust/crates/harness-core/src/filesystem/execution_journal/inline_tests.rs
+@@ -456,8 +456,6 @@
+             ModelEvent::Completed { metadata } => metadata,
+             _ => unreachable!(),
+         }),
+-        started_at: None,
+-        completed_at: None,
+         latency_ns: Some(123),
+     };
+     let partial = ModelEvent::Content {
