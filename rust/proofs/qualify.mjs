@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-failure-progress": [
+    "rust/crates/stream/src/local/local_stream.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failed journal left a public observation parked", ["--features", "local,test-support"],
+    {
+      mutations: [
+        { patch: "rust/proofs/local-failure-progress/observation.patch", label: "missing-observation-retirement", diagnostic: "failed journal left a public observation parked" },
+        { patch: "rust/proofs/local-failure-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "failed journal left a conditional mutation parked" },
+      ],
+    },
+  ],
   "browser-revision-progress": [
     "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
     "browser::tests::database_loss_ends_parked_revision_observers",

@@ -1,75 +1,171 @@
 use super::super::*;
+use futures::FutureExt as _;
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll},
+};
 
 // The OS refuses a real journal write through a held read-only descriptor.
 // Keep its lease so the descriptor cache cannot reopen it with write access.
 #[tokio::test]
 async fn failed_physical_write_keeps_its_cause_and_ends_followers()
 -> Result<(), Box<dyn std::error::Error>> {
-    for native in [false, true] {
-        let root = tempfile::tempdir()?;
-        let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
-        let path = StreamPath::new("failure")?;
-        stream.append(super::keyed_append("failure", 0)?).await?;
-        let mut follow = stream
-            .follow(crate::FollowRequest::new(path.clone(), 1))
-            .await?;
-        assert!(futures::poll!(follow.next()).is_pending());
-        let file_path = root.path().join(JOURNAL_FILE);
-        let read_only = acyclic_native_runtime::CachedFile::new(
-            std::fs::File::open(&file_path)?,
-            &file_path,
-            true,
-            false,
-        )?;
-        let held = read_only.lease()?;
-        stream
-            .inner
-            .journal
-            .lock()
-            .map_err(|_| "journal poisoned")?
-            .file = read_only;
-        let meter = Arc::new(crate::test_meter::Meter::local());
-        let work = if native {
-            Some(crate::native::Work::new(meter.original())?)
-        } else {
-            None
-        };
-        let frame = PreparedFrame::encode(
-            &WriteRequest::Append(super::keyed_append("failure", 1)?),
-            SystemUnixMillisClock.now_unix_millis(),
-            work.clone(),
-        )?;
-        let visibility = stream.inner.visibility.write().await;
-        let publication = stream.inner.publication.write().await;
-        assert_eq!(stream.persist(frame).await, Err(StreamError::Unavailable));
-        let cause = stream.failure().ok_or("missing original failure")?;
-        assert_eq!(cause.operation, "write");
-        assert_eq!(cause.cause, "io");
-        assert!(cause.io_kind.is_some());
-        assert!(cause.raw_os_error.is_some());
-        if let Some(work) = work {
-            assert_eq!(work.failure("write"), Some(cause));
-            assert!(
-                work.finish::<(), StreamError>(Err(StreamError::Unavailable))
-                    .is_err()
-            );
+    struct Observer(AtomicBool);
+    impl futures::task::ArcWake for Observer {
+        fn wake_by_ref(observer: &Arc<Self>) {
+            observer.0.store(true, Ordering::Release);
         }
-        stream.inner.poison();
-        assert_eq!(
-            stream.failure(),
-            Some(cause),
-            "a secondary failure replaced the OS cause"
-        );
-        drop(publication);
-        drop(visibility);
-        assert!(matches!(
-            follow.next().await,
-            Some(Err(StreamError::Unavailable))
-        ));
-        assert!(follow.next().await.is_none());
-        drop(follow);
-        drop(held);
-        drop(stream);
+    }
+    for native in [false, true] {
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        let (root, path, meter) = super::journal_lifecycle(&schedule, &mut boundaries, async {
+            let root = tempfile::tempdir()?;
+            let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+            let path = StreamPath::new("failure")?;
+            stream.append(super::keyed_append("failure", 0)?).await?;
+            // Scope the owned workers, but poll reads through ordinary dispatch:
+            // scheduling instrumentation must not insert an observation wait.
+            let mut follow = acyclic_native_runtime::testing::untracked(
+                stream.follow(crate::FollowRequest::new(path.clone(), 1)),
+            )
+            .await?;
+            assert!(
+                futures::poll!(acyclic_native_runtime::testing::untracked(follow.next()))
+                    .is_pending()
+            );
+            let file_path = root.path().join(JOURNAL_FILE);
+            let read_only = acyclic_native_runtime::CachedFile::new(
+                std::fs::File::open(&file_path)?,
+                &file_path,
+                true,
+                false,
+            )?;
+            let held = read_only.lease()?;
+            stream
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| "journal poisoned")?
+                .file = read_only;
+            let meter = Arc::new(crate::test_meter::Meter::local());
+            let work = if native {
+                Some(crate::native::Work::new(meter.original())?)
+            } else {
+                None
+            };
+            let frame = PreparedFrame::encode(
+                &WriteRequest::Append(super::keyed_append("failure", 1)?),
+                SystemUnixMillisClock.now_unix_millis(),
+                work.clone(),
+            )?;
+            let visibility = stream.inner.visibility.write().await;
+            let publication = stream.inner.publication.write().await;
+            // These public operations are parked before they can observe memory.
+            // Failure must wake them while both original fences remain held.
+            let mut waits: [crate::BoxProviderFuture<'_, Result<(), StreamError>>; 4] = [
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(stream.tail(path.clone()))
+                        .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(stream.read(ReadRequest {
+                        path: path.clone(),
+                        from: 0,
+                        limit: 1,
+                        key: None,
+                        at_least: Default::default(),
+                    }))
+                    .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    acyclic_native_runtime::testing::untracked(
+                        stream.follow(crate::FollowRequest::new(path.clone(), 1)),
+                    )
+                    .map(|result| result.map(|_| ())),
+                ),
+                Box::pin(
+                    stream
+                        .commit(CommitRequest {
+                            conditions: vec![crate::CommitCondition::Tail {
+                                path: path.clone(),
+                                expected: 1,
+                            }],
+                            mutations: vec![crate::CommitMutation::Append {
+                                path: path.clone(),
+                                records: vec!["queued".into()],
+                            }],
+                            deadline_unix_millis: None,
+                            idempotency_key: IdempotencyKey::unique(),
+                        })
+                        .map(|result| result.map(|_| ())),
+                ),
+            ];
+            let observers: [_; 4] =
+                std::array::from_fn(|_| Arc::new(Observer(AtomicBool::new(false))));
+            let wakers = observers
+                .each_ref()
+                .map(|observer| futures::task::waker(observer.clone()));
+            for (waiting, waker) in waits.iter_mut().zip(&wakers) {
+                assert!(
+                    waiting
+                        .as_mut()
+                        .poll(&mut Context::from_waker(waker))
+                        .is_pending()
+                );
+            }
+            assert_eq!(stream.persist(frame).await, Err(StreamError::Unavailable));
+            for (index, ((waiting, waker), observer)) in
+                waits.iter_mut().zip(&wakers).zip(&observers).enumerate()
+            {
+                let diagnostic = if index == 3 {
+                    "failed journal left a conditional mutation parked"
+                } else {
+                    "failed journal left a public observation parked"
+                };
+                assert!(observer.0.load(Ordering::Acquire), "{diagnostic}");
+                assert!(
+                    matches!(
+                        waiting.as_mut().poll(&mut Context::from_waker(waker)),
+                        Poll::Ready(Err(StreamError::Unavailable))
+                    ),
+                    "{diagnostic}"
+                );
+            }
+            drop(waits);
+            let cause = stream.failure().ok_or("missing original failure")?;
+            assert_eq!(cause.operation, "write");
+            assert_eq!(cause.cause, "io");
+            assert!(cause.io_kind.is_some());
+            assert!(cause.raw_os_error.is_some());
+            if let Some(work) = work {
+                assert_eq!(work.failure("write"), Some(cause));
+                assert!(
+                    work.finish::<(), StreamError>(Err(StreamError::Unavailable))
+                        .is_err()
+                );
+            }
+            stream.inner.poison();
+            assert_eq!(
+                stream.failure(),
+                Some(cause),
+                "a secondary failure replaced the OS cause"
+            );
+            drop(publication);
+            drop(visibility);
+            assert!(matches!(
+                acyclic_native_runtime::testing::untracked(follow.next()).now_or_never(),
+                Some(Some(Err(StreamError::Unavailable)))
+            ));
+            assert!(matches!(
+                acyclic_native_runtime::testing::untracked(follow.next()).now_or_never(),
+                Some(None)
+            ));
+            drop(follow);
+            drop(held);
+            drop(stream);
+            Ok::<_, Box<dyn std::error::Error>>((root, path, meter))
+        })
+        .await??;
         meter.assert_refunded();
         let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
         assert_eq!(

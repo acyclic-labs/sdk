@@ -1,0 +1,24 @@
+diff --git a/rust/crates/stream/src/local/local_stream.rs b/rust/crates/stream/src/local/local_stream.rs
+index 76cef07ad0d..bb1db5b387e 100644
+--- a/rust/crates/stream/src/local/local_stream.rs
++++ b/rust/crates/stream/src/local/local_stream.rs
+@@ -746,16 +746,8 @@ impl LocalStream {
+     // The shared stream driver owns observation outside its cancellable probe.
+     async fn accepted_snapshot<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+         self.check_available()?;
+-        let mut failed = self.inner.failed.subscribe();
+-        let read = std::pin::pin!(async {
+-            let _visibility = self.inner.publication.read().await;
+-            self.check_available()?;
+-            Ok(read.await)
+-        });
+-        let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+-        match futures::future::select(unavailable, read).await {
+-            futures::future::Either::Left((error, _)) => Err(error),
+-            futures::future::Either::Right((result, _)) => result,
+-        }
++        let _visibility = self.inner.publication.read().await;
++        self.check_available()?;
++        Ok(read.await)
+     }
+ }
