@@ -15,7 +15,7 @@ pub fn check(bytes: &[u8], key: &str) -> Option<String> {
     }
     // Compare the admitted bytes, before the writer can repair authentication.
     // JSON ordering and whitespace are not part of the persisted contract.
-    let original = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+    let original = serde_json::from_slice::<serde_json::Value>(bytes);
     let mut checksum = Sha256::new();
     checksum.update(key.as_bytes());
     checksum.update([0]);
@@ -25,10 +25,11 @@ pub fn check(bytes: &[u8], key: &str) -> Option<String> {
         "digest": value,
         "checksum": format!("sha256:{:x}", checksum.finalize()),
     });
-    assert_eq!(
-        original,
-        Some(canonical),
-        "accepted an unauthenticated cache record"
+    assert!(
+        original
+            .as_ref()
+            .is_ok_and(|original| original == &canonical),
+        "accepted an unauthenticated cache record: original={original:?}; expected={canonical:?}"
     );
     Some(value)
 }
