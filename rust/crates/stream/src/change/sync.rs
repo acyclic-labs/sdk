@@ -22,11 +22,13 @@ mod checked {
         pub(crate) fn new(value: T) -> Self {
             Self(loom::sync::Mutex::new(value))
         }
-        pub(crate) fn lock(&self) -> Result<Guard<'_, T>, ()> {
+        pub(crate) fn lock(&self) -> std::sync::LockResult<Guard<'_, T>> {
             assert_unlocked();
-            let guard = self.0.lock().map_err(|_| ())?;
+            let guard = self.0.lock();
             HELD.with(|held| held.set(true));
-            Ok(Guard(guard))
+            guard
+                .map(Guard)
+                .map_err(|poison| std::sync::PoisonError::new(Guard(poison.into_inner())))
         }
     }
     impl<T> Deref for Guard<'_, T> {
