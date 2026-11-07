@@ -34,3 +34,16 @@ impl std::fmt::Display for DarwinRetirementFailure {
 }
 
 impl std::error::Error for DarwinRetirementFailure {}
+
+pub(super) fn retirement_result(status: i32, dissent: i32) -> std::io::Result<()> {
+    if dissent != 0 {
+        return Err(std::io::Error::new(
+            std::io::Error::from_raw_os_error(status).kind(),
+            DarwinRetirementFailure(dissent),
+        ));
+    }
+    if status != 0 {
+        return Err(std::io::Error::from_raw_os_error(status));
+    }
+    Ok(())
+}
