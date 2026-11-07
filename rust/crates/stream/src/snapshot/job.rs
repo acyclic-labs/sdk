@@ -1,5 +1,5 @@
 use super::Snapshot;
-use crate::query_sync::SyncMutex;
+use crate::change::sync::Mutex as SyncMutex;
 use std::{
     future::{Future, poll_fn},
     sync::{Arc, PoisonError},
@@ -74,17 +74,21 @@ impl<S: Snapshot> Future for Receiver<S> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
-        let value = {
+        let waker = cx.waker().clone();
+        let (value, previous) = {
             let mut completed = self
                 .completed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let value = completed.value.take();
-            if value.is_none() {
-                completed.waker = Some(cx.waker().clone());
-            }
-            value
+            let previous = if value.is_none() {
+                completed.waker.replace(waker)
+            } else {
+                None
+            };
+            (value, previous)
         };
+        drop(previous);
         match value {
             Some(value) => {
                 self.satisfied = true;
@@ -111,21 +115,31 @@ impl<S: Snapshot> Drop for Receiver<S> {
             #[cfg(not(loom))]
             return;
         }
-        let (value, worker) = {
+        #[cfg(loom)]
+        let skip_wake;
+        let (value, waker, worker) = {
             let mut completed = self
                 .completed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             completed.abandoned = true;
-            completed.waker = None;
             #[cfg(loom)]
-            if completed.mutant == super::model::Mutant::NoWake {
-                completed.worker = None;
+            {
+                skip_wake = completed.mutant == super::model::Mutant::NoWake;
             }
-            (completed.value.take(), completed.worker.take())
+            (
+                completed.value.take(),
+                completed.waker.take(),
+                completed.worker.take(),
+            )
         };
         // State destruction and the wake happen outside the leaf lock.
         drop(value);
+        drop(waker);
+        #[cfg(loom)]
+        if skip_wake {
+            return;
+        }
         if let Some(worker) = worker {
             worker.wake();
         }
@@ -146,7 +160,8 @@ impl<S: Snapshot> Job<S> {
             // Abandonment is checked before every read poll, so a job whose
             // consumer is gone never enters, or stays queued on, a lock.
             poll_fn(|cx| {
-                {
+                let waker = cx.waker().clone();
+                let previous = {
                     let mut completed = completed.lock().unwrap_or_else(PoisonError::into_inner);
                     if completed.abandoned {
                         #[cfg(loom)]
@@ -155,8 +170,9 @@ impl<S: Snapshot> Job<S> {
                         }
                         return Poll::Ready(None);
                     }
-                    completed.worker = Some(cx.waker().clone());
-                }
+                    completed.worker.replace(waker)
+                };
+                drop(previous);
                 let result = read.as_mut().poll(cx).map(Some);
                 #[cfg(all(test, not(loom)))]
                 if result.is_pending() {
@@ -183,14 +199,19 @@ impl<S: Snapshot> Job<S> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             completed.value = Some((state, result));
-            #[cfg(loom)]
-            if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
-                if let Some(waker) = completed.waker.take() {
-                    waker.wake();
+            let worker = {
+                #[cfg(loom)]
+                {
+                    if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
+                        None
+                    } else {
+                        completed.worker.take()
+                    }
                 }
-                return;
-            }
-            (completed.waker.take(), completed.worker.take())
+                #[cfg(not(loom))]
+                completed.worker.take()
+            };
+            (completed.waker.take(), worker)
         };
         drop(worker);
         if let Some(waker) = waker {

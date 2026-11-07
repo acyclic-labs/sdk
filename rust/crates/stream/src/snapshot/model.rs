@@ -44,6 +44,22 @@ pub(crate) fn capture(discard_on_drop: bool) {
     });
 }
 
+struct ConsumerWake {
+    retired: std::sync::Arc<loom::sync::atomic::AtomicUsize>,
+}
+impl std::task::Wake for ConsumerWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        crate::change::sync::assert_unlocked();
+    }
+}
+impl Drop for ConsumerWake {
+    fn drop(&mut self) {
+        crate::change::sync::assert_unlocked();
+        self.retired
+            .fetch_add(1, loom::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub(super) fn discard_on_drop() -> bool {
     EXECUTOR.with(|executor| executor.borrow().as_ref().is_some_and(|entry| entry.0))
 }
@@ -122,6 +138,21 @@ pub(crate) fn depart<H>(
             .is_pending()
     );
     let mut worker = take();
+    let retired = std::sync::Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+    // Replace the actual receiver's last Waker owner, then leave the next one
+    // stored through publication or cancellation. Both destructors may re-enter.
+    for _ in 0..2 {
+        let waker = Waker::from(std::sync::Arc::new(ConsumerWake {
+            retired: retired.clone(),
+        }));
+        assert!(
+            follow
+                .as_mut()
+                .poll_next(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+    }
+    assert_eq!(retired.load(loom::sync::atomic::Ordering::SeqCst), 1);
     let woken = std::sync::Arc::new(Flag(loom::sync::atomic::AtomicBool::new(false)));
     let waker = Waker::from(woken.clone());
     let mut cx = Context::from_waker(&waker);
@@ -171,4 +202,5 @@ pub(crate) fn depart<H>(
         }
     }
     drop(worker);
+    assert_eq!(retired.load(loom::sync::atomic::Ordering::SeqCst), 2);
 }
