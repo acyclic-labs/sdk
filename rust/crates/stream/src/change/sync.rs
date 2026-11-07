@@ -52,8 +52,3 @@ mod checked {
 pub(crate) use checked::Mutex;
 #[cfg(all(loom, test))]
 pub(crate) use checked::assert_unlocked;
-
-#[cfg(loom)]
-pub(crate) use loom::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(loom))]
-pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};

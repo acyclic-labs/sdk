@@ -80,7 +80,7 @@ fn cancellation_race(broken: bool) {
         let removing = changed.clone();
         let cancel = loom::thread::spawn(move || {
             if broken {
-                let old = std::mem::take(&mut removing.state.inner.lock().unwrap().waiters);
+                let old = std::mem::take(&mut removing.state.lock().unwrap().waiters);
                 drop(old);
             }
             drop(cancelled);
@@ -96,7 +96,7 @@ fn cancellation_race(broken: bool) {
             kept.poll_changed(&mut Context::from_waker(&kept_wake)),
             Poll::Ready(Ok(()))
         );
-        assert!(changed.state.inner.lock().unwrap().waiters.is_empty());
+        assert!(changed.state.lock().unwrap().waiters.is_empty());
     });
 }
 #[test]
@@ -120,7 +120,7 @@ fn notification(broken: bool) {
                 .is_pending()
         );
         if broken {
-            let mut state = changed.state.inner.lock().unwrap();
+            let mut state = changed.state.lock().unwrap();
             state.revision = Some(1);
             // Catch inside the guard's scope so the deliberate assertion cannot
             // poison the mutex and abort later subscription cleanup.
@@ -158,7 +158,7 @@ proptest::proptest! {
     ) {
         loom::model(move || {
             let changed = Change::new();
-            { let mut state = changed.state.inner.lock().unwrap(); state.revision = Some(revision); state.next_id = id; }
+            { let mut state = changed.state.lock().unwrap(); state.revision = Some(revision); state.next_id = id; }
             let first = changed.subscribe();
             assert_eq!(first.is_ok(), id < u64::MAX);
             if let Ok(first) = first {
@@ -166,54 +166,7 @@ proptest::proptest! {
                 if let Ok(second) = changed.subscribe() { assert!(second.id > first.id); }
             }
             assert_eq!(changed.notify().is_ok(), revision < u64::MAX);
-            assert_eq!(changed.state.inner.lock().unwrap().revision, revision.checked_add(1));
-        });
-    }
-}
-
-/// This is the original Change used by BrowserPort's detached changed future,
-/// not a parallel model. No wall-clock timeout or retry can hide a lost wake.
-#[test]
-fn producer_loss_terminates_detached_subscriptions() {
-    for before_poll in [false, true] {
-        loom::model(move || {
-            let producer = Change::new();
-            let last = producer.clone();
-            let mut subscription = producer.subscribe().unwrap();
-            let mut cancelled = producer.subscribe().unwrap();
-            let (count, wake) = probe();
-            let mut context = Context::from_waker(&wake);
-            assert!(cancelled.poll_changed(&mut context).is_pending());
-            drop(cancelled);
-            drop(producer);
-            // An unrelated clone retiring must not close a living producer.
-            assert!(subscription.poll_changed(&mut context).is_pending());
-            let mut late = last.subscribe().unwrap();
-            let mut wait = Box::pin(subscription.changed());
-            if before_poll {
-                assert!(wait.as_mut().poll(&mut context).is_pending());
-            }
-            let retiring = loom::thread::spawn(move || drop(last));
-            let observed = wait.as_mut().poll(&mut context);
-            retiring.join().unwrap();
-            if observed.is_pending() {
-                assert!(
-                    count.count.load(Ordering::SeqCst) > 0,
-                    "final change producer dropped without waking its subscription"
-                );
-                assert_eq!(
-                    wait.as_mut().poll(&mut context),
-                    Poll::Ready(Err(StreamError::Unavailable)),
-                    "detached subscription retained a vanished change producer"
-                );
-            } else {
-                assert_eq!(observed, Poll::Ready(Err(StreamError::Unavailable)));
-            }
-            assert_eq!(
-                Box::pin(late.changed()).as_mut().poll(&mut context),
-                Poll::Ready(Err(StreamError::Unavailable)),
-                "unpolled subscription retained a vanished change producer"
-            );
+            assert_eq!(changed.state.lock().unwrap().revision, revision.checked_add(1));
         });
     }
 }

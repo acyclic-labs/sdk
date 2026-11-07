@@ -712,25 +712,3 @@ async fn every_opener_of_one_database_proves_the_others_revisions() {
         Some(Err(StreamError::RevisionForeign))
     ));
 }
-
-/// The actual journal API hands off a static future, so it must outlive both
-/// its transaction and its provider without retaining a nonexistent producer.
-#[wasm_bindgen_test]
-async fn detached_journal_wait_ends_when_its_last_provider_drops() {
-    use crate::replicated::CommandJournal as _;
-    let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
-        .await
-        .expect("open");
-    let surviving = provider.clone();
-    let mut port = port::BrowserPort::new(&provider, provider.transaction().expect("transaction"))
-        .expect("journal port");
-    let mut waiting = port.changed(0);
-    drop(port);
-    drop(provider);
-    assert!(futures::poll!(waiting.as_mut()).is_pending());
-    drop(surviving);
-    assert!(matches!(
-        waiting.now_or_never(),
-        Some(Err(StreamError::Unavailable))
-    ));
-}

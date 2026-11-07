@@ -101,7 +101,7 @@ impl Attempt {
     }
 }
 
-/// Storage owns physical ordering, durability, its acceptance clock and events.
+/// Storage owns physical ordering, durability and its acceptance clock.
 /// It never evaluates Stream conditions or invents a replacement retry identity.
 pub(crate) trait CommandJournal: ProviderPlatform {
     fn append_if(
@@ -114,6 +114,11 @@ pub(crate) trait CommandJournal: ProviderPlatform {
         from: u64,
         page: usize,
     ) -> impl Future<Output = Result<JournalPage, StreamError>> + ProviderTask;
+}
+
+/// Journal notifications for replicas refreshed by an independent writer.
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub(crate) trait JournalNotifications: CommandJournal {
     /// Registers atomically against `after`; an already advanced head is ready.
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
 }
@@ -343,9 +348,13 @@ impl<J: CommandJournal> Replicated<J> {
         result
     }
 
+    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
     pub(crate) fn changed(
         &mut self,
-    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError> {
+    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError>
+    where
+        J: JournalNotifications,
+    {
         self.check()?;
         Ok(self.journal.changed(self.cursor))
     }
