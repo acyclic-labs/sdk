@@ -79,9 +79,9 @@ impl HostWorkspaceOwner {
                 .native
                 .ok_or_else(|| Error::NotFound("native session reference absent".into()));
         }
-        self.attach(&agent).await?;
+        let view = self.attach(&agent).await?;
         if matches!(event, "Stop" | "SessionEnd") {
-            self.view(&agent)?.capture(operation).await?;
+            view.capture(operation).await?;
             return Ok(json!({}));
         }
         Ok(
