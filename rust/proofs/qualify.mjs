@@ -30,6 +30,8 @@ const claims = {
         { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
         { patch: "rust/proofs/postgres-refresh-progress/unpolled.patch", label: "late-retirement-custody", diagnostic: "retired refresh producer served a later observer" },
         { patch: "rust/proofs/postgres-refresh-progress/connection.patch", label: "missing-connection-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/session.patch", label: "missing-session-retirement", diagnostic: "retired producer left a public session refresh parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "retired producer left a conditional publication parked" },
       ],
     },
   ],

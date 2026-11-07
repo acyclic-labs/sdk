@@ -692,6 +692,12 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
 #[test]
 fn refresh_producer_retirement_ends_public_waits()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    struct Observer(std::sync::atomic::AtomicBool);
+    impl futures::task::ArcWake for Observer {
+        fn wake_by_ref(observer: &Arc<Self>) {
+            observer.0.store(true, Ordering::Release);
+        }
+    }
     let database = std::env::var("STORAGE_POSTGRES_URL")?;
     for producer in 0..4 {
         for park in [true, false] {
@@ -779,6 +785,42 @@ fn refresh_producer_retirement_ends_public_waits()
                     assert!(waiting.as_mut().now_or_never().is_none());
                 });
                 }
+                // Retain the real session owner so no SQL completion or mutex
+                // release can conceal a missing retirement observation.
+                let session = runtime.block_on(provider.inner.session.lock());
+                let mut tail = Box::pin(provider.tail(path.clone()));
+                let mut publication = Box::pin(provider.commit(CommitRequest {
+                    conditions: vec![CommitCondition::Tail {
+                        path: path.clone(),
+                        expected: 1,
+                    }],
+                    mutations: vec![CommitMutation::Append {
+                        path: path.clone(),
+                        records: vec!["retained-session".into()],
+                    }],
+                    deadline_unix_millis: None,
+                    idempotency_key: IdempotencyKey::unique(),
+                }));
+                let observers = [
+                    Arc::new(Observer(AtomicBool::new(false))),
+                    Arc::new(Observer(AtomicBool::new(false))),
+                ];
+                let wakers = observers
+                    .each_ref()
+                    .map(|observer| futures::task::waker(observer.clone()));
+                runtime.block_on(async {
+                    assert!(
+                        tail.as_mut()
+                            .poll(&mut std::task::Context::from_waker(&wakers[0]))
+                            .is_pending()
+                    );
+                    assert!(
+                        publication
+                            .as_mut()
+                            .poll(&mut std::task::Context::from_waker(&wakers[1]))
+                            .is_pending()
+                    );
+                });
                 // Retire each original producer independently, then the executor.
                 // The provider, cursor and remote writer remain alive throughout.
                 if producer == 3 {
@@ -793,6 +835,23 @@ fn refresh_producer_retirement_ends_public_waits()
                         "retired refresh producer left a public revision wait parked"
                     );
                 }
+                assert_eq!(
+                    tail.as_mut().now_or_never(),
+                    Some(Err(StreamError::Unavailable)),
+                    "retired producer left a public session refresh parked"
+                );
+                assert_eq!(
+                    publication.as_mut().now_or_never(),
+                    Some(Err(StreamError::Unavailable)),
+                    "retired producer left a conditional publication parked"
+                );
+                for observer in observers {
+                    assert!(
+                        observer.0.load(Ordering::Acquire),
+                        "retirement lost a public session waiter wake"
+                    );
+                }
+                drop(session);
                 assert!(matches!(
                     next.now_or_never(),
                     Some(Some(Err(StreamError::Unavailable)))

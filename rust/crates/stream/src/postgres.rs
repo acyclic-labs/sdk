@@ -300,8 +300,15 @@ impl PostgresStream {
 
     async fn refresh(&self) -> Result<(), StreamError> {
         self.check()?;
-        let mut replica = self.inner.session.lock().await;
-        let result = replica.refresh(PAGE).await;
+        let mut failure = self.inner.failure.subscribe();
+        let result = tokio::select! {
+            biased;
+            _ = failure.wait_for(|failure| failure.retired) => return Err(StreamError::Unavailable),
+            result = async {
+                let mut replica = self.inner.session.lock().await;
+                replica.refresh(PAGE).await
+            } => result,
+        };
         if result.is_err() {
             self.fail();
         }
@@ -325,12 +332,14 @@ impl PostgresStream {
             Ok(command) => command,
             Err(error) => return completion.finish(Err(error), StreamError::code),
         };
+        self.check()?;
+        let mut failure = self.inner.failure.subscribe();
         let provider = self.clone();
         // This one exact publication retains custody through caller cancellation.
-        tokio::spawn(span.scope(completion.observe_output(
+        let publication = tokio::spawn(span.scope(completion.observe_output(
             async move {
-                provider.check()?;
                 let mut replica = provider.inner.session.lock().await;
+                provider.check()?;
                 let result = replica.execute(command, deadline, PAGE).await;
                 if matches!(
                     result,
@@ -343,9 +352,14 @@ impl PostgresStream {
                 result.map(|execution| execution.outcome)
             },
             |result| result.as_ref().err().map(StreamError::code),
-        )))
-        .await
-        .map_err(unavailable)?
+        )));
+        // Losing observation does not cancel the submitted identity. The task
+        // retains custody; a retirement result never asserts non-publication.
+        tokio::select! {
+            biased;
+            result = publication => result.map_err(unavailable)?,
+            _ = failure.wait_for(|failure| failure.retired) => Err(StreamError::Unavailable),
+        }
     }
 
     fn guarded<T: Send + 'static>(
