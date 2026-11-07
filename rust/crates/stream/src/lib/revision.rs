@@ -738,8 +738,16 @@ mod tests {
         tokio::pin!(closing);
         assert!(closing.as_mut().poll(&mut context).is_pending());
         authority.close();
-        assert_eq!(observer.0.load(Ordering::Relaxed), 3);
-        assert_eq!(closing.await, Err(StreamError::Unavailable));
+        assert_eq!(
+            observer.0.load(Ordering::Relaxed),
+            3,
+            "retired revision authority did not wake its parked reader"
+        );
+        assert_eq!(
+            closing.as_mut().poll(&mut context),
+            std::task::Poll::Ready(Err(StreamError::Unavailable)),
+            "retired revision authority left its reader parked"
+        );
         assert_eq!(
             authority.wait(&closing_cut).await,
             Err(StreamError::Unavailable)

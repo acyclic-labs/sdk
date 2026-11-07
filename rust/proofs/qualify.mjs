@@ -26,6 +26,17 @@ const claims = {
     "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
     "unchanged applied revision woke a parked reader", ["--no-default-features"],
   ],
+  "revision-retirement-progress": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
+    "retired revision authority did not wake its parked reader", ["--no-default-features"],
+    {
+      mutations: [
+        { patch: "rust/proofs/revision-retirement-progress/notification.patch", label: "missing-retirement-wake", diagnostic: "retired revision authority did not wake its parked reader" },
+        { patch: "rust/proofs/revision-retirement-progress/terminal.patch", label: "missing-terminal-state", diagnostic: "retired revision authority left its reader parked" },
+      ],
+    },
+  ],
   "conditional-watch-parity": [
     "rust/crates/stream/src/query_sync/watch.rs", "acyclic-stream-publication-models",
     "watch_publication_cancellation_and_loss_match_tokio",
