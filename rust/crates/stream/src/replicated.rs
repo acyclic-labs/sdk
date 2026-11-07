@@ -209,7 +209,11 @@ impl<J: CommandJournal> Replicated<J> {
         self.failed
     }
 
-    #[cfg(all(test, feature = "postgres", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        test,
+        any(feature = "local", feature = "postgres"),
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn set_proposal_clock(&self, millis: u64) {
         self.clock.set(millis);
     }

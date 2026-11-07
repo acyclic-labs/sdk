@@ -29,10 +29,11 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
                 stream.follow(crate::FollowRequest::new(path.clone(), 1)),
             )
             .await?;
-            assert!(
-                futures::poll!(acyclic_native_runtime::testing::untracked(follow.next()))
-                    .is_pending()
-            );
+            {
+                let next =
+                    std::pin::pin!(acyclic_native_runtime::testing::untracked(follow.next()));
+                assert!(futures::poll!(next).is_pending());
+            }
             let file_path = root.path().join(JOURNAL_FILE);
             let read_only = acyclic_native_runtime::CachedFile::new(
                 std::fs::File::open(&file_path)?,
