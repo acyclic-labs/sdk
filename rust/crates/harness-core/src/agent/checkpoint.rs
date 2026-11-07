@@ -19,7 +19,7 @@
 //! whose window and turn would not fit fails the agent visibly instead (see
 //! [`super::machine`]), so no step can wedge an agent on a record its stream
 //! refuses.
-use super::{AgentId, AgentState, Error};
+use super::{AgentId, AgentRecord as _, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 use std::collections::BTreeSet;
