@@ -75,7 +75,10 @@ proptest! {
                     prop_assert_ne!(bytes.as_slice().as_ptr(), pointer, "unknown backing was not copied");
                 }
             }
-            prop_assert_eq!(bytes.backing().as_ref(), Some(&backing), "backing lost original owner");
+            {
+                let observed_backing = bytes.backing();
+                prop_assert_eq!(observed_backing.as_ref(), Some(&backing), "backing lost original owner");
+            }
             prop_assert_eq!(bytes.retained_capacity(), Some(backing.capacity()));
             let retained = if shared { held } else { 0 };
             prop_assert_eq!(observed.held.load(Order::Relaxed), retained, "original custody retired early");
