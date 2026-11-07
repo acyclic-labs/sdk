@@ -34,13 +34,15 @@ proptest! {
         end in any::<usize>(),
         budget in 0usize..256,
     ) {
-        let start = start % (payload.len() + 1);
-        let end = start + end % (payload.len() - start + 1);
-        for mode in 0..4 {
+        for mode in 0..5 {
+            const STATIC: &[u8] = b"immutable static backing";
+            let payload = if mode == 4 { STATIC } else { payload.as_slice() };
+            let start = start % (payload.len() + 1);
+            let end = start + end % (payload.len() - start + 1);
             let observed = Arc::new(Meter::default());
             let meter = observed.original();
             let mut data = Vec::with_capacity(payload.len() + spare);
-            data.extend_from_slice(&payload);
+            data.extend_from_slice(payload);
             let bytes = match mode {
                 0 => OwnedBytes::from(data),
                 1 => OwnedBytes::from(Bytes::from_owner(data)),
@@ -48,7 +50,7 @@ proptest! {
                     let claim = ReadAllocation::new(&meter, data.capacity()).unwrap();
                     OwnedBytes::from_vec_with_guard(data, claim, meter.clone()).unwrap()
                 }
-                _ => {
+                3 => {
                     let claim = ReadAllocation::new(&meter, data.capacity()).unwrap();
                     let bytes = OwnedBytes::from(data);
                     let alias = bytes.clone();
@@ -56,9 +58,10 @@ proptest! {
                     drop(alias);
                     bytes
                 }
+                _ => OwnedBytes::from_static(STATIC),
             }.slice(start..end);
             let capacity = bytes.retained_capacity();
-            let shared = capacity.is_some_and(|capacity| capacity <= budget || capacity <= bytes.len());
+            let shared = mode == 4 || capacity.is_some_and(|capacity| capacity <= budget || capacity <= bytes.len());
             let identity = bytes.data.identity();
             let pointer = bytes.as_slice().as_ptr();
             let held = observed.held.load(Order::Relaxed);
@@ -113,16 +116,16 @@ fn ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery() {
     let range = range.try_into_ordinary_vec().unwrap_err();
     assert_eq!(range.as_slice(), [2, 3]);
     assert_eq!(range.retained_capacity(), Some(4));
-    for bytes in [
-        OwnedBytes::from_static(b"static"),
-        Bytes::from_owner(vec![1, 2, 3]).into(),
-        Bytes::from(vec![4, 5, 6]).into(),
+    for (bytes, capacity) in [
+        (OwnedBytes::from_static(b"static"), Some(0)),
+        (Bytes::from_owner(vec![1, 2, 3]).into(), None),
+        (Bytes::from(vec![4, 5, 6]).into(), None),
     ] {
         let pointer = bytes.as_slice().as_ptr();
         let length = bytes.len();
         let bytes = bytes.try_into_ordinary_vec().unwrap_err();
         assert_eq!((bytes.as_slice().as_ptr(), bytes.len()), (pointer, length));
-        assert_eq!(bytes.retained_capacity(), None);
+        assert_eq!(bytes.retained_capacity(), capacity);
     }
     let bytes = OwnedBytes::from(String::from("capacity"));
     for alias in [bytes.slice(..3), bytes.slice(3..), bytes.slice(0..0)] {

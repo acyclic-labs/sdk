@@ -169,13 +169,13 @@ impl OwnedBytes {
     pub const fn new() -> Self {
         Self::from_static(b"")
     }
-    /// Borrows static bytes.
+    /// Borrows static bytes with zero retained heap capacity.
     #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
         Self {
             data: Data::Plain(Bytes::from_static(bytes)),
             range: 0..bytes.len(),
-            retained_capacity: None,
+            retained_capacity: Some(0),
         }
     }
     /// Copies ordinary bytes.
@@ -341,7 +341,8 @@ impl OwnedBytes {
     pub fn is_empty(&self) -> bool {
         self.range.is_empty()
     }
-    /// Actual original vector or boxed-slice capacity, when known.
+    /// Actual retained heap capacity, when known. Static storage retains zero;
+    /// vectors and boxed slices retain their original allocation capacity.
     #[must_use]
     pub const fn retained_capacity(&self) -> Option<usize> {
         self.retained_capacity
