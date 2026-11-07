@@ -464,7 +464,15 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
             .map_err(|error| fail("list-after-never-duplicates-or-skips", error))?;
         expect!(
             "list-after-never-duplicates-or-skips",
-            page.digests.len() <= 2 && page.digests.windows(2).all(|pair| pair[0] < pair[1]),
+            page.digests.len() <= 2
+                && page.digests.windows(2).all(|pair| pair[0] < pair[1])
+                && page
+                    .digests
+                    .first()
+                    .is_none_or(|first| after.is_none_or(|cursor| *first > cursor))
+                && page
+                    .next
+                    .is_none_or(|next| page.digests.last() == Some(&next)),
             page
         );
         seen.extend(page.digests.iter().copied());
@@ -473,11 +481,6 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
             None => break,
         }
     }
-    expect!(
-        "list-after-never-duplicates-or-skips",
-        seen.windows(2).all(|pair| pair[0] < pair[1]),
-        seen
-    );
     for live in [verified.digest, left_digest, right_digest, parent, digest] {
         expect!(
             "list-after-never-duplicates-or-skips",
