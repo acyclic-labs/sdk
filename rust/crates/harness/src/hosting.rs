@@ -408,9 +408,22 @@ where
         match command {
             AgentCommand::Bind { agent } => {
                 let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
+                #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+                if agent != &self.root {
+                    if let Some((tools, credential)) =
+                        self.bound.selected_observation(agent).await?
+                    {
+                        return Ok(AgentBinding::reply(
+                            &self.binding(),
+                            tools,
+                            Some(&credential),
+                        ));
+                    }
+                }
                 Ok(AgentBinding::reply(
                     &self.binding(),
                     self.bound.tool_resource(agent).await?,
+                    None,
                 ))
             }
             AgentCommand::Root {} => Ok(AgentReply::Root {

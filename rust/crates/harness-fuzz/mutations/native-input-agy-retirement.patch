@@ -1,0 +1,12 @@
+diff --git a/plugin/src/input.rs b/plugin/src/input.rs
+--- a/plugin/src/input.rs
++++ b/plugin/src/input.rs
+@@ -34,7 +34,7 @@ pub(super) fn agy_hook(
+         "SessionStart" | "PreInvocation" => "SessionStart",
+         "PostToolUse" => "ToolBoundary",
+         "Stop" => match input.get("fullyIdle").and_then(Value::as_bool) {
+-            Some(false) => return Ok(None),
++            Some(false) => "Stop",
+             Some(true) => "Stop",
+             None => return Err("step=admit Antigravity retirement: fullyIdle absent; recovery=update agy to a version reporting native background retirement".into()),
+         },

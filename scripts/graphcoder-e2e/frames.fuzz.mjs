@@ -51,9 +51,12 @@ function admission(visible, text, kind, reason, schedule) {
 export async function fuzz(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory();
-  let refusal, refusedScreen, observations = 0;
+  let refusal, refusedScreen, observations = 0, available = 0, reused = 0;
   const frames = new TerminalFrames(screen, () => {
     assert.ok(frames.ready());
+    if (frames.available()) available++;
+    frames.consume();
+    if (frames.available()) reused++;
     observations++;
     const visible = screenText(screen), failure = history.unexpected(visible);
     if (failure && !refusal) { refusal = failure; refusedScreen = visible; }
@@ -67,6 +70,17 @@ export async function fuzz(schedule) {
     }
     await Promise.all(writes);
     assert.equal(observations, 2, "each original transaction is observed once, independent of pipe fragmentation");
+    assert.equal(available, 2, "the next original transaction releases input admission");
+    assert.equal(reused, 0, "request callbacks cannot reuse consumed cells");
+    assert.equal(frames.available(), false);
+    // Out-of-band cursor bytes come from the retained capture. They must still
+    // wake failure observation without releasing the consumed native frame.
+    const cursor = corpus.idle.stdout.match(/\x1b\[\?25[hl]/)[0];
+    let outOfBand = 0, released = false;
+    frames.frame = () => { outOfBand++; released ||= frames.available(); };
+    await frames.write(cursor);
+    assert.equal(outOfBand, 1);
+    assert.equal(released, false, "out-of-band observation cannot re-admit the consumed transaction");
     assert.match(refusal ?? "", /task [0-9a-f-]{36} failed: invalid request: mandatory con/);
     assert.equal(history.unexpected(screenText(screen)), undefined,
       "negative control: observing only the final idle screen loses the original refusal");

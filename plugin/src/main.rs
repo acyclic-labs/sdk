@@ -27,6 +27,15 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     let mut args = env::args().skip(1).collect::<Vec<_>>();
+    let selected = match args.as_slice() {
+        [selector, id, _, ..] if selector == "--task" => {
+            let task = parse_task(id)?;
+            args.drain(..2);
+            Some(task)
+        }
+        [selector, ..] if selector == "--task" => return Err("--task requires ID COMMAND".into()),
+        _ => None,
+    };
     let Some(command) = args.first().cloned() else {
         return help();
     };
@@ -43,13 +52,7 @@ fn run() -> Result<()> {
     if internal(&args)? {
         return Ok(());
     }
-    let task = if args.first().map(String::as_str) == Some("--task") {
-        if args.len() < 3 {
-            return Err("--task requires ID COMMAND".into());
-        }
-        let id = args.get(1).ok_or("--task requires ID COMMAND")?;
-        let task = parse_task(id)?;
-        args.drain(..2);
+    let task = if let Some(task) = selected {
         task
     } else if let Ok(task) = env::var("ACYCLIC_TASK") {
         parse_task(&task)?
@@ -81,6 +84,13 @@ fn internal(args: &[String]) -> Result<bool> {
         "--help" | "-h" => {
             help()?;
         }
+        "fs" if matches!(args, [_, option] if matches!(option.as_str(), "--help" | "-h" | "help")) =>
+        {
+            let fs = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("step=read filesystem help: fs descriptor absent; recovery: reinstall the complete Acyclic package")?;
+            println!("Usage: acyclic fs COMMAND...\n{}", fs.description);
+        }
         "--version" | "-V" => {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         }
@@ -100,7 +110,7 @@ fn internal(args: &[String]) -> Result<bool> {
             };
             let answer = match read_json(io::stdin().lock()) {
                 Ok(input) => hook(host, event, input),
-                Err(error) => hook_failure(event, &error.to_string()),
+                Err(error) => native_hook_failure(host, event, &error.to_string()),
             };
             println!("{answer}");
         }
@@ -234,7 +244,7 @@ fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST [--headless] -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
@@ -242,23 +252,51 @@ fn help() -> Result<()> {
 
 fn hook(host: &str, event: &str, input: Value) -> Value {
     let result = (|| -> Result<Value> {
-        let input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
+        let mut input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
+        let event = if host == "agy" {
+            let workspace = env::var("ACYCLIC_WORKSPACE").ok();
+            let Some(event) = input::agy_hook(event, &mut input, workspace.as_deref())? else {
+                return Ok(json!({}));
+            };
+            event
+        } else {
+            event
+        };
         let cwd = PathBuf::from(
             input
                 .get("cwd")
                 .and_then(Value::as_str)
                 .ok_or("native hook lacks cwd")?,
         );
-        Ok(host_files::request(
+        let response = host_files::request(
             &cwd,
             HostAction::Hook {
                 host: host.into(),
                 event: event.into(),
                 input,
             },
-        )?)
+        )?;
+        Ok(if host == "agy" { json!({}) } else { response })
     })();
-    result.unwrap_or_else(|error| hook_failure(event, &error.to_string()))
+    result.unwrap_or_else(|error| native_hook_failure(host, event, &error.to_string()))
+}
+
+fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
+    if host != "agy" {
+        return hook_failure(event, error);
+    }
+    // The native host ignores hook exit status. Its own invocation disposition
+    // carries refusal; Stop keeps the session open to expose the failed capture.
+    let reason = format!(
+        "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode plan"
+    );
+    match event {
+        "PreInvocation" => {
+            json!({"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":reason}}]})
+        }
+        "Stop" => json!({"decision":"continue","reason":reason}),
+        _ => json!({"reason":reason}),
+    }
 }
 
 fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {
