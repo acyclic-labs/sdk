@@ -1,0 +1,12 @@
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -569,9 +569,6 @@
+                             }
+                         }
+                         _ => {
+-                            if completing.poll_cancelled(context).is_ready() {
+-                                return Poll::Ready(Event::CompletionCancelled);
+-                            }
+                             if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
+                                 return Poll::Ready(Event::Completion(completion));
+                             }

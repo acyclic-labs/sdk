@@ -78,6 +78,16 @@ const claims = {
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "public settlement retained its lost model producer", nativeHarness,
   ],
+  "runtime-completion-cancellation": [
+    "rust/crates/actors/src/local/runtime/completion.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion retained its cancelled original observer", [],
+    { mutations: [
+      { patch: "rust/proofs/runtime-completion-cancellation/premature.patch", label: "premature-retirement", diagnostic: "live completion retired before its original idle cut" },
+      { patch: "rust/proofs/runtime-completion-cancellation/retirement.patch", label: "cancelled-observer-retained", diagnostic: "completion retained its cancelled original observer" },
+      { source: "rust/crates/actors/src/local/runtime.rs", patch: "rust/proofs/runtime-completion-cancellation/dispatch.patch", label: "dispatcher-registration-omitted", diagnostic: "cancelled completion did not wake the original dispatcher" },
+    ] },
+  ],
   "runtime-completion-obligations": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
     "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
