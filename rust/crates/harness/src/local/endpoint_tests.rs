@@ -24,7 +24,9 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
         crate::test_support::ScriptedTurn::Text("child output".into()),
         crate::test_support::ScriptedTurn::Text("grandchild output".into()),
     ]);
-    let config = volume_config(directory.path(), project, provider)?;
+    // The script publishes two text turns; it has no summary-model requests.
+    let config = volume_config(directory.path(), project, provider)?
+        .compaction(crate::context::CompactionPolicy::Disabled);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(exchange)?;
