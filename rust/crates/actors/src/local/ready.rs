@@ -355,11 +355,21 @@ impl<K> Registration<K> {
         self.observe_alarm(alarm, alarm.pending())
     }
 
-    /// Record `alarm` as the one the running delivery consumes. That delivery
-    /// is its wake, so it leaves the due index: a failed attempt is retried by
-    /// the actor's next event, never by its own elapsed deadline.
-    pub fn deliver_alarm(&self, alarm: &super::Alarm) -> Result<(), super::Error> {
-        self.observe_alarm(alarm, None)
+    /// Observe the committed alarm before a delivery at `now_unix_ms`. True
+    /// when this delivery is that due alarm: the delivery is its wake, so it
+    /// leaves the due index and a failed attempt is retried by the actor's
+    /// next event, never by its own elapsed deadline. An undue alarm stays
+    /// installed as the actor's future wake.
+    pub fn observe_delivery(
+        &self,
+        alarm: &super::Alarm,
+        now_unix_ms: u64,
+    ) -> Result<bool, super::Error> {
+        let due = alarm
+            .pending()
+            .is_some_and(|deadline| deadline <= now_unix_ms);
+        self.observe_alarm(alarm, alarm.pending().filter(|_| !due))?;
+        Ok(due)
     }
 
     fn observe_alarm(
