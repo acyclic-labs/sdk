@@ -8,7 +8,7 @@ pub(super) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
 const PATH: &str = "ACYCLIC_PROJFS_METADATA_PATH";
 const READY: &str = "ACYCLIC_METADATA_READY";
 
-pub(super) fn run(
+pub(in super::super) fn run(
     mode: &str,
     path: &Path,
     before_action: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
@@ -87,6 +87,18 @@ pub(super) fn execute(mode: &std::ffi::OsStr) -> Result<(), Box<dyn std::error::
     let path = std::env::var_os(PATH).ok_or("client path missing")?;
     let path = Path::new(&path);
     match mode.to_str() {
+        Some("held-entry") => {
+            use windows::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            };
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ.0)
+                .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+                .open(path)?;
+            start_action()?;
+            drop(file);
+        }
         Some("late") => {
             std::fs::write(path, b"late")?;
             let file = writable(path)?;

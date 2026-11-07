@@ -256,10 +256,6 @@ async fn a_projected_directory_link_leads_into_its_directory()
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-    };
     #[derive(Clone, Copy, Debug)]
     enum Replacement {
         Removed,
@@ -288,55 +284,48 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
             }
             let (_root, destination, mut session) = mount_source(&source)?;
             let projected = destination.join("name");
-            let held = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ.0)
-                .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-                .open(&projected)
-                .map_err(|error| {
-                    format!("open held entry, link={link}, {replacement:?}: {error}")
-                })?;
-            let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
-            let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
-            let context = driver.context.ok_or("missing ProjFS context")?;
-            let tree = lock_recover(&runtime.projector.tree);
-            source.remove(&name, None, &work)?;
-            match replacement {
-                Replacement::Removed => {}
-                Replacement::File => {
-                    source.create_file(&name, FileMetadata::default(), None, &work)?;
-                    source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+            let mut released_at = 0;
+            super::metadata::client::run("held-entry", &projected, || {
+                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+                let context = driver.context.ok_or("missing ProjFS context")?;
+                let tree = lock_recover(&runtime.projector.tree);
+                source.remove(&name, None, &work)?;
+                match replacement {
+                    Replacement::Removed => {}
+                    Replacement::File => {
+                        source.create_file(&name, FileMetadata::default(), None, &work)?;
+                        source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+                    }
+                    Replacement::Directory => {
+                        source.create_directory(&name, FileMetadata::default(), &work)?;
+                        let inner = name.child(windows_name("inner.txt"));
+                        source.create_file(&inner, FileMetadata::default(), None, &work)?;
+                        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                    }
                 }
-                Replacement::Directory => {
-                    source.create_directory(&name, FileMetadata::default(), &work)?;
-                    let inner = name.child(windows_name("inner.txt"));
-                    source.create_file(&inner, FileMetadata::default(), None, &work)?;
-                    source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
-                }
-            }
-            runtime.projector.materialize_locked(
-                Projection {
-                    runtime: &runtime,
-                    work: &work,
-                    context,
-                    starting: false,
-                },
-                vec![MountPath::root()],
-            )?;
-            let target = {
-                let state = lock_recover(&runtime.projector.state);
-                assert!(
-                    state.processed < state.notified,
-                    "the changed view must await its original worker"
-                );
-                state.notified
-            };
-            let projector = Arc::clone(&runtime.projector);
-            let pending = name.clone();
-            let closer = std::thread::spawn(move || {
-                let mut state = lock_recover(&projector.state);
+                runtime.projector.materialize_locked(
+                    Projection {
+                        runtime: &runtime,
+                        work: &work,
+                        context,
+                        starting: false,
+                    },
+                    vec![MountPath::root()],
+                )?;
+                let target = {
+                    let state = lock_recover(&runtime.projector.state);
+                    assert!(
+                        state.processed < state.notified,
+                        "the changed view must await its original worker"
+                    );
+                    state.notified
+                };
+                drop(tree);
+                let mut state = lock_recover(&runtime.projector.state);
                 while state.processed < target && state.failure.is_none() && !state.stopping {
-                    state = projector
+                    state = runtime
+                        .projector
                         .changed
                         .wait(state)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -347,18 +336,16 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                 );
                 assert!(state.processed >= target);
                 assert!(
-                    state.pending.contains_key(&pending),
+                    state.pending.contains_key(&name),
                     "the worker must retain the held incarnation"
                 );
-                let releases = state.releases;
-                drop(state);
-                drop(held);
-                releases
-            });
-            drop(tree);
+                released_at = state.releases;
+                Ok(())
+            })?;
             let settled = session.revalidate(&work);
-            let released_at = closer.join().map_err(|_| "closer panicked")?;
             settled.map_err(|error| {
+                let driver = session.driver.as_ref().expect("live ProjFS driver");
+                let runtime = driver.runtime.as_ref().expect("live ProjFS runtime");
                 let state = lock_recover(&runtime.projector.state);
                 format!(
                     "revalidate held entry, link={link}, {replacement:?}: {error}; original close completed after release {released_at}, observed releases={}, retry={}, processed={:?}, notified={:?}, pending={}",
@@ -369,6 +356,16 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
                     state.pending.len(),
                 )
             })?;
+            {
+                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                let runtime = driver.runtime.as_ref().ok_or("missing ProjFS runtime")?;
+                let state = lock_recover(&runtime.projector.state);
+                assert_ne!(
+                    state.releases, released_at,
+                    "the external handle close must reach the original release event"
+                );
+                assert!(!state.pending.contains_key(&name));
+            }
             match replacement {
                 Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
                 Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
