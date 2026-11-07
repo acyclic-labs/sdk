@@ -8,7 +8,10 @@ selection may leave charged memory or a spent allocation attempt. The property
 checks every path before reporting violations and preserves the original panic.
 
 Run from the repository root. The retained patch restores the complete original
-production file from `4a3122d094a1a82d7605b4fcb8e4cadb106365d4`:
+production file from `4a3122d094a1a82d7605b4fcb8e4cadb106365d4`. It also restores
+that revision's Darwin production dependency, retaining the current tests. This
+keeps its Linux-only borrowed constructor consistent with the original member
+storage; an unavailable constructor cannot stand in for the owner-order failure:
 
 ```sh
 git apply rust/proofs/allocation-owner/original-owner-order.patch

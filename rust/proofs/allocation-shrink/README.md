@@ -10,7 +10,9 @@ The property evaluates all six cases before reporting custody violations.
 
 Run from the repository root. The retained patch restores the complete original
 production file from `e85420c325d53887e9d8e10b81190f08761cc2ef`, while keeping the
-same property and original meter:
+same property and original meter. The inverse also restores that revision's
+Darwin production dependency, retaining current tests, so the original Linux-only
+borrowed constructor cannot turn the semantic control into a compilation failure:
 
 ```sh
 git apply rust/proofs/allocation-shrink/original-custody.patch

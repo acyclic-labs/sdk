@@ -1,0 +1,75 @@
+--- a/rust/crates/native-runtime/src/process_tree/apple_group_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/apple_group_wait.rs
+@@ -135,20 +135,23 @@
+ 
+ struct Members<'a> {
+     ids: Vec<libc::pid_t>,
+-    allocation: Option<crate::ReadAllocation<&'a dyn NativeReadMeter>>,
++    meter: Option<&'a dyn NativeReadMeter>,
++    retained: u64,
+ }
+ 
+ impl<'a> Members<'a> {
+     fn new(count: usize, meter: Option<&'a dyn NativeReadMeter>) -> io::Result<Self> {
+         let bytes = count
+             .checked_mul(std::mem::size_of::<libc::pid_t>())
+-            .ok_or(io::ErrorKind::OutOfMemory)?;
+-        let allocation = meter
+-            .map(|meter| crate::ReadAllocation::borrowed(meter, bytes))
+-            .transpose()?;
++            .and_then(|bytes| u64::try_from(bytes).ok())
++            .ok_or(io::ErrorKind::OutOfMemory)?;
++        if let Some(meter) = meter {
++            meter.allocate(bytes)?;
++        }
+         let mut members = Self {
+             ids: Vec::new(),
+-            allocation,
++            meter,
++            retained: bytes,
+         };
+         members
+             .ids
+@@ -157,16 +160,35 @@
+                 Some(meter) => meter.allocation_failed(error),
+                 None => io::Error::other(error),
+             })?;
+-        let actual = members
+-            .ids
+-            .capacity()
+-            .checked_mul(std::mem::size_of::<libc::pid_t>())
+-            .ok_or(io::ErrorKind::OutOfMemory)?;
+-        if let Some(allocation) = &mut members.allocation {
+-            allocation.reconcile_capacity(actual)?;
++        let actual = u64::try_from(
++            members
++                .ids
++                .capacity()
++                .checked_mul(std::mem::size_of::<libc::pid_t>())
++                .ok_or(io::ErrorKind::OutOfMemory)?,
++        )
++        .map_err(io::Error::other)?;
++        if let Some(meter) = meter {
++            if actual > bytes {
++                let (retained, recorded) = meter.record_completed_adoption(actual - bytes);
++                members.retained += retained;
++                recorded?;
++            } else {
++                meter.release(bytes - actual);
++                members.retained = actual;
++            }
+         }
+         members.ids.resize(count, 0);
+         Ok(members)
++    }
++}
++
++impl Drop for Members<'_> {
++    fn drop(&mut self) {
++        drop(std::mem::take(&mut self.ids));
++        if let Some(meter) = self.meter {
++            meter.release(self.retained);
++        }
+     }
+ }
+ 

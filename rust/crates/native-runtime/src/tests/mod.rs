@@ -210,6 +210,15 @@ pub(super) struct ReadBudgetMeter {
 }
 
 impl ReadBudgetMeter {
+    #[cfg(target_os = "macos")]
+    pub(super) fn on_allocation_returned(&mut self, returned: impl Fn() + Send + Sync + 'static) {
+        self.credit_returned = Some(Box::new(move |credit| {
+            if credit == reservations::Credit::Allocation {
+                returned();
+            }
+        }));
+    }
+
     /// After the original operation ends, await its final allocation release.
     /// The release callback and this registration share one mutex, including
     /// the already-retired case, so neither ordering loses the terminal event.
