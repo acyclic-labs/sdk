@@ -69,13 +69,9 @@ install_tool() {
     --strip-components="$strip" "$member"
 }
 
-# Runs Rust tests with the pinned cargo-nextest: one process per test, test
-# binaries in parallel, slow tests flagged, and per-test timings kept as JUnit
-# (.config/nextest.toml). Doctests and the serial live-mount suites stay on
-# cargo test.
-nextest() {
-  local target checksum status=0 profile=ci
-  if [[ "${1:-}" == --profile ]]; then profile="$2"; shift 2; fi
+# Both Rust qualification and the real-tool policy control need this release.
+ensure_nextest() {
+  local target checksum
   if [[ "$(cargo-nextest nextest --version 2>/dev/null)" != "cargo-nextest 0.9.146 "* ]]; then
     case "$(uname -s):$(uname -m)" in
       Linux:x86_64)
@@ -92,6 +88,16 @@ nextest() {
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$target.tar.gz" \
       "$checksum" "$TOOLS_DIR/cargo/bin" cargo-nextest
   fi
+}
+
+# Runs Rust tests with the pinned cargo-nextest: one process per test, test
+# binaries in parallel, slow tests flagged, and per-test timings kept as JUnit
+# (.config/nextest.toml). Doctests and the serial live-mount suites stay on
+# cargo test.
+nextest() {
+  local status=0 profile=ci
+  if [[ "${1:-}" == --profile ]]; then profile="$2"; shift 2; fi
+  ensure_nextest
   # Rust drift tests consume ignored TypeScript authoring outputs. Generate them
   # with the existing Rust producer; these lanes do not require Bun or protoc JS.
   cargo run --locked -p acyclic-actors --example actors-http-routes -- \
@@ -412,6 +418,7 @@ case "$lane" in
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
+    ensure_nextest
     node --test scripts/full-cloud-qualification.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs
