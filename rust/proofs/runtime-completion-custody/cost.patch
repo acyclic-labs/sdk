@@ -1,0 +1,10 @@
+diff --git a/rust/crates/actors/src/local/runtime.rs b/rust/crates/actors/src/local/runtime.rs
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -620,5 +620,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
+                     // No delivery can publish while this owner captures the cut.
+                     // A newly observed prefix resumes the SAME activation follow.
++                    let _ = provider.tail(self.store.root().clone()).await;
+                     completion_tail = match provider.tail(self.store.root().clone()).await {
+                         Ok(tail) => tail,
+                         Err(StreamError::NotFound) => 0,
