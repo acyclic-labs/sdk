@@ -1,10 +1,7 @@
 //! Real custody selection in isolated child processes, without an interactive
 //! credential store. Every build honours the same explicit policy.
 
-use acyclic_native_runtime::{
-    private_file::PublicationStage,
-    signing_key::{SigningCustody, SigningKeyReference},
-};
+use acyclic_native_runtime::signing_key::{SigningCustody, SigningKeyReference};
 use std::{io, path::Path, process::Command};
 #[path = "signing_reference/oracle.rs"]
 mod reference_oracle;
@@ -22,11 +19,9 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                     )
                     .map_err(io::Error::other)?;
                 match SigningKeyReference::create(SigningCustody::Configured) {
-                    Ok(key) => {
-                        key.reference()
-                            .with_seed(SigningCustody::Configured, |_| ())?;
-                        // Unpublished probe custody is retired by its guard.
-                        drop(key);
+                    Ok(reference) => {
+                        // The account's one root entry is created at most once.
+                        reference.with_seed(SigningCustody::Configured, |_| ())?;
                         println!("NATIVE_CUSTODY_AVAILABLE");
                     }
                     Err(error) => {
@@ -39,13 +34,11 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 Ok(())
             }
             Some("create") => {
-                let key = SigningKeyReference::create(SigningCustody::Configured)?;
-                key.reference()
-                    .with_seed(SigningCustody::Configured, |_| ())?;
-                let encoded = serde_json::to_vec(&key.reference())?;
+                let reference = SigningKeyReference::create(SigningCustody::Configured)?;
+                reference.with_seed(SigningCustody::Configured, |_| ())?;
+                let encoded = serde_json::to_vec(&reference)?;
                 reference_oracle::check(&encoded);
                 std::fs::write(record, encoded)?;
-                key.observe_publication(PublicationStage::Installed);
                 Ok(())
             }
             Some("read") | Some("mismatch") => {
@@ -76,8 +69,8 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         };
     }
     let root = tempfile::tempdir()?;
-    let record = root.path().join("reference.json");
-    let invoke = |operation: &str, policy: &str| -> io::Result<std::process::Output> {
+    let records = [0, 1, 2].map(|owner| root.path().join(format!("owner-{owner}.json")));
+    let invoke = |operation: &str, policy: &str, record: &Path| -> io::Result<std::process::Output> {
         Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
@@ -85,19 +78,22 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 "--nocapture",
             ])
             .env("CUSTODY_CONTROL_OPERATION", operation)
-            .env("CUSTODY_CONTROL_RECORD", &record)
+            .env("CUSTODY_CONTROL_RECORD", record)
             .env("ACYCLIC_SIGNING_CUSTODY", policy)
             .env("ACYCLIC_SIGNING_CUSTODY_DIRECTORY", root.path())
             .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .output()
     };
+    // Owners created by separate processes share the account's one root entry.
     for operation in ["create", "read"] {
-        let output = invoke(operation, "private-file")?;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        for record in &records {
+            let output = invoke(operation, "private-file", record)?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
     // A different private directory and a different backend both refuse at
     // selection, before a native service or missing credential is consulted.
@@ -110,7 +106,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 "--nocapture",
             ])
             .env("CUSTODY_CONTROL_OPERATION", "mismatch")
-            .env("CUSTODY_CONTROL_RECORD", &record)
+            .env("CUSTODY_CONTROL_RECORD", &records[0])
             .env("ACYCLIC_SIGNING_CUSTODY", policy)
             .env_remove("ACYCLIC_SIGNING_CUSTODY_DIRECTORY");
         if policy == "private-file" {
@@ -127,7 +123,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         );
         assert!(!root.path().join("other-store").exists());
     }
-    let entries = || std::fs::read_dir(root.path().join("acyclic/signing-seeds"));
+    let entries = || std::fs::read_dir(root.path().join("acyclic/signing-root.v2"));
     let paths = entries()?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
@@ -137,10 +133,10 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         &acyclic_native_runtime::private_file::open(path, false)?
     )?);
     make_public(path)?;
-    let refused = invoke("read", "private-file")?;
+    let refused = invoke("read", "private-file", &records[0])?;
     assert!(
         !refused.status.success(),
-        "public signing seed reached bootstrap"
+        "public signing root reached bootstrap"
     );
     assert!(
         String::from_utf8_lossy(&refused.stderr).contains("CustodyFailure"),
@@ -154,7 +150,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
     );
     // An explicit native policy with a file-only setting is refused, without
     // probing either service or silently interpreting a typo as file custody.
-    let refused = invoke("create", "native")?;
+    let refused = invoke("create", "native", &records[0])?;
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("InvalidPolicy"));
     assert_eq!(entries()?.count(), 1);

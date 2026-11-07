@@ -800,6 +800,7 @@ pub fn conversation(
         agent::TurnOutcome::Completed => "completed",
         agent::TurnOutcome::Cancelled => "cancelled",
         agent::TurnOutcome::RestoreConflict => "restore_conflict",
+        agent::TurnOutcome::Failed { .. } => "failed",
     };
     let mut row = Row::new(agent_path, Some(operation), sequence, "conversation", kind);
     row.inbox = Some(entry.inbox);

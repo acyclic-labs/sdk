@@ -46,7 +46,7 @@ pub(super) fn remote() -> Option<Remote> {
     })
 }
 
-pub(crate) fn lock_directory() -> io::Result<Option<PathBuf>> {
+pub(super) fn lock_directory() -> io::Result<Option<PathBuf>> {
     if std::env::var_os(ADDRESS).is_none() {
         return Ok(None);
     }
@@ -58,12 +58,7 @@ pub(crate) fn lock_directory() -> io::Result<Option<PathBuf>> {
 }
 
 impl Remote {
-    pub(super) fn request(
-        &self,
-        operation: u8,
-        name: &str,
-        secret: &[u8],
-    ) -> keyring::Result<Vec<u8>> {
+    pub(super) fn request(&self, operation: u8, secret: &[u8]) -> keyring::Result<Vec<u8>> {
         let address = self
             .address
             .as_ref()
@@ -75,10 +70,9 @@ impl Remote {
         let mut stream = TcpStream::connect(address).map_err(platform)?;
         stream.write_all(token).map_err(platform)?;
         stream.write_all(&[operation]).map_err(platform)?;
-        if name.len() != 64 || (operation == 1 && secret.len() != 32) {
+        if operation == 1 && secret.len() != 32 {
             return Err(platform(io::Error::from(io::ErrorKind::InvalidInput)));
         }
-        stream.write_all(name.as_bytes()).map_err(platform)?;
         if operation == 1 {
             stream.write_all(secret).map_err(platform)?;
         }
@@ -103,7 +97,7 @@ impl Remote {
 }
 
 /// Owns one isolated in-memory credential store across standalone fixture children.
-/// Its directory contains only transaction locks; signing seeds never reach disk.
+/// Its directory contains only the root creation lock; secrets never reach disk.
 pub struct FixtureCustody {
     address: SocketAddr,
     token: [u8; 32],
@@ -192,16 +186,10 @@ async fn serve(
     }
     let mut operation = [0];
     stream.read_exact(&mut operation).await?;
-    let mut name = [0; 64];
-    stream.read_exact(&mut name).await?;
-    let name = std::str::from_utf8(&name).map_err(io::Error::other)?;
-    if !name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
     // Delegate to the existing fixture backend. The host adds isolation only;
     // it has no second secret map, publication policy or cleanup protocol.
     let entry = Credential {
-        name: format!("{prefix}{name}"),
+        name: format!("{prefix}{}", super::super::ROOT),
         remote: None,
     };
     let result = match operation[0] {
