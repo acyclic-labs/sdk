@@ -3,6 +3,19 @@ import { join } from "node:path";
 
 const identity = target => JSON.stringify(target);
 
+// Cargo hard-links every bin and example to one path per [kind, name] and
+// reports only that path, so same-named targets of different packages in one
+// build overwrite each other and every run executes whichever linked last.
+export class ContractTargetCollision extends Error {
+  constructor(output, targets) {
+    super(`STEP_FAILED contract-collision: ${targets.map(identity).join(" and ")} share Cargo output ${output}; recovery: give each Rust contract target a unique [kind, name]`);
+    this.name = "ContractTargetCollision";
+    this.code = "CONTRACT_TARGET_COLLISION";
+    this.output = output;
+    this.targets = targets;
+  }
+}
+
 export function parseContractJson(text, context) {
   try { return JSON.parse(text); }
   catch (cause) {
@@ -56,6 +69,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   /** @type {Map<string, string | undefined>} */
   const requested = new Map();
   const features = new Set(requestedFeatures);
+  const outputs = new Map();
   for (const [packageName, kind, name] of targets) {
     const pkg = packages.get(packageName);
     if (!["bin", "example"].includes(kind) || !pkg?.targets.some(target => target.name === name && target.kind.includes(kind))) {
@@ -66,6 +80,9 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     const key = identity([pkg.id, kind, name]);
     if (requested.has(key)) throw new Error(`duplicate Rust contract target: ${key}`);
     requested.set(key, undefined);
+    const output = identity([kind, name]);
+    if (outputs.has(output)) throw new ContractTargetCollision(output, [outputs.get(output), [packageName, kind, name]]);
+    outputs.set(output, [packageName, kind, name]);
   }
   // Keep the existing shared Cargo cache until configuration-isolation costs
   // have been measured. This path comes from Cargo, including config/env.
@@ -79,6 +96,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     ...targets.flatMap(([, kind, name]) => [`--${kind}`, name]),
   ]);
   report.artifacts = [];
+  const owners = new Map();
   report.phase = "artifact-discovery";
   saveProgress();
   for (const line of output.split(/\r?\n/).filter(line => line.startsWith("{"))) {
@@ -91,6 +109,8 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
       const key = identity([message.package_id, kind, message.target.name]);
       if (!requested.has(key)) continue;
       if (requested.get(key)) throw new Error(`duplicate Rust contract artifact: ${key}`);
+      if (owners.has(message.executable)) throw new ContractTargetCollision(message.executable, [owners.get(message.executable), key].map(item => JSON.parse(item)));
+      owners.set(message.executable, key);
       requested.set(key, message.executable);
     }
   }
