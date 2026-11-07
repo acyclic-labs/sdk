@@ -279,7 +279,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
 }
 
 /// Runs `body` against a live workspace server for `host`.
-async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
+pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -328,7 +328,11 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
 
 /// A root session for `host` and its children, as the root's native host
 /// holds them.
-fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, AgentPath)> {
+pub(super) fn children(
+    host: &str,
+    cwd: &Path,
+    session: &str,
+) -> Result<(NativeChildren, AgentPath)> {
     let root = host_files::request(
         cwd,
         HostAction::Open {
@@ -358,7 +362,7 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
 
 /// Sends `action` to `reference` claiming its input, and admits the claimed
 /// turn: its process slot and the view its exchange mounted.
-fn claim(
+pub(super) fn claim(
     sessions: &mut NativeChildren,
     cwd: &Path,
     reference: &str,
@@ -468,7 +472,7 @@ fn wait_exit(running: &mut Running) -> Result {
 
 /// Read the real shell's PID before releasing its stdin gate. EOF is a
 /// terminal refusal rather than a missing file to keep checking.
-fn shell_pid(running: &mut Running) -> Result<u32> {
+pub(super) fn shell_pid(running: &mut Running) -> Result<u32> {
     let mut digits = [0; 11];
     let mut length = 0;
     loop {
@@ -500,7 +504,11 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
     }
 }
 
-fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
+pub(super) fn native_fixture(
+    view: &Path,
+    events: &str,
+    exit: &str,
+) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
     command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
         .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());

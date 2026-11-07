@@ -136,3 +136,150 @@ impl ToolProvider for Coordination {
         Ok(Some(Box::pin(children.woken())))
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::super::tests::{children, claim, native_fixture, served, shell_pid};
+    use super::*;
+    use std::io::{self, Read as _, Seek as _};
+    use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+    /// EOF is delivered only after the actual reply writer is held.
+    struct Input {
+        bytes: io::Cursor<Vec<u8>>,
+        writing: Option<Receiver<()>>,
+    }
+
+    impl io::Read for Input {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = self.bytes.read(bytes)?;
+            if count == 0
+                && let Some(writing) = self.writing.take()
+            {
+                writing
+                    .recv()
+                    .map_err(|_| io::Error::other("reply writer producer closed"))?;
+            }
+            Ok(count)
+        }
+    }
+
+    struct Output {
+        writing: Option<SyncSender<()>>,
+        release: Receiver<()>,
+    }
+
+    impl io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if let Some(writing) = self.writing.take() {
+                writing
+                    .send(())
+                    .map_err(|_| io::Error::other("input observer closed"))?;
+                self.release
+                    .recv()
+                    .map_err(|_| io::Error::other("retirement observer closed"))?;
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Observes the real provider's close, then releases the held writer even
+    /// when the original close failed. No completion depends on a timeout.
+    struct Observed {
+        owner: Coordination,
+        process: std::fs::File,
+        release: SyncSender<()>,
+    }
+
+    impl ToolProvider for Observed {
+        type Error = Error;
+
+        fn tools(&self) -> Value {
+            self.owner.tools()
+        }
+
+        fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolCall> {
+            self.owner.call(name, arguments)
+        }
+
+        fn progress(
+            &mut self,
+            parked: &BTreeSet<String>,
+            settled: &mut Vec<(String, Settled)>,
+        ) -> Result<Option<Wake>> {
+            self.owner.progress(parked, settled)
+        }
+
+        fn closed(&mut self) -> Result<()> {
+            let closed = self.owner.closed();
+            let retired = (|| {
+                let children = self
+                    .owner
+                    .children
+                    .as_ref()
+                    .ok_or_else(|| invalid("original child owner absent"))?;
+                if children.running() {
+                    return Err(invalid(
+                        "EOF left native children running before reply drain",
+                    ));
+                }
+                let mut stat = String::new();
+                match self.process.read_to_string(&mut stat) {
+                    Err(error)
+                        if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+                    }
+                    Err(error) => return Err(storage(error)),
+                    Ok(_) => {
+                        return Err(invalid("original process must retire before reply drain"));
+                    }
+                }
+                let reply = children
+                    .wait("held")?
+                    .ok_or_else(|| invalid("retired child remains running"))?;
+                if reply["control"] != "interrupt" || reply["status"]["settled"] != true {
+                    return Err(invalid("EOF did not settle the original native claim"));
+                }
+                Ok(())
+            })();
+            let released = self
+                .release
+                .send(())
+                .map_err(|_| invalid("reply writer stopped before retirement observation"));
+            closed.and(retired).and(released)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn eof_retires_native_children_before_draining_a_held_reply()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for host in ["codex", "claude-code", "pi"] {
+            served(host, |host, cwd| {
+                let (mut children, _) = children(host, cwd, "eof-retirement")?;
+                let (mut running, view) = claim(&mut children, cwd, "held", SessionAction::Spawn { prompt: "wait for parent".into() })?;
+                let mut command = native_fixture(&view, "", "0");
+                running.process.spawn(&mut command, running.claim.operation)?;
+                let pid = shell_pid(&mut running)?;
+                let mut process = std::fs::File::open(format!("/proc/{pid}/stat"))?;
+                let mut original = String::new();
+                process.read_to_string(&mut original)?;
+                assert!(!original.is_empty());
+                process.rewind()?;
+                children.children.insert(running.claim.agent.to_string(), running);
+                let (writing, written) = sync_channel(1);
+                let (release, released) = sync_channel(1);
+                let mut observed = Observed { owner: Coordination { host: host.into(), children: Some(children) }, process, release };
+                ToolServer { name: "acyclic-sessions", version: env!("CARGO_PKG_VERSION"), parked: WAITS, frame_bytes: FRAME_BYTES }.serve(
+                    &mut observed,
+                    Input { bytes: io::Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}\n".to_vec()), writing: Some(written) },
+                    Output { writing: Some(writing), release: released },
+                )?;
+                Ok(())
+            }).await?;
+        }
+        Ok(())
+    }
+}
