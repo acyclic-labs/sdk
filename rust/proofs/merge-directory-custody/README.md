@@ -2,7 +2,8 @@
 
 Run `node rust/proofs/qualify.mjs merge-directory-custody` from the repository root.
 
-The qualifier reuses the existing public merge-directory test. It creates real
+The qualifier reuses the existing public merge-directory test with default
+product features. It creates real
 memory-backed workspaces, diverges an original parent and child, stages the
 original retained preview and resolves proposals from pinned generations.
 
