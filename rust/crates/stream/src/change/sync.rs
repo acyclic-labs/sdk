@@ -15,8 +15,14 @@ mod checked {
     // Thread ownership distinguishes re-entry from another thread's contention.
     pub(crate) struct Mutex<T>(loom::sync::Mutex<T>);
     pub(crate) struct Guard<'a, T>(loom::sync::MutexGuard<'a, T>);
+    pub(crate) fn is_locked_by_current_thread() -> bool {
+        HELD.with(Cell::get)
+    }
     pub(crate) fn assert_unlocked() {
-        HELD.with(|held| assert!(!held.get(), "wake must run outside the publication lock"));
+        assert!(
+            !is_locked_by_current_thread(),
+            "wake must run outside the publication lock"
+        );
     }
     impl<T> Mutex<T> {
         pub(crate) fn new(value: T) -> Self {
@@ -49,6 +55,6 @@ mod checked {
     }
 }
 #[cfg(loom)]
-pub(crate) use checked::Mutex;
-#[cfg(loom)]
 pub(crate) use checked::assert_unlocked;
+#[cfg(loom)]
+pub(crate) use checked::{Mutex, is_locked_by_current_thread};

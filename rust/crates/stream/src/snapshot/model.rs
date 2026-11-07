@@ -46,15 +46,24 @@ pub(crate) fn capture(discard_on_drop: bool) {
 
 struct ConsumerWake {
     retired: std::sync::Arc<loom::sync::atomic::AtomicUsize>,
+    under_lock: std::sync::Arc<loom::sync::atomic::AtomicBool>,
+}
+impl ConsumerWake {
+    fn observe(&self) {
+        if crate::change::sync::is_locked_by_current_thread() {
+            self.under_lock
+                .store(true, loom::sync::atomic::Ordering::SeqCst);
+        }
+    }
 }
 impl std::task::Wake for ConsumerWake {
     fn wake(self: std::sync::Arc<Self>) {
-        crate::change::sync::assert_unlocked();
+        self.observe();
     }
 }
 impl Drop for ConsumerWake {
     fn drop(&mut self) {
-        crate::change::sync::assert_unlocked();
+        self.observe();
         self.retired
             .fetch_add(1, loom::sync::atomic::Ordering::SeqCst);
     }
@@ -139,11 +148,13 @@ pub(crate) fn depart<H>(
     );
     let mut worker = take();
     let retired = std::sync::Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+    let under_lock = std::sync::Arc::new(loom::sync::atomic::AtomicBool::new(false));
     // Replace the actual receiver's last Waker owner, then leave the next one
     // stored through publication or cancellation. Both destructors may re-enter.
     for _ in 0..2 {
         let waker = Waker::from(std::sync::Arc::new(ConsumerWake {
             retired: retired.clone(),
+            under_lock: under_lock.clone(),
         }));
         assert!(
             follow
@@ -203,4 +214,11 @@ pub(crate) fn depart<H>(
     }
     drop(worker);
     assert_eq!(retired.load(loom::sync::atomic::Ordering::SeqCst), 2);
+    crate::change::sync::assert_unlocked();
+    // Report after custody has retired: panicking inside a destructor would
+    // poison the job and turn the intended negative into a second panic.
+    assert!(
+        !under_lock.load(loom::sync::atomic::Ordering::SeqCst),
+        "wake must run outside the publication lock"
+    );
 }
