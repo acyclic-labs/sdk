@@ -118,6 +118,15 @@ impl Conversation {
         Arc::new(Self { connection })
     }
 
+    /// The same conversation over [`Connection::observation`]: its committed
+    /// records stay readable after a failure stopped the agents' runtime.
+    ///
+    /// # Errors
+    /// Fails when the observation cannot be bound.
+    pub async fn observation(&self) -> Result<Arc<Self>> {
+        Ok(Self::open(self.connection.observation().await?))
+    }
+
     fn agent(&self) -> &AgentPath {
         self.connection.root()
     }

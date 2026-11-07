@@ -331,7 +331,11 @@ async fn run(
             .transpose()?
             .unwrap_or_default()
     };
-    let config = configure(&args, credentials)?;
+    let config = configure(&args, credentials);
+    if matches!(args.command, Some(Command::Doctor)) {
+        return doctor(config).await;
+    }
+    let config = config?;
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
             (Some(certificate), Some(key), Some(url)) => {
@@ -370,6 +374,31 @@ async fn run(
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
     connected(&args, connection, output, event_output).await
+}
+
+/// Prints every startup refusal of this configuration, one per line with its
+/// recovery; nothing is reported that opening the harness would not refuse.
+async fn doctor(
+    config: Result<LocalHarnessConfig, Box<dyn std::error::Error>>,
+) -> Result<u8, Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    let refusals: Vec<String> = match config {
+        Ok(config) => LocalHarness::doctor(config)
+            .await
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        Err(error) => vec![error.to_string()],
+    };
+    let mut output = std::io::stdout().lock();
+    for refusal in &refusals {
+        writeln!(output, "refused: {refusal}")?;
+    }
+    if refusals.is_empty() {
+        writeln!(output, "ok: a run with these flags starts")?;
+    }
+    output.flush()?;
+    Ok(u8::from(!refusals.is_empty()))
 }
 
 async fn connected(
@@ -498,14 +527,19 @@ async fn drive(
     if let Some(mut usage) = usage.take() {
         // A refused/failed run can still have committed admissions. Exporting
         // them never changes its result into success or fabricates completion.
-        let exported = conversation
-            .write_usage_jsonl(usage.writer())
-            .await
-            .and_then(|()| {
-                usage
-                    .finish()
-                    .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
-            });
+        // The export reads committed records, so it observes them through a
+        // session that outlives a runtime failure which ended the run.
+        let exported = async {
+            conversation
+                .observation()
+                .await?
+                .write_usage_jsonl(usage.writer())
+                .await?;
+            usage
+                .finish()
+                .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
+        }
+        .await;
         if let Err(error) = exported {
             if result.is_err() {
                 eprintln!("graphcoder: usage export failed: {error}");
