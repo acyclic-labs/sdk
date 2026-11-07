@@ -42,17 +42,22 @@ pub(super) async fn journal() -> Result<(
     >,
     crate::core::AuthorityRoot,
 )> {
-    journal_on(Arc::new(acyclic_stream::MemoryStream::default())).await
+    journal_on(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+    )
+    .await
 }
 
-async fn journal_on<P: crate::store::JournalProvider>(
+async fn journal_on<
+    P: crate::store::JournalProvider,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
     stream: Arc<P>,
+    filesystem: acyclic_fs::Fs<A, O>,
 ) -> Result<(
-    crate::filesystem::FilesystemExecutionJournal<
-        P,
-        acyclic_fs::MemoryAuthorityBackend,
-        acyclic_fs::MemoryObjectBackend,
-    >,
+    crate::filesystem::FilesystemExecutionJournal<P, A, O>,
     crate::core::AuthorityRoot,
 )> {
     use crate::{
@@ -66,7 +71,7 @@ async fn journal_on<P: crate::store::JournalProvider>(
         "2".into(),
         &mut None,
     )?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = crate::AgentId::from_bytes([61; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -138,11 +143,18 @@ async fn cancellation_retires_provider_before_pending_completion_durability() ->
         }
     }
 
-    let directory = tempfile::tempdir().map_err(|cause| Error::Storage(cause.to_string()))?;
-    let stream = acyclic_stream::LocalStream::open(directory.path(), Default::default())
-        .await
+    acyclic_native_runtime::initialize_native_io_services()
         .map_err(|cause| Error::Storage(cause.to_string()))?;
-    let (journal, _issuer) = journal_on(Arc::new(stream)).await?;
+    let directory = tempfile::tempdir().map_err(|cause| Error::Storage(cause.to_string()))?;
+    let stream =
+        acyclic_stream::LocalStream::open(directory.path().join("journal"), Default::default())
+            .await
+            .map_err(|cause| Error::Storage(cause.to_string()))?;
+    let filesystem = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(
+        directory.path().join("filesystem"),
+    ))
+    .await?;
+    let (journal, _issuer) = journal_on(Arc::new(stream), filesystem).await?;
     assert!(journal.supports_deferred_durability());
     let stop = acyclic_actors::guest::CancellationToken::new();
     let journal = journal.with_stop(stop.clone());
