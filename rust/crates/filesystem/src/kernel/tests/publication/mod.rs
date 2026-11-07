@@ -16,6 +16,7 @@ use crate::kernel::{
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::storage::{FenceOutcome, ObjectKind, object_digest};
+use bytes::Bytes;
 use sha2::{Digest as _, Sha256};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

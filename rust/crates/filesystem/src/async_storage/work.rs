@@ -4,9 +4,7 @@ use crate::{
     WorkError,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::{
-    CommitOutcome, CommitRequest, NativeStreamResult, StreamProvider, StreamProviderExt as _,
-};
+use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProviderExt as _};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod commit_tests;

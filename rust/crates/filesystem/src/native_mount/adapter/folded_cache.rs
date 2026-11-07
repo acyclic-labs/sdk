@@ -1,10 +1,18 @@
 pub(super) use crate::sync::Arc as Shared;
 use crate::sync::Mutex;
 
-use crate::ObjectId;
+use crate::{Digest, ObjectId, ObjectKind};
 
 // Disposable immutable directory indexes. Edits produce a different tree id.
 const SLOTS: usize = 64;
+
+// Only immutable plaintext names are cached, within one fixed folding policy.
+// Sealed storage associations cannot change that derived result.
+type ContentKey = (ObjectKind, Digest);
+
+fn content_key(object: ObjectId) -> ContentKey {
+    (object.kind, object.digest)
+}
 
 pub(super) enum DirectoryNames<T> {
     Unique,
@@ -23,7 +31,7 @@ impl<T> Clone for DirectoryNames<T> {
 pub(super) struct FoldedDirectoryCache<T> {
     // Lock order: view gate -> shared checkout -> this terminal lock. No guard
     // escapes; only Arc clones/moves occur inside. Evicted payloads drop outside.
-    state: Mutex<(usize, [Option<(ObjectId, DirectoryNames<T>)>; SLOTS])>,
+    state: Mutex<(usize, [Option<(ContentKey, DirectoryNames<T>)>; SLOTS])>,
 }
 
 impl<T> FoldedDirectoryCache<T> {
@@ -34,6 +42,7 @@ impl<T> FoldedDirectoryCache<T> {
     }
 
     pub(super) fn get(&self, key: ObjectId) -> Option<DirectoryNames<T>> {
+        let key = content_key(key);
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -44,6 +53,7 @@ impl<T> FoldedDirectoryCache<T> {
     }
 
     pub(super) fn insert(&self, key: ObjectId, value: DirectoryNames<T>) {
+        let key = content_key(key);
         let previous = {
             let mut state = self
                 .state

@@ -38,7 +38,7 @@ pub(super) fn existing_tracked_paths<
 pub(super) async fn prepared<T, P, F, Fut>(preparation: P, before_effect: &F) -> Result<T, Error>
 where
     P: Future<Output = Result<T, Error>>,
-    F: Fn() -> Fut,
+    F: Fn() -> Fut + ?Sized,
     Fut: Future<Output = Result<(), Error>>,
 {
     let value = preparation.await?;

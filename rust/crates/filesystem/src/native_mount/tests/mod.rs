@@ -5,7 +5,6 @@ use crate::model::{
     MutationMode, VolumeConfig, VolumeLimits,
 };
 use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
-use std::time::Duration;
 
 pub(in crate::native_mount) use super::fixture_access;
 pub(super) use super::recovery::wait_for_retirement as await_recovery_worker;
@@ -60,33 +59,6 @@ pub(super) fn portable_path(
             .collect::<Result<Vec<_>, _>>()?,
         limits,
     )?)
-}
-
-pub(super) const RECLAIM_CHILD_READY: &str = "acyclic-reclaim-ready";
-
-#[test]
-pub(super) fn destination_reclaim_child_waits_for_external_release()
--> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{Read as _, Write as _};
-    let Some(destination) = std::env::var_os("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION") else {
-        return Ok(());
-    };
-    {
-        let mut output = std::io::stdout().lock();
-        writeln!(output, "\n{RECLAIM_CHILD_READY}")?;
-        output.flush()?;
-    }
-    let mut release = [0];
-    std::io::stdin().read_exact(&mut release)?;
-    if release != [1] {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "reclaim child received an invalid release",
-        )
-        .into());
-    }
-    reclaim_native_mount_destination_fence(Path::new(&destination))?;
-    Ok(())
 }
 
 mod capture;

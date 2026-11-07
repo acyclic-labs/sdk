@@ -29,7 +29,8 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
     let mounted = mount
         .native_root_identity()
         .ok_or("live mount lost its native root identity")?;
-    assert_ne!(mounted, before);
+    // ProjFS attaches to the existing directory. Source-backed reads witness
+    // attachment on every platform; identity authenticates the destination.
     assert_eq!(crate::capture_root_identity(destination.path())?, mounted);
     assert_eq!(
         std::fs::read(destination.path().join("source.txt"))?,
@@ -49,7 +50,11 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
         retired, before,
         "last mount owner returned while its native namespace remained mounted"
     );
-    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
+    assert_eq!(
+        std::fs::read_dir(destination.path())?.count(),
+        0,
+        "last mount owner left projected entries in the native namespace"
+    );
     assert!(
         source.upgrade().is_none(),
         "driver still owns the mount source"
@@ -58,7 +63,6 @@ async fn dropping_the_last_customer_owner_retires_the_native_namespace()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
@@ -202,7 +206,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
                 .arg(format!(
                     "{module}::lazy_mount_preserves_guarded_publication_import_and_retirement"
                 ))
-                .args(["--exact", "--ignored", "--test-threads=1"])
+                .args(["--exact", "--test-threads=1"])
                 .env(
                     "ACYCLIC_CUSTOMER_HOST_WRITE",
                     destination.path().join("authored.txt"),

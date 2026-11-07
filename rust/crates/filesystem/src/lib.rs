@@ -63,7 +63,7 @@ pub mod access;
 mod arc_layout;
 mod operation_claim;
 mod sync;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 mod watch_queue;
 pub use acyclic_stream::{
     OperationAttempt, OperationClaim, OperationClaims, OperationObservation, OperationTermination,
@@ -136,7 +136,7 @@ mod kani_proofs;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod native_exchange;
+mod native_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
@@ -330,11 +330,6 @@ pub use native_capture::{
     SearchRoot, WatchCaptureReceipt, capture_baseline, capture_held_paths, capture_paths,
     capture_root_identity, capture_subtree, capture_watch_batch, file_identity, hold_root,
     hold_search_root, host_path_to_namespace, namespace_to_host_path,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use native_exchange::{
-    NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    prepare_native_exchange, publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};

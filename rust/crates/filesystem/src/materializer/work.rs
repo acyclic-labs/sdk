@@ -37,6 +37,18 @@ impl NativeMaterializationWork {
         crate::native_host::open_root_directory(path, &mut &*self)
     }
 
+    /// Removes one empty directory from an admitted parent without following
+    /// the leaf or removing descendants. The parent is opened once and held
+    /// through the removal; all native work uses this original ledger.
+    pub fn remove_empty_directory(
+        &self,
+        parent: &Path,
+        leaf: &Path,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        let (parent, _) = self.open_root_directory(parent)?;
+        crate::native_host::remove_leaf(&parent, leaf, true, &mut &*self)
+    }
+
     /// Registers a cancellation waiter funded by this original ledger.
     pub fn cancellation_wait(
         &self,

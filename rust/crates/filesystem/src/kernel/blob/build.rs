@@ -151,29 +151,13 @@ pub(super) fn reserve_blob_vec<T>(
     capacity: usize,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    if owner.value.capacity() >= capacity {
-        return Ok(());
-    }
-    let before = vector_bytes::<T>(owner.value.capacity())?;
-    let requested = vector_bytes::<T>(capacity)?;
-    let delta = requested.checked_sub(before).ok_or(WorkError::Overflow)?;
-    let mut admitted = accounting.claim_owned(delta, 1)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if matches!(owner.custody, KernelOwnedAllocation::Standalone)
-        && matches!(admitted, KernelOwnedAllocation::NativeOriginal(_))
-    {
-        owner.custody = admitted;
-    } else {
-        owner.custody.absorb(&mut admitted)?;
-    }
-    #[cfg(target_arch = "wasm32")]
-    owner.custody.absorb(&mut admitted)?;
-    if let Err(error) = owner.value.try_reserve_exact(capacity - owner.value.len()) {
-        let _ = accounting.reconcile_owned(&mut owner.custody, requested, before);
-        return Err(BlobBuildError::ReserveFailed(error).into());
-    }
-    let actual = vector_bytes::<T>(owner.value.capacity())?;
-    accounting.reconcile_owned(&mut owner.custody, requested, actual)
+    super::super::allocation::reserve_vec_with_accounting(
+        &mut owner.value,
+        capacity,
+        &mut owner.custody,
+        accounting,
+        |error| BlobBuildError::ReserveFailed(error).into(),
+    )
 }
 
 pub(super) fn release_blob_vec<T>(

@@ -215,6 +215,43 @@ impl Fixture {
             .prepare(&self.from, &self.to, &self.state, &options, &self.work)
             .await?;
         assert_eq!(prepared.phase, acyclic_fs::MaterializationPhase::Prepared);
+        // The persisted v1 journal resumes from this same nested namespace.
+        let staging = self.root.parent().unwrap().join(".acyclic-m");
+        assert_eq!(
+            publication.directory().parent().unwrap().parent(),
+            Some(staging.as_path()),
+            "prepared journal changed its original staging namespace"
+        );
+        assert!(options.destination.exists());
+        let pending = self.publication(OperationId::new())?;
+        let pending_options = MaterializeOptions::native(pending.directory().join("target"));
+        pending
+            .prepare(
+                &self.from,
+                &self.to,
+                &self.state,
+                &pending_options,
+                &self.work,
+            )
+            .await?;
+        let other_root = self.root.parent().unwrap().join("other-checkout");
+        std::fs::create_dir(&other_root)?;
+        let other = CheckoutPublication::new(
+            &other_root,
+            self.work.root_identity(&other_root)?,
+            OperationId::new(),
+            &self.work,
+        )?;
+        let other_options = MaterializeOptions::native(other.directory().join("target"));
+        other
+            .prepare(
+                &self.from,
+                &self.to,
+                &self.state,
+                &other_options,
+                &self.work,
+            )
+            .await?;
         assert!(!self.root.join("note").exists());
         // Negative control: the low-level path cannot resume the original journal
         // from an already committed logical head. Every adapter needs the owner.
@@ -238,6 +275,17 @@ impl Fixture {
             assert_eq!(std::fs::read_to_string(self.root.join(name))?, "host-owned");
         }
         assert!(!publication.directory().exists());
+        // Both another operation on this root and another root own real
+        // Prepared bytes. Optional ancestor cleanup must preserve both.
+        assert!(pending_options.destination.exists());
+        assert!(other_options.destination.exists());
+        cleanup_directory(pending.directory(), &self.work)?;
+        assert!(other_options.destination.exists());
+        cleanup_directory(other.directory(), &self.work)?;
+        assert!(
+            !staging.exists(),
+            "publication left shared staging ancestors behind"
+        );
         std::fs::write(self.root.join("note"), "edit after acknowledgement")?;
         self.publish(adapter, operation, &self.to).await?;
         assert_eq!(

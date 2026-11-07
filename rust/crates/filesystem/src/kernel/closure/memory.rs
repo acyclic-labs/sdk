@@ -288,6 +288,7 @@ impl ProofGuard {
             (ProofGuard::Native(target), ProofGuard::Native(source)) => {
                 target.absorb(source).map_err(Into::into)
             }
+            #[cfg(not(target_arch = "wasm32"))]
             _ => Err(WorkError::Overflow.into()),
         }
     }

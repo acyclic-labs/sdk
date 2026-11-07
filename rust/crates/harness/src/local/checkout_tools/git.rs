@@ -20,7 +20,7 @@ impl CheckoutTools {
     ) -> Result<crate::tools::FsCommand> {
         let parsed = self.commands().fs_arguments(command, scope)?;
         if !child_lifecycle(&parsed.arguments) {
-            return Err(Error::Invalid("fs supports a child fork's lifecycle only: diff, merge or discard agents/<name>, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
+            return Err(Error::Invalid("fs supports status and a child fork's lifecycle: diff, merge or discard agents/<name>, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands".into()));
         }
         Ok(parsed)
     }
@@ -62,12 +62,13 @@ impl CheckoutTools {
     }
 }
 
-/// The model-visible fs grammar: one child fork's whole lifecycle. A parent
-/// inspects, merges or discards `agents/<name>`, and a conflicted merge is
+/// The model-visible fs grammar: working-tree status and one child fork's
+/// lifecycle. A parent inspects, merges or discards `agents/<name>`, and a conflicted merge is
 /// completed the way the join's own refusal instructs, by marking resolved
 /// paths and continuing or aborting. Every other git command belongs to shell.
 fn child_lifecycle(arguments: &[String]) -> bool {
     match arguments {
+        [operation] if operation == "status" => true,
         [operation, argument] if matches!(operation.as_str(), "diff" | "merge" | "discard") => {
             (operation == "merge" && matches!(argument.as_str(), "--continue" | "--abort"))
                 || argument
@@ -122,6 +123,7 @@ mod tests {
                 Default::default(),
             )?;
             for command in [
+                "status",
                 "diff agents/child",
                 "merge agents/child",
                 "discard agents/child",
@@ -140,7 +142,7 @@ mod tests {
                     ),
                     "child command bypassed volume authority: {command}"
                 );
-                if command.ends_with("diff agents/child") {
+                if command.ends_with("diff agents/child") || command.ends_with("status") {
                     assert!(tools.fs_arguments(&command, &read_only).is_ok());
                 } else {
                     assert!(
@@ -152,7 +154,12 @@ mod tests {
                     );
                 }
             }
-            for command in ["merge main", "diff agents/", "add --all", "status"] {
+            for command in [
+                "merge main",
+                "diff agents/",
+                "add --all",
+                "status --porcelain",
+            ] {
                 let command = format!("{target}{command}");
                 assert!(
                     tools.fs_arguments(&command, &granted).is_err(),

@@ -2,6 +2,7 @@
 
 use super::*;
 use std::process::{Command, Stdio};
+use std::sync::PoisonError;
 
 const CHILD: &str = "ACYCLIC_FS_SHARED_FUSE_CHILD";
 /// Negative control for the cost test: one mount per view, as before.
@@ -83,13 +84,7 @@ fn entries(path: &str) -> std::io::Result<usize> {
 fn child(test: &str, root: &Path) -> Command {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
     command
-        .args([
-            test,
-            "--exact",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD, root)
         .env_remove(UNSHARED)
         .stdin(Stdio::null());
@@ -97,7 +92,6 @@ fn child(test: &str, root: &Path) -> Command {
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
@@ -180,7 +174,6 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted, around) = shared_sources(posix_config())?;
@@ -212,13 +205,15 @@ pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CHILD).is_some() {
+        return shared_view_costs_in_this_process();
+    }
     for unshared in [false, true] {
         let temporary = tempfile::tempdir()?;
         let mut command = child(
-            "native_mount::fuse::tests::shared::shared_view_costs_in_this_process",
+            "native_mount::fuse::tests::shared::linux_shared_views_cost_no_thread_descriptor_or_mount",
             temporary.path(),
         );
         if unshared {
@@ -241,12 +236,8 @@ pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 }
 
 /// Child half of `linux_shared_views_cost_no_thread_descriptor_or_mount`.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let root = root.canonicalize()?;
@@ -330,54 +321,165 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
-pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
+pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{BufRead as _, BufReader};
+    if let Some(mode) = std::env::var_os(CHILD) {
+        if mode == "server-loss" {
+            return original_connection_retires_after_server_loss();
+        }
+        return shared_view_owner_until_killed();
+    }
+    let temporary = tempfile::tempdir()?;
+    let status = child(
+        "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
+        temporary.path(),
+    )
+    .env(CHILD, "server-loss")
+    .status()?;
+    assert!(status.success(), "isolated server-loss control: {status}");
+    for killed_action in [false, true] {
+        owner_exit_namespace(killed_action)?;
+    }
+    Ok(())
+}
 
+fn original_connection_retires_after_server_loss() -> Result<(), Box<dyn std::error::Error>> {
+    // A live facade and its notification sinks must not retain a device after
+    // the original packet server has stopped. Check physical ownership before
+    // issuing a lookup, so the old-source negative cannot strand a kernel call.
+    let device_count = || -> std::io::Result<usize> {
+        let mut count = 0;
+        for entry in std::fs::read_dir("/proc/self/fd")? {
+            if std::fs::read_link(entry?.path())
+                .is_ok_and(|target| target == Path::new("/dev/fuse"))
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    };
+    let before = device_count()?;
+    let server_root = tempfile::tempdir()?;
+    let (source, _) = shared_sources(posix_config())?;
+    let mut live = mount_view(source, server_root.path(), false)?;
+    let io = {
+        let driver = live.driver.as_ref().ok_or("live FUSE driver")?;
+        driver
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .device
+            .as_ref()
+            .cloned()
+            .ok_or("live FUSE transport")?
+    };
+    assert_eq!(device_count()?, before + 1);
+    io.stop();
+    let remaining = device_count()?;
+    // Always clean up this exact mount, including the negative control.
+    if remaining != before {
+        let _ = live.stop();
+        assert_eq!(remaining, before, "the stopped server retained /dev/fuse");
+    }
+    let error = std::fs::metadata(server_root.path().join("after-server-exit"))
+        .expect_err("a terminated connection refuses a fresh lookup");
+    assert!(matches!(
+        error.raw_os_error(),
+        Some(libc::ENOTCONN | libc::ENOENT)
+    ));
+    assert!(live.stop()?);
+    assert_eq!(mounts_at(server_root.path())?, 0);
+
+    Ok(())
+}
+
+fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead as _, BufReader};
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(
-        "native_mount::fuse::tests::shared::shared_view_owner_until_killed",
+        "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
         temporary.path(),
     )
+    .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::inherit())
     .spawn()?;
     let mut lines = BufReader::new(owner.stdout.take().ok_or("child stdout")?).lines();
-    loop {
+    let cleanup_pid = loop {
         let line = lines
             .next()
             .ok_or("the owner exited before its view was live")??;
-        if line.contains("shared view owner: ready") {
-            break;
+        // The test host can prefix the first output line with its test name.
+        if let Some((_, pid)) = line.rsplit_once("shared view owner: ready ") {
+            break pid.parse::<u32>()?;
+        }
+    };
+    use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    // The original owner still holds this PID; registration precedes its
+    // kill, so PID reuse cannot select another process's terminal event.
+    // SAFETY: pidfd_open takes the retained original PID and no pointers.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, cleanup_pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: pidfd_open returned this fresh owned descriptor.
+    let cleanup = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd)?) };
+    // Remove the actual cleanup producer through its retained kernel identity.
+    // This negative control cannot accidentally signal a reused numeric PID.
+    if killed_action {
+        // SAFETY: the retained pidfd names the original action; SIGKILL carries
+        // no siginfo pointer and flags zero selects the ordinary delivery.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                cleanup.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
         }
     }
     owner.kill()?;
     owner.wait()?;
-    // The kill is the leak: a mount nobody serves, and its fence.
-    assert_eq!(
-        mounts_at(&root)?,
-        1,
-        "a killed owner leaves its root mounted"
-    );
+    let mut terminal = libc::pollfd {
+        fd: cleanup.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one initialized record, with its original pidfd retained.
+        if unsafe { libc::poll(&mut terminal, 1, -1) } >= 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+    let remaining = mounts_at(&root)?;
     let [fence, ..] = crate::native_mount_control_paths(&root)?;
-    assert!(fence.exists(), "and fenced");
-
-    // Negative control: without the reaper the root cannot be reused.
-    super::super::shared_instance::SKIP_REAP.with(|skip| skip.set(true));
-    let (refused_source, _) = shared_sources(posix_config())?;
-    let refused = view(refused_source, &root.join("refused"));
-    super::super::shared_instance::SKIP_REAP.with(|skip| skip.set(false));
-    assert!(
-        refused.is_err(),
-        "a crash-left root is unusable without the reaper"
+    assert!(fence.exists(), "the original fence remains recoverable");
+    println!(
+        "owner-exit action control: killed_action={killed_action}, remaining_mounts={remaining}"
     );
-    assert_eq!(mounts_at(&root)?, 1);
-
+    if remaining != 0 {
+        // The planted producer-loss control must not itself abandon a mount.
+        let (source, _) = shared_sources(posix_config())?;
+        let mut recovered = view(source, &root.join("negative-cleanup"))?;
+        assert!(recovered.stop()?);
+    }
+    assert_eq!(
+        remaining == 0,
+        !killed_action,
+        "the killed owner's namespace outlived its cleanup action"
+    );
     let (source, _) = shared_sources(posix_config())?;
     let mut session = view(source, &root.join("after"))?;
-    assert_eq!(mounts_at(&root)?, 1, "the reaper replaced the dead mount");
+    assert_eq!(mounts_at(&root)?, 1, "the successor owns its new mount");
     assert_eq!(listing(&root)?, ["after"]);
     assert!(session.stop()?);
     assert_eq!(mounts_at(&root)?, 0);
@@ -385,19 +487,26 @@ pub(super) fn linux_a_crashed_owner_leaves_a_root_the_next_start_reaps()
     Ok(())
 }
 
-/// Child half of `linux_a_crashed_owner_leaves_a_root_the_next_start_reaps`:
+/// Child half of the original connection and namespace retirement guard:
 /// holds a view until its parent kills it.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let (source, _) = shared_sources(posix_config())?;
-    let _session = view(source, &root.join("crashed"))?;
-    println!("shared view owner: ready");
+    let session = view(source, &root.join("crashed"))?;
+    let cleanup = session
+        .driver
+        .as_ref()
+        .ok_or("live driver")?
+        .state
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .shared
+        .as_ref()
+        .and_then(|view| view.exit_action_id())
+        .ok_or("original owner-exit action")?;
+    println!("shared view owner: ready {cleanup}");
     loop {
         std::thread::park();
     }

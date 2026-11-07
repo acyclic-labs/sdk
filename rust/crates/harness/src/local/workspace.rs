@@ -7,6 +7,9 @@ use acyclic_fs::{
 
 /// Reserved mount namespace within an already writable checkout.
 pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
+/// Physical task-view directories, below [`HOST_VIEW_ROOT`] so that no
+/// checkout capture or Git facade ever reads them as authored content.
+const PHYSICAL_VIEW_ROOT: &str = ".physical";
 
 mod bootstrap;
 #[cfg(test)]
@@ -62,6 +65,8 @@ pub struct LocalWorkspace {
     /// Optional sandbox admission shared by the root and all descendants.
     pub(super) task_view_admission: Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
     pub(super) mounted: Option<Arc<TaskMount>>,
+    /// How this owner's task views reach the host filesystem.
+    pub(super) mounting: WorkspaceMounting,
     pub(super) filesystem: acyclic_fs::LocalFs,
     pub(super) store: LocalCoreStateStore,
     pub(super) mount_authority: Option<crate::filesystem::NativeMountAuthority>,
@@ -196,21 +201,26 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
+        // A physical view projects no volume: its home stays unbound, as the
+        // checkout's does.
+        let native = self.mounting == WorkspaceMounting::Native;
         let mut mounts = mounts::owner(
             root.path(),
             project,
             None,
-            Some((crate::filesystem::HOME_VOLUME.into(), scratch, None)),
+            native.then(|| (crate::filesystem::HOME_VOLUME.into(), scratch, None)),
         )?;
-        volumes::attach(
-            &self.filesystem,
-            &self.store,
-            &root,
-            &mut mounts,
-            authority,
-            &self.task_view_admission,
-        )
-        .await?;
+        if native {
+            volumes::attach(
+                &self.filesystem,
+                &self.store,
+                &root,
+                &mut mounts,
+                authority,
+                &self.task_view_admission,
+            )
+            .await?;
+        }
         Ok(Arc::new(mounts))
     }
 
@@ -335,6 +345,7 @@ pub(super) struct Attach<'a> {
     pub(super) directory: &'a Path,
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
+    pub(super) mounting: WorkspaceMounting,
 }
 
 pub(super) async fn open(
@@ -349,6 +360,7 @@ pub(super) async fn open(
         volume,
         scratch,
         native_mounts,
+        mounting,
         ..
     } = attach;
     // The held root is the root its holder validated; binding and every setup
@@ -356,7 +368,8 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
-    if native_mounts {
+    // Physical task views live below the reserved view root too.
+    if native_mounts || mounting == WorkspaceMounting::Physical {
         volumes::exclude_state(&root)?;
     }
     let setup = if native_mounts {
@@ -418,6 +431,7 @@ pub(super) async fn open(
         mount_directory,
         task_view_admission,
         mounted: None,
+        mounting,
         filesystem: filesystem.clone(),
         store,
         mount_authority,

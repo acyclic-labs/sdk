@@ -1,3 +1,18 @@
+`view-retirement-admission.patch` restores replacement admission before the
+original physical view has finished retiring. Apply it from the repository
+root, then run from `rust`:
+
+```sh
+cargo test -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::host_owner::tests::replacement_view_waits_for_original_retirement_and_reports_producer_loss -- --exact
+```
+
+The actual native owner must reject the mutation with `replacement attachment
+was admitted while its original view remained live`. Reverse the patch and
+run the same control. It checks cancellation of the original caller, shared
+replacement attachment, and typed failure for both waiters when the original
+retirement producer disappears. The existing idle-view lifecycle control
+retains settled contents and active-session custody.
+
 The historical-child scenario also exercises the native `ForkCuts` adapter
 opened by the real local harness. It retains a cut, advances the parent with
 an actual write, reuses the original operation and refuses mismatched selected

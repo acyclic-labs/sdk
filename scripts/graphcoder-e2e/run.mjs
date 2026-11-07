@@ -119,7 +119,8 @@ async function prepare(test, gitOrigin) {
     if (event.case === test.id) listener(event);
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
-  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
+  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny",
+    ...(test.variant === "physical" ? ["--workspace-mounting", "physical"] : [])];
   return { fixture, artifact, seconds: (performance.now() - begin) / 1000 };
 }
 async function execute(test, prepared) {

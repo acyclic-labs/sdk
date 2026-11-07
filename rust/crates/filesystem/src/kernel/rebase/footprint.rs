@@ -45,23 +45,38 @@ pub(crate) struct CommitFootprint<'a> {
 impl CommitFootprint<'_> {
     /// Symmetric read/write independence. Incomplete deltas cannot certify it.
     pub(crate) fn independent(self, other: Self, maximum_items: u64) -> FootprintQuery {
+        self.independent_all([other], maximum_items)
+    }
+
+    /// Validate the immutable proposal once across an authenticated cohort.
+    pub(crate) fn independent_all(
+        self,
+        others: impl IntoIterator<Item = Self>,
+        maximum_items: u64,
+    ) -> FootprintQuery {
         let mut budget = QueryBudget {
             maximum: maximum_items,
             examined: 0,
         };
         let independent = (|| {
-            if !writes_disjoint(self.writes, other.writes, &mut budget)? {
+            let mut others = others.into_iter();
+            let Some(first) = others.next() else {
+                return Ok(true);
+            };
+            if first.writes.truncated {
                 return Ok(false);
             }
-            if let Some(reads) = self.reads
-                && !reads.disjoint_from(other.writes, &mut budget)?
-            {
+            let Some(left) = PreparedFootprint::new(self, &mut budget)? else {
                 return Ok(false);
-            }
-            if let Some(reads) = other.reads
-                && !reads.disjoint_from(self.writes, &mut budget)?
-            {
-                return Ok(false);
+            };
+            for other in std::iter::once(first).chain(others) {
+                budget.visit()?;
+                let Some(right) = PreparedFootprint::new(other, &mut budget)? else {
+                    return Ok(false);
+                };
+                if !left.independent(right, &mut budget)? {
+                    return Ok(false);
+                }
             }
             Ok(true)
         })();
@@ -69,6 +84,38 @@ impl CommitFootprint<'_> {
             independent,
             items_examined: budget.examined,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PreparedFootprint<'a>(CommitFootprint<'a>);
+
+impl<'a> PreparedFootprint<'a> {
+    fn new(
+        footprint: CommitFootprint<'a>,
+        budget: &mut QueryBudget,
+    ) -> Result<Option<Self>, WorkError> {
+        if footprint.writes.truncated || !ordered(footprint.writes, budget)? {
+            return Ok(None);
+        }
+        Ok(Some(Self(footprint)))
+    }
+
+    fn independent(self, other: Self, budget: &mut QueryBudget) -> Result<bool, WorkError> {
+        if !writes_disjoint(self, other, budget)? {
+            return Ok(false);
+        }
+        if let Some(reads) = self.0.reads
+            && !reads.disjoint_from(other.0.writes, budget)?
+        {
+            return Ok(false);
+        }
+        if let Some(reads) = other.0.reads
+            && !reads.disjoint_from(self.0.writes, budget)?
+        {
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
@@ -152,50 +199,38 @@ fn binding_overlaps(region: &DependencyRegion, change: &DirectoryBindingChange) 
 }
 
 fn writes_disjoint(
-    left: &GenerationDiff,
-    right: &GenerationDiff,
+    left: PreparedFootprint<'_>,
+    right: PreparedFootprint<'_>,
     budget: &mut QueryBudget,
 ) -> Result<bool, WorkError> {
-    if left.truncated || right.truncated || !ordered(left, budget)? || !ordered(right, budget)? {
-        return Ok(false);
-    }
+    let (left, right) = (left.0.writes, right.0.writes);
     let mut left_files = left.files.iter().peekable();
     let mut right_files = right.files.iter().peekable();
-    while let (Some(a), Some(b)) = (left_files.peek(), right_files.peek()) {
-        budget.visit()?;
-        match a.file_id.cmp(&b.file_id) {
-            std::cmp::Ordering::Less => {
-                left_files.next();
-            }
-            std::cmp::Ordering::Greater => {
-                right_files.next();
-            }
-            std::cmp::Ordering::Equal => {
-                if !a.directory_children_only() || !b.directory_children_only() {
-                    return Ok(false);
-                }
-                left_files.next();
-                right_files.next();
-            }
-        }
+    if !acyclic_collections::page::merge::overlapping(
+        &mut left_files,
+        &mut right_files,
+        |a, b| {
+            budget.visit()?;
+            Ok(a.file_id.cmp(&b.file_id))
+        },
+        |a, b| {
+            Ok(a.zip(b)
+                .is_none_or(|(a, b)| a.directory_children_only() && b.directory_children_only()))
+        },
+    )? {
+        return Ok(false);
     }
     let mut left_bindings = left.bindings.iter().peekable();
     let mut right_bindings = right.bindings.iter().peekable();
-    while let (Some(a), Some(b)) = (left_bindings.peek(), right_bindings.peek()) {
-        budget.visit()?;
-        match (a.directory_id, &a.name).cmp(&(b.directory_id, &b.name)) {
-            std::cmp::Ordering::Less => {
-                left_bindings.next();
-            }
-            std::cmp::Ordering::Greater => {
-                right_bindings.next();
-            }
-            std::cmp::Ordering::Equal => {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
+    acyclic_collections::page::merge::overlapping(
+        &mut left_bindings,
+        &mut right_bindings,
+        |a, b| {
+            budget.visit()?;
+            Ok((a.directory_id, &a.name).cmp(&(b.directory_id, &b.name)))
+        },
+        |a, b| Ok(a.zip(b).is_none()),
+    )
 }
 
 fn ordered(changes: &GenerationDiff, budget: &mut QueryBudget) -> Result<bool, WorkError> {

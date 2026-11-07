@@ -440,7 +440,23 @@ fn exact_reclamation_preserves_every_authored_sibling() -> Result<(), Box<dyn st
 #[test]
 fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{BufRead as _, Write as _};
+    use std::io::{Read as _, Write as _};
+    const DESTINATION: &str = "ACYCLIC_FS_RECLAIM_CHILD_DESTINATION";
+    const READY: &str = "acyclic-reclaim-ready";
+    if let Some(destination) = std::env::var_os(DESTINATION) {
+        acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), READY)?;
+        let mut release = [0];
+        std::io::stdin().read_exact(&mut release)?;
+        if release != [1] {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "reclaim child received an invalid release",
+            )
+            .into());
+        }
+        reclaim_native_mount_destination_fence(Path::new(&destination))?;
+        return Ok(());
+    }
     crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
@@ -461,13 +477,13 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
             acyclic_native_runtime::ProcessCommand::new(&executable)
                 .args([
                     "--exact",
-                    "native_mount::tests::destination_reclaim_child_waits_for_external_release",
+                    "native_mount::tests::fence::independent_supervisors_concurrently_reclaim_one_crash_left_fence",
                     "--nocapture",
                 ])
                 .stdin(acyclic_native_runtime::ProcessStdio::piped())
                 .stdout(acyclic_native_runtime::ProcessStdio::piped())
                 .stderr(acyclic_native_runtime::ProcessStdio::inherit())
-                .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination),
+                .env(DESTINATION, &destination),
         )?;
         let release = child
             .take_stdin()
@@ -478,20 +494,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
         children.push((child, release, std::io::BufReader::new(output)));
     }
     for (_, _, output) in &mut children {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            if output.read_line(&mut line)? == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "reclaim child closed before publishing readiness",
-                )
-                .into());
-            }
-            if line.trim_end() == RECLAIM_CHILD_READY {
-                break;
-            }
-        }
+        acyclic_test_support::readiness::wait(output, READY)?;
     }
     // The actual child has published readiness, but losing its original
     // release producer must fail before any reclamation takes place.

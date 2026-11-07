@@ -1,3 +1,6 @@
+//! Bounded proofs of the production shared allocation layout.
+
+#[cfg(kani)]
 #[path = "../../src/arc_layout.rs"]
 mod arc_layout;
 

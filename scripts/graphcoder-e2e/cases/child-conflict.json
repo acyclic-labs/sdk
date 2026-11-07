@@ -208,5 +208,6 @@
       "conflict"
     ]
   },
-  "ntfs": true
+  "ntfs": true,
+  "physical": true
 }

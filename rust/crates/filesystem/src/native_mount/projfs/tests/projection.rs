@@ -254,95 +254,135 @@ async fn a_projected_directory_link_leads_into_its_directory()
 
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn a_held_link_is_removed_or_replaced_after_close() -> Result<(), Box<dyn std::error::Error>>
-{
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows::Win32::Storage::FileSystem::{
-        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-    };
-    for replacement in [false, true] {
-        let work = setup_work()?;
-        let source = windows_checkout_source().await?;
-        let name = windows_path("name");
-        source.create_symbolic_link(
-            &name,
-            setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
-            FileMetadata::default(),
-            &work,
-        )?;
-        let (_root, destination, mut session) = mount_source(&source)?;
-        let projected = destination.join("name");
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ.0)
-            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
-            .open(&projected)
-            .map_err(|error| format!("open held link, replacement={replacement}: {error}"))?;
-        let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
-        let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
-        let context = driver.context.ok_or("missing ProjFS context")?;
-        let tree = lock_recover(&runtime.projector.tree);
-        source.remove(&name, None, &work)?;
-        if replacement {
-            source.create_directory(&name, FileMetadata::default(), &work)?;
-            let inner = name.child(windows_name("inner.txt"));
-            source.create_file(&inner, FileMetadata::default(), None, &work)?;
-            source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
-        }
-        runtime.projector.materialize_locked(
-            Projection {
-                runtime: &runtime,
-                work: &work,
-                context,
-                starting: false,
-            },
-            vec![MountPath::root()],
-        )?;
-        let target = {
-            let state = lock_recover(&runtime.projector.state);
-            assert!(
-                state.pending.contains_key(&name),
-                "the held link must block retirement"
-            );
-            state.notified
-        };
-        let projector = Arc::clone(&runtime.projector);
-        let pending = name.clone();
-        let closer = std::thread::spawn(move || {
-            let mut state = lock_recover(&projector.state);
-            while state.processed < target && state.failure.is_none() && !state.stopping {
-                state = projector
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Clone, Copy, Debug)]
+    enum Replacement {
+        Removed,
+        File,
+        Directory,
+    }
+    for link in [false, true] {
+        for replacement in [
+            Replacement::Removed,
+            Replacement::File,
+            Replacement::Directory,
+        ] {
+            let work = setup_work()?;
+            let source = windows_checkout_source().await?;
+            let name = windows_path("name");
+            if link {
+                source.create_symbolic_link(
+                    &name,
+                    setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
+                    FileMetadata::default(),
+                    &work,
+                )?;
+            } else {
+                source.create_file(&name, FileMetadata::default(), None, &work)?;
+                source.write_range(&name, 0, Bytes::from_static(b"old"))?;
             }
-            assert!(
-                state.pending.contains_key(&pending),
-                "the worker must retain the held incarnation"
-            );
-            drop(state);
-            drop(held);
-        });
-        drop(tree);
-        session
-            .revalidate(&work)
-            .map_err(|error| format!("revalidate held link, replacement={replacement}: {error}"))?;
-        closer.join().map_err(|_| "closer panicked")?;
-        if replacement {
-            assert!(
-                std::fs::symlink_metadata(&projected)
-                    .map_err(|error| format!("replacement directory metadata: {error}"))?
-                    .is_dir()
-            );
-            assert_eq!(
-                std::fs::read(projected.join("inner.txt"))
-                    .map_err(|error| format!("replacement child read: {error}"))?,
-                b"inner"
-            );
-        } else {
-            assert!(sorted_names(&destination)?.is_empty());
+            let (_root, destination, mut session) = mount_source(&source).map_err(|error| {
+                format!("mount held entry, link={link}, {replacement:?}: {error}")
+            })?;
+            let projected = destination.join("name");
+            let mut released_at = 0;
+            super::metadata::client::run("held-entry", &projected, || {
+                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                let runtime = Arc::clone(driver.runtime.as_ref().ok_or("missing ProjFS runtime")?);
+                let context = driver.context.ok_or("missing ProjFS context")?;
+                let tree = lock_recover(&runtime.projector.tree);
+                source.remove(&name, None, &work)?;
+                match replacement {
+                    Replacement::Removed => {}
+                    Replacement::File => {
+                        source.create_file(&name, FileMetadata::default(), None, &work)?;
+                        source.write_range(&name, 0, Bytes::from_static(b"newer"))?;
+                    }
+                    Replacement::Directory => {
+                        source.create_directory(&name, FileMetadata::default(), &work)?;
+                        let inner = name.child(windows_name("inner.txt"));
+                        source.create_file(&inner, FileMetadata::default(), None, &work)?;
+                        source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
+                    }
+                }
+                runtime.projector.materialize_locked(
+                    Projection {
+                        runtime: &runtime,
+                        work: &work,
+                        context,
+                        starting: false,
+                    },
+                    vec![MountPath::root()],
+                )?;
+                let target = {
+                    let state = lock_recover(&runtime.projector.state);
+                    assert!(
+                        state.processed < state.notified,
+                        "the changed view must await its original worker"
+                    );
+                    state.notified
+                };
+                drop(tree);
+                let mut state = lock_recover(&runtime.projector.state);
+                while state.processed < target && state.failure.is_none() && !state.stopping {
+                    state = runtime
+                        .projector
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                assert!(
+                    state.failure.is_none() && !state.stopping,
+                    "the original worker must complete"
+                );
+                assert!(state.processed >= target);
+                assert!(
+                    state.pending.contains_key(&name),
+                    "the worker must retain the held incarnation"
+                );
+                released_at = state.releases;
+                Ok(())
+            })
+            .map_err(|error| {
+                format!("hold and change entry, link={link}, {replacement:?}: {error}")
+            })?;
+            let settled = session.revalidate(&work);
+            settled.map_err(|error| {
+                let driver = session.driver.as_ref().expect("live ProjFS driver");
+                let runtime = driver.runtime.as_ref().expect("live ProjFS runtime");
+                let state = lock_recover(&runtime.projector.state);
+                format!(
+                    "revalidate held entry, link={link}, {replacement:?}: {error}; original close completed after release {released_at}, observed releases={}, retry={}, processed={:?}, notified={:?}, pending={}",
+                    state.releases,
+                    state.retry,
+                    state.processed,
+                    state.notified,
+                    state.pending.len(),
+                )
+            })?;
+            {
+                let driver = session.driver.as_ref().ok_or("missing ProjFS driver")?;
+                let runtime = driver.runtime.as_ref().ok_or("missing ProjFS runtime")?;
+                let state = lock_recover(&runtime.projector.state);
+                assert_ne!(
+                    state.releases, released_at,
+                    "the external handle close must reach the original release event"
+                );
+                assert!(!state.pending.contains_key(&name));
+            }
+            match replacement {
+                Replacement::Removed => assert!(sorted_names(&destination)?.is_empty()),
+                Replacement::File => assert_eq!(std::fs::read(&projected)?, b"newer"),
+                Replacement::Directory => {
+                    assert!(std::fs::symlink_metadata(&projected)?.is_dir());
+                    assert_eq!(std::fs::read(projected.join("inner.txt"))?, b"inner");
+                }
+            }
+            session.stop().map_err(|error| {
+                format!("stop settled entry, link={link}, {replacement:?}: {error}")
+            })?;
         }
-        session.stop()?;
     }
     Ok(())
 }

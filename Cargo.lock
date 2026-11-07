@@ -496,6 +496,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-harness-search",
  "acyclic-harness-tui",
+ "acyclic-host-platform",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",

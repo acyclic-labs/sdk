@@ -55,7 +55,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         maximum_entries: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<DirectoryRecordPage> {
+    ) -> W::OwnedOutput<DirectoryRecordPage, crate::FsError> {
         self.list_directory_records_in_order(
             path,
             (after, maximum_entries, Direction::Ascending),
@@ -78,7 +78,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         maximum_entries: u32,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<DirectoryRecordPage> {
+    ) -> W::OwnedOutput<DirectoryRecordPage, crate::FsError> {
         self.list_directory_records_in_order(
             path,
             (before, maximum_entries, Direction::Descending),
@@ -94,7 +94,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         page: (Option<&LogicalName>, u32, Direction),
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<DirectoryRecordPage> {
+    ) -> W::OwnedOutput<DirectoryRecordPage, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]
@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
             Ok((page, allocation))
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
     /// Resolves one bounded directory page into generation-scoped child handles.
     pub async fn resolve_directory_page(
@@ -379,7 +379,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         maximum_entries: u32,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<DirectoryRecordPage> {
+    ) -> W::OwnedOutput<DirectoryRecordPage, crate::FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
             .list_directory_records_with_accounting(
@@ -390,7 +390,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 cancellation,
             )
             .await;
-        budget.finish_owned(result, &accounting)
+        budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     pub(crate) async fn list_directory_records_with_accounting(

@@ -93,7 +93,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         paths: &[NamespacePath],
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<Option<ResolvedFile<A, O>>>> {
+    ) -> W::OwnedOutput<Vec<Option<ResolvedFile<A, O>>>, crate::FsError> {
         let mut accounting = work.accounting(cancellation);
         let result = async {
             cancellation.check()?;
@@ -156,7 +156,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
             Ok((handles.value, handles.allocation))
         }
         .await;
-        work.finish_owned(result, &accounting)
+        work.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 
     /// Reads ordered ranges with bounded concurrency and one cumulative work context.
@@ -166,7 +166,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         concurrency: usize,
         budget: W,
         cancellation: &CancellationToken,
-    ) -> W::OwnedOutput<Vec<FileRangeRead>> {
+    ) -> W::OwnedOutput<Vec<FileRangeRead>, crate::FsError> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             if concurrency == 0
@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
             Ok((reads.value, reads.allocation))
         }
         .await;
-        budget.finish_owned(result, &accounting)
+        budget.finish_owned::<_, crate::FsError>(result, &accounting)
     }
 }
 

@@ -65,6 +65,18 @@ impl HostStat {
     pub fn is_dir(&self) -> bool {
         self.file_type() == crate::demand::SourceNodeKind::Directory
     }
+    /// Device numbers for a native character or block device.
+    pub fn device(&self) -> Option<(u32, u32)> {
+        #[cfg(unix)]
+        if matches!(
+            self.file_type(),
+            crate::demand::SourceNodeKind::CharacterDevice
+                | crate::demand::SourceNodeKind::BlockDevice
+        ) {
+            return Some(split_device(self.raw.st_rdev as u64));
+        }
+        None
+    }
     /// Whether the host object has zero bytes.
     pub fn is_empty(&self) -> bool {
         self.len() == 0

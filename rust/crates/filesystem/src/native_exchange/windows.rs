@@ -1,25 +1,12 @@
-use super::{NativeExchangeError, Path, PathBuf};
+use super::{NativeExchangeError, Path};
 use crate::demand::{DemandError, SourceDemandReadWork};
 use crate::native_host::{self as host};
 use crate::{NativeRootIdentity, WorkCounters, WorkError};
 use std::io::{Read, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 
 pub(super) const ENTRY_WITNESS: &[u8; 32] = b"acyclic-entry-exchange-v2\0\0\0\0\0\0\0";
-
-fn service_path(live: &Path, suffix: &str) -> Result<PathBuf, NativeExchangeError> {
-    let parent = live.parent().ok_or(NativeExchangeError::InvalidLayout)?;
-    let mut name = std::ffi::OsString::from(".");
-    name.push(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?);
-    name.push(suffix);
-    Ok(parent.join(name))
-}
-pub(super) fn scratch(live: &Path) -> Result<PathBuf, NativeExchangeError> {
-    service_path(live, ".acyclic-exchange")
-}
-pub(super) fn entry_exchange_witness(live: &Path) -> Result<PathBuf, NativeExchangeError> {
-    service_path(live, ".acyclic-exchange-witness")
-}
 
 pub(super) fn with_service_name<W: SourceDemandReadWork, T>(
     name: &Path,

@@ -10,6 +10,13 @@ pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 #[derive(Debug)]
 pub struct ServiceReadiness(File);
 
+impl From<File> for ServiceReadiness {
+    /// Retains the starter's owned read end of a service readiness pipe.
+    fn from(reader: File) -> Self {
+        Self(reader)
+    }
+}
+
 /// How a started service left its readiness channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceStartOutcome {
@@ -128,7 +135,7 @@ impl ServiceReadySignal {
 /// Takes the readiness channel and redirects subsequent standard output to discard.
 pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
     if !std::env::args_os()
-        .skip(2)
+        .skip(1)
         .any(|argument| argument == SERVICE_READY_ARGUMENT)
     {
         return Ok(None);

@@ -32,8 +32,18 @@ fn configured_sources(
     consistency: ConsistencyMode,
     publication: MountPublication,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    sources_with_fs(&Fs::memory(), config, consistency, publication)
+}
+
+fn sources_with_fs<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    fs: &Fs<A, O>,
+    config: VolumeConfig,
+    consistency: ConsistencyMode,
+    publication: MountPublication,
+) -> Result<(CheckoutMountSource<A, O>, CheckoutMountSource<A, O>), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     let cancellation = CancellationToken::new();
     let volume = runtime
         .block_on(fs.create_volume(config, WorkBudget::UNBOUNDED, &cancellation))?

@@ -9,6 +9,9 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 
+#[cfg(all(test, loom, not(target_arch = "wasm32")))]
+mod model_checking;
+
 pub(crate) type Failure = OperationFailure<Error>;
 
 /// A value with ownership charged to a kernel accounting context.
@@ -65,6 +68,23 @@ impl<T> Owned<T> {
 }
 
 impl<T> Owned<Vec<T>> {
+    /// Appends only within original admitted backing, without growing it.
+    pub(crate) fn push(
+        &mut self,
+        value: T,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        if self.value.len() == self.value.capacity() {
+            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        }
+        let copied = crate::WorkCounters {
+            items_examined: 1,
+            bytes_copied: std::mem::size_of::<T>() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        accounting.perform(copied, || self.value.push(value))
+    }
+
     pub(crate) fn allocate(
         count: usize,
         accounting: &mut KernelAccounting<'_>,
@@ -110,36 +130,37 @@ impl<T> Owned<Vec<T>> {
         if self.value.len() < self.value.capacity() {
             return Ok(());
         }
-        let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
-        let previous = self.value.capacity();
-        let requested = crate::foundation::usize_to_u64(
-            (next - previous)
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(crate::WorkError::Overflow)?,
+        let old_capacity = self.value.capacity();
+        let next = old_capacity.saturating_mul(2).max(1).min(maximum);
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = accounting.native_work().is_some();
+        let result = super::allocation::reserve_vec_with_accounting(
+            &mut self.value,
+            next,
+            &mut self.allocation,
+            accounting,
+            |error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if native {
+                    return crate::NativeTreeMaterializationError::AllocationFailed(error).into();
+                }
+                let _ = error;
+                super::CanonicalDecodeError::AllocationFailed.into()
+            },
         );
-        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-        if let Err(_error) = self.value.try_reserve_exact(next - self.value.len()) {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
-            retire_allocation(allocation, requested, accounting)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(crate::FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::AllocationFailed(_error),
-                ));
-            }
-            return Err(super::CanonicalDecodeError::AllocationFailed.into());
-        }
-        let actual = crate::foundation::usize_to_u64(
-            (self.value.capacity() - previous) * std::mem::size_of::<T>(),
-        );
-        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        self.allocation.absorb(&mut allocation)?;
+        // Payload buffers already joined this owner. Add only actual backing
+        // growth, including when the allocator succeeds before a late refusal.
+        let growth = self
+            .value
+            .capacity()
+            .checked_sub(old_capacity)
+            .and_then(|count| count.checked_mul(std::mem::size_of::<T>()))
+            .ok_or(crate::WorkError::Overflow)?;
         self.bytes = self
             .bytes
-            .checked_add(actual)
+            .checked_add(crate::foundation::usize_to_u64(growth))
             .ok_or(crate::WorkError::Overflow)?;
-        checked
+        result
     }
 }
 

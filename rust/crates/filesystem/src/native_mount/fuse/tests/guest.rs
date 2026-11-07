@@ -13,11 +13,10 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::{UnixListener, UnixStream};
 
 #[test]
-#[ignore = "requires prepared Linux guest artifacts, KVM, QEMU and cloud-hypervisor"]
 fn standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete()
 -> Result<(), Box<dyn std::error::Error>> {
     let artifacts = std::env::var_os("ACYCLIC_FS_GUEST_ARTIFACTS").ok_or(
-        "step=locate guest artifacts; recovery: python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture",
+        "step=locate guest artifacts; recovery: python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest; ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib native_mount::fuse::tests::guest::standard_qemu_and_cloud_hypervisor_guests_read_write_and_delete -- --exact --nocapture",
     )?;
     let artifacts = Path::new(&artifacts).canonicalize()?;
     let provenance = std::fs::read(artifacts.join("provenance.json"))?;

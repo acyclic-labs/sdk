@@ -56,30 +56,28 @@ pub fn run<'a>(
     workspace: Workspace<'a>,
     args: &'a [String],
 ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output>> {
-    // Keep the facade's large future out of every embedding consumer's layout.
-    Box::pin(run_with_guard(workspace, args, || {
-        std::future::ready(Ok(()))
-    }))
+    run_with_guard(workspace, args, || std::future::ready(Ok(())))
 }
 
+/// Runs one command with `before_effect` fencing every effect. The command
+/// engine is erased here, so a consumer holds a pointer instead of every
+/// filesystem preparation and action nested in the command.
 #[doc(hidden)]
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub async fn run_with_guard<F, Fut>(
-    workspace: Workspace<'_>,
-    args: &[String],
+pub fn run_with_guard<'a, F, Fut>(
+    workspace: Workspace<'a>,
+    args: &'a [String],
     before_effect: F,
-) -> crate::Result<Output>
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output>>
 where
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform + 'a,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask + 'a,
 {
-    // Callers retain only the command pointer, rather than the state for
-    // every filesystem preparation and action nested in this command.
-    Box::pin(run_inner(workspace, args, before_effect)).await
+    acyclic_stream::erase_provider_future(move || run_inner(workspace, args, before_effect))
 }
 
 #[cfg(all(
@@ -96,7 +94,8 @@ where
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = crate::Result<()>> + Send,
 {
-    let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
+    let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());
+    let (executor, tree, patch) = match prepare(&workspace, args, guard).await? {
         Prepared::Complete(output) => return Ok(output),
         Prepared::Ready {
             executor,
@@ -126,68 +125,70 @@ where
 /// Runs the shared command engine directly against a provider-backed volume.
 /// No physical checkout, process or machine is involved.
 /// Descendant publications retain the repository's authenticated policy cut.
-pub async fn run_volume_with_guard<F, Fut, P, O, S>(
-    workspace: Workspace<'_, P, O, S>,
+/// The command engine is erased here, as for [`run_with_guard`].
+pub fn run_volume_with_guard<'a, F, Fut, P, O, S>(
+    workspace: Workspace<'a, P, O, S>,
     root_cut: Option<acyclic_fs::PolicyCut>,
-    args: &[String],
+    args: &'a [String],
     before_effect: F,
-) -> crate::Result<Output<P, O>>
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output<P, O>>>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
-    S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
+    S: CommandStore + 'a,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform + 'a,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask + 'a,
 {
-    if workspace.view.workspace().id() != workspace.repository && root_cut.is_none() {
-        return Err(Error::Unauthorized(
-            "descendant command requires its repository policy cut".into(),
-        ));
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    if workspace.checkout.is_some() || !matches!(workspace.view, View::Volume(_)) {
-        return Err(Error::Invalid(
-            "volume commands require a volume view".into(),
-        ));
-    }
-    let command = async {
-        let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
-            Prepared::Complete(output) => return Ok(output),
-            Prepared::Ready {
-                executor,
-                tree,
-                patch,
-            } => (executor, tree, patch),
+    acyclic_stream::erase_provider_future(move || async move {
+        if workspace.view.workspace().id() != workspace.repository && root_cut.is_none() {
+            return Err(Error::Unauthorized(
+                "descendant command requires its repository policy cut".into(),
+            ));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if workspace.checkout.is_some() || !matches!(workspace.view, View::Volume(_)) {
+            return Err(Error::Invalid(
+                "volume commands require a volume view".into(),
+            ));
+        }
+        let guard: &EffectGuard<'_> = &|| Box::pin(before_effect());
+        let command = async {
+            let (executor, tree, patch) = match prepare(&workspace, args, guard).await? {
+                Prepared::Complete(output) => return Ok(output),
+                Prepared::Ready {
+                    executor,
+                    tree,
+                    patch,
+                } => (executor, tree, patch),
+            };
+            let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
+            finish(executor, command)
         };
-        let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
-        finish(executor, command)
-    };
-    match root_cut {
-        Some(cut) => cut.scope(command).await,
-        None => command.await,
-    }
+        match root_cut {
+            Some(cut) => cut.scope(command).await,
+            None => command.await,
+        }
+    })
 }
 
-enum Prepared<'a, F, P: ?Sized + 'static, O: 'static, S> {
+enum Prepared<'a, P: ?Sized + 'static, O: 'static, S> {
     Complete(Output<P, O>),
     Ready {
-        executor: WorkspaceGitExecutor<'a, F, P, O, S>,
+        executor: WorkspaceGitExecutor<'a, P, O, S>,
         tree: GitTreeRef,
         patch: Option<acyclic_stream::OwnedBytes>,
     },
 }
 
-async fn prepare<'a, F, Fut, P, O, S>(
+async fn prepare<'a, P, O, S>(
     workspace: &Workspace<'a, P, O, S>,
     args: &[String],
-    before_effect: &'a F,
-) -> crate::Result<Prepared<'a, F, P, O, S>>
+    before_effect: &'a EffectGuard<'a>,
+) -> crate::Result<Prepared<'a, P, O, S>>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
     before_effect().await?;
     workspace.access.require(workspace.view.workspace()).await?;
@@ -250,16 +251,14 @@ where
     })
 }
 
-fn finish<F, Fut, P, O, S>(
-    executor: WorkspaceGitExecutor<'_, F, P, O, S>,
+fn finish<P, O, S>(
+    executor: WorkspaceGitExecutor<'_, P, O, S>,
     command: Option<GitCommandOutput>,
 ) -> crate::Result<Output<P, O>>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
     Ok(Output {
         command: command.map(|output| without_host_paths(output, &executor.repository)),

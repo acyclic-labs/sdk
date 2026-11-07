@@ -254,26 +254,28 @@ where
 
 // Match the service's persistent state-root selection before consulting OS
 // defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
+// A persistent root must be absolute before any directory is created.
 fn persistent_base() -> Option<PathBuf> {
     #[cfg(windows)]
     if let Some(directory) =
-        std::env::var_os("LOCALAPPDATA").filter(|directory| !directory.is_empty())
+        std::env::var_os("LOCALAPPDATA").filter(|directory| Path::new(directory).is_absolute())
     {
         return Some(directory.into());
     }
     #[cfg(not(windows))]
     {
-        if let Some(directory) =
-            std::env::var_os("XDG_STATE_HOME").filter(|directory| !directory.is_empty())
+        if let Some(directory) = std::env::var_os("XDG_STATE_HOME")
+            .filter(|directory| Path::new(directory).is_absolute())
         {
             return Some(directory.into());
         }
-        if let Some(directory) = std::env::var_os("HOME").filter(|directory| !directory.is_empty())
+        if let Some(directory) =
+            std::env::var_os("HOME").filter(|directory| Path::new(directory).is_absolute())
         {
             return Some(PathBuf::from(directory).join(".local").join("state"));
         }
     }
-    dirs::data_local_dir()
+    dirs::data_local_dir().filter(|directory| directory.is_absolute())
 }
 
 #[cfg(test)]

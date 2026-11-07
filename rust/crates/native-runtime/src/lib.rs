@@ -39,6 +39,8 @@ mod output;
 pub use output::InheritedOutput;
 pub mod obs;
 mod process_tree;
+#[cfg(all(target_pointer_width = "64", feature = "test-support"))]
+pub use process_tree::fuzz_runner_request;
 #[cfg(windows)]
 mod windows;
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -64,7 +66,7 @@ pub use process_tree::{
     ProcessWaitOutcome, ProcessWake,
 };
 #[cfg(target_os = "linux")]
-pub use process_tree::{ChildExitWatch, wait_child_until};
+pub use process_tree::{ChildExitWatch, ProcessExitAction, wait_child_until};
 #[cfg(unix)]
 pub use process_tree::{DescriptorInterest, DescriptorReadiness, descriptor_readiness};
 #[cfg(not(target_arch = "wasm32"))]

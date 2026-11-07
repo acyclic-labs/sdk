@@ -10,6 +10,13 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     read_many_representation::<Decoded, S>(store, requests, context)
 }
 
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "conformance"),
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) fn read_many_stored_sequential<S: AsyncObjectStore + ?Sized>(
     store: &S,
     requests: &[ObjectReadRequest],
@@ -29,6 +36,13 @@ trait ReadRepresentation {
     ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask;
 }
 struct Decoded;
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "conformance"),
+        not(target_arch = "wasm32")
+    )
+))]
 struct Stored;
 impl ReadRepresentation for Decoded {
     fn read<S: AsyncObjectStore + ?Sized>(
@@ -39,6 +53,13 @@ impl ReadRepresentation for Decoded {
         store.read(request.object_id, request.maximum_bytes, context)
     }
 }
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "conformance"),
+        not(target_arch = "wasm32")
+    )
+))]
 impl ReadRepresentation for Stored {
     fn read<S: AsyncObjectStore + ?Sized>(
         store: &S,

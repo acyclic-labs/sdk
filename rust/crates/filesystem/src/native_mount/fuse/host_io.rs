@@ -6,11 +6,15 @@ use acyclic_native_runtime::ProcessWake;
 use std::fs::File;
 use std::io::{self, IoSlice, Read, Write};
 use std::os::fd::AsFd;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 pub(super) struct HostIo {
-    pub(super) device: Arc<File>,
+    // The session is the sole descriptor owner. Retained notification sinks
+    // retain this control, never a live device after its server has stopped.
+    device: RwLock<Option<File>>,
     wake: ProcessWake,
+    #[cfg(test)]
+    receive_counts: [std::sync::atomic::AtomicU64; 3],
     _allocation: crate::NativeAllocation,
 }
 
@@ -23,7 +27,7 @@ pub(super) enum Received {
 
 impl HostIo {
     pub(super) fn new(
-        device: Arc<File>,
+        device: File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, super::NativeMountError> {
         let allocation = work.claim(
@@ -33,41 +37,104 @@ impl HostIo {
             2,
             crate::WorkCounters::UNCHARGED,
         )?;
-        super::transport_io::nonblocking(device.as_ref())?;
+        super::transport_io::nonblocking(&device)?;
         Ok(Self {
-            device,
+            device: RwLock::new(Some(device)),
             wake: ProcessWake::new()?,
+            #[cfg(test)]
+            receive_counts: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
             _allocation: allocation,
         })
     }
 
     pub(super) fn stop(&self) {
         let _ = self.wake.stop();
+        // Wake every physical borrower before waiting for its read guard.
+        // Closing the last device aborts unanswered kernel requests.
+        self.device
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+
+    pub(super) fn with_device<T>(
+        &self,
+        use_device: impl FnOnce(Option<std::os::fd::BorrowedFd<'_>>) -> T,
+    ) -> T {
+        let device = self.device.read().unwrap_or_else(PoisonError::into_inner);
+        use_device(device.as_ref().map(AsFd::as_fd))
+    }
+
+    pub(super) fn wait_detached(&self, mount: &mut super::mount::Mount) -> io::Result<bool> {
+        self.with_device(|device| match device {
+            Some(device) => mount.wait_device_detached(device, Some(&self.wake)),
+            None => mount.observe_closed(),
+        })
     }
 
     fn wait(&self, events: i16) -> io::Result<Ready> {
-        let ready = transport_io::wait(&self.wake, Some(self.device.as_fd()), events)?;
+        let ready = self.with_device(|device| transport_io::wait(&self.wake, device, events))?;
         if ready == Ready::Wake {
             self.wake.consume()?;
         }
         Ok(ready)
     }
 
-    pub(super) fn receive(&self, bytes: &mut [u8]) -> io::Result<Received> {
+    pub(super) fn reader(&self) -> io::Result<transport_io::PacketReader> {
+        self.with_device(|device| {
+            transport_io::PacketReader::new(
+                &self.wake,
+                device.ok_or_else(|| io::Error::from_raw_os_error(libc::ENODEV))?,
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn receive_counts(&self) -> [u64; 3] {
+        self.receive_counts
+            .each_ref()
+            .map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(super) fn receive(
+        &self,
+        reader: &transport_io::PacketReader,
+        bytes: &mut [u8],
+    ) -> io::Result<Received> {
         loop {
-            match self.wait(libc::POLLIN)? {
+            match reader.wait(&self.wake)? {
                 Ready::Closed => return Ok(Received::Closed),
-                Ready::Wake => return Ok(Received::Wake),
-                Ready::Device(_) => {}
+                Ready::Wake => {
+                    self.wake.consume()?;
+                    return Ok(Received::Wake);
+                }
+                Ready::Device(_) => {
+                    #[cfg(test)]
+                    self.receive_counts[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
-            match (&*self.device).read(bytes) {
+            let device = self.device.read().unwrap_or_else(PoisonError::into_inner);
+            let Some(device) = device.as_ref() else {
+                return Ok(Received::Closed);
+            };
+            match (&*device).read(bytes) {
                 Ok(0) => return Ok(Received::Closed),
-                Ok(length) => return Ok(Received::Packet(length)),
+                Ok(length) => {
+                    #[cfg(test)]
+                    self.receive_counts[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(Received::Packet(length));
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
                         io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                    ) => {}
+                    ) =>
+                {
+                    #[cfg(test)]
+                    if error.kind() == io::ErrorKind::WouldBlock {
+                        self.receive_counts[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
                 Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {
                     return Ok(Received::Closed);
                 }
@@ -88,7 +155,14 @@ impl PacketSink for HostIo {
             if self.wake.is_stopped() {
                 return Err(io::Error::from_raw_os_error(libc::ENODEV));
             }
-            match (&*self.device).write_vectored(packet) {
+            let result = {
+                let device = self.device.read().unwrap_or_else(PoisonError::into_inner);
+                let device = device
+                    .as_ref()
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::ENODEV))?;
+                (&*device).write_vectored(packet)
+            };
+            match result {
                 Ok(length) if length == total => return Ok(()),
                 // A short publication has uncertain completion. Never retry it.
                 Ok(_) => {
@@ -106,12 +180,6 @@ impl PacketSink for HostIo {
                 Err(error) => return Err(error),
             }
         }
-    }
-}
-
-impl AsFd for HostIo {
-    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        self.device.as_fd()
     }
 }
 

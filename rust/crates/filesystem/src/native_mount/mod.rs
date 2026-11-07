@@ -69,9 +69,6 @@ pub use fuse::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 #[cfg(target_os = "linux")]
 pub use guest::{GuestMappingAdmission, GuestMappingFence, GuestPosixPolicy, GuestSource};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod device;
-
 pub use crate::{
     CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
     capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,
@@ -149,9 +146,11 @@ const DIRECTORY_PAGE_SIZE: u32 = 256;
 /// cost per live mount.
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 const CALLBACK_THREADS: u32 = 8;
-/// Descriptors one mount's startup holds at once: its destination probe, the
-/// device and the session's own copy of it, the mount helper's channel pair
-/// and diagnostic file, and the root it validates.
+/// Startup's native probes, transport, helper channels and validated root,
+/// plus each Linux packet worker's exclusive readiness queue.
+#[cfg(target_os = "linux")]
+const MOUNT_STARTUP_DESCRIPTORS: usize = 8 + CALLBACK_THREADS as usize;
+#[cfg(not(target_os = "linux"))]
 const MOUNT_STARTUP_DESCRIPTORS: usize = 8;
 
 /// Admits one mount's startup descriptors from the process-wide allowance,

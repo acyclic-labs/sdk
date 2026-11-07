@@ -1,7 +1,56 @@
 use super::*;
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
+pub(super) fn linux_isolated_requests_measure_original_packet_wakes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let volume_id = source.volume_id()?;
+    let temporary = tempfile::tempdir()?;
+    let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
+    let io = Arc::clone(
+        session
+            .driver
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle("mounted session has no driver"))?
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .device
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle(
+                "mounted session has no transport",
+            ))?,
+    );
+    // Distinct absent names force actual kernel LOOKUPs rather than repeated
+    // negative-cache hits. Each native reply is the next request's barrier.
+    let mut samples = [Duration::ZERO; 128];
+    for (index, elapsed) in samples.iter_mut().enumerate() {
+        let path = temporary.path().join(format!("absent-{index}"));
+        let started = std::time::Instant::now();
+        let error = std::fs::metadata(path).expect_err("absent entry unexpectedly existed");
+        *elapsed = started.elapsed();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    // Count only after positive worker retirement: a losing reader must not
+    // disappear from the observation merely because the reply won the race.
+    assert!(session.stop()?);
+    let [wakes, packets, would_block] = io.receive_counts();
+    assert!(packets >= samples.len() as u64);
+    samples.sort_unstable();
+    eprintln!(
+        "FUSE_RECEIVE samples={} wakes={wakes} packets={packets} would_block={would_block} expected_isolated_wakes_per_packet=1 p50_ns={} p99_ns={}",
+        samples.len(),
+        samples[samples.len() / 2].as_nanos(),
+        samples[samples.len() * 99 / 100].as_nanos(),
+    );
+    assert_eq!(
+        would_block, 0,
+        "isolated kernel requests woke competing readers without a packet"
+    );
+    Ok(())
+}
+
+#[test]
 pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted_source, around) = shared_sources(posix_config())?;
@@ -34,24 +83,38 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
 
-    // Without the barrier the change still arrives, promptly.
+    // Follow the original source publication through physical kernel invalidation.
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.remove(&name("added"), None, work)
     })?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while added.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "a removal around the mount never reached the kernel"
-        );
-        std::thread::yield_now();
-    }
+    let work = fuse_fixture_work();
+    let target =
+        mounted_source
+            .view_stamp_with_meter(&work)?
+            .ok_or(NativeMountError::Lifecycle(
+                "committed source has no stable view stamp",
+            ))?;
+    let core = Arc::clone(
+        &session
+            .driver
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle("mounted session has no driver"))?
+            .core,
+    );
+    core.wait_for_invalidation(core.state_to_finish(), Some(target), &work)?;
+    assert!(
+        !added.exists(),
+        "completed invalidation retained a removed entry"
+    );
     assert!(session.stop()?);
+    assert!(matches!(
+        core.wait_for_invalidation(core.state_to_finish(), Some(target), &work),
+        Err(NativeMountError::Lifecycle("session is stopped"))
+    ));
     Ok(())
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
@@ -87,7 +150,6 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
     let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
@@ -122,7 +184,6 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_listings_resume_across_pages_and_readers()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, around) = shared_sources(posix_config())?;
@@ -191,7 +252,6 @@ pub(super) fn linux_listings_resume_across_pages_and_readers()
 /// neither lose nor repeat a name, and every name of the file reports its
 /// current facts.
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_listings_that_name_one_file_repeatedly_split_without_loss()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, around) = shared_sources(posix_config())?;
@@ -269,7 +329,6 @@ pub(super) fn only_folding_volumes_with_case_variants_fold_names()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_folded_names_stay_exact_through_the_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;
@@ -314,7 +373,6 @@ pub(super) fn linux_folded_names_stay_exact_through_the_mount()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = tracking_sources()?;
     let reader = Arc::new(reader);
@@ -503,7 +561,6 @@ pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send +
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let (inner, _) = shared_sources(posix_config())?;

@@ -11,10 +11,12 @@ use std::process::Command;
 fn main() -> Result<(), Box<dyn Error>> {
     for path in [
         "runner/main.rs",
+        "runner/request.rs",
         "runner/sys.rs",
         "src/process_tree/record.rs",
         "src/process_tree/warden.rs",
         "src/execution/linux/entry.rs",
+        "src/execution/instruction.rs",
     ] {
         println!("cargo:rerun-if-changed={path}");
     }

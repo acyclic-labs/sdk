@@ -3,7 +3,7 @@
 //! Construction here does not admit a filesystem source or a guest cache
 //! contract. The public admitted source entry must supply the PacketSession.
 
-use super::packet_buffers::PacketBufferPool;
+use super::packet_buffers::{PacketBufferPool, PacketBuffers};
 use super::packet_session::PacketSession;
 use super::packet_workers::{self, PacketWorkers};
 use super::vhost_control::VhostControl;
@@ -59,8 +59,8 @@ impl VhostSession {
         let core = Arc::clone(protocol.single_core().ok_or(libc::ENOTSUP)?);
         let buffers = PacketBufferPool::new(
             NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32 - 1),
-            protocol.packet_capacity(),
             work,
+            || PacketBuffers::new(protocol.packet_capacity(), work),
         )?;
         // The maintained decoder is blocking. Shutdown on this duplicate
         // interrupts it without closing an fd under a recvmsg/sendmsg borrower.
@@ -81,7 +81,11 @@ impl VhostSession {
     }
 
     pub(super) fn run(self) -> VhostRetired {
-        let result = packet_workers::run(&self, NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32));
+        let result = packet_workers::run(
+            &self,
+            NonZeroU32::MIN.saturating_add(QUEUE_COUNT as u32),
+            |_| Ok(()),
+        );
         // Only the owner reaches this point, after the actual control and data
         // workers have ALL joined. A socket errno cannot replace the original
         // callback/admission/publication failure retained before shutdown.

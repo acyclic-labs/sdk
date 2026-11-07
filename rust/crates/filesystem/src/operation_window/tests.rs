@@ -68,7 +68,7 @@ async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() 
     let store = MemoryOperationWindowStore::new();
     store.states.0.lock().expect("state lock").insert(
         workspace,
-        OperationWindowSnapshot {
+        Box::new(OperationWindowSnapshot {
             version: STATE_VERSION,
             revision: 1,
             workspace_id: workspace,
@@ -77,7 +77,7 @@ async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() 
                 leases: BTreeMap::new(),
                 pending_parent: None,
             },
-        },
+        }),
     );
     let coordinator = OperationWindowCoordinator::new(store);
 

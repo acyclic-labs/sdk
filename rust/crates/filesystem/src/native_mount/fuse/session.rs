@@ -6,7 +6,6 @@ use crate::{
     NativeAllocation, NativeMaterializationWork, NativeRootIdentity, NativeWorkReservation,
     WorkCounters, WorkError,
 };
-use std::os::fd::AsFd;
 
 pub(in crate::native_mount) struct FuseSession {
     pub(super) core: Arc<ProjectionCore>,
@@ -19,7 +18,7 @@ pub(super) struct FuseSessionState {
     pub(super) before: Option<(u64, u64)>,
     pub(super) mount: super::mount::Mount,
     pub(super) worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
-    pub(super) device: Option<Arc<std::fs::File>>,
+    pub(super) device: Option<Arc<super::host_io::HostIo>>,
     pub(super) notifier: Option<CacheNotifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
@@ -71,12 +70,15 @@ impl FuseSessionState {
             core.stop();
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
-            self.mount
-                .stop(path, self.device.as_ref().map(std::os::fd::AsFd::as_fd))?;
+            let result = self.mount.stop(path);
+            if let Some(device) = self.device.as_ref() {
+                device.stop();
+            }
+            result?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            if !self.mount.wait_device_detached(device.as_fd())? {
+            if !device.wait_detached(&mut self.mount)? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
@@ -91,6 +93,7 @@ impl FuseSessionState {
             if (metadata.st_dev as u64, metadata.st_ino as u64) != before {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
+            self.mount.observe_closed()?;
         }
         self.device.take();
         self.before.take();
@@ -114,6 +117,32 @@ impl FuseSessionState {
             retirement.retire(None, join)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for FuseSessionState {
+    fn drop(&mut self) {
+        // Even a refused retirement cannot leave its accepted packet producer
+        // holding the connection after the last original state owner is gone.
+        if let Some(device) = self.device.as_ref() {
+            device.stop();
+        }
+        if let Some(worker) = self.worker.take() {
+            if let Err(error) = self.cleanup.started_io(ReadOperations.delta(1), None) {
+                tracing::warn!(%error, "FUSE packet producer retirement accounting failed");
+            }
+            match worker.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "FUSE packet producer failed during retirement")
+                }
+                Err(_) => tracing::warn!("FUSE packet producer panicked during retirement"),
+            }
+        }
+        // Finish before the original retirement packet can unlock its fence.
+        if let Err(error) = self.mount.finish_exit_action() {
+            tracing::warn!(%error, "FUSE owner-exit cleanup failed during retirement");
+        }
     }
 }
 
@@ -224,15 +253,30 @@ impl FuseSession {
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
             };
-            let FuseSessionState { mount, device, .. } = &mut *started;
+            let FuseSessionState {
+                mount,
+                device,
+                retirement,
+                ..
+            } = &mut *started;
             let mut received = None;
             let opened = mount.open_into(
                 &request.destination,
                 request.writable,
                 || super::lifecycle::fuse_recovery_helper(work),
                 &mut received,
+                retirement
+                    .as_ref()
+                    .and_then(|packet| packet.destination_guard.as_ref())
+                    .and_then(|guard| guard.file.as_ref())
+                    .ok_or(NativeMountError::ControlPending)?,
+                work,
             );
-            *device = received.map(|descriptor| Arc::new(std::fs::File::from(descriptor)));
+            *device = received
+                .map(|descriptor| {
+                    super::host_io::HostIo::new(std::fs::File::from(descriptor), work).map(Arc::new)
+                })
+                .transpose()?;
             opened?;
             // State retains the actual device throughout handshake and rollback.
             let descriptor = Arc::clone(
@@ -252,7 +296,7 @@ impl FuseSession {
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
-            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
+            started.worker = Some(session.start(std::thread::Builder::new())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
             started.identity = Some(identity);
@@ -486,16 +530,12 @@ pub(super) fn run_fuse_session((core, state): (Arc<ProjectionCore>, Arc<Mutex<Fu
         // This physical worker executes the retirement pass once. Its cleanup
         // cause is distinct from the namespace worker's already-owned cause.
         retiring.failure.cleanup = Some(error);
+        if let Some(device) = retiring.device.as_ref() {
+            device.stop();
+        }
     }
-    drop(retiring);
-    // A refused cleanup keeps the original source, fence and join handles owned.
-    while !state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .is_retired()
-    {
-        std::thread::park_timeout(Duration::from_millis(100));
-    }
+    // The caller's original state retains a refused cleanup and its cause.
+    // There is no work left for this producer after its one retirement pass.
 }
 
 impl Drop for FuseSession {

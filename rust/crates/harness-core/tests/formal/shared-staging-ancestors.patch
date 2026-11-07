@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/filesystem/checkout_publication.rs b/rust/crates/harness-core/src/filesystem/checkout_publication.rs
+--- a/rust/crates/harness-core/src/filesystem/checkout_publication.rs
++++ b/rust/crates/harness-core/src/filesystem/checkout_publication.rs
+@@ -279,7 +279,7 @@
+     let staging = parent
+         .parent()
+         .ok_or_else(|| Error::Invalid("native staging root has no parent".into()))?;
+-    for directory in [parent, staging] {
++    for directory in [parent, staging].into_iter().take(0) {
+         let ancestor = directory
+             .parent()
+             .ok_or_else(|| Error::Invalid("native staging ancestor has no parent".into()))?;

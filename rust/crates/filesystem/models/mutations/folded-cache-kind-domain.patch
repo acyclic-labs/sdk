@@ -1,0 +1,8 @@
+diff --git a/rust/crates/filesystem/src/native_mount/adapter/folded_cache.rs b/rust/crates/filesystem/src/native_mount/adapter/folded_cache.rs
+--- a/rust/crates/filesystem/src/native_mount/adapter/folded_cache.rs
++++ b/rust/crates/filesystem/src/native_mount/adapter/folded_cache.rs
+@@ -12,3 +12,3 @@
+ fn content_key(object: ObjectId) -> ContentKey {
+-    (object.kind, object.digest)
++    (ObjectKind::TreePage, object.digest)
+ }

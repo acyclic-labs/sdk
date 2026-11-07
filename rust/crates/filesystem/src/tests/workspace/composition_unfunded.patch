@@ -1,0 +1,43 @@
+diff --git a/rust/crates/filesystem/src/facade/composition.rs b/rust/crates/filesystem/src/facade/composition.rs
+index b70585d141..3092044a53 100644
+--- a/rust/crates/filesystem/src/facade/composition.rs
++++ b/rust/crates/filesystem/src/facade/composition.rs
+@@ -75,7 +75,11 @@ where
+         let mut accounting = work.accounting(cancellation);
+         let mut guard = commit.guard();
+         let result = async {
+-            let mut generations = Owned::<Vec<_>>::allocate(restores.len(), &mut accounting)?;
++            let mut generations = Owned::new(
++                Vec::with_capacity(restores.len()),
++                accounting.claim_owned(0, 0)?,
++                0,
++            );
+             for restore in restores {
+                 let volume = &restore.expected.workspace.volume;
+                 if !self.same_deployment(&volume.fs)
+@@ -176,7 +180,11 @@ where
+         let mut guard = commit.guard();
+         let result = async {
+             let accounting = &mut accounting;
+-            let mut created = Owned::<Vec<_>>::allocate(forks.len(), accounting)?;
++            let mut created = Owned::new(
++                Vec::with_capacity(forks.len()),
++                accounting.claim_owned(0, 0)?,
++                0,
++            );
+             for fork in forks {
+                 let value = self
+                     .contribute_fork(fork, guard.commit(), accounting, cancellation)
+@@ -271,7 +279,11 @@ where
+         let mut guard = commit.guard();
+         let result = async {
+             let accounting = &mut accounting;
+-            let mut created = Owned::<Vec<_>>::allocate(creations.len(), accounting)?;
++            let mut created = Owned::new(
++                Vec::with_capacity(creations.len()),
++                accounting.claim_owned(0, 0)?,
++                0,
++            );
+             for creation in creations {
+                 let value = self
+                     .contribute_creation(creation, guard.commit(), accounting, cancellation)
