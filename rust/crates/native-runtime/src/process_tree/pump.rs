@@ -209,8 +209,6 @@ pub(super) struct Pump<'a> {
     input: Option<PendingStdin<'a>>,
     stdout: Option<OutputPipe<ChildStdout>>,
     stderr: Option<OutputPipe<ChildStderr>>,
-    #[cfg(windows)]
-    readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,
     streaming: bool,
     observed_start: bool,
@@ -282,6 +280,9 @@ impl<'a> Pump<'a> {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
         }
+        #[cfg(windows)]
+        tree.prepare_output_readers()
+            .map_err(ProcessCaptureFailure::before_capture)?;
         let child = tree.child.as_mut().ok_or_else(|| {
             ProcessCaptureFailure::before_capture(io::Error::other(
                 "process output was already collected",
@@ -290,29 +291,6 @@ impl<'a> Pump<'a> {
         tree.output_taken = true;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        #[cfg(windows)]
-        let readers = (|| {
-            Ok::<_, io::Error>([
-                stdout
-                    .as_ref()
-                    .map(events::PipeOperation::reader)
-                    .transpose()?,
-                stderr
-                    .as_ref()
-                    .map(events::PipeOperation::reader)
-                    .transpose()?,
-            ])
-        })();
-        #[cfg(windows)]
-        let readers = match readers {
-            Ok(readers) => readers,
-            Err(error) => {
-                // Return the pipes before reporting the failure.
-                child.stdout = stdout;
-                child.stderr = stderr;
-                return Err(ProcessCaptureFailure::before_capture(error));
-            }
-        };
         Ok(Self {
             deadline,
             remaining: max_bytes,
@@ -320,8 +298,6 @@ impl<'a> Pump<'a> {
             input,
             stdout,
             stderr,
-            #[cfg(windows)]
-            readers,
             status: None,
             streaming: false,
             observed_start: false,
@@ -575,7 +551,7 @@ impl<'a> Pump<'a> {
         #[cfg(windows)]
         let wait = {
             let mut sources = Vec::with_capacity(4);
-            let [stdout, stderr] = &self.readers;
+            let [stdout, stderr] = &tree.readers;
             if self.stdout.is_some()
                 && let Some(reader) = stdout
             {

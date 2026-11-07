@@ -296,7 +296,10 @@ fn wait_for_owner_stop() -> ! {
 
 /// Await the original diagnostic pipe without consuming its captured payload.
 /// EOF also completes the wait, letting capture report the lost producer.
-fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
+fn stderr_ready(tree: &mut ProcessTree) -> io::Result<()> {
+    #[cfg(windows)]
+    tree.prepare_output_readers()?;
+    #[cfg(unix)]
     let stderr = tree
         .child
         .as_ref()
@@ -308,9 +311,8 @@ fn stderr_ready(tree: &ProcessTree) -> io::Result<()> {
         super::events::Source::Readable(stderr.as_fd())
     };
     #[cfg(windows)]
-    let operation = super::events::PipeOperation::reader(stderr)?;
-    #[cfg(windows)]
-    let source = super::events::Source::Pipe(&operation);
+    let source =
+        super::events::Source::Pipe(tree.readers[1].as_ref().ok_or(io::ErrorKind::BrokenPipe)?);
     super::events::arm(&[source], None)?.block().into_result()
 }
 
@@ -1264,7 +1266,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     let mut command = command("stdin-stall", temporary.path());
     command.stdin(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled exchange");
-    stderr_ready(&tree).expect("original stalled input readiness event");
+    stderr_ready(&mut tree).expect("original stalled input readiness event");
     // The capture clock is frozen and only reaches the deadline inside the
     // second check, so expiry is ordered after two full capture iterations no
     // matter how late the scheduler runs this thread.
@@ -1317,7 +1319,12 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut tree = ProcessTree::spawn(&mut command("partial", temporary.path()))
         .expect("spawn partial output");
-    stderr_ready(&tree).expect("original partial output readiness event");
+    stderr_ready(&mut tree).expect("original partial output readiness event");
+    #[cfg(windows)]
+    let original_readers = tree
+        .readers
+        .each_ref()
+        .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr));
     let failure = tree
         .wait_with_output(
             Duration::from_millis(20),
@@ -1330,7 +1337,19 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
             None,
         )
         .expect_err("partial process times out");
-    assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
+    #[cfg(windows)]
+    assert_eq!(
+        tree.readers
+            .each_ref()
+            .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr)),
+        original_readers,
+        "capture replaced the original pipe completion owners"
+    );
+    assert_eq!(
+        failure.error.kind(),
+        std::io::ErrorKind::TimedOut,
+        "{failure:?}"
+    );
     assert!(failure.stdout.ends_with(b"stdout-before-stop"));
     assert_eq!(failure.stderr, b"stderr-before-stop");
     assert!(failure.cleanup_completed);

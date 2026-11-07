@@ -675,6 +675,25 @@ impl ProcessTree {
         self.readiness_for(false)
     }
 
+    #[cfg(windows)]
+    fn prepare_output_readers(&mut self) -> io::Result<()> {
+        // A pipe's IOCP association lasts until its handle closes. Readiness
+        // and capture share these original operations, including after panic.
+        let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        let [stdout, stderr] = &mut self.readers;
+        if stdout.is_none()
+            && let Some(pipe) = &child.stdout
+        {
+            *stdout = Some(events::PipeOperation::reader(pipe)?);
+        }
+        if stderr.is_none()
+            && let Some(pipe) = &child.stderr
+        {
+            *stderr = Some(events::PipeOperation::reader(pipe)?);
+        }
+        Ok(())
+    }
+
     fn readiness_for(&mut self, output: bool) -> io::Result<ProcessReadiness> {
         #[cfg(unix)]
         let retired = self.child.is_none() && self.native_child.is_none();
@@ -709,20 +728,10 @@ impl ProcessTree {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsHandle as _;
+            if output {
+                self.prepare_output_readers()?;
+            }
             let child = self.child.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
-            let [stdout, stderr] = &mut self.readers;
-            if output
-                && stdout.is_none()
-                && let Some(pipe) = &child.stdout
-            {
-                *stdout = Some(events::PipeOperation::reader(pipe)?);
-            }
-            if output
-                && stderr.is_none()
-                && let Some(pipe) = &child.stderr
-            {
-                *stderr = Some(events::PipeOperation::reader(pipe)?);
-            }
             let mut sources = Vec::with_capacity(if output { 4 } else { 2 });
             if output
                 && child.stdout.is_some()
