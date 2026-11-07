@@ -93,3 +93,13 @@ also serves the retained `recorded_invocation` fuzz target. The public serving
 vector rejects an unknown outer field derived from its actual invocation bytes;
 `mutations/execution_invocation_authority_loss.patch` removes that decoder guard
 and must fail with `execution invocation accepted foreign envelope authority`.
+The serving vector compares the public payload with its original immutable
+reference and checks nonempty provider continuation data. The canonical replay
+property roundtrips all four envelope fields, including bound targets and
+filesystem identities. `mutations/recorded_invocation_roundtrip_depth_loss.patch`
+reintroduces the default JSON nesting limit; the existing
+`projection::recorded_invocation_tests::complete_depth_and_numeric_bounds_apply_before_recording`
+control must then fail with `recursion limit exceeded` before admission.
+`mutations/recorded_invocation_filesystem_loss.patch` drops bound filesystem
+authority during production serialization; the same envelope property must
+refuse that loss against its original bound value.

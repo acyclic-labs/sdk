@@ -36,7 +36,10 @@ pub const REPLY: &str = "conformance hosted reply";
 pub fn model_events(step: u32) -> Vec<ModelEvent> {
     vec![
         if step == 0 {
-            ModelEvent::ToolCall(ToolCall::new("call-0".into(), TOOL.into(), json!({})))
+            ModelEvent::ToolCall(
+                ToolCall::new("call-0".into(), TOOL.into(), json!({}))
+                    .with_metadata(invocation_metadata()),
+            )
         } else {
             ModelEvent::Content {
                 delta: REPLY.into(),
@@ -46,6 +49,10 @@ pub fn model_events(step: u32) -> Vec<ModelEvent> {
             metadata: serde_json::Value::Null,
         },
     ]
+}
+
+fn invocation_metadata() -> serde_json::Value {
+    json!({"continuation": {"signature": "original provider continuation"}})
 }
 
 /// The shared internal fixture tool, whose actual executions are counted.

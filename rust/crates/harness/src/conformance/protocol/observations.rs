@@ -45,7 +45,12 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                 return Err("execution page skipped or substituted an original record".into());
             }
             match &record.event {
-                ExecutionEvent::ToolStarted { step, call_id, .. } => {
+                ExecutionEvent::ToolStarted {
+                    step,
+                    call_id,
+                    invocation: original,
+                    ..
+                } => {
                     let bytes = read(
                         endpoint,
                         agent,
@@ -54,7 +59,20 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
                         ExecutionPayloadField::Invocation,
                     )
                     .await?;
+                    if bytes != endpoint.read_file(agent, original).await? {
+                        return Err(
+                            "execution reader changed the original invocation envelope".into()
+                        );
+                    }
                     let recorded: RecordedInvocation = serde_json::from_slice(&bytes)?;
+                    if recorded.metadata != super::invocation_metadata()
+                        || recorded.target.is_some()
+                        || recorded.filesystem.is_some()
+                    {
+                        return Err(
+                            "execution invocation changed original envelope authority".into()
+                        );
+                    }
                     // Mutate the actual producer's envelope, not a parallel
                     // fixture. Readers must reject an unknown outer field even
                     // when its original invocation remains valid.

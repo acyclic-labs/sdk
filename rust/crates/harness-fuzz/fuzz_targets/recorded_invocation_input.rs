@@ -194,6 +194,37 @@ pub fn assert_replay(record: Record, limits: Limits) {
     assert_eq!(projected, replay);
 }
 
+pub fn assert_envelope(record: &Record) {
+    // Retain every field when reading an already bound durable envelope.
+    let encoded = serde_json::to_vec(record).unwrap();
+    let decoded: Record = json_from_slice_bounded(
+        PhantomData,
+        &encoded,
+        JsonBounds {
+            maximum_bytes: encoded.len() as u64,
+            maximum_items: 4096,
+            maximum_depth: 256,
+        },
+        None,
+        Some(JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(decoded.invocation, record.invocation);
+    assert_eq!(
+        decoded.metadata, record.metadata,
+        "recorded invocation lost original metadata"
+    );
+    assert_eq!(
+        decoded.target, record.target,
+        "recorded invocation lost original target"
+    );
+    assert_eq!(
+        decoded.filesystem, record.filesystem,
+        "recorded invocation lost original filesystem authority"
+    );
+}
+
 pub fn check(data: &[u8]) {
     let parsed = json_from_slice_bounded(
         PhantomData::<Record>,
@@ -208,10 +239,7 @@ pub fn check(data: &[u8]) {
         &mut |_| Ok(()),
     );
     if let Ok(record) = parsed {
-        // Retain every field when reading an already bound durable envelope.
-        let encoded = serde_json::to_vec(&record).unwrap();
-        let decoded: Record = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+        assert_envelope(&record);
         assert_replay(
             record,
             Limits {
