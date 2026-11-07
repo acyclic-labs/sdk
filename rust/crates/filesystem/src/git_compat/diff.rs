@@ -217,74 +217,76 @@ where
 /// file edited while resolving a conflict, never become tracked here.
 /// `repository` is the repository-level policy, as in
 /// [`git_compatible_diff_counts`]; a path it reserves is never tracked.
-pub async fn git_tracked_paths_after<A, O>(
-    before: &Generation<A, O>,
-    published: &Generation<A, O>,
-    current: &Generation<A, O>,
-    repository: &GitIgnorePolicy,
-    already_tracked: &BTreeSet<String>,
+pub fn git_tracked_paths_after<'task, A, O>(
+    before: &'task Generation<A, O>,
+    published: &'task Generation<A, O>,
+    current: &'task Generation<A, O>,
+    repository: &'task GitIgnorePolicy,
+    already_tracked: &'task BTreeSet<String>,
     maximum_changes: u32,
-    cancellation: &CancellationToken,
-) -> Result<BTreeSet<String>, GitCaptureError>
+    cancellation: &'task CancellationToken,
+) -> acyclic_stream::BoxProviderFuture<'task, Result<BTreeSet<String>, GitCaptureError>>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    let changes = before
-        .diff_to(
-            published,
-            maximum_changes,
-            WorkBudget::UNBOUNDED,
-            cancellation,
-        )
-        .await
-        .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)?
-        .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
-        .await
-        .map(|receipt| receipt.value.0)
-        .map_err(|failure| failure.error)?;
-    let mut published_paths = BTreeSet::new();
-    for change in changes {
-        if change
-            .after
-            .is_some_and(|record| record.kind != FileKind::Directory)
-        {
-            published_paths.insert(portable_changed_path(&change.path)?);
-        }
-    }
-    let mut policies = BTreeMap::new();
-    let root = repository_root(current, &mut policies, repository).await?;
-    let mut tracked = BTreeSet::new();
-    for path in already_tracked.union(&published_paths) {
-        cancellation.check().map_err(WorkspaceError::from)?;
-        if repository.reserves(path) {
-            continue;
-        }
-        match current
-            .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
-            .await
-        {
-            Ok(receipt) if receipt.value.kind != FileKind::Directory => {}
-            Ok(_) => continue,
-            Err(failure) if failure.error.is_absent() => continue,
-            Err(failure) => return Err(failure.error.into()),
-        }
-        if already_tracked.contains(path)
-            || git_path_eligible_with_root_at(
-                current,
-                &mut policies,
-                &root,
-                path,
-                false,
-                already_tracked,
+    acyclic_stream::erase_provider_future(move || async move {
+        let changes = before
+            .diff_to(
+                published,
+                maximum_changes,
+                WorkBudget::UNBOUNDED,
+                cancellation,
             )
-            .await?
-        {
-            tracked.insert(path.clone());
+            .await
+            .map(|receipt| receipt.value.0)
+            .map_err(|failure| failure.error)?
+            .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
+            .await
+            .map(|receipt| receipt.value.0)
+            .map_err(|failure| failure.error)?;
+        let mut published_paths = BTreeSet::new();
+        for change in changes {
+            if change
+                .after
+                .is_some_and(|record| record.kind != FileKind::Directory)
+            {
+                published_paths.insert(portable_changed_path(&change.path)?);
+            }
         }
-    }
-    Ok(tracked)
+        let mut policies = BTreeMap::new();
+        let root = repository_root(current, &mut policies, repository).await?;
+        let mut tracked = BTreeSet::new();
+        for path in already_tracked.union(&published_paths) {
+            cancellation.check().map_err(WorkspaceError::from)?;
+            if repository.reserves(path) {
+                continue;
+            }
+            match current
+                .stat(&format!("/{path}"), WorkBudget::UNBOUNDED, cancellation)
+                .await
+            {
+                Ok(receipt) if receipt.value.kind != FileKind::Directory => {}
+                Ok(_) => continue,
+                Err(failure) if failure.error.is_absent() => continue,
+                Err(failure) => return Err(failure.error.into()),
+            }
+            if already_tracked.contains(path)
+                || git_path_eligible_with_root_at(
+                    current,
+                    &mut policies,
+                    &root,
+                    path,
+                    false,
+                    already_tracked,
+                )
+                .await?
+            {
+                tracked.insert(path.clone());
+            }
+        }
+        Ok(tracked)
+    })
 }
 
 /// One generation's root `.gitignore` layered over the repository policy.

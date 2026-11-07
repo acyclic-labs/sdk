@@ -78,30 +78,34 @@ pub(crate) async fn run_git_command<S: CommandStore, E: GitFilesystemExecutor<Er
 }
 
 /// Reads a patch file from the managed workspace.
-pub(crate) async fn git_apply_patch<O: acyclic_fs::AsyncObjectStore + 'static>(
-    workspace: View<'_, O>,
-    root: &Path,
-    argv: &[String],
-) -> Result<Option<acyclic_stream::OwnedBytes>, Error> {
-    if argv.first().is_none_or(|command| command != "apply") {
-        return Ok(None);
+pub(crate) fn git_apply_patch<'task, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: View<'task, O>,
+    root: &'task Path,
+    argv: &'task [String],
+) -> impl Future<Output = Result<Option<acyclic_stream::OwnedBytes>, Error>>
++ acyclic_stream::ProviderTask
++ use<'task, O> {
+    async move {
+        if argv.first().is_none_or(|command| command != "apply") {
+            return Ok(None);
+        }
+        let [_, patch_path] = argv else {
+            return Err(Error::Invalid(
+                "acyclic git apply requires exactly one patch file".to_owned(),
+            ));
+        };
+        if patch_path == "-" {
+            return Err(Error::Invalid(
+                "acyclic git apply does not accept stdin through the service; pass a patch file"
+                    .to_owned(),
+            ));
+        }
+        let patch_path = workspace_path_argument(root, patch_path)?;
+        workspace
+            .read(&patch_path, 16 * 1024 * 1024)
+            .await
+            .map(Some)
     }
-    let [_, patch_path] = argv else {
-        return Err(Error::Invalid(
-            "acyclic git apply requires exactly one patch file".to_owned(),
-        ));
-    };
-    if patch_path == "-" {
-        return Err(Error::Invalid(
-            "acyclic git apply does not accept stdin through the service; pass a patch file"
-                .to_owned(),
-        ));
-    }
-    let patch_path = workspace_path_argument(root, patch_path)?;
-    workspace
-        .read(&patch_path, 16 * 1024 * 1024)
-        .await
-        .map(Some)
 }
 
 /// Captures the lazy or exact tree required by the command.

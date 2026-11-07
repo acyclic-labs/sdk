@@ -4,80 +4,83 @@ use super::*;
 /// Returns the live Git-relative tracked paths, or `None` while markers remain.
 /// Retained conflict identities follow renames. Only conflicted regular files
 /// are streamed; removing a conflict is a valid explicit deletion resolution.
-pub async fn git_merge_resolution<
+pub fn git_merge_resolution<
+    'task,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
-    current: &Generation<A, O>,
-    conflicts: &BTreeMap<String, Option<crate::FileId>>,
-    tracked: &BTreeSet<String>,
-) -> Result<Option<BTreeSet<String>>, GitCaptureError> {
-    let cancellation = CancellationToken::new();
-    let mut paths: BTreeMap<_, _> = tracked
-        .iter()
-        .map(|path| (format!("/{path}"), false))
-        .collect();
-    for path in conflicts.keys() {
-        paths.insert(path.clone(), true);
-    }
-    for renamed in current
-        .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
-        .await?
-        .into_values()
-    {
-        for path in renamed {
-            paths.insert(path, true);
+    current: &'task Generation<A, O>,
+    conflicts: &'task BTreeMap<String, Option<crate::FileId>>,
+    tracked: &'task BTreeSet<String>,
+) -> acyclic_stream::BoxProviderFuture<'task, Result<Option<BTreeSet<String>>, GitCaptureError>> {
+    acyclic_stream::erase_provider_future(move || async move {
+        let cancellation = CancellationToken::new();
+        let mut paths: BTreeMap<_, _> = tracked
+            .iter()
+            .map(|path| (format!("/{path}"), false))
+            .collect();
+        for path in conflicts.keys() {
+            paths.insert(path.clone(), true);
         }
-    }
-    let mut resolved = BTreeSet::new();
-    for (mut path, conflicted) in paths {
-        let stat = match current
-            .stat(&path, WorkBudget::UNBOUNDED, &cancellation)
-            .await
+        for renamed in current
+            .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
+            .await?
+            .into_values()
         {
-            Ok(receipt) => receipt.value,
-            Err(failure) if failure.error.is_absent() => continue,
-            Err(failure) => return Err(failure.error.into()),
-        };
-        if stat.kind == FileKind::Directory {
-            continue;
+            for path in renamed {
+                paths.insert(path, true);
+            }
         }
-        if conflicted && stat.kind == FileKind::Regular {
-            let length = stat
-                .logical_bytes
-                .ok_or(WorkspaceError::InvalidMergeResolution)?;
-            let mut scanner = merge_markers::Scanner::new();
-            let mut offset = 0;
-            while offset < length {
-                let bytes = current
-                    .read_range(
-                        &path,
-                        offset,
-                        (length - offset).min(64 * 1024),
-                        WorkBudget::UNBOUNDED,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.error)?
-                    .value;
-                if bytes.bytes.is_empty() {
-                    return Err(WorkspaceError::InvalidMergeResolution.into());
+        let mut resolved = BTreeSet::new();
+        for (mut path, conflicted) in paths {
+            let stat = match current
+                .stat(&path, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+            {
+                Ok(receipt) => receipt.value,
+                Err(failure) if failure.error.is_absent() => continue,
+                Err(failure) => return Err(failure.error.into()),
+            };
+            if stat.kind == FileKind::Directory {
+                continue;
+            }
+            if conflicted && stat.kind == FileKind::Regular {
+                let length = stat
+                    .logical_bytes
+                    .ok_or(WorkspaceError::InvalidMergeResolution)?;
+                let mut scanner = merge_markers::Scanner::new();
+                let mut offset = 0;
+                while offset < length {
+                    let bytes = current
+                        .read_range(
+                            &path,
+                            offset,
+                            (length - offset).min(64 * 1024),
+                            WorkBudget::UNBOUNDED,
+                            &cancellation,
+                        )
+                        .await
+                        .map_err(|failure| failure.error)?
+                        .value;
+                    if bytes.bytes.is_empty() {
+                        return Err(WorkspaceError::InvalidMergeResolution.into());
+                    }
+                    offset += bytes.bytes.len() as u64;
+                    if scanner.push(&bytes.bytes) {
+                        return Ok(None);
+                    }
                 }
-                offset += bytes.bytes.len() as u64;
-                if scanner.push(&bytes.bytes) {
+                if scanner.finish() {
                     return Ok(None);
                 }
             }
-            if scanner.finish() {
-                return Ok(None);
+            if path.starts_with('/') {
+                path.remove(0);
             }
+            resolved.insert(path);
         }
-        if path.starts_with('/') {
-            path.remove(0);
-        }
-        resolved.insert(path);
-    }
-    Ok(Some(resolved))
+        Ok(Some(resolved))
+    })
 }
 
 #[cfg(test)]

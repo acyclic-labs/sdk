@@ -255,61 +255,65 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 // Scope is immutable and authenticated by the owning verifier/grant constructor.
 // The caller checks its request-specific legacy authority before using this view.
-pub(crate) async fn access_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    workspace: &Workspace<A, O>,
-    scope: &Scope,
+pub(crate) fn access_view<'task, 'context, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &'task Workspace<A, O>,
+    scope: &'task Scope,
     generation: Option<GenerationId>,
-    payload: &[u8],
-    ceiling: Option<&crate::Capabilities>,
-    io: &'a PreparationIo,
-) -> Result<CompiledAccess<'a>> {
-    crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-        let capability = intersect_capabilities(payload, ceiling, io)?;
-        let head = io.sdk(
-            workspace
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
-                    io,
-                    io.cancellation(),
-                )
-                .await,
-        )?;
-        let head_hold = if io.original_native_work().is_none() {
-            Some(io.reserve_decode(head.logical_owned_bytes())?)
-        } else {
-            None
-        };
-        let mut head = (head, head_hold);
-        let policy_generation = head.0.generation_id();
-        let principal = authenticated_principal(scope, io)?;
-        let view = io.sdk(
-            head.0
-                .compile_access(
-                    acyclic_fs::access::AccessBinding {
-                        principal: &principal.0,
-                        capability: &capability.0,
-                        facts: acyclic_fs::access::AuthenticatedFacts::Identity,
-                        generation,
-                        context: Context {
-                            now: access_now()?,
-                            approvals: 0,
+    payload: &'task [u8],
+    ceiling: Option<&'task crate::Capabilities>,
+    io: &'context PreparationIo,
+) -> impl std::future::Future<Output = Result<CompiledAccess<'context>>>
++ acyclic_stream::ProviderTask
++ use<'task, 'context, A, O> {
+    async move {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let capability = intersect_capabilities(payload, ceiling, io)?;
+            let head = io.sdk(
+                workspace
+                    .checkout(
+                        GenerationSelector::Head,
+                        CheckoutMode::read_only_pinned(),
+                        io,
+                        io.cancellation(),
+                    )
+                    .await,
+            )?;
+            let head_hold = if io.original_native_work().is_none() {
+                Some(io.reserve_decode(head.logical_owned_bytes())?)
+            } else {
+                None
+            };
+            let mut head = (head, head_hold);
+            let policy_generation = head.0.generation_id();
+            let principal = authenticated_principal(scope, io)?;
+            let view = io.sdk(
+                head.0
+                    .compile_access(
+                        acyclic_fs::access::AccessBinding {
+                            principal: &principal.0,
+                            capability: &capability.0,
+                            facts: acyclic_fs::access::AuthenticatedFacts::Identity,
+                            generation,
+                            context: Context {
+                                now: access_now()?,
+                                approvals: 0,
+                            },
                         },
-                    },
-                    io,
-                    io.cancellation(),
-                )
-                .await,
-        )?;
-        let bytes = view.logical_owned_bytes();
-        let hold = if io.original_native_work().is_some() {
-            io.guard_owned(bytes)?
-        } else {
-            io.reserve_decode(bytes)?
-        };
-        Ok((view, [Some(hold), None, None, None], policy_generation))
-    })?
-    .await
+                        io,
+                        io.cancellation(),
+                    )
+                    .await,
+            )?;
+            let bytes = view.logical_owned_bytes();
+            let hold = if io.original_native_work().is_some() {
+                io.guard_owned(bytes)?
+            } else {
+                io.reserve_decode(bytes)?
+            };
+            Ok((view, [Some(hold), None, None, None], policy_generation))
+        })?
+        .await
+    }
 }
 
 mod writes;

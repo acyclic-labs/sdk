@@ -174,74 +174,78 @@ enum Prepared<'a, O: 'static, S> {
     },
 }
 
-async fn prepare<'a, O, S>(
-    workspace: &Workspace<'a, O, S>,
-    args: &[String],
-    before_effect: &'a EffectGuard<'a>,
-) -> crate::Result<Prepared<'a, O, S>>
+fn prepare<'task, 'context, O, S>(
+    workspace: &'task Workspace<'context, O, S>,
+    args: &'task [String],
+    before_effect: &'context EffectGuard<'context>,
+) -> impl Future<Output = crate::Result<Prepared<'context, O, S>>>
++ acyclic_stream::ProviderTask
++ use<'task, 'context, O, S>
 where
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
 {
-    before_effect().await?;
-    workspace.access.require(workspace.view.workspace()).await?;
-    // A replayed request returns its saved result before reading any
-    // command input (a patch file it consumed may be gone by now).
-    if let Some(request) = &workspace.request
-        && let Some(output) = (RepositoryAccess {
+    async move {
+        before_effect().await?;
+        workspace.access.require(workspace.view.workspace()).await?;
+        // A replayed request returns its saved result before reading any
+        // command input (a patch file it consumed may be gone by now).
+        if let Some(request) = &workspace.request
+            && let Some(output) = (RepositoryAccess {
+                access: workspace.access,
+                filesystem: workspace.filesystem,
+                store: workspace.store,
+                current: workspace.view.workspace(),
+                repository: workspace.repository,
+            })
+            .request_result(request.operation)
+            .await?
+        {
+            before_effect().await?;
+            return Ok(Prepared::Complete(Output {
+                command: Some(output),
+                switched: None,
+            }));
+        }
+        let permit = workspace.lease.as_ref().map_or(
+            PublicationPermit::Unrestricted,
+            OperationWindowLease::publication_permit,
+        );
+        let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
+        let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+        let ignore = ignore.reserving(workspace.reserved);
+        let repository =
+            crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
+        let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
+        let executor = WorkspaceGitExecutor {
+            before_effect,
             access: workspace.access,
-            filesystem: workspace.filesystem,
+            fs: workspace.filesystem,
             store: workspace.store,
-            current: workspace.view.workspace(),
-            repository: workspace.repository,
+            current: workspace.view.workspace().clone(),
+            lazy_current: workspace.view,
+            repository_id: workspace.repository,
+            ignore,
+            repository,
+            permit,
+            lease: workspace.lease.clone(),
+            merge_drivers,
+            merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
+            switched: Mutex::new(None),
+        };
+        executor.authorize_repository().await?;
+        if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
+            before_effect().await?;
+            let output = executor.diff_agent(branch, tree).await?;
+            before_effect().await?;
+            return Ok(Prepared::Complete(output));
+        }
+        Ok(Prepared::Ready {
+            executor,
+            tree,
+            patch,
         })
-        .request_result(request.operation)
-        .await?
-    {
-        before_effect().await?;
-        return Ok(Prepared::Complete(Output {
-            command: Some(output),
-            switched: None,
-        }));
     }
-    let permit = workspace.lease.as_ref().map_or(
-        PublicationPermit::Unrestricted,
-        OperationWindowLease::publication_permit,
-    );
-    let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
-    let (ignore, merge_drivers) = git_policy(workspace.view).await?;
-    let ignore = ignore.reserving(workspace.reserved);
-    let repository =
-        crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
-    let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
-    let executor = WorkspaceGitExecutor {
-        before_effect,
-        access: workspace.access,
-        fs: workspace.filesystem,
-        store: workspace.store,
-        current: workspace.view.workspace().clone(),
-        lazy_current: workspace.view,
-        repository_id: workspace.repository,
-        ignore,
-        repository,
-        permit,
-        lease: workspace.lease.clone(),
-        merge_drivers,
-        merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
-        switched: Mutex::new(None),
-    };
-    executor.authorize_repository().await?;
-    if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
-        before_effect().await?;
-        let output = executor.diff_agent(branch, tree).await?;
-        before_effect().await?;
-        return Ok(Prepared::Complete(output));
-    }
-    Ok(Prepared::Ready {
-        executor,
-        tree,
-        patch,
-    })
 }
 
 fn finish<O, S>(
