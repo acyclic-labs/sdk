@@ -1,0 +1,37 @@
+diff --git a/rust/crates/native-runtime/src/descriptor/cache.rs b/rust/crates/native-runtime/src/descriptor/cache.rs
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -341,6 +341,7 @@
+     access: Access,
+     /// Whether closing a written descriptor flushes it.
+     durable: bool,
++    flush_state: crate::sync::Arc<F::FlushState>,
+     state: Mutex<State<F>>,
+     /// The file's index in the cache's ring while listed, kept under the
+     /// ring's lock.
+@@ -366,7 +367,7 @@
+ /// closes, whoever closes it last.
+ pub(super) struct Handle<F: Files> {
+     file: F::File,
+-    flush_state: F::FlushState,
++    flush_state: crate::sync::Arc<F::FlushState>,
+     cache: Arc<Cache<F>>,
+     /// Zero when clean, UNFLUSHED after a write, otherwise a device drain cut.
+     unsynced: AtomicU64,
+@@ -521,6 +522,7 @@
+             path: absolute,
+             access,
+             durable,
++            flush_state: crate::sync::Arc::new(Default::default()),
+             state: Mutex::new(State {
+                 identity,
+                 open: None,
+@@ -538,7 +540,7 @@
+     fn handle(&self, file: F::File) -> crate::sync::Arc<Handle<F>> {
+         crate::sync::Arc::new(Handle {
+             file,
+-            flush_state: Default::default(),
++            flush_state: crate::sync::Arc::clone(&self.flush_state),
+             cache: Arc::clone(&self.cache),
+             unsynced: AtomicU64::new(0),
+             durable: self.durable,

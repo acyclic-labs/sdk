@@ -1,0 +1,14 @@
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -453,10 +453,7 @@
+     /// Marks the callback's writes before its borrowed descriptor is released.
+     /// A flush during the callback cannot retire writes that finish later.
+     pub(super) fn write<R>(&self, write: impl FnOnce(&F::File) -> io::Result<R>) -> io::Result<R> {
+-        let _unflushed = Unflushed {
+-            dirty: &self.unsynced,
+-            restore: UNFLUSHED,
+-        };
++        self.unsynced.store(UNFLUSHED, Ordering::Release);
+         write(&self.file)
+     }
+ 

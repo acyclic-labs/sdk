@@ -27,10 +27,29 @@ pub fn write_file_all(writer: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
 
 /// Retains the caller's original data-only flush policy.
 pub fn flush_file_data(file: &File) -> io::Result<()> {
+    flush_data_with(|| flush_file_policy(file, true))
+}
+
+pub(crate) fn flush_cached_data(file: &File, state: &super::FlushState) -> io::Result<()> {
+    flush_data_with(|| {
+        #[cfg(target_vendor = "apple")]
+        {
+            use std::os::fd::AsFd as _;
+            crate::apple::sync_descriptor_once(file.as_fd(), Some(state))
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = state;
+            flush_file_policy(file, true)
+        }
+    })
+}
+
+fn flush_data_with(run: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_data", || flush_file_policy(file, true));
+    return testing::durable_operation("file:sync_data", run);
     #[cfg(not(feature = "test-support"))]
-    flush_file_policy(file, true)
+    run()
 }
 
 /// Retains the caller's original data-and-metadata flush policy.

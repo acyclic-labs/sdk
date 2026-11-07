@@ -57,7 +57,7 @@ impl CoreLog {
                 })
             }));
             let repaired = truncated.and_then(|()| {
-                let synced = lease.flush(acyclic_native_runtime::flush_file_data);
+                let synced = lease.flush(|file| file.flush_data());
                 drop(repair.as_mut().map(|repair| {
                     repair.record_completed(crate::WorkCounters {
                         durability_operations: 1,
@@ -207,7 +207,7 @@ impl CoreLog {
         }
         crash_point("frame written", self.flushed);
         if !deferred {
-            let synced = lease.flush(acyclic_native_runtime::flush_file_data);
+            let synced = lease.flush(|file| file.flush_data());
             let recorded = flush
                 .as_mut()
                 .map(|flush| {
@@ -253,7 +253,7 @@ impl CoreLog {
                         .as_ref()
                         .map(|allocation| allocation.work()),
                 )
-                .and_then(|lease| lease.flush(acyclic_native_runtime::flush_file_data))
+                .and_then(|lease| lease.flush(|file| file.flush_data()))
             {
                 // Checkpoints cross this barrier directly, before the ordinary
                 // acknowledgement path. An uncertain flush must fence every

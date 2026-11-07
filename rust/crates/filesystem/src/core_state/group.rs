@@ -144,7 +144,7 @@ fn flush_through(
     )?;
     let covered = (log.epoch, log.length);
     drop(slot);
-    let synced = file.flush(acyclic_native_runtime::flush_file_data);
+    let synced = file.flush(|file| file.flush_data());
     let recorded = credit
         .as_ref()
         .map(|credit| {

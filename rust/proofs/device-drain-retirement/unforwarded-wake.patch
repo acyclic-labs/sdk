@@ -1,0 +1,10 @@
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -121,7 +121,6 @@
+                 // or to the next request that must drain. One caller wakes
+                 // at most one successor, including after counter exhaustion.
+                 drop(progress);
+-                self.drained.notify_one();
+                 return Ok(());
+             }
+             if !progress.draining {
