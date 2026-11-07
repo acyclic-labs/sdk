@@ -71,24 +71,32 @@ fn explicit_state_directory_is_used_by_a_fresh_registry() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn empty_state_override_uses_the_fallback_in_a_fresh_process()
+fn invalid_state_roots_use_the_fallback_in_a_fresh_process()
 -> Result<(), Box<dyn std::error::Error>> {
-    const CHILD: &str = "ACYCLIC_FS_REGISTRY_EMPTY_OVERRIDE_CHILD";
+    const CHILD: &str = "ACYCLIC_FS_REGISTRY_INVALID_ROOT_CHILD";
     if std::env::var_os(CHILD).is_some() {
         #[cfg(windows)]
-        let expected = dirs::data_local_dir();
+        let expected = dirs::data_local_dir().filter(|path| path.is_absolute());
         #[cfg(not(windows))]
         let expected =
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"));
+            if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("absolute-home")) {
+                Some(
+                    PathBuf::from(std::env::var_os("HOME").unwrap())
+                        .join(".local")
+                        .join("state"),
+                )
+            } else {
+                dirs::data_local_dir().filter(|path| path.is_absolute())
+            };
         // Compare before initialize. A source-negative must never create a
-        // relative registry, and the Windows OS fallback is only inspected.
+        // relative registry. The OS fallback is only inspected.
         assert_eq!(
             persistent_base(),
             expected,
-            "empty state override selected a relative registry"
+            "invalid state root selected a registry according to process cwd"
         );
         #[cfg(not(windows))]
-        {
+        if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("absolute-home")) {
             let expected = expected.ok_or("fixture HOME is absent")?;
             initialize()?;
             assert_eq!(
@@ -111,22 +119,47 @@ fn empty_state_override_uses_the_fallback_in_a_fresh_process()
     #[cfg(not(windows))]
     let variable = "XDG_STATE_HOME";
     let name = format!(
-        "{}::empty_state_override_uses_the_fallback_in_a_fresh_process",
+        "{}::invalid_state_roots_use_the_fallback_in_a_fresh_process",
         module_path!().split_once("::").unwrap().1
     );
-    let output = acyclic_native_runtime::process_output(
-        acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
-            .args(["--exact", &name, "--nocapture"])
-            .env(CHILD, "1")
-            .env(variable, "")
-            .env("HOME", &profile)
-            .env("USERPROFILE", &profile)
-            .env("CODEX_HOME", &codex)
-            .env("APPDATA", profile.join("AppData").join("Roaming")),
-        std::time::Duration::from_secs(5),
-        16 * 1024,
-    )?;
-    assert!(output.status.success(), "empty {variable}: {output:?}");
+    #[cfg(windows)]
+    let homes = [profile.as_os_str()];
+    #[cfg(not(windows))]
+    let homes = [
+        profile.as_os_str(),
+        std::ffi::OsStr::new("relative-home"),
+        std::ffi::OsStr::new(""),
+    ];
+    for home in homes {
+        for value in ["", "relative-state", "../relative-state"] {
+            let output = acyclic_native_runtime::process_output(
+                acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
+                    .args(["--exact", &name, "--nocapture"])
+                    .current_dir(fixture.path())
+                    .env(
+                        CHILD,
+                        if Path::new(home).is_absolute() {
+                            "absolute-home"
+                        } else {
+                            "invalid-home"
+                        },
+                    )
+                    .env(variable, value)
+                    .env("HOME", home)
+                    .env("USERPROFILE", &profile)
+                    .env("CODEX_HOME", &codex)
+                    .env("APPDATA", profile.join("AppData").join("Roaming")),
+                std::time::Duration::from_secs(5),
+                16 * 1024,
+            )?;
+            assert!(
+                output.status.success(),
+                "{variable}={value:?}, HOME={home:?}: {output:?}"
+            );
+            assert!(!fixture.path().join("relative-state").exists());
+            assert!(!fixture.path().join("relative-home").exists());
+        }
+    }
     Ok(())
 }
 

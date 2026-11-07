@@ -1,0 +1,38 @@
+diff --git b/rust/crates/filesystem/src/native_mount/registry.rs a/rust/crates/filesystem/src/native_mount/registry.rs
+index 0cd48253ac3..b6f63df7350 100644
+--- b/rust/crates/filesystem/src/native_mount/registry.rs
++++ a/rust/crates/filesystem/src/native_mount/registry.rs
+@@ -254,28 +254,26 @@ where
+ 
+ // Match the service's persistent state-root selection before consulting OS
+ // defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
+-// A persistent root must be absolute before any directory is created.
+ fn persistent_base() -> Option<PathBuf> {
+     #[cfg(windows)]
+     if let Some(directory) =
+-        std::env::var_os("LOCALAPPDATA").filter(|directory| Path::new(directory).is_absolute())
++        std::env::var_os("LOCALAPPDATA").filter(|directory| !directory.is_empty())
+     {
+         return Some(directory.into());
+     }
+     #[cfg(not(windows))]
+     {
+-        if let Some(directory) = std::env::var_os("XDG_STATE_HOME")
+-            .filter(|directory| Path::new(directory).is_absolute())
++        if let Some(directory) =
++            std::env::var_os("XDG_STATE_HOME").filter(|directory| !directory.is_empty())
+         {
+             return Some(directory.into());
+         }
+-        if let Some(directory) =
+-            std::env::var_os("HOME").filter(|directory| Path::new(directory).is_absolute())
++        if let Some(directory) = std::env::var_os("HOME").filter(|directory| !directory.is_empty())
+         {
+             return Some(PathBuf::from(directory).join(".local").join("state"));
+         }
+     }
+-    dirs::data_local_dir().filter(|directory| directory.is_absolute())
++    dirs::data_local_dir()
+ }
+ 
+ #[cfg(test)]
