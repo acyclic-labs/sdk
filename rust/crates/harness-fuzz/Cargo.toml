@@ -1,6 +1,5 @@
 [package]
 autotests = false
-license.workspace = true
 name = "acyclic-harness-fuzz"
 version = "0.0.0"
 edition.workspace = true
