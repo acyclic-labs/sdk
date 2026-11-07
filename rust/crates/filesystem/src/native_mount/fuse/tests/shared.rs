@@ -84,13 +84,7 @@ fn entries(path: &str) -> std::io::Result<usize> {
 fn child(test: &str, root: &Path) -> Command {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
     command
-        .args([
-            test,
-            "--exact",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD, root)
         .env_remove(UNSHARED)
         .stdin(Stdio::null());
@@ -98,7 +92,6 @@ fn child(test: &str, root: &Path) -> Command {
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
@@ -181,7 +174,6 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted, around) = shared_sources(posix_config())?;
@@ -213,13 +205,15 @@ pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CHILD).is_some() {
+        return shared_view_costs_in_this_process();
+    }
     for unshared in [false, true] {
         let temporary = tempfile::tempdir()?;
         let mut command = child(
-            "native_mount::fuse::tests::shared::shared_view_costs_in_this_process",
+            "native_mount::fuse::tests::shared::linux_shared_views_cost_no_thread_descriptor_or_mount",
             temporary.path(),
         );
         if unshared {
@@ -242,12 +236,8 @@ pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 }
 
 /// Child half of `linux_shared_views_cost_no_thread_descriptor_or_mount`.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let root = root.canonicalize()?;
@@ -331,9 +321,11 @@ pub(super) fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace()
 -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os(CHILD).is_some() {
+        return shared_view_owner_until_killed();
+    }
     // A live facade and its notification sinks must not retain a device after
     // the original packet server has stopped. Check physical ownership before
     // issuing a lookup, so the old-source negative cannot strand a kernel call.
@@ -391,7 +383,7 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(
-        "native_mount::fuse::tests::shared::shared_view_owner_until_killed",
+        "native_mount::fuse::tests::shared::linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace",
         temporary.path(),
     )
     .stdin(Stdio::null())
@@ -482,12 +474,8 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
 
 /// Child half of the original connection and namespace retirement guard:
 /// holds a view until its parent kills it.
-#[test]
-#[ignore = "runs only as the child of its parent test"]
-pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let (source, _) = shared_sources(posix_config())?;

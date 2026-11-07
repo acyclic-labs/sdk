@@ -1,6 +1,5 @@
 use super::*;
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let (source, mount) = (root.path().join("source"), root.path().join("mount"));
@@ -39,23 +38,15 @@ async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std
     assert!(is_absent(&mount.join("gone")));
     assert_eq!(std::fs::read(mount.join("moved").join("x"))?, b"xy");
 
-    // Without revalidation, the source's report alone shows a change.
+    // Fence the actual source watcher before checking kernel visibility.
     std::fs::write(source.join("d").join("x"), b"reported")?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while std::fs::metadata(mount.join("d").join("x"))?.len() != 8 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "a reported change never became visible"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    live.revalidate()?;
     assert_eq!(std::fs::read(mount.join("d").join("x"))?, b"reported");
     live.unmount().await?;
     Ok(())
 }
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::error::Error>> {
     for watched in [true, false] {
         keeps_a_reused_identity_apart(watched).await?;
@@ -64,7 +55,6 @@ async fn live_mount_keeps_a_reused_identity_apart() -> Result<(), Box<dyn std::e
 }
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error::Error>> {
     for watched in [true, false] {
         keeps_hard_links_one_file(watched).await?;
@@ -73,7 +63,6 @@ async fn live_mount_keeps_hard_links_one_file() -> Result<(), Box<dyn std::error
 }
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_shows_writes_through_a_name_outside_its_source()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
@@ -108,7 +97,6 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
 }
 #[cfg(not(target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_follows_concurrent_changes_to_its_source()
 -> Result<(), Box<dyn std::error::Error>> {
     const FILES: usize = 24;

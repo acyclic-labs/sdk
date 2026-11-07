@@ -541,7 +541,6 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
 /// file system, so a mount's own refusal must arrive as `ENOTEMPTY`.
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "mounts a live FUSE session"]
 fn a_linux_mount_refuses_replacing_or_removing_a_full_directory_with_enotempty()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Posix)?);

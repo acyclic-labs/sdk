@@ -1,6 +1,5 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "requires two live Unix mounts"]
 fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
     for (parallel, a_bytes, b_bytes) in [
         (false, b"from-a".as_slice(), b"from-b".as_slice()),
@@ -43,7 +42,6 @@ fn independent_mount_start_cases() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "mounts a live Unix session; requires the host's native mount capability"]
 fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Arc::new(source(FilesystemProfile::Posix)?);
@@ -91,7 +89,6 @@ fn exclusive_create_on_a_unix_mount_creates_once_with_real_timestamps()
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
     use std::os::unix::fs::MetadataExt as _;
@@ -326,7 +323,7 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
         };
         if let Err(cause) = result {
             return Err(format!(
-                "step=Linux mount case {case}; cause={cause:?}; recovery: ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture"
+                "step=Linux mount case {case}; cause={cause:?}; recovery: cargo test --locked -p acyclic-fs --lib native_mount::adapter::tests::linux_mount_behaviour_cases -- --exact --nocapture"
             ).into());
         }
     }
@@ -335,12 +332,10 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read as _, Write as _};
+
     let destination =
         std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").ok_or("child mount path is absent")?;
-    let ready =
-        std::env::var_os("ACYCLIC_FS_UNIX_CHILD_READY").ok_or("child ready path is absent")?;
-    let release =
-        std::env::var_os("ACYCLIC_FS_UNIX_CHILD_RELEASE").ok_or("child release path is absent")?;
     let identity = std::env::var("ACYCLIC_FS_UNIX_CHILD_ID")?;
     let source = Arc::new(source(FilesystemProfile::Posix)?);
     let mut mount = crate::mount_native(
@@ -358,50 +353,71 @@ fn run_unix_mount_cross_process_worker() -> Result<(), Box<dyn std::error::Error
         std::path::Path::new(&destination).join(filename),
         identity.as_bytes(),
     )?;
-    std::fs::write(&ready, identity.as_bytes())?;
-    wait_for_path(
-        std::path::Path::new(&release),
-        std::time::Duration::from_secs(10),
-    )?;
+    {
+        let mut output = std::io::stdout().lock();
+        writeln!(output, "\nacyclic-unix-mount-ready")?;
+        output.flush()?;
+    }
+    let mut release = [0];
+    // The parent owns this pipe. Its exit closes the producer and returns EOF.
+    std::io::stdin().read_exact(&mut release)?;
+    if release != [1] {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "step=release child mount; recovery: run unix_mounts_in_distinct_processes_remain_independent through its parent test",
+        ).into());
+    }
     assert!(mount.stop()?);
     Ok(())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-#[ignore = "starts two real mount-owning processes; requires the host's native mount capability"]
 fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn std::error::Error>>
 {
+    use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
+    use std::io::{BufRead as _, BufReader, Write as _};
+
     if std::env::var_os("ACYCLIC_FS_UNIX_CHILD_MOUNT").is_some() {
         return run_unix_mount_cross_process_worker();
     }
     let temporary = tempfile::tempdir()?;
-    let mounts = ["a", "b"].map(|id| {
-        (
-            id,
-            temporary.path().join(format!("mount-{id}")),
-            temporary.path().join(format!("ready-{id}")),
-        )
-    });
-    let release = temporary.path().join("release");
+    let mounts = ["a", "b"].map(|id| (id, temporary.path().join(format!("mount-{id}"))));
     let executable = std::env::current_exe()?;
     let worker =
         "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
     let mut children = Vec::new();
-    for (id, mount, ready) in &mounts {
+    for (id, mount) in &mounts {
         std::fs::create_dir(mount)?;
-        children.push(acyclic_native_runtime::ProcessTree::spawn(
-            acyclic_native_runtime::ProcessCommand::new(&executable)
-                .args(["--ignored", "--exact", worker, "--test-threads=1"])
+        let mut child = ProcessTree::spawn(
+            ProcessCommand::new(&executable)
+                .args(["--exact", worker, "--nocapture", "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", mount)
-                .env("ACYCLIC_FS_UNIX_CHILD_READY", ready)
-                .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-                .env("ACYCLIC_FS_UNIX_CHILD_ID", id),
-        )?);
+                .env("ACYCLIC_FS_UNIX_CHILD_ID", id)
+                .stdin(ProcessStdio::piped())
+                .stdout(ProcessStdio::piped())
+                .stderr(ProcessStdio::inherit()),
+        )?;
+        let input = child.take_stdin().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        let output = child.take_stdout().ok_or(std::io::ErrorKind::BrokenPipe)?;
+        children.push((child, input, BufReader::new(output)));
     }
     let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
-        for (id, mount, ready) in &mounts {
-            wait_for_path(ready, Duration::from_secs(10))?;
+        for ((id, mount), (_, _, output)) in mounts.iter().zip(&mut children) {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                // Read the original child's event; death closes the pipe.
+                if output.read_line(&mut line)? == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        format!("step=await mount {id}; recovery: verify native mount prerequisites and rerun {worker}"),
+                    ).into());
+                }
+                if line.trim_end() == "acyclic-unix-mount-ready" {
+                    break;
+                }
+            }
             assert_eq!(
                 std::fs::read(mount.join(format!("{id}.txt")))?,
                 id.as_bytes()
@@ -411,41 +427,17 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
         }
         Ok(())
     })();
-    std::fs::write(&release, b"release")?;
-    let statuses = children
-        .iter_mut()
-        .map(|child| wait_for_child(child, Duration::from_secs(10)))
-        .collect::<Result<Vec<_>, _>>()?;
+    // On refusal, drop all original process owners and contain their trees.
     validation?;
-    for status in statuses {
-        assert!(status.success(), "mount process failed: {status}");
+    for (_, input, _) in &mut children {
+        input.write_all(&[1])?;
+    }
+    for (child, _, _) in &mut children {
+        let status = child.wait(Duration::from_secs(10));
+        child.terminate(None)?;
+        assert!(status?.success(), "mount process failed");
     }
     Ok(())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn wait_for_path(
-    path: &std::path::Path,
-    timeout: std::time::Duration,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + timeout;
-    while !path.exists() {
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("timed out waiting for {}", path.display()).into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    Ok(())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn wait_for_child(
-    child: &mut acyclic_native_runtime::ProcessTree,
-    timeout: std::time::Duration,
-) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
-    let result = child.wait(timeout);
-    child.terminate(None)?;
-    Ok(result?)
 }
 
 #[test]
