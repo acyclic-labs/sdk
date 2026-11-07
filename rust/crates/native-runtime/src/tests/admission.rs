@@ -804,7 +804,7 @@ fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
     workers
         .admission
         .lock()
-        .expect("original queue owner")
+        .map_err(|error| io::Error::other(error.to_string()))?
         .queued_jobs = 1;
     let mut prior = run_blocking_io(|| 37, None)?;
     let mut pending = prior.pending.take();

@@ -1,6 +1,6 @@
 --- a/rust/crates/native-runtime/src/workers/admission.rs
 +++ b/rust/crates/native-runtime/src/workers/admission.rs
-@@ -236,7 +236,7 @@
+@@ -235,7 +235,7 @@
                      .lock()
                      .unwrap_or_else(std::sync::PoisonError::into_inner);
                  job.set_queued(true);

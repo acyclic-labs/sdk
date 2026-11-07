@@ -105,7 +105,17 @@
              queued: false,
              _allocation: allocation,
          }),
-@@ -198,66 +200,24 @@
+@@ -188,7 +190,8 @@
+     let Some(mut job) = pending.take() else {
+         return Poll::Ready(Ok(()));
+     };
+-    if let Some(meter) = job.meter()
++    let meter = job.meter().cloned();
++    if let Some(meter) = &meter
+         && let Err(error) = meter.check()
+     {
+         job.record_submission_error(&error);
+@@ -197,96 +200,64 @@
      }
      let observation = job.queue_observation();
      job.stage(1);
@@ -182,10 +192,10 @@
              if let Some(observation) = observation {
                  obs::project(move || {
                      observation.record("native.queued", true);
-@@ -265,31 +225,39 @@
+                     drop(obs::OperationSpan::new_root(observation));
                  });
              }
-             drop(prepaid);
++            drop(prepaid);
 +            wake_capacity_waiter(next);
              Poll::Ready(Ok(()))
          }
@@ -227,12 +237,12 @@
              let error = io::Error::from(io::ErrorKind::BrokenPipe);
              job.record_submission_error(&error);
              drop(job);
-             drop(prepaid);
++            drop(prepaid);
 +            wake_capacity_waiter(next);
              Poll::Ready(Err(error))
          }
      }
-@@ -303,10 +271,9 @@
+@@ -300,10 +271,9 @@
          .admission
          .lock()
          .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -244,7 +254,7 @@
  }
  
  pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
-@@ -344,16 +311,16 @@
+@@ -341,16 +311,16 @@
                  admission.notifying = false;
                  return;
              };

@@ -84,7 +84,17 @@
              queued: false,
              _allocation: allocation,
          }),
-@@ -201,53 +202,20 @@
+@@ -188,7 +189,8 @@
+     let Some(mut job) = pending.take() else {
+         return Poll::Ready(Ok(()));
+     };
+-    if let Some(meter) = job.meter()
++    let meter = job.meter().cloned();
++    if let Some(meter) = &meter
+         && let Err(error) = meter.check()
+     {
+         job.record_submission_error(&error);
+@@ -200,53 +202,20 @@
      // Declare the owner before the guard so callback unwind also unlocks
      // admission before retiring this node.
      let retired;
@@ -147,7 +157,7 @@
          Ok(()) => {
              admission.queued_jobs += 1;
              retired = waiter.take();
-@@ -257,7 +225,6 @@
+@@ -256,23 +225,35 @@
              drop(admission);
              wake_capacity_waiter(next);
              drop(retired);
@@ -155,7 +165,11 @@
              if let Some(observation) = observation {
                  obs::project(move || {
                      observation.record("native.queued", true);
-@@ -269,12 +236,24 @@
+                     drop(obs::OperationSpan::new_root(observation));
+                 });
+             }
++            drop(prepaid);
+             Poll::Ready(Ok(()))
          }
          Err(mpsc::TrySendError::Full(mut job)) => {
              // No acceptance callback for a failed candidate transfer.
@@ -183,7 +197,7 @@
              Poll::Pending
          }
          Err(mpsc::TrySendError::Disconnected(job)) => {
-@@ -285,7 +264,6 @@
+@@ -283,10 +264,10 @@
              drop(admission);
              wake_capacity_waiter(next);
              drop(retired);
@@ -191,7 +205,11 @@
              let error = io::Error::from(io::ErrorKind::BrokenPipe);
              job.record_submission_error(&error);
              drop(job);
-@@ -344,16 +322,16 @@
++            drop(prepaid);
+             Poll::Ready(Err(error))
+         }
+     }
+@@ -341,16 +322,16 @@
                  admission.notifying = false;
                  return;
              };

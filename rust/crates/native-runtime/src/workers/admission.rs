@@ -188,8 +188,7 @@ pub(crate) fn poll_submission_with(
     let Some(mut job) = pending.take() else {
         return Poll::Ready(Ok(()));
     };
-    let meter = job.meter().cloned();
-    if let Some(meter) = &meter
+    if let Some(meter) = job.meter()
         && let Err(error) = meter.check()
     {
         job.record_submission_error(&error);
@@ -264,7 +263,6 @@ pub(crate) fn poll_submission_with(
                     drop(obs::OperationSpan::new_root(observation));
                 });
             }
-            drop(prepaid);
             Poll::Ready(Ok(()))
         }
         Err(mpsc::TrySendError::Full(mut job)) => {
@@ -289,7 +287,6 @@ pub(crate) fn poll_submission_with(
             let error = io::Error::from(io::ErrorKind::BrokenPipe);
             job.record_submission_error(&error);
             drop(job);
-            drop(prepaid);
             Poll::Ready(Err(error))
         }
     }
