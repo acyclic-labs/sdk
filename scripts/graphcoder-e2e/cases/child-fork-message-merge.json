@@ -183,5 +183,6 @@
       "child.txt": "CHILD_E2E_CONTENT\n"
     }
   },
-  "ntfs": true
+  "ntfs": true,
+  "physical": true
 }

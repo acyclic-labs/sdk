@@ -40,5 +40,6 @@
     "files": {
       "bash.txt": "BASH_E2E_CONTENT\n"
     }
-  }
+  },
+  "physical": true
 }
