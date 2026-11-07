@@ -1,3 +1,4 @@
+//! Exercises production HTTP failure classification with untrusted response bytes.
 #![no_main]
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
