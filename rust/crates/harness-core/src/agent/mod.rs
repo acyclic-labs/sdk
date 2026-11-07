@@ -43,7 +43,7 @@ pub use notices::NoticeSelection;
 pub(crate) mod records;
 mod reply;
 mod settled;
-pub use settled::{TurnChildren, answer, settled};
+pub use settled::{Settlement, TurnChildren, answer, settled};
 mod messaging;
 mod slots;
 mod steering;

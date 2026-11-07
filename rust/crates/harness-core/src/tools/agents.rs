@@ -348,8 +348,8 @@ impl AgentTool {
         let mut settled = Vec::with_capacity(children.len());
         let mut running = Vec::new();
         for (name, child) in &children {
-            let phase = match observer.settled(child).await {
-                Ok(Some(phase)) => phase,
+            let observed = match observer.settled(child).await {
+                Ok(Some(observed)) => observed,
                 Ok(None) => {
                     running.push(name.as_str());
                     continue;
@@ -359,12 +359,16 @@ impl AgentTool {
                 }
                 Err(error) => return Err(error),
             };
+            let answer = match observed.answer {
+                Some(sequence) => Some(observer.answer(child, sequence).await?),
+                None => None,
+            };
             let mut entry = json!({
                 "name": name,
                 "agent": child.as_str(),
-                "phase": serde_json::to_value(&phase)
+                "phase": serde_json::to_value(&observed.phase)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
-                "answer": observer.answer(child).await?,
+                "answer": answer,
             });
             // The fork's branch: its changes reach this agent's project
             // only through `fs merge` of it. A spawn name names it; an agent
@@ -718,20 +722,23 @@ mod tests {
         fn settled<'a>(
             &'a self,
             child: &'a AgentPath,
-        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Phase>>> {
+        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Settlement>>> {
             let phase = self
                 .settled
                 .contains(child)
-                .then(|| crate::agent::Phase::Done {
-                    outcome: crate::agent::AgentOutcome::Failed {
-                        message: String::new(),
+                .then(|| crate::agent::Settlement {
+                    phase: crate::agent::Phase::Done {
+                        outcome: crate::agent::AgentOutcome::Failed {
+                            message: String::new(),
+                        },
                     },
+                    answer: None,
                 });
             Box::pin(async move { Ok(phase) })
         }
 
-        fn answer<'a>(&'a self, _: &'a AgentPath) -> BoxProviderFuture<'a, Result<Option<String>>> {
-            Box::pin(async { Ok(None) })
+        fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
+            Box::pin(async { Err(Error::Invalid("no answer selected".into())) })
         }
     }
 

@@ -92,7 +92,13 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         assert!(host.runtime().drain().await.is_empty());
         assert!(changes.try_next().await?.is_some());
         assert!(host.input_progress(&root, inbox).await?.0);
-        assert_eq!(settled(&provider, &within, &root).await?, Some(Phase::Idle));
+        assert_eq!(
+            settled(&provider, &within, &root).await?,
+            Some(Settlement {
+                phase: Phase::Idle,
+                answer: Some(n),
+            })
+        );
         let statuses = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(statuses.len(), 1);
         let stale = StatusRecord::decode(&statuses[0])?;
