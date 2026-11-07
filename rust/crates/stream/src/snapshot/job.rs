@@ -153,46 +153,49 @@ impl<S: Snapshot> Drop for Receiver<S> {
 }
 
 impl<S: Snapshot> Job<S> {
-    pub(super) async fn run(mut self) {
-        let completed = self.completed.clone();
-        #[cfg(all(test, not(loom)))]
-        let observation = &mut self.observation;
-        // A job owns its state until it finishes, and it runs once.
-        let Some(state) = self.state.as_mut() else {
-            return;
-        };
-        let result = {
-            let mut read = std::pin::pin!(state.read());
-            // Abandonment is checked before every read poll, so a job whose
-            // consumer is gone never enters, or stays queued on, a lock.
-            poll_fn(|cx| {
-                let waker = cx.waker().clone();
-                let previous = {
-                    let mut completed = completed.lock().unwrap_or_else(PoisonError::into_inner);
-                    if completed.abandoned {
-                        #[cfg(loom)]
-                        if completed.mutant == super::model::Mutant::LeakReservation {
-                            return Poll::Pending;
+    pub(super) fn run(mut self) -> crate::BoxProviderFuture<'static, ()> {
+        crate::erase_provider_future(|| async move {
+            let completed = self.completed.clone();
+            #[cfg(all(test, not(loom)))]
+            let observation = &mut self.observation;
+            // A job owns its state until it finishes, and it runs once.
+            let Some(state) = self.state.as_mut() else {
+                return;
+            };
+            let result = {
+                let mut read = std::pin::pin!(state.read());
+                // Abandonment is checked before every read poll, so a job whose
+                // consumer is gone never enters, or stays queued on, a lock.
+                poll_fn(|cx| {
+                    let waker = cx.waker().clone();
+                    let previous = {
+                        let mut completed =
+                            completed.lock().unwrap_or_else(PoisonError::into_inner);
+                        if completed.abandoned {
+                            #[cfg(loom)]
+                            if completed.mutant == super::model::Mutant::LeakReservation {
+                                return Poll::Pending;
+                            }
+                            return Poll::Ready(None);
                         }
-                        return Poll::Ready(None);
+                        completed.worker.replace(waker)
+                    };
+                    drop(previous);
+                    let result = read.as_mut().poll(cx).map(Some);
+                    #[cfg(all(test, not(loom)))]
+                    if result.is_pending() {
+                        inspection::notify(observation, &completed, inspection::Cut::Pending);
                     }
-                    completed.worker.replace(waker)
-                };
-                drop(previous);
-                let result = read.as_mut().poll(cx).map(Some);
-                #[cfg(all(test, not(loom)))]
-                if result.is_pending() {
-                    inspection::notify(observation, &completed, inspection::Cut::Pending);
-                }
-                result
-            })
-            .await
-        };
-        match result {
-            Some(result) => self.finish(Some(result)),
-            // Nobody receives the cursor; dropping it never advanced it twice.
-            None => drop(self.state.take()),
-        }
+                    result
+                })
+                .await
+            };
+            match result {
+                Some(result) => self.finish(Some(result)),
+                // Nobody receives the cursor; dropping it never advanced it twice.
+                None => drop(self.state.take()),
+            }
+        })
     }
 
     fn finish(&mut self, result: Option<S::Output>) {

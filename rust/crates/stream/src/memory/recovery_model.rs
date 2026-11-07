@@ -445,7 +445,9 @@ pub fn snapshot_consumer_departures(mutant: &str) {
         Departure::CancelRacesFirstPoll,
         Departure::CancelRacesRelease,
     ] {
+        eprintln!("snapshot progress: provider=memory departure={departure:?} mutant={mutant:?}");
         crate::memory::parking_model::abandon(departure, mutant);
+        eprintln!("snapshot progress: provider=local departure={departure:?} mutant={mutant:?}");
         crate::local::parking_model::abandon(departure, mutant);
     }
 }
