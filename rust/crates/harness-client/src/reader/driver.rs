@@ -449,7 +449,7 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
         Failure::Denied => reader.denied(stream),
         Failure::Refused | Failure::Changed => reader.refuse_follow(stream, error.clone()),
         failure @ (Failure::Unavailable | Failure::Overloaded) => {
-            reader.follow_failed(failure, now)
+            reader.follow_failed(failure, now);
         }
     }
 }
