@@ -8,7 +8,7 @@ std::thread_local! {
 
 pub(super) fn admitted_bytes(bytes: u64) -> u64 {
     if OMIT_ARC_HEADER.with(Cell::get) {
-        std::mem::size_of::<NativeProofAccounting>() as u64
+        std::mem::size_of::<NativeAllocationAccounting>() as u64
     } else {
         bytes
     }
@@ -33,7 +33,7 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
         }
     }
     let _restore = Restore(OMIT_ARC_HEADER.with(|flag| flag.replace(broken)));
-    let (shared, allocated) = measured(|| original.state.lock().proof_accounting().unwrap());
+    let (shared, allocated) = measured(|| original.state.lock().allocation_accounting().unwrap());
     if allocated.count_total != 1 || allocated.count_current != 1 || allocated.count_max != 1 {
         return Err("one shared allocation");
     }
@@ -77,9 +77,9 @@ fn allocation_matches_heap(broken: bool) -> Result<u64, &'static str> {
 fn shared_proof_metadata_funds_the_actual_arc_until_final_reconciliation() {
     let physical = allocation_matches_heap(false).unwrap();
     eprintln!(
-        "shared_proof_accounting physical={physical} legacy_charge={} admitted={}",
-        std::mem::size_of::<NativeProofAccounting>(),
-        NativeProofAccounting::ALLOCATION_BYTES
+        "shared_allocation_accounting physical={physical} legacy_charge={} admitted={}",
+        std::mem::size_of::<NativeAllocationAccounting>(),
+        NativeAllocationAccounting::ALLOCATION_BYTES
     );
 }
 
@@ -108,7 +108,7 @@ fn an_exact_physical_metadata_budget_succeeds_and_one_byte_less_allocates_nothin
         .unwrap();
         assert_eq!(original.live_allocation_bytes(), baseline);
         let before = original.receipt();
-        let (result, heap) = measured(|| original.state.lock().proof_accounting());
+        let (result, heap) = measured(|| original.state.lock().allocation_accounting());
         if short {
             assert!(
                 matches!(result, Err(DemandError::Work(crate::WorkError::BudgetExceeded {
@@ -144,7 +144,7 @@ proptest! {
             WorkBudget::UNBOUNDED, &CancellationToken::new(),
         ).unwrap();
         let baseline = original.live_allocation_bytes();
-        let initial = original.state.lock().proof_accounting().unwrap();
+        let initial = original.state.lock().allocation_accounting().unwrap();
         let mut owners = vec![Some(initial); publishers];
         let charged = original.receipt();
         for (clone, index) in actions {

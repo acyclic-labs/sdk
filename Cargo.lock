@@ -264,6 +264,7 @@ name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-test-support",
  "async-trait",
  "heck",
  "proc-macro2",
@@ -322,6 +323,7 @@ dependencies = [
  "nix 0.31.3",
  "notify",
  "parking_lot 0.13.0",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",
@@ -626,6 +628,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-host-platform",
  "acyclic-machines",
+ "acyclic-mcp",
  "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -708,12 +711,16 @@ version = "0.0.0"
 dependencies = [
  "acyclic-fs",
  "acyclic-harness",
+ "acyclic-harness-client",
  "acyclic-harness-core",
+ "acyclic-mcp",
  "acyclic-native-runtime",
  "acyclic-stream",
  "acyclic-test-support",
+ "base64 0.22.1",
  "blake3",
  "bytes",
+ "clap",
  "diffy",
  "futures",
  "harness-mock-model",
@@ -727,6 +734,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 1.1.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -961,9 +969,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
- "sha2 0.11.1",
  "tsify",
- "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -1013,8 +1019,6 @@ dependencies = [
  "acyclic-test-support",
  "proptest",
  "pulldown-cmark",
- "serde",
- "serde_json",
  "unicase",
  "unicode-segmentation",
  "unicode-width",
@@ -1023,6 +1027,20 @@ dependencies = [
 [[package]]
 name = "acyclic-markdown-work"
 version = "0.2.0"
+
+[[package]]
+name = "acyclic-mcp"
+version = "0.2.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "loom",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio-util",
+]
 
 [[package]]
 name = "acyclic-model-render"
@@ -1189,7 +1207,7 @@ name = "acyclic-plugin-identity"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
- "acyclic-harness-core",
+ "acyclic-mcp",
  "acyclic-native-runtime",
  "axum",
  "base64 0.23.1",
@@ -1236,17 +1254,22 @@ name = "acyclic-sdk-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-grpc-observability",
  "acyclic-harness",
  "acyclic-harness-core",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-test-support",
  "arrayvec",
  "libfuzzer-sys",
+ "prettyplease 0.3.0",
  "proptest",
  "prost",
+ "prost-reflect",
  "serde",
  "serde_json",
+ "syn 3.0.9",
  "tokio",
 ]
 
@@ -1408,6 +1431,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_derive",
+ "serde_json",
  "thiserror 2.0.21",
  "walkdir",
 ]
@@ -3365,7 +3389,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6853,7 +6877,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7459,7 +7483,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7538,7 +7562,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7788,6 +7812,7 @@ dependencies = [
  "cargo_metadata",
  "libfuzzer-sys",
  "rustdoc-types 0.60.0",
+ "sdk-docs",
  "serde_json",
 ]
 
@@ -7828,13 +7853,13 @@ dependencies = [
 name = "sdk-generation-fuzz"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "libfuzzer-sys",
  "sdk-docs",
  "sdk-generation",
- "serde",
  "serde_json",
  "sha2 0.10.9",
- "toml 0.9.8",
+ "tar",
 ]
 
 [[package]]
@@ -8635,7 +8660,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9794,7 +9819,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

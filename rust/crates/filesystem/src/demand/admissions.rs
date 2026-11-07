@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[path = "admissions_accounting.rs"]
 mod accounting;
-pub(crate) use accounting::NativeProofAccounting;
+pub(crate) use accounting::NativeAllocationAccounting;
 #[cfg(any(test, feature = "native-watch"))]
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
@@ -47,7 +47,7 @@ pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
     pub(super) poisoned: bool,
     pub(super) io_failure: Option<DemandError>,
-    proof_accounting: Option<Arc<NativeProofAccounting>>,
+    allocation_accounting: Option<Arc<NativeAllocationAccounting>>,
     paid_non_native: u64,
     pub(super) native_mount_admission_pending: bool,
     pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
@@ -84,7 +84,7 @@ impl Admissions {
                         .expect("bounded live bytes"),
                 )
             });
-        let (released, unrecorded) = if let Some(shared) = &self.proof_accounting {
+        let (released, unrecorded) = if let Some(shared) = &self.allocation_accounting {
             let actual = shared.non_native.load(Ordering::Acquire);
             (
                 released
@@ -124,7 +124,7 @@ impl DemandWork {
         ))
     }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
-        let Some(shared) = &self.roots.proof_accounting else {
+        let Some(shared) = &self.roots.allocation_accounting else {
             return Ok(());
         };
         let retired = shared.take_retired();
@@ -135,7 +135,7 @@ impl DemandWork {
         if let Some(bytes) =
             shared.drain_for_final_owner(Arc::strong_count(shared), self.roots.paid_non_native)?
         {
-            drop(self.roots.proof_accounting.take());
+            drop(self.roots.allocation_accounting.take());
             self.roots.paid_non_native = 0;
             self.allocations
                 .release(bytes)
@@ -146,7 +146,7 @@ impl DemandWork {
     pub(crate) fn reconcile_cancellation_registry(&mut self) -> Result<(), crate::WorkError> {
         self.reconcile_native_controls()?;
         let mut failure = None;
-        if let Some(shared) = &self.roots.proof_accounting {
+        if let Some(shared) = &self.roots.allocation_accounting {
             let actual = shared.non_native.load(Ordering::Acquire);
             let paid = self.roots.paid_non_native;
             if actual < paid {
@@ -278,21 +278,35 @@ impl DemandWork {
             .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
         Ok(())
     }
-    fn proof_accounting(&mut self) -> Result<Arc<NativeProofAccounting>, DemandError> {
-        if let Some(shared) = &self.roots.proof_accounting {
+    pub(crate) fn allocation_accounting(
+        &mut self,
+    ) -> Result<Arc<NativeAllocationAccounting>, DemandError> {
+        if let Some(shared) = &self.roots.allocation_accounting {
             return Ok(shared.clone());
         }
-        let bytes = NativeProofAccounting::ALLOCATION_BYTES;
+        let bytes = NativeAllocationAccounting::ALLOCATION_BYTES;
         #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
         let bytes = metadata_tests::admitted_bytes(bytes);
-        self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
-        let shared = Arc::new(NativeProofAccounting::default());
-        self.roots.proof_accounting = Some(shared.clone());
+        // This shared control belongs to the original ledger, not the first
+        // resource or capture that needs deferred retirement.
+        self.scope(
+            |work| &mut work.native_resource,
+            None,
+            |work| {
+                work.scope(
+                    |work| &mut work.capture_custody,
+                    None,
+                    |work| work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED),
+                )
+            },
+        )?;
+        let shared = Arc::new(NativeAllocationAccounting::default());
+        self.roots.allocation_accounting = Some(shared.clone());
         Ok(shared)
     }
     pub(crate) fn owns_native_checkout_token(&self, token: &Arc<ProofDataCustody>) -> bool {
         self.roots
-            .proof_accounting
+            .allocation_accounting
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
@@ -343,14 +357,11 @@ impl NativeDemandReadMeter {
             |work| &mut work.native_invocation,
             native.invocation.as_ref().map(Arc::downgrade),
             |work| work.check(),
-        )
-        .map_err(crate::materializer::native_materialization_work_error)?;
+        )?;
         if work.owns_native_checkout_token(token) || !token.accepts_native_original(self) {
             return Err(Error::InvalidLayout);
         }
-        let shared = work
-            .proof_accounting()
-            .map_err(crate::materializer::native_materialization_work_error)?;
+        let shared = work.allocation_accounting()?;
         if !token.bind_native_original(self, &shared) {
             return Err(Error::InvalidLayout);
         }

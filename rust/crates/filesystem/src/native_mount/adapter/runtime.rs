@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_mount::NativeMountStartupAdmissionError;
+use crate::native_mount::{NativeMountCallbackFuture, NativeMountStartupAdmissionError};
 
 /// Blocking bridge into the process-shared callback runtime.
 #[derive(Clone)]
@@ -197,15 +197,16 @@ impl CallbackRuntime {
         native_future(work, create)
     }
 
-    pub(in crate::native_mount) fn verify_callback<
-        F: Future<Output = Result<(), NativeMountError>>,
-    >(
+    pub(in crate::native_mount) fn verify_callback<'a>(
         &self,
         work: &crate::NativeMaterializationWork,
-        create: impl FnOnce() -> Result<F, NativeMountError>,
+        create: impl FnOnce() -> Result<NativeMountCallbackFuture<'a>, NativeMountError>,
     ) -> Result<(), NativeMountError> {
         let prepared = self.prepare_native_wait(work)?;
-        self.wait_prepared(prepared, || async { create()?.await })
+        // The guard already admitted and owns its concrete future. Lend that
+        // same owner to the bridge instead of allocating another future frame.
+        let mut future = self.enter(|_| create().map(tokio::task::unconstrained))?;
+        self.poll_prepared(prepared, Pin::new(&mut future))
     }
 
     pub(in crate::native_mount) fn block_on<F: Future>(
@@ -365,6 +366,51 @@ mod future_custody_tests {
         );
         drop(retained.into_inner());
         assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn guard_future_uses_original_custody_and_producer() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = CallbackRuntime::create()?;
+        for lost in [false, true] {
+            let work = crate::NativeMaterializationWork::new(
+                WorkBudget {
+                    // Original ledger, wait owner and the guard's future.
+                    // A second boxed bridge frame cannot fit this budget.
+                    allocation_operations: 3,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &CancellationToken::new(),
+            )
+            .map_err(|(error, _)| error)?;
+            let baseline = work.live_allocation_bytes();
+            let (producer, receiver) = tokio::sync::oneshot::channel();
+            BEFORE_PARK.with_borrow_mut(|hook| {
+                assert!(hook.is_none());
+                *hook = Some(Box::new(move || {
+                    if !lost {
+                        producer.send(()).unwrap();
+                    }
+                }));
+            });
+            let result = runtime.verify_callback(&work, || {
+                NativeMountCallbackFuture::new(&work, || async move {
+                    receiver
+                        .await
+                        .map_err(|_| NativeMountError::Lifecycle("callback producer dropped"))
+                })
+            });
+            BEFORE_PARK.with_borrow_mut(|hook| assert!(hook.is_none(), "{result:?}"));
+            if lost {
+                assert!(matches!(
+                    result,
+                    Err(NativeMountError::Lifecycle("callback producer dropped"))
+                ));
+            } else {
+                result?;
+            }
+            assert_eq!(work.live_allocation_bytes(), baseline);
+        }
         Ok(())
     }
 

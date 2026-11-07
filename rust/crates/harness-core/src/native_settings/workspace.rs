@@ -96,5 +96,5 @@ fn components(path: &str, windows: bool, unc: bool) -> impl Iterator<Item = &str
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests;

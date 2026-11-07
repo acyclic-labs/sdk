@@ -22,6 +22,24 @@ impl From<VolumeCreatedError> for DecodeFailure {
     }
 }
 
+impl From<PublicationEvidenceError> for DecodeFailure {
+    fn from(_: PublicationEvidenceError) -> Self {
+        Self::Canonical
+    }
+}
+
+impl From<GenerationExportManifestError> for DecodeFailure {
+    fn from(_: GenerationExportManifestError) -> Self {
+        Self::Canonical
+    }
+}
+
+impl From<RetentionCreatedError> for DecodeFailure {
+    fn from(_: RetentionCreatedError) -> Self {
+        Self::Canonical
+    }
+}
+
 macro_rules! interrupt {
     ($decode:ident, $bytes:expr, $limits:expr, $steps:expr) => {{
         assert!($steps > 0, "admitted decoding accounts for its work");

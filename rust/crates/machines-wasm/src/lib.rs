@@ -27,6 +27,7 @@ pub(crate) fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
 #[wasm_bindgen]
 pub fn normalize_identity(kind: &str, value: &str) -> Result<String, JsValue> {
     acyclic_machines::normalize_identity(kind, value)
+        .map(|identity| identity.to_string())
         .map_err(|_| js_error("invalid", "identity value is required"))
 }
 

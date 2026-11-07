@@ -1,0 +1,157 @@
+{
+  "id": "topology-pipeline",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PIPE_ROOT"
+        },
+        "tools": [
+          {
+            "id": "spawn-verify",
+            "name": "spawn",
+            "arguments": {
+              "name": "verify",
+              "task": "VERIFY_STAGE",
+              "role": "advisor"
+            }
+          },
+          {
+            "id": "spawn-extract",
+            "name": "spawn",
+            "arguments": {
+              "name": "extract",
+              "task": "EXTRACT_STAGE",
+              "role": "advisor",
+              "peers": [
+                "verify"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PIPE_ROOT",
+          "tool_result": "extract"
+        },
+        "tools": [
+          {
+            "id": "wait-extract",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "extract"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PIPE_ROOT",
+          "tool_result": "EXTRACT_DONE"
+        },
+        "tools": [
+          {
+            "id": "wait-verify",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "verify"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PIPE_ROOT",
+          "tool_result": "PIPE_VERIFIED"
+        },
+        "text": [
+          "PIPE_ROOT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "EXTRACT_STAGE"
+        },
+        "tools": [
+          {
+            "id": "ungranted",
+            "name": "send",
+            "arguments": {
+              "agent": "report",
+              "message": "PIPE_UNGRANTED",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "EXTRACT_STAGE",
+          "tool_result": "authorized peer inbox"
+        },
+        "tools": [
+          {
+            "id": "granted",
+            "name": "send",
+            "arguments": {
+              "agent": "verify",
+              "message": "PIPE_CLAIMS",
+              "delivery": "follow_up"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "EXTRACT_STAGE",
+          "tool_result": "queued"
+        },
+        "text": [
+          "EXTRACT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "VERIFY_STAGE"
+        },
+        "text": [
+          "VERIFY_READY"
+        ]
+      },
+      {
+        "when": {
+          "user": "PIPE_CLAIMS"
+        },
+        "text": [
+          "PIPE_VERIFIED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "PIPE_ROOT",
+      "answer": "PIPE_ROOT_DONE"
+    }
+  ],
+  "assert": {
+    "requests": 9,
+    "tool_contains": [
+      "EXTRACT_DONE",
+      "PIPE_VERIFIED"
+    ],
+    "tool_errors": [
+      "authorized peer inbox"
+    ]
+  }
+}

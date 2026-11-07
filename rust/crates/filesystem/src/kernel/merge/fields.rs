@@ -3,6 +3,29 @@ enum OptionalResolution {
     Conflict,
 }
 
+async fn matching_payloads<S: AsyncObjectStore>(
+    store: &S,
+    ours: FileRecord,
+    theirs: FileRecord,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    // Different extent or blob-index layouts can retain the same file bytes.
+    if ours.payload == theirs.payload {
+        return Ok(true);
+    }
+    super::records_match_content(
+        store,
+        ours,
+        theirs,
+        (limits, limits.maximum_object_bytes),
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
 fn resolve_optional(
     base: Option<FileRecord>,
     ours: Option<FileRecord>,
@@ -107,7 +130,7 @@ async fn merge_records_async<S: AsyncObjectStore>(
     }
     if ours.kind != theirs.kind
         || ours.link_count != theirs.link_count
-        || ours.payload != theirs.payload
+        || !matching_payloads(store, ours, theirs, limits, accounting, cancellation).await?
     {
         return Ok(None);
     }
@@ -250,18 +273,6 @@ async fn read_metadata<S: AsyncObjectStore>(
         retire_allocation(KernelOwnedAllocation::Standalone, retained, accounting)?;
     }
     result
-}
-
-async fn converge_metadata_async<S: AsyncObjectStore>(
-    store: &S,
-    ours: ObjectId,
-    theirs: ObjectId,
-    limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Option<ObjectId>, FsError> {
-    // The added-record rule is exactly authored fields agree / later times.
-    merge_metadata_async(store, None, ours, theirs, limits, accounting, cancellation).await
 }
 
 pub(crate) fn merge_metadata_fields(

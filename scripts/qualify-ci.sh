@@ -368,6 +368,8 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
+    node --test scripts/check-cargo-lock.test.mjs
+    node scripts/check-cargo-lock.mjs
     node --test scripts/check-feature-matrix.test.mjs scripts/run-command.test.mjs
     node --test scripts/graphcoder-e2e/spool.test.mjs scripts/graphcoder-e2e/transcript.test.mjs
     node --test scripts/check-test-support.test.mjs
@@ -379,7 +381,7 @@ case "$lane" in
     bash scripts/test-ensure-rust-target.sh
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
-    node --test scripts/qualify-main-green-debts.test.mjs
+    node --test scripts/qualify-main-green-debts.test.mjs scripts/test-support/libtest.test.mjs
     node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \

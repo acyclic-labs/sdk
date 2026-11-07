@@ -185,9 +185,11 @@ pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
     apply_generation_mutations,
 };
+pub(crate) use historical_evidence::decode_historical_generation_evidence_observed;
 pub use historical_evidence::{
     HistoricalGenerationEvidence, HistoricalGenerationProjection,
     decode_historical_generation_evidence, encode_original_generation_evidence,
+    project_historical_generation_evidence,
 };
 pub use list::{DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries};
 pub use live::{LiveMutationOutcome, LivePublicationObservation};

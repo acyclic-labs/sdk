@@ -1,3 +1,5 @@
+use crate::native_mount::shared::outcome::{CallbackFailure, source_refusal, source_stops_mount};
+
 use super::{
     Carried, DeleteBinding, FILE_NOTIFICATIONS, FileId, GUID, HR_FILE_INVALID, HR_FILE_NOT_FOUND,
     HR_INVALID_DATA, HR_NOT_SAME_DEVICE, HR_NOT_SUPPORTED, HR_OK, HR_UNEXPECTED, HRESULT,
@@ -76,7 +78,9 @@ fn creating_name_is_current(
     }
     let _lease = match source.acquire_binding_lease_with_meter(Some(basis.binding), work) {
         Ok(lease) => lease,
-        Err(MountSourceError::Stale) => return Ok(false),
+        Err(error) if source_refusal(&error) == Some(CallbackFailure::Stale) => {
+            return Ok(false);
+        }
         Err(error) => return Err(error),
     };
     let current = source.view_is_stable_with_meter(work)?
@@ -374,9 +378,7 @@ pub(super) unsafe fn notification(
                     },
                 ) {
                     Ok(true) => return Ok(()),
-                    Err(error)
-                        if crate::native_mount::shared::outcome::source_stops_mount(&error) =>
-                    {
+                    Err(error) if source_stops_mount(&error) => {
                         return Err(error);
                     }
                     Ok(false) | Err(_) => {}
@@ -474,7 +476,7 @@ pub(super) unsafe fn notification(
         Ok(()) => HR_OK,
         Err(error) => {
             let status = source_hresult(&error);
-            if crate::native_mount::shared::outcome::source_stops_mount(&error) {
+            if source_stops_mount(&error) {
                 let mut failures = lock_recover(&runtime.post_operation_failure);
                 if failures.callback_failure.is_none() {
                     failures.callback_failure = Some((error.into(), work.receipt()));

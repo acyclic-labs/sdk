@@ -4,9 +4,13 @@
 //! link, and a dependency would silently replace the allocator of every
 //! binary that links it. A test, bench or fuzz binary that measures declares
 //! [`counting_allocator!`] once at its crate root.
+/// Language-independent source/model coverage and reachability checks.
+pub mod correspondence;
 pub mod differential;
 mod fixtures;
-pub use fixtures::{crate_source_path, source_path};
+/// Finite trace conformance through the same checked correspondence inventory.
+pub mod trace;
+pub use fixtures::{crate_source_path, runtime_path, source_path};
 /// Construct a future before entering its polling frame. Large test and model
 /// futures otherwise retain construction temporaries beside their polling stack.
 #[inline(never)]

@@ -1,7 +1,6 @@
 //! Native process checks exercise the shared CLI and MCP binary against HTTP fakes.
 
-#[path = "support/binary.rs"]
-mod binary;
+use super::binary;
 
 #[test]
 fn identity_processes() -> Result<(), Box<dyn std::error::Error>> {

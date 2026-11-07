@@ -100,11 +100,8 @@ impl NativeWorkReservation {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut state = self.state.lock();
-        let available = state
-            .available()
-            .map_err(native_materialization_work_error)?;
-        self.finish(&mut state, actual.intersect_budget(available), actual)
-            .map_err(native_materialization_work_error)?;
+        let available = state.available()?;
+        self.finish(&mut state, actual.intersect_budget(available), actual)?;
         actual.remaining(available).map(|_| ()).map_err(Into::into)
     }
     pub(crate) fn record_deferred(&mut self, actual: WorkCounters) {
@@ -139,7 +136,8 @@ impl NativeWorkReservation {
     }
     pub(super) fn begin_drop(&self, state: &mut Reservation, actual: WorkCounters) {
         if let Err(error) = self.begin(state, actual) {
-            self.meter.poison(native_materialization_work_error(error));
+            self.meter
+                .poison(NativeTreeMaterializationError::from(error));
             let actual = actual.native_io_operations();
             if let Err(error) = self.finish(state, actual.intersect_budget(state.remaining), actual)
             {
@@ -185,11 +183,7 @@ impl NativeWorkReservation {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut state = self.state.lock();
-        maximum.remaining(
-            state
-                .available()
-                .map_err(native_materialization_work_error)?,
-        )?;
+        maximum.remaining(state.available()?)?;
         state.remaining = maximum.remaining(state.remaining)?;
         Ok(Self::new(self.meter.clone(), maximum))
     }
@@ -222,11 +216,7 @@ impl NativeWorkReservation {
         if maximum.allocation_operations != 0 || maximum.peak_allocation_bytes != 0 {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let available = self
-            .state
-            .get_mut()
-            .available()
-            .map_err(native_materialization_work_error)?;
+        let available = self.state.get_mut().available()?;
         let missing = maximum.intersect_budget(available).remaining(maximum)?;
         if missing == WorkCounters::UNCHARGED {
             return Ok(());
@@ -234,8 +224,7 @@ impl NativeWorkReservation {
         // Exclusive reservation custody precedes the original ledger's lock,
         // as in absorb/partition_work; no new caller permission is admitted.
         self.meter
-            .state(|state| state.reserve_reconciled(missing))
-            .map_err(native_materialization_work_error)?;
+            .state(|state| state.reserve_reconciled(missing))?;
         let mut retry = Self::new(self.meter.clone(), missing);
         self.absorb(&mut retry)
     }
@@ -259,7 +248,7 @@ impl NativeWorkReservation {
         self.begin(&mut self.state.lock(), actual)
             .map_err(|error| match error {
                 DemandError::InvalidRequest => NativeTreeMaterializationError::InvalidLayout,
-                error => native_materialization_work_error(error),
+                error => NativeTreeMaterializationError::from(error),
             })
     }
     #[cfg(all(feature = "native-mount", target_os = "macos"))]
@@ -300,7 +289,8 @@ impl Drop for NativeWorkReservation {
             let retired = state.release(self.header_bytes);
             refunded.and(retired)
         }) {
-            self.meter.poison(native_materialization_work_error(error));
+            self.meter
+                .poison(NativeTreeMaterializationError::from(error));
         }
     }
 }

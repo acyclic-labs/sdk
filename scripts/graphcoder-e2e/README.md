@@ -39,22 +39,26 @@ node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mo
 ```
 
 Use the serial matrix on every OS to avoid concurrent native mounts and PTYs
-competing inside a shared deadline. On Windows run it under the shared
-`Global\AcyclicWindowsTestRun` mutex. Each case suite retains
-the ten-second limit, including its filesystem variants. The aggregate receipt
-requires every case and variant exactly once; total matrix time is recorded
-separately. Run Node helper tests with `--test-concurrency=1` on Windows.
-The strict helper launcher also owns its complete process tree. Its active
-nine-second budget cancels and drains the scope; cancellation always fails
+competing for resources. On Windows run it under the shared
+`Global\AcyclicWindowsTestRun` mutex. Each case suite joins its completed
+operation and records its elapsed time, including its filesystem variants.
+The aggregate receipt requires every case and variant exactly once; total
+matrix time is recorded separately. Run Node helper tests with
+`--test-concurrency=1` on Windows. The strict helper launcher also owns its
+complete process tree. Cancellation drains the scope and always fails
 qualification, including when a late child summary reports success.
 
 To split a serial matrix into diagnostic selections, pass a zero-based `INDEX/COUNT`
 after the two executable paths. Run partitions sequentially, with a fresh
 `E2E_OUTPUT` directory for each. Each exports `partition.json`; a partition
 never qualifies the platform. Collect all receipts with
-`node scripts/graphcoder-e2e/serial.mjs --collect FRESH_OUTPUT PARTITION.json ...`.
+`node scripts/graphcoder-e2e/serial.mjs --collect GRAPHCODER MOCK_MODEL FRESH_OUTPUT PARTITION.json ...`.
 Collection rejects missing or duplicate partitions, changed executable/source
-identities, changed case definitions and missing suite receipts. Case assertions
+identities, changed case definitions and missing suite receipts. Collection binds
+the supplied executables and current acceptance/runtime closure once, using the
+same environment as the partitions. Receipts must match that intended identity,
+even when every receipt agrees on an older source. The final matrix retains the
+checked binding. Collection hashes the admitted inputs but launches no case. Case assertions
 and the nine-second active scope stay unchanged. A failed partition is retained;
 collection does not execute or retry any case.
 
@@ -200,3 +204,30 @@ idle with the exact expected answer and no running child. Fork/merge also
 requires the real merge and the resulting parent file bytes. The text oracle follows `-p`;
 JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeated
 tool calls. This tier complements the installed-host matrix.
+
+The kept byte-fuzz entries are `lines.fuzz.mjs`, `process-report.fuzz.mjs`,
+`assertions.fuzz.mjs`, `spool.fuzz.mjs` and `output-watch.fuzz.mjs`. They call the shared production decoders and acceptance
+boundaries, retaining captured wire seeds and provenance in `fixtures/`.
+Run their corpus replay and planted production-defect controls with:
+
+```sh
+node --test scripts/graphcoder-e2e/decoder-fuzz.test.mjs scripts/graphcoder-e2e/decoder-fuzz-negative.test.mjs
+```
+
+The mutation control checks that each source edit applies exactly once and that
+the unchanged oracle rejects the intended defect; an import failure or crash
+does not qualify. For unmutated source coverage, run only `decoder-fuzz.test.mjs`
+with Node's `--experimental-test-coverage` option. These parser controls do not
+replace the real process, transport-retirement or installed-host suites.
+The output-watch target compares incremental UTF-8 presence and final occurrence
+ordering against whole-buffer substring positions, including captured terminal
+escape sequences. It checks whole, single-byte and input-derived chunk partitions;
+it does not establish native terminal input or OS PTY behavior.
+The spool target checks JSONL admission, unique-key indexing and original
+terminal retention across byte partitions and process-exit order. It also checks
+the original file-backed index and completed transcript history, joining the
+original file stream before cleanup. A generated identifier mutation supplies
+a distinct second range. Its in-memory
+stream adapter does not qualify filesystem transcript failures or native pipes.
+Pending and retained-key cancellation must preserve the caller's original reason
+even when later source EOF or indexed data is available.

@@ -152,7 +152,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             std::future::ready(Ok("renewed".into()))
         }));
         let typed = domain::InvokeActorRequest::try_from(renewed.clone())?;
-        assert_eq!(client.invoke_actor(&typed).await?.body(), &[8]);
+        assert_eq!(client.invoke_actor(typed.clone()).await?.body(), &[8]);
         let output = client.call("InvokeActor", &renewed.encode_to_vec()).await?;
         assert_eq!(
             wire::InvokeActorResponse::decode(output.as_slice())?.body,
@@ -174,7 +174,7 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             ));
         }
         assert!(matches!(
-            client.invoke_actor(&typed).await,
+            client.invoke_actor(typed.clone()).await,
             Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
         ));
         assert_eq!(renewals.load(Ordering::Relaxed), 2);
@@ -206,53 +206,87 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
                 },
             ));
             assert!(matches!(
-                client.invoke_actor(&typed).await,
+                client.invoke_actor(typed.clone()).await,
                 Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
             ));
         }
         assert_eq!(renewals.load(Ordering::Relaxed), 4);
         assert_eq!(calls.load(Ordering::SeqCst), 6);
+        // Observe the shipped request path at its credential event, before
+        // protobuf serialization. Both direct and namespace calls must move
+        // payload storage; admission work cannot grow with the body length.
+        for bound in [false, true] {
+            let mut admission_bytes = Vec::new();
+            for length in [1, 65_536] {
+                let (release, credential) = tokio::sync::oneshot::channel();
+                let credential = Arc::new(std::sync::Mutex::new(Some(credential)));
+                let observed = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+                let measured = Arc::clone(&observed);
+                let client = Arc::new(Client::from_channel(
+                    channel.clone(),
+                    CredentialProvider::new(move || {
+                        measured.store(
+                            acyclic_test_support::current_allocations()
+                                .unwrap()
+                                .bytes_total,
+                            Ordering::Relaxed,
+                        );
+                        let credential = credential.lock().unwrap().take().unwrap();
+                        async move {
+                            credential
+                                .await
+                                .map_err(|_| acyclic_auth::credential::CredentialError::Invalid)
+                        }
+                    }),
+                ));
+                let namespace =
+                    crate::namespace::Namespace::new(b"account", b"ClassOne", Arc::clone(&client))?;
+                let stub = namespace.get_by_name("actor-a", None)?;
+                let body = vec![7; length];
+                let mut work = std::pin::pin!(async {
+                    let response = if bound {
+                        stub.fetch("POST".into(), "/work".into(), body, vec![])
+                            .await?
+                    } else {
+                        let request = domain::InvokeActorRequest::new(
+                            domain::ActorId::new("actor-a".into())?,
+                            "POST".into(),
+                            "/work".into(),
+                            body,
+                            vec![],
+                        );
+                        client.invoke_actor(request).await?
+                    };
+                    Ok::<_, Box<dyn std::error::Error>>(response)
+                });
+                acyclic_test_support::measure(|| {
+                    assert!(
+                        work.as_mut()
+                            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                            .is_pending()
+                    );
+                });
+                let bytes = observed.load(Ordering::Relaxed);
+                assert_ne!(
+                    bytes,
+                    u64::MAX,
+                    "request must reach its credential producer"
+                );
+                admission_bytes.push(bytes);
+                release.send("fixture".into()).unwrap();
+                assert_eq!(work.await?.body(), vec![7; length]);
+            }
+            eprintln!("request admission bound={bound} bytes={admission_bytes:?}");
+            assert_eq!(
+                admission_bytes[0], admission_bytes[1],
+                "admitted request must not copy payload storage"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 10);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
     .await;
     let _ = shutdown.send(());
     server.await??;
     result
-}
-
-#[test]
-#[ignore = "opt-in debug-profile request-path measurement: npm run bench:clients"]
-fn request_path_measure_admitted_request_conversion() -> Result<(), Error> {
-    for consume in [false, true] {
-        let requests: Result<Vec<_>, _> = (0..256)
-            .map(|_| {
-                domain::InvokeActorRequest::try_from(wire::InvokeActorRequest {
-                    deployment_envelope: Vec::new(),
-                    invocation_order: None,
-                    namespace: None,
-                    account_id: Vec::new(),
-                    location_hint: None,
-                    binding_name: None,
-                    rpc_method: None,
-                    actor_id: "actor-a".into(),
-                    method: "POST".into(),
-                    url: "/work".into(),
-                    body: vec![7; 65_536],
-                    headers: vec![],
-                })
-            })
-            .collect();
-        let requests = requests?;
-        let started = std::time::Instant::now();
-        for request in requests {
-            let wire =
-                wire::InvokeActorRequest::from(if consume { request } else { request.clone() });
-            std::hint::black_box(wire);
-        }
-        eprintln!(
-            "actors admitted request conversion consume={consume} iterations=256 bytes=65536 elapsed_us={}",
-            started.elapsed().as_micros()
-        );
-    }
-    Ok(())
 }

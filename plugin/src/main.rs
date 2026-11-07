@@ -1,4 +1,5 @@
 //! Thin native-host workspace client. `GraphCoder` owns the shared workspace.
+mod input;
 mod install;
 #[cfg(test)]
 mod tests;
@@ -7,13 +8,12 @@ use acyclic_harness::{
     agent::AgentPath,
     local::{host_files, host_owner::HostAction},
 };
+use input::{Result, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
-    env,
-    io::{self, Read as _},
+    env, io,
     path::{Path, PathBuf},
 };
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -238,19 +238,6 @@ fn help() -> Result<()> {
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
-}
-
-fn parse_task(value: &str) -> Result<AgentPath> {
-    Ok(serde_json::from_value(json!(value))?)
-}
-
-fn read_json(input: impl io::Read) -> Result<Value> {
-    let mut bytes = Vec::new();
-    input.take(65_537).read_to_end(&mut bytes)?;
-    if bytes.len() > 65_536 {
-        return Err("native hook exceeds shared command file bound".into());
-    }
-    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn hook(host: &str, event: &str, input: Value) -> Value {

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/local/local_stream.rs b/rust/crates/stream/src/local/local_stream.rs
+--- a/rust/crates/stream/src/local/local_stream.rs
++++ b/rust/crates/stream/src/local/local_stream.rs
+@@ -108,7 +108,7 @@ impl LocalStream {
+                 }
+                 Recovered::Validate(complete) => {
+-                    let _ = complete.send(replay_error.is_none());
++                    let _ = complete.send(true);
+                     continue;
+                 }
+                 _ if replay_error.is_some() => continue,
+                 Recovered::State { encoded } => {

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/mcp/http/body.rs
++++ b/rust/crates/harness-core/src/mcp/http/body.rs
+@@ -68,7 +68,7 @@
+         if *this.ended {
+             return Poll::Ready(None);
+         }
+-        if this.frontier.overflowed() {
++        if false {
+             *this.ended = true;
+             return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
+         }

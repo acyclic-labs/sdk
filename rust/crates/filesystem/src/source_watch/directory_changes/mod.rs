@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 use super::HostChange;
-use super::{Delivery, HostChangeWide, check_wait};
+use super::{Delivery, HostChangeWide};
 use crate::cancellation::custody::Custody;
 use crate::demand::{DemandError, DemandWork, SourceDemandReadWork, SourcePayloadOwnership};
 use crate::performance::WorkCounters;
@@ -24,9 +24,7 @@ use windows::Win32::Foundation::{
     ERROR_NOTIFY_ENUM_DIR, ERROR_OPERATION_ABORTED, HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
-    FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_EXTENDED_INFORMATION,
+    FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE, FILE_NOTIFY_EXTENDED_INFORMATION,
     FILE_NOTIFY_INFORMATION, FILE_SHARE_READ, FILE_SHARE_WRITE, ReadDirectoryChangesExW,
     ReadDirectoryNotifyExtendedInformation, ReadDirectoryNotifyInformation,
 };
@@ -75,6 +73,8 @@ pub(crate) struct NativeSourceWatch {
 }
 struct Shared {
     directory: AtomicPtr<std::ffi::c_void>,
+    /// Computed once from the original sink's subscription interest.
+    notification_filter: FILE_NOTIFY_CHANGE,
     extended: AtomicBool,
     complete: AtomicBool,
     recursive: bool,

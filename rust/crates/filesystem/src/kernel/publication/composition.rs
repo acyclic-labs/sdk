@@ -34,6 +34,7 @@ pub(crate) async fn prepare_publication<P: PublicationOwner>(
         cancellation,
         resolved: None,
     }
+    .validate(accounting)?
     .prepare(accounting, &mut |_, _, _| Ok::<_, crate::FsError>(()))
     .await?;
     match prepared {

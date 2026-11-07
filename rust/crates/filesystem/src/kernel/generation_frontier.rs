@@ -47,7 +47,24 @@ impl GenerationFrontier {
     }
 }
 
+/// Replays every authority step from `request.base` to `request.head`. The
+/// replay and its per-step diffs run in a funded heap frame, so callers hold
+/// a pointer and never embed the whole history engine in their own futures.
 pub(crate) async fn generation_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    authority: &A,
+    objects: &O,
+    request: FrontierRequest<'_>,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<GenerationFrontier, FsError> {
+    crate::heap_future::in_borrowed_frame!(
+        accounting,
+        |accounting| replay_frontier(authority, objects, request, accounting, cancellation),
+        erase_task
+    )
+}
+
+async fn replay_frontier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,
     objects: &O,
     request: FrontierRequest<'_>,

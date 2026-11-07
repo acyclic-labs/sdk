@@ -235,27 +235,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
     /// Builds the original join candidate without submitting an authority write.
     /// Its normalized history parent stays protected until publication finishes.
-    pub(crate) async fn prepare_workspace_join_with_accounting<E>(
+    pub(crate) fn prepare_workspace_join_with_accounting<E>(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceJoinPreparation, E>
+    ) -> impl Future<Output = Result<WorkspaceJoinPreparation, E>>
     where
         E: From<FsError> + From<WorkspaceError> + Send,
     {
         self.prepare_workspace_join(request, false, accounting, cancellation)
-            .await
     }
 
-    pub(crate) async fn preview_workspace_join_with_accounting(
+    pub(crate) fn preview_workspace_join_with_accounting(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<WorkspaceJoinPreparation, WorkspaceError> {
+    ) -> impl Future<Output = Result<WorkspaceJoinPreparation, WorkspaceError>> {
         self.prepare_workspace_join(request, true, accounting, cancellation)
-            .await
     }
 
     async fn prepare_workspace_join<E>(
@@ -269,10 +267,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         E: From<FsError> + From<WorkspaceError> + Send,
     {
         let mut scope = accounting.allocation_scope()?;
-        let accounting = &mut *scope;
-        let result = async {
+        scope.check()?;
+        let result = crate::heap_future::in_borrowed_frame!(&mut *scope, |accounting| async move {
             use Owned;
-            accounting.check()?;
             let publication_context = if preview {
                 None
             } else {
@@ -523,8 +520,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source_root.retire(accounting)?;
             base_root.retire(accounting)?;
             result
-        }
-        .await;
+        });
         if result.is_ok() {
             scope.keep();
         }

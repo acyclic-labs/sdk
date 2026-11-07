@@ -3,7 +3,8 @@ import test from "node:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failureReport, publishReport, summarizeCases, verifyReport } from "./report.mjs";
+import { SpoolEnded } from "./process.mjs";
+import { failureReport, finishCase, publishReport, retainCapture, summarizeCases, verifyReport } from "./report.mjs";
 
 test("case summaries retain every attempted row with one identity visit regardless of population", () => {
   // Generated internal report rows exercise accounting, not measured intervals.
@@ -75,7 +76,38 @@ test("request evidence failure still publishes original case failures and cannot
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("failure reports retain operands omitted by the original assertion stack", async () => {
+test("failure reports retain arbitrary failures and operands omitted by the original assertion stack", async () => {
+  // Generated thrown values exercise the shared reporter, not provider wire.
+  const unknown = Object.create(null);
+  Object.defineProperty(unknown, "stack", { enumerable: true, get() { assert.fail("diagnostic invoked an arbitrary getter"); } });
+  Object.defineProperty(unknown, Symbol.toPrimitive, { value() { assert.fail("diagnostic coerced an arbitrary failure"); } });
+  Object.defineProperty(unknown, Symbol.for("nodejs.util.inspect.custom"), { value() { assert.fail("diagnostic invoked a custom inspector"); } });
+  const inputs = [[undefined, "undefined"], [null, "null"], [false, "false"], [0, "0"],
+    ["", "''"], [Symbol("callback refusal"), "Symbol(callback refusal)"], [unknown, "stack: [Getter]"]];
+  const captures = [], pending = [];
+  for (const [failure, representation] of inputs) {
+    const report = failureReport(failure);
+    assert.equal(typeof report.error, "string");
+    assert.ok(report.error.includes(representation), "the original thrown value must survive diagnostic formatting");
+    pending.push(retainCapture(Promise.reject(failure), captures));
+    const ended = new SpoolEnded("consumer", "step=dispatch; recovery=repair the callback", failure);
+    const wrapped = failureReport(ended);
+    assert.equal(wrapped.error, ended.stack);
+    assert.ok(wrapped.detail?.includes(representation), "the retained non-Error callback reason must survive reporting");
+    pending.push(retainCapture(Promise.reject(ended), captures));
+  }
+  const result = await finishCase({ case: "original", status: "pass" }, pending, ["repeat original case"]);
+  assert.equal(result.status, "fail", "capture rejection cannot become an accepted case");
+  assert.equal(result.capture_failures.length, 2 * inputs.length);
+  for (const [index, [failure, representation]] of inputs.entries()) {
+    assert.deepEqual(result.capture_failures[2 * index], failureReport(failure));
+    assert.ok(result.capture_failures[2 * index + 1].detail.includes(representation));
+  }
+  assert.deepEqual(captures, [], "refused captures cannot publish a completed result");
+  const accessor = new Error("original callback failure");
+  Object.defineProperty(accessor, "detail", { get() { assert.fail("diagnostic invoked a detail getter"); } });
+  assert.equal(failureReport(accessor).error, accessor.stack);
+
   const actual = { bytes: "a".repeat(20_000), tail: "original actual tail", unknown: undefined,
     count: 2n, get untouched() { throw new Error("diagnostic invoked a getter"); } };
   actual.self = actual;
@@ -106,25 +138,32 @@ test("complete evidence is published before failed export can release its snapsh
   const report = { results: [{ case: "host", status: "fail",
     evidence: { captures: [{ stdout: "real host output", stderr: "native failure", code: 101 }],
       requests: [{ sequence: 1, path: "/actual/request" }] } }] };
-  let published;
-  const io = { publish: async text => { published = text; },
-    writeFile: async () => { throw new Error("ENOTCONN: export snapshot unavailable"); } };
-  await assert.rejects(publishReport("matrix.json", report, io), /ENOTCONN/);
-  assert.deepEqual(JSON.parse(published), report);
-  // Old write-first ordering loses every byte when the export rejects.
-  published = undefined;
-  await assert.rejects((async () => {
-    await io.writeFile("matrix.json", JSON.stringify(report));
-    await io.publish(JSON.stringify(report));
-  })(), /ENOTCONN/);
-  assert.equal(published, undefined);
-  const order = [];
-  await publishReport("matrix.json", report, {
-    publish: async text => order.push(["published", text]),
-    writeFile: async (path, text) => order.push([path, text]),
-  });
-  assert.deepEqual(order.map(([event]) => event), ["published", "matrix.json"]);
-  assert.equal(order[0][1], order[1][1]);
+  const check = async publish => {
+    let published;
+    await assert.rejects(publish("matrix.json", report, {
+      publish: async text => { published = text; },
+      writeFile: async () => { throw new Error("ENOTCONN: export snapshot unavailable"); },
+    }), /ENOTCONN/);
+    assert.equal(typeof published, "string", "original evidence must precede the failed export");
+    assert.deepEqual(JSON.parse(published), report);
+    const order = [];
+    await publish("matrix.json", report, {
+      publish: async text => order.push(["published", text]),
+      writeFile: async (path, text) => order.push([path, text]),
+    });
+    assert.deepEqual(order.map(([event]) => event), ["published", "matrix.json"]);
+    assert.equal(order[0][1], order[1][1]);
+  };
+  await check(publishReport);
+  // Qualify the same oracle against the actual production order, rather than
+  // restating a deleted write-first implementation in a separate example.
+  const source = await readFile(new URL("./report.mjs", import.meta.url), "utf8");
+  const before = "    await io.publish(text);\n    await io.writeFile(path, text);";
+  assert.equal(source.split(before).length, 2, "production mutation site must be unique");
+  const mutated = source.replace(before, "    await io.writeFile(path, text);\n    await io.publish(text);");
+  const { publishReport: reordered } = await import("data:text/javascript," + encodeURIComponent(mutated));
+  await assert.rejects(check(reordered), error => error.code === "ERR_ASSERTION"
+    && error.message.includes("original evidence must precede the failed export"));
 });
 
 test("cancellation during either original report write retains a failed terminal snapshot", async () => {
@@ -133,7 +172,8 @@ test("cancellation during either original report write retains a failed terminal
     for (const boundary of ["before", "publish", "file", "none"]) {
       const signal = new AbortController(), report = { pass: true, results: [] };
       const snapshots = [], path = join(root, boundary + ".json");
-      const reason = new Error("caller cancelled at " + boundary);
+      const reason = boundary === "file" ? Object.create(null) : new Error("caller cancelled at " + boundary);
+      if (boundary === "before") Object.defineProperty(reason, "cause", { get() { assert.fail("cancellation must not inspect an unrelated cause"); } });
       if (boundary === "before") signal.abort(reason);
       const io = {
         publish: async text => {
@@ -152,7 +192,7 @@ test("cancellation during either original report write retains a failed terminal
       assert.deepEqual(JSON.parse(await readFile(path, "utf8")), report);
       assert.deepEqual(snapshots.at(-1), report);
       assert.equal(snapshots.length, ["publish", "file"].includes(boundary) ? 2 : 1);
-      if (!expected) assert.equal(report.cancellation, reason.message);
+      if (!expected) assert.match(report.cancellation, boundary === "file" ? /null prototype/ : /caller cancelled at/);
       if (snapshots.length === 2) assert.equal(snapshots[0].pass, true);
     }
   } finally {

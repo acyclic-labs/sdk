@@ -37,29 +37,27 @@ where
 }
 
 /// Leaves local-stream mutations accepted until an explicit durability barrier.
-pub async fn deferring_durability<F: Future>(future: F) -> F::Output {
-    DEFERRED.scope(Deferral::All, future).await
+pub fn deferring_durability<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    DEFERRED.scope(Deferral::All, future)
 }
 
 /// Requires each mutation in `future` to admit and flush its own durable
 /// publication, including when its caller is deferring unrelated writes.
-pub async fn requiring_durability<F: Future>(future: F) -> F::Output {
-    DEFERRED.scope(Deferral::Eager, future).await
+pub fn requiring_durability<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    DEFERRED.scope(Deferral::Eager, future)
 }
 
 /// Groups only mutations of this provider owner. Unrelated local journals keep
 /// their normal durability, including filesystem authorities used by `future`.
 /// The caller must obtain an explicit receipt before certifying publication.
-pub async fn deferring_provider_durability<P: StreamProvider + ?Sized, F: Future>(
+pub fn deferring_provider_durability<P: StreamProvider + ?Sized, F: Future>(
     provider: &P,
     future: F,
-) -> F::Output {
-    DEFERRED
-        .scope(
-            Deferral::Provider(provider.context().operation_claims().owner_identity()),
-            future,
-        )
-        .await
+) -> impl Future<Output = F::Output> {
+    DEFERRED.scope(
+        Deferral::Provider(provider.context().operation_claims().owner_identity()),
+        future,
+    )
 }
 
 fn deferred(provider: &LocalStream) -> bool {

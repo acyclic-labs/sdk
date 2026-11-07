@@ -4,9 +4,17 @@
 mod decode;
 #[path = "../../src/relative_spans.rs"]
 mod relative_spans;
+#[path = "../relative_spans.rs"]
+mod relative_spans_oracle;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(decoded) = decode::from_slice(bytes) {
+        if let Some(prototype) = decoded.index.values().next() {
+            relative_spans_oracle::check(
+                prototype,
+                prototype.name.as_deref().unwrap_or_default().as_bytes(),
+            );
+        }
         let paths = relative_spans::sources(decoded.index.values());
         for item in decoded.index.values().filter(|item| item.crate_id == 0) {
             if let Some(span) = item

@@ -15,7 +15,7 @@ pub(super) async fn read_before_effect<T>(
     cancellation: &mut BoxProviderFuture<'_, Result<()>>,
     read: impl Future<Output = Result<T>>,
 ) -> Result<T> {
-    futures::pin_mut!(read);
+    let read = core::pin::pin!(read);
     match futures::future::select(cancellation, read).await {
         futures::future::Either::Left((stopped, _)) => {
             stopped?;

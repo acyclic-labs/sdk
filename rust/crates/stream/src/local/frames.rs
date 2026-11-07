@@ -16,36 +16,45 @@ fn validate_limits(limits: LocalStreamLimits) -> Result<(), LocalStreamError> {
     }
 }
 
-fn encode_limits(limits: LocalStreamLimits) -> Result<Vec<u8>, LocalStreamError> {
-    let mut encoded = Vec::with_capacity(LIMITS_BYTES);
-    for value in [
+fn encode_limits(limits: LocalStreamLimits) -> Result<[u8; LIMITS_BYTES], LocalStreamError> {
+    let memory = [
         limits.memory.paths,
         limits.memory.path_bytes,
         limits.memory.records,
         limits.memory.payload_bytes,
         limits.memory.commits,
         limits.memory.idempotency_results,
-    ] {
+    ]
+    .into_iter()
+    .map(|value| {
         // Zero is outside the admitted finite capacities and denotes None.
-        encoded.extend_from_slice(
-            &value
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| LocalStreamError::InvalidLimits)?
-                .unwrap_or_default()
-                .to_le_bytes(),
-        );
+        value
+            .map(u64::try_from)
+            .transpose()
+            .map(|value| value.unwrap_or_default())
+            .map_err(|_| LocalStreamError::InvalidLimits)
+    });
+    let values = memory.chain([
+        Ok(limits.compaction_operations),
+        Ok(limits.compaction_bytes),
+    ]);
+    let mut encoded = [0; LIMITS_BYTES];
+    for (slot, value) in encoded.chunks_exact_mut(8).zip(values) {
+        slot.copy_from_slice(&value?.to_le_bytes());
     }
-    encoded.extend_from_slice(&limits.compaction_operations.to_le_bytes());
-    encoded.extend_from_slice(&limits.compaction_bytes.to_le_bytes());
     Ok(encoded)
 }
 
-fn encode_header(limits: LocalStreamLimits, epoch: u64) -> Result<Vec<u8>, LocalStreamError> {
-    let mut encoded = Vec::with_capacity(HEADER_BYTES);
-    encoded.extend_from_slice(HEADER_MAGIC);
-    encoded.extend_from_slice(&encode_limits(limits)?);
-    encoded.extend_from_slice(&epoch.to_le_bytes());
+fn encode_header(
+    limits: LocalStreamLimits,
+    epoch: u64,
+) -> Result<[u8; HEADER_BYTES], LocalStreamError> {
+    let mut encoded = [0; HEADER_BYTES];
+    let (magic, rest) = encoded.split_at_mut(HEADER_MAGIC.len());
+    let (capacities, generation) = rest.split_at_mut(LIMITS_BYTES);
+    magic.copy_from_slice(HEADER_MAGIC);
+    capacities.copy_from_slice(&encode_limits(limits)?);
+    generation.copy_from_slice(&epoch.to_le_bytes());
     Ok(encoded)
 }
 
@@ -67,7 +76,7 @@ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalS
     let (found, epoch) = rest
         .split_at_checked(LIMITS_BYTES)
         .ok_or(LocalStreamError::Corrupt)?;
-    if found != encode_limits(limits)? {
+    if found != encode_limits(limits)?.as_slice() {
         return Err(LocalStreamError::Corrupt);
     }
     Ok(u64::from_le_bytes(

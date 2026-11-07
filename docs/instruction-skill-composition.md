@@ -83,6 +83,13 @@ the complete skill body. `PinnedContextPath::read` loads the body later through
 the ordinary owner-authorized pinned path read and verifies the returned descriptor.
 Applications can then select/render that file with the existing context APIs.
 
+Skill names are display labels. Discovery retains
+same-named skills from distinct pinned sources. A name-only selection must resolve
+to exactly one catalog entry: `ContextManifest::selected_skills` rejects repeated
+or ambiguous selections. Native `/name` invocation matches skill names without
+case sensitivity and also rejects command/skill collisions. Unselected
+same-named skills do not prevent capture or invocation of an unambiguous name.
+
 ## Reload and admission
 
 `ContextReloadPolicy::default()` is `Explicit`: reuse the identified snapshot
@@ -105,7 +112,7 @@ budget selected by the caller, and an instruction-file byte budget. Pagination
 pins one generation and checks ordered advancing cursors, page sizes and provider
 identity. Instruction capture rejects oversize before requesting a complete
 read. Missing declared directories, missing retained data, malformed frontmatter,
-duplicate skill names, named entries with the wrong file kind, invalid text,
+named entries with the wrong file kind, invalid text,
 unsupported provider operations and exceeded
 budgets have explicit errors; absence of an optional filename is ordinary absence.
 The complete snapshot and projected request also obey their existing protocol

@@ -883,7 +883,7 @@ impl NativeAgents {
         self.issuer.bootstrap_scope(
             "agent",
             &crate::Capabilities::new(grants),
-            Some(crate::AgentId::from_bytes(agent.path.id().to_bytes())),
+            Some(crate::AgentId::from_bytes(agent.path.id_bytes())),
             &mut None,
         )
     }

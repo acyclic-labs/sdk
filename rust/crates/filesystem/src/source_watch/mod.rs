@@ -101,6 +101,8 @@ pub(super) fn record_cleanup_credits(
 /// One change the host reported beneath a watched root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HostChange {
+    /// The host reported removal or departure of this root-relative name.
+    Departed(PathBuf),
     /// This root-relative path (empty: the root itself) may bind another entry, or none, and so may everything reached through it.
     Rebound(PathBuf),
     /// The entry at this root-relative path may have changed in place: its content or attributes.
@@ -133,6 +135,12 @@ pub(crate) enum HostChangeWide<'a> {
 
 /// Receives each batch of changes, in the order the host reported them.
 pub(crate) trait HostChangeSink: Send + Sync {
+    /// Fixed subscription interest; all other change classes remain required.
+    #[cfg(windows)]
+    fn observes_birth_time(&self) -> bool {
+        true
+    }
+
     /// SDK payload owned by this watch's concrete sink wrapper, excluding borrowed caller controls and provider-private allocator metadata.
     fn logical_owned_bytes(&self) -> u64;
     /// Called with no watch lock held that a lookup could wait on.

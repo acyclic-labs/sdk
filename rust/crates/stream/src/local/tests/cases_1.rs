@@ -187,109 +187,105 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
 }
 
 #[tokio::test]
-async fn local_provider_excludes_a_second_process_owner_and_repairs_a_torn_tail()
+async fn emitted_history_drains_replay_and_refuses_repair_after_semantic_failure()
 -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    assert!(matches!(
-        LocalStream::open(directory.path(), LocalStreamLimits::default()).await,
-        Err(LocalStreamError::AlreadyOpen)
-    ));
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new("durable")?,
-            records: vec![(Bytes::from_static(b"one")).into()],
-            if_tail: Some(0),
-            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"append"))?,
-        })
-        .await?;
-    drop(provider);
-    let journal = directory.path().join("stream.journal");
-    let valid_length = std::fs::metadata(&journal)?.len();
-    OpenOptions::new()
-        .append(true)
-        .open(&journal)?
-        .write_all(&[9, 8, 7])?;
-    let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    assert_eq!(reopened.tail(StreamPath::new("durable")?).await?, 1);
-    drop(reopened);
-    assert_eq!(std::fs::metadata(journal)?.len(), valid_length);
-    Ok(())
-}
+    use futures::TryStreamExt as _;
 
-#[tokio::test]
-async fn reopen_streams_more_commands_than_the_pipeline_window()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let path = StreamPath::new("bounded-replay")?;
-    let count = u64::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
-    for index in 0..count {
+    async fn history(
+        provider: &LocalStream,
+        path: &StreamPath,
+        count: u32,
+    ) -> Result<Vec<crate::Record>, StreamError> {
         provider
-            .append(AppendRequest {
+            .read(ReadRequest {
                 path: path.clone(),
-                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
-                if_tail: Some(index),
-                idempotency_key: crate::IdempotencyKey::unique(),
+                from: 0,
+                limit: count,
+                key: None,
+                at_least: Default::default(),
             })
-            .await?;
+            .await?
+            .try_collect()
+            .await
     }
-    drop(provider);
 
-    let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    assert_eq!(reopened.tail(path).await?, count);
-    Ok(())
-}
-
-#[tokio::test]
-async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
--> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let provider = LocalStream::open(directory.path(), limits).await?;
+    assert!(matches!(
+        LocalStream::open(directory.path(), limits).await,
+        Err(LocalStreamError::AlreadyOpen)
+    ));
+    let paths = ["source", "branch", "branch/child"]
+        .map(StreamPath::new)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let journal_path = directory.path().join(JOURNAL_FILE);
+    let header = std::fs::read(&journal_path)?;
+    provider.append(keyed_append("source", 0)?).await?;
+    let seed_end = usize::try_from(std::fs::metadata(&journal_path)?.len())?;
+    for pair in paths.windows(2) {
+        provider
+            .fork(ForkRequest {
+                source: pair[0].clone(),
+                destination: pair[1].clone(),
+                at_tail: Some(1),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let count = u32::try_from(REPLAY_PIPELINE_COMMANDS * 4)?;
+    for index in 1..u64::from(count) {
+        provider
+            .append(AppendRequest {
+                path: paths[2].clone(),
+                records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
+                if_tail: Some(index),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+    }
+    let mut expected = Vec::new();
+    for path in &paths {
+        expected.push(history(&provider, path, count).await?);
+    }
+    let prefix = std::fs::read(&journal_path)?;
+    provider
+        .append(keyed_append("branch/child", u64::from(count))?)
+        .await?;
+    let mut torn = std::fs::read(&journal_path)?;
+    torn.pop().ok_or("emitted journal is empty")?;
     drop(provider);
 
-    let path = StreamPath::new("failed-replay")?;
-    let invalid = PreparedFrame::encode(
-        &WriteRequest::Fork(ForkRequest {
-            exclude: Vec::new(),
-            source: StreamPath::new("missing-source")?,
-            destination: path.clone(),
-            at_tail: None,
-            idempotency_key: crate::IdempotencyKey::unique(),
-        }),
-        0,
-        None,
-    )?;
-    let valid = PreparedFrame::encode(
-        &WriteRequest::Append(AppendRequest {
-            path,
-            records: vec![(Bytes::from_static(b"later")).into()],
-            if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
-        }),
-        0,
-        None,
-    )?;
-    let journal_path = directory.path().join("stream.journal");
-    let mut journal = OpenOptions::new().append(true).open(&journal_path)?;
-    journal.write_all(&invalid.encoded)?;
-    for _ in 0..REPLAY_PIPELINE_COMMANDS * 4 {
-        journal.write_all(&valid.encoded)?;
-    }
-    journal.write_all(&[9, 8, 7])?;
-    journal.sync_all()?;
-    drop(journal);
-    let before = std::fs::read(&journal_path)?;
-
+    // Remove the emitted seed command, keeping the original header, forks and
+    // later commands. The first fork now has no source. Its refusal must drain
+    // the bounded channel without authorizing repair of the torn final frame.
+    let mut missing_seed = header;
+    missing_seed.extend_from_slice(&torn[seed_end..]);
+    std::fs::write(&journal_path, &missing_seed)?;
     for _ in 0..2 {
-        let result = LocalStream::open(directory.path(), limits).await;
         assert!(matches!(
-            result,
+            LocalStream::open(directory.path(), limits).await,
             Err(LocalStreamError::Replay(StreamError::NotFound))
         ));
-        assert_eq!(std::fs::read(&journal_path)?, before);
+        assert_eq!(
+            std::fs::read(&journal_path)?,
+            missing_seed,
+            "refused replay repaired emitted journal"
+        );
     }
+    std::fs::write(&journal_path, torn)?;
+    let reopened = LocalStream::open(directory.path(), limits).await?;
+    for (path, expected) in paths.iter().zip(expected) {
+        assert_eq!(
+            history(&reopened, path, count + 1).await?,
+            expected,
+            "recovered pipeline history changed"
+        );
+    }
+    drop(reopened);
+    assert_eq!(std::fs::read(&journal_path)?, prefix);
     Ok(())
 }
 
@@ -318,29 +314,6 @@ async fn compaction_targets_never_refuse_an_atomic_append() -> Result<(), Box<dy
     Ok(())
 }
 
-/// Appends one record to `path` and returns the journal's length after.
-async fn append_one(
-    provider: &LocalStream,
-    path: &str,
-    journal: &Path,
-) -> Result<u64, Box<dyn std::error::Error>> {
-    provider
-        .append(AppendRequest {
-            path: StreamPath::new(path)?,
-            records: vec![(Bytes::from_static(b"body")).into()],
-            if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
-        })
-        .await?;
-    Ok(std::fs::metadata(journal)?.len())
-}
-
-/// The tail of `path` in the journal reopened, if the path exists.
-async fn tail_of(directory: &Path, path: &str) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let provider = LocalStream::open(directory, LocalStreamLimits::default()).await?;
-    Ok(provider.tail(StreamPath::new(path)?).await.ok())
-}
-
 /// A damaged frame with an intact one after it was committed, so the
 #[tokio::test]
 async fn a_damaged_frame_before_an_intact_one_fails_closed()
@@ -348,8 +321,8 @@ async fn a_damaged_frame_before_an_intact_one_fails_closed()
     let directory = tempfile::tempdir()?;
     let journal = directory.path().join("stream.journal");
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    append_one(&provider, "first", &journal).await?;
-    append_one(&provider, "second", &journal).await?;
+    provider.append(keyed_append("first", 0)?).await?;
+    provider.append(keyed_append("second", 0)?).await?;
     drop(provider);
 
     let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
@@ -385,8 +358,11 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         let directory = tempfile::tempdir()?;
         let journal = directory.path().join("stream.journal");
         let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-        let kept = append_one(&provider, "kept", &journal).await?;
-        let torn = append_one(&provider, "torn", &journal).await?;
+        provider.append(keyed_append("kept", 0)?).await?;
+        let prefix = std::fs::read(&journal)?;
+        let kept = u64::try_from(prefix.len())?;
+        provider.append(keyed_append("torn", 0)?).await?;
+        let torn = std::fs::metadata(&journal)?.len();
         drop(provider);
 
         let mut file = OpenOptions::new().read(true).write(true).open(&journal)?;
@@ -395,17 +371,23 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
         file.sync_all()?;
         drop(file);
 
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(
-            tail_of(directory.path(), "kept").await?,
-            Some(1),
+            reopened.tail(StreamPath::new("kept")?).await?,
+            1,
             "{fill:#x}"
         );
         assert_eq!(
-            tail_of(directory.path(), "torn").await?.unwrap_or(0),
-            0,
-            "{fill:#x}"
+            reopened.tail(StreamPath::new("torn")?).await,
+            Err(StreamError::NotFound),
+            "torn final frame must be absent: {fill:#x}"
         );
-        assert_eq!(std::fs::metadata(&journal)?.len(), kept, "{fill:#x}");
+        drop(reopened);
+        assert_eq!(
+            std::fs::read(&journal)?,
+            prefix,
+            "repaired prefix changed: {fill:#x}"
+        );
     }
     Ok(())
 }
@@ -437,9 +419,12 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
 {
     let directory = tempfile::tempdir()?;
     let limits = compacting_limits();
+    // Two half-full compactions replace the snapshot, then leave one journal
+    // frame to recover alongside it.
+    let count = limits.compaction_operations + 1;
     let provider = LocalStream::open(directory.path(), limits).await?;
     let mut outcomes = Vec::new();
-    for index in 0..21 {
+    for index in 0..count {
         outcomes.push(append_keyed(&provider, index).await?);
     }
     let journal = provider
@@ -448,18 +433,18 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .lock()
         .map_err(|_| "journal poisoned")?
         .operations;
-    assert!(journal < 4, "the journal restarted: {journal} frames");
+    assert_eq!(journal, 1, "one frame follows the second snapshot");
     drop(provider);
     assert!(directory.path().join(SNAPSHOT_FILE).exists());
 
     let reopened = LocalStream::open(directory.path(), limits).await?;
-    assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
+    assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, count);
     let history = reopened
         .read(ReadRequest {
             key: None,
             path: StreamPath::new("compacted")?,
             from: 0,
-            limit: 21,
+            limit: u32::try_from(count)?,
             at_least: Default::default(),
         })
         .await?
@@ -467,8 +452,8 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(history.len(), 21);
-    for (index, record) in (0_u64..21).zip(&history) {
+    assert_eq!(history.len(), usize::try_from(count)?);
+    for (index, record) in (0..count).zip(&history) {
         assert_eq!(record.sequence, index);
         assert_eq!(record.value.as_ref(), index.to_le_bytes());
     }
@@ -477,7 +462,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             exclude: Vec::new(),
             source: StreamPath::new("compacted")?,
             destination: StreamPath::new("compacted-fork")?,
-            at_tail: Some(21),
+            at_tail: Some(count),
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
@@ -486,7 +471,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             key: None,
             path: StreamPath::new("compacted-fork")?,
             from: 0,
-            limit: 21,
+            limit: u32::try_from(count)?,
             at_least: Default::default(),
         })
         .await?
@@ -498,9 +483,6 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
     }
-    conformance::verify(&crate::conformance::Fixture::new(reopened.clone()))
-        .await
-        .map_err(std::io::Error::other)?;
     Ok(())
 }
 

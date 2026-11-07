@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/json/admission.rs b/rust/crates/harness-core/src/executor/json/admission.rs
+--- a/rust/crates/harness-core/src/executor/json/admission.rs
++++ b/rust/crates/harness-core/src/executor/json/admission.rs
+@@ -337,7 +337,7 @@ fn document(
+     if let Some(error) = failed.borrow_mut().take() {
+         return Err(error);
+     }
+-    release?;
++    let _ = release;
+     Ok(counts)
+ }
+ pub(super) type Lexical = Lexer<false>;

@@ -1,4 +1,4 @@
-use super::{HttpMcpTransport, McpHttpRequest};
+use super::{HttpMcpTransport, McpHttpRequest, body::bounded};
 use crate::{
     Error, OperationId, Result,
     mcp::{
@@ -22,22 +22,12 @@ pub(super) async fn response(
     let mut spelling = [0; 36];
     let identity = uuid::Uuid::from_bytes(operation.into_bytes());
     let expected: &str = identity.hyphenated().encode_lower(&mut spelling);
-    let mut received = 0_usize;
-    // Bound input before the parser buffers it.
-    let bounded = body.map(move |chunk| -> Result<Bytes> {
-        let chunk = chunk?;
-        received = received
-            .checked_add(chunk.len())
-            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
-            .ok_or(Error::Indeterminate(operation))?;
-        Ok(chunk)
-    });
     let events = crate::sse::frames(
-        bounded,
+        bounded(body, maximum_bytes, operation),
         maximum_bytes as usize,
         crate::sse::Decoder::default(),
     );
-    futures::pin_mut!(events);
+    let mut events = core::pin::pin!(events);
     let mut pending = VecDeque::new();
     let mut requests = 0_u32;
     let mut stream_open = true;
@@ -77,7 +67,7 @@ pub(super) async fn response(
             message: value,
         };
         let admitted = admission.admit(context.clone(), &callback).fuse();
-        futures::pin_mut!(admitted);
+        let mut admitted = core::pin::pin!(admitted);
         let (callback_operation, reply) = loop {
             if !stream_open {
                 break admitted.await?;

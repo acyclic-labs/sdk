@@ -367,14 +367,14 @@ pub(crate) fn owned_read_bytes(
     Ok(owner.value.into())
 }
 
-pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
+pub(crate) fn read_object_with_accounting<S: AsyncObjectStore>(
     store: &S,
     object: crate::ObjectId,
     maximum: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(crate::storage::ObjectRead, u64), FsError> {
-    read_object_observed(store, object, maximum, accounting, cancellation, None).await
+) -> impl Future<Output = Result<(crate::storage::ObjectRead, u64), FsError>> {
+    read_object_observed(store, object, maximum, accounting, cancellation, None)
 }
 
 pub(crate) async fn read_object_observed<S: AsyncObjectStore>(
@@ -653,7 +653,7 @@ pub(crate) fn decode_owned<T>(
     match create(&mut |step| observed.observe(step)) {
         Ok(value) => Ok((value, observed.into_allocation())),
         Err(error) => {
-            observed.release_failed()?;
+            observed.retire()?;
             Err(error)
         }
     }

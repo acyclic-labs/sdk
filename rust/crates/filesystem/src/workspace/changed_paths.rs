@@ -33,7 +33,7 @@ pub(super) struct State<A: 'static, O: 'static> {
     pub(super) pending: Option<ChangedPathEntry>,
     // Frontier backing retires before the generation pins it reads.
     cursor: Option<Cursor<'static>>,
-    checkouts: [Option<Owned<Checkout<A, O>>>; 2],
+    pub(super) checkouts: [Option<Owned<Checkout<A, O>>>; 2],
     failed: bool,
     complete: bool,
 }
@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
                 initial,
             ));
         }
-        let mut owner = ReadOwner::<State<A, O>>::new(accounting, State::default())
+        let mut owner = ReadOwner::<State<A, O>>::new(accounting, State::default)
             .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial))?;
         let result = async {
             let (state, mut accounting) = owner.borrow();
@@ -167,10 +167,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O
             .map(|checkout| checkout.as_ref().map(|checkout| checkout.value.root()));
         self.cursor = Some(Cursor::new(roots, config, accounting)?);
         Ok(())
-    }
-
-    pub(super) fn set_checkouts(&mut self, checkouts: [Owned<Checkout<A, O>>; 2]) {
-        self.checkouts = checkouts.map(Some);
     }
 
     pub(super) async fn prepare_next(

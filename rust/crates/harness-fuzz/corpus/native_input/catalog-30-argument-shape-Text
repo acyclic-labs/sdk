@@ -1,0 +1,1 @@
+[{"name":"search","aliases":["web"],"description":"Search the web","arguments":"text","action":{"kind":"tool","tool":"web_search"}}]

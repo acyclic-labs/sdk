@@ -129,7 +129,7 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         self.accounting.record_completed(delta)
     }
 
-    pub(crate) fn release_failed(mut self) -> Result<(), FsError> {
+    pub(crate) fn retire(mut self) -> Result<(), FsError> {
         self.accounting
             .release_owned(&mut self.allocation, self.owned_bytes)
     }

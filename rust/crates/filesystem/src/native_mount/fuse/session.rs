@@ -118,6 +118,10 @@ impl FuseSessionState {
 }
 
 impl FuseSession {
+    pub(in crate::native_mount) fn has_retirement_owner(&self) -> bool {
+        self.invalidator.is_some()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "Startup retains its admitted worker, mount and rollback controls in one frame."

@@ -48,7 +48,8 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// after setup uses that same channel before completion, independently of an
 /// earlier diagnostic snapshot. No post-terminal output, implicit text storage
 /// or replacement reporter is started on error. JSONL execution errors use the
-/// original event output owner before their result returns.
+/// original event output owner before their result returns; text execution
+/// errors write one stderr line from the operation itself.
 /// Diagnostic delivery ends with the original operation, report and shutdown
 /// owner; its best-effort failure never replaces the original operation result.
 pub fn main_with(
@@ -165,6 +166,15 @@ pub fn main_with(
                 })
                 .transpose()?;
             let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
+            // Text output has no event channel: its stderr line is the only
+            // account of a returned failure. It is written by this operation,
+            // so the original shutdown still ends a write to a full pipe.
+            if let (Err(error), None) = (&result, &event_failure) {
+                // The exit status reports the failure even when stderr is closed.
+                if let Ok(stderr) = acyclic_native_runtime::InheritedOutput::stderr() {
+                    let _ = stderr.write_owned(format!("graphcoder: {error}\n")).await;
+                }
+            }
             if let (Err(error), Some((operation, generated))) = (&result, &event_failure) {
                 let recovery =
                     headless::Recovery::capture(generated.then_some(operation.as_str()))?;
@@ -392,10 +402,29 @@ async fn connected(
         let mut output = headless::Output::new(acyclic_native_runtime::InheritedOutput::stdout()?);
         headless::write_event(
             &mut output,
-            OperationId::from_bytes(connection.root().id().to_bytes()),
+            OperationId::from_bytes(connection.root().id_bytes()),
             &reply,
         )
         .await?;
+        return Ok(0);
+    }
+    if let Some(Command::Study(study)) = &args.command {
+        // Admitted before any model call.
+        let admitted = acyclic_harness::local::study::Study::load(&study.arms)?;
+        admitted.admit_model(args.model.as_deref())?;
+        let mut report = usage_export::Output::open(&study.report)?;
+        let operation = args
+            .operation
+            .clone()
+            .unwrap_or_else(|| OperationId::new().to_string());
+        let failures =
+            acyclic_harness::local::study::run(&connection, &admitted, &operation, report.writer())
+                .await?;
+        report.finish()?;
+        // Failed trials are report rows; the operator also sees each one.
+        for failure in failures {
+            eprintln!("graphcoder: study trial failed: {failure}");
+        }
         return Ok(0);
     }
     drive(args, Conversation::open(connection), output, event_output).await

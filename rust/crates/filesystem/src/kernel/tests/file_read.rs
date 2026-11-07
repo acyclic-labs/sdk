@@ -561,7 +561,7 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
         observed.observe(ReadAllocationStep::BeforeItem)
     })();
     drop(bytes);
-    observed.release_failed()?;
+    observed.retire()?;
     assert!(matches!(
         result,
         Err(FsError::NativeKernel(

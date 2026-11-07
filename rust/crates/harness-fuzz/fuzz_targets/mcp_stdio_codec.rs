@@ -9,22 +9,11 @@ use std::sync::{
 };
 use tokio_util::codec::{Decoder as _, Encoder as _};
 
-pub(crate) mod sync {
-    include!("../../harness-core/src/sync/arc.rs");
-    include!("../../harness-core/src/sync/atomic.rs");
-}
-mod mcp {
-    pub(crate) use crate::sync;
-}
-
-// Compile the production codec, rather than maintaining a fuzz-only parser.
-#[path = "../../harness-core/src/mcp/stdio/native/codec.rs"]
-mod codec;
-
 fuzz_target!(|input: &[u8]| {
     for maximum in [1, 16, 128, 4096] {
         let bound = Arc::new(AtomicU32::new(maximum));
-        let mut decoder = codec::BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&bound));
+        let mut decoder =
+            acyclic_mcp::BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&bound));
         let mut pending = BytesMut::new();
         for (index, chunk) in input.chunks(17).enumerate() {
             if index == 1 {

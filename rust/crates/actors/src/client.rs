@@ -504,32 +504,33 @@ where
 
 macro_rules! operations {
     ($apply:ident) => { $apply! {
-        ("DeployNamespace", deploy_namespace, DeploymentRequest, DeploymentResponse),
-        ("InvokeWorker", invoke_worker, InvokeWorkerRequest, InvokeActorResponse),
-        ("DeleteWorker", delete_worker, DeleteWorkerRequest, DeleteWorkerResponse),
-        ("DeployWorker", deploy_worker, DeploymentRequest, DeploymentResponse),
-        ("UpdateNamespace", update_namespace, UpdateNamespaceRequest, UpdateNamespaceResponse),
-        ("InspectActor", inspect_actor, InspectActorRequest, InspectActorResponse),
-        ("AddSubscription", add_subscription, AddSubscriptionRequest, AddSubscriptionResponse),
-        ("RemoveSubscription", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
-        ("ResumeSubscription", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
-        ("CheckpointActor", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
-        ("ForkActor", fork_actor, ForkActorRequest, ForkActorResponse),
-        ("InvokeActor", invoke_actor, InvokeActorRequest, InvokeActorResponse),
-        ("DeleteAll", delete_all, DeleteAllRequest, DeleteAllResponse)
+        ("DeployNamespace", deploy_namespace, 0, DeploymentRequest, DeploymentResponse),
+        ("InvokeWorker", invoke_worker, 10, InvokeWorkerRequest, InvokeActorResponse),
+        ("DeleteWorker", delete_worker, 11, DeleteWorkerRequest, DeleteWorkerResponse),
+        ("DeployWorker", deploy_worker, 9, DeploymentRequest, DeploymentResponse),
+        ("UpdateNamespace", update_namespace, 1, UpdateNamespaceRequest, UpdateNamespaceResponse),
+        ("InspectActor", inspect_actor, 2, InspectActorRequest, InspectActorResponse),
+        ("AddSubscription", add_subscription, 3, AddSubscriptionRequest, AddSubscriptionResponse),
+        ("RemoveSubscription", remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
+        ("ResumeSubscription", resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
+        ("CheckpointActor", checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
+        ("ForkActor", fork_actor, 12, ForkActorRequest, ForkActorResponse),
+        ("InvokeActor", invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
+        ("DeleteAll", delete_all, 8, DeleteAllRequest, DeleteAllResponse)
     } };
 }
+pub(crate) use operations;
 
 macro_rules! client_operations {
-    ($(($name:literal, $method:ident, $input:ident, $output:ident)),* $(,)?) => {
+    ($(($name:literal, $method:ident, $index:literal, $input:ident, $output:ident)),* $(,)?) => {
         impl Client {
             /// Methods emitted with this client's canonical operation table.
             pub const RPC_METHODS: &[&str] = &[$(stringify!($method)),*];
             $(
-            #[doc = concat!("Executes the semantic ", $name, " operation.")]
-            pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
+            #[doc = concat!("Consumes the admitted request for the semantic ", $name, " operation.")]
+            pub async fn $method(&self, request: domain::$input) -> Result<domain::$output, Error> {
                 self.stage(async {
-                    let input = wire::$input::from(request.clone());
+                    let input = wire::$input::from(request);
                     validate_operation_request!($input, $name, &input)?;
                     self.dispatch(input, None, |input| async move {
                         self.inner.clone().$method(input).await

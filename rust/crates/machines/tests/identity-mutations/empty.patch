@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/contract/identity.rs
++++ b/rust/crates/machines/src/contract/identity.rs
+@@ -21,7 +21,7 @@
+     {
+         return Ok(parsed);
+     }
+-    if value.is_empty() {
++    if value == "\0" {
+         return Err(IdentityError);
+     }
+     let mut digest = Sha256::new();

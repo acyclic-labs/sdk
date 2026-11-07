@@ -34,7 +34,7 @@ impl StockExecution<'_> {
             .open_interaction(approval, request, self.io)?
             .await?;
         let decision = journal.interaction_outcome(approval, self.io)?;
-        futures::pin_mut!(decision);
+        let decision = core::pin::pin!(decision);
         let outcome = match futures::future::select(journal.model_cancellation(), decision).await {
             futures::future::Either::Left((cancelled, _)) => {
                 cancelled?;

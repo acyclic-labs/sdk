@@ -1,5 +1,6 @@
 //! On-demand checks call the same codecs as transport and recovery.
 use crate::{StreamError, persistence};
+use futures::FutureExt as _;
 use prost::Message as _;
 
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
@@ -81,8 +82,24 @@ fn truncated_header_is_invalid<T>(
         || matches!(decoded, Err(StreamError::InvalidArgument))
 }
 
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
+pub(crate) fn command(bytes: &[u8]) -> bool {
+    match crate::journal::decode_command(bytes) {
+        Ok(command) => command.encode_to_vec() == bytes,
+        Err(_) => true,
+    }
+}
+
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
+    let value = crate::OwnedBytes::copy_from_slice(bytes);
     #[cfg(feature = "local")]
     if !crate::memory::check_snapshot_codec(bytes) {
         return false;
@@ -95,10 +112,62 @@ pub fn check(bytes: &[u8]) -> bool {
             target_arch = "wasm32"
         )
     ))]
-    if let Ok(command) = crate::journal::decode_command(bytes) {
-        if command.encode_to_vec() != bytes {
+    {
+        if !command(bytes) {
             return false;
         }
+        // Canonicality after successful decoding cannot detect rejection of
+        // valid writer output. Use the same request factory as the corpus,
+        // varying its record values and fork position with this input.
+        let commands = match commands(Some(value.clone())) {
+            Ok(commands) => Some(commands),
+            Err(StreamError::LimitExceeded) => None,
+            Err(_) => return false,
+        };
+        for (_, command) in commands.into_iter().flatten() {
+            let command = match command.validated() {
+                Ok(command) => command,
+                Err(StreamError::LimitExceeded) => continue,
+                Err(_) => return false,
+            };
+            if !crate::journal::decode_command(&command.encode_to_vec())
+                .is_ok_and(|decoded| decoded == command)
+            {
+                return false;
+            }
+        }
+    }
+    // Obtain the original facts from the public provider, independently of the
+    // decoders under test. Accepted-only canonicality misses valid refusals.
+    // The provider is private and has no competing lock holders or external
+    // producers. A pending operation violates this synchronous oracle's progress
+    // contract; reject it immediately rather than waiting on another task.
+    let version_change = bytes.first().copied().unwrap_or(0).max(1);
+    match publications(Some(value)).now_or_never() {
+        Some(Ok((_, publications))) => {
+            for publication in publications {
+                if !wire_records_admitted(&publication.envelope)
+                    || !persisted_fact_admitted(
+                        persistence::OBSERVATION_MAGIC,
+                        version_change,
+                        &publication.observation,
+                        persistence::encode_observation,
+                        persistence::decode_observation,
+                    )
+                    || !persisted_fact_admitted(
+                        persistence::ENVELOPE_MAGIC,
+                        version_change,
+                        &publication.envelope,
+                        persistence::encode_envelope,
+                        persistence::decode_envelope,
+                    )
+                {
+                    return false;
+                }
+            }
+        }
+        Some(Err(StreamError::LimitExceeded)) => {}
+        Some(Err(_)) | None => return false,
     }
     let observation = persistence::decode_observation(bytes, usize::MAX);
     if !truncated_header_is_invalid(bytes, persistence::OBSERVATION_DOMAIN, &observation) {
@@ -166,17 +235,106 @@ pub fn check(bytes: &[u8]) -> bool {
     true
 }
 
-fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
+fn persisted_fact_admitted<T: PartialEq>(
+    magic: &[u8],
+    version_change: u8,
+    value: &T,
+    encode: fn(&T, usize) -> Result<Vec<u8>, StreamError>,
+    decode: fn(&[u8], usize) -> Result<T, StreamError>,
+) -> bool {
+    let Ok(mut bytes) = encode(value, usize::MAX) else {
+        return false;
+    };
+    if !bytes.starts_with(magic) {
+        return false;
+    }
+    // Include the format header in the real byte cap. Exact-size admission
+    // distinguishes an inclusive limit from an unlimited-only roundtrip.
+    if decode(&bytes, bytes.len()).as_ref() != Ok(value)
+        || encode(value, bytes.len()).as_deref() != Ok(bytes.as_slice())
+        || [0, bytes.len() - 1].into_iter().any(|maximum| {
+            !matches!(encode(value, maximum), Err(StreamError::LimitExceeded))
+                || !matches!(decode(&bytes, maximum), Err(StreamError::LimitExceeded))
+        })
+        || !matches!(
+            decode(&bytes[magic.len()..], usize::MAX),
+            Err(StreamError::InvalidArgument)
+        )
+        // A valid domain with no version or only its first byte must refuse
+        // as malformed before payload interpretation or capacity accounting.
+        || [magic.len() - 2, magic.len() - 1].into_iter().any(|end| {
+            !matches!(decode(&bytes[..end], 0), Err(StreamError::InvalidArgument))
+        })
+    {
+        return false;
+    }
+    // Change only the actual v1 writer's version, then omit its entire payload
+    // and grant no byte capacity. Version refusal must precede both checks.
+    bytes[magic.len() - 2] ^= version_change;
+    matches!(
+        decode(&bytes[..magic.len()], 0),
+        Err(StreamError::Unsupported)
+    )
+}
+
+fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
+    let foreign = crate::StreamPath::new("codec/other").expect("canonical fixture path");
+    for mutation in &envelope.mutations {
+        let records = match mutation {
+            crate::CommittedMutation::Append(append) => &append.records,
+            crate::CommittedMutation::Fork(fork) => &fork.records,
+        };
+        let mut encoded = Vec::with_capacity(records.len());
+        for record in records {
+            // Persisted envelopes already exercise the elided-origin path.
+            // The same spelled origin must work without a follow context and
+            // when following another path, preserving the original record.
+            let value = crate::wire_codec::record_wire(record.clone(), None);
+            for followed in [None, Some(&foreign)] {
+                if crate::wire_codec::record(value.clone(), followed) != Ok(record.clone()) {
+                    return false;
+                }
+            }
+            encoded.push(value);
+        }
+        if crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
+            encoded.clone(),
+        )) != Ok(encoded)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn commands(
+    value: Option<crate::OwnedBytes>,
+) -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
     use crate::{
         AppendRequest, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey, OwnedBytes,
         StreamPath, WriteRequest,
+    };
+    let headers = match &value {
+        None => crate::RecordHeaders::default(),
+        Some(value) => crate::RecordHeaders::new(
+            vec![value.slice(..value.len().min(crate::MAX_RECORD_KEY_BYTES))],
+            vec![crate::Attribute {
+                name: "topic".into(),
+                value: value.clone(),
+            }],
+        )?,
     };
     Ok([
         (
             "append",
             WriteRequest::Append(AppendRequest {
                 path: StreamPath::new("codec/events")?,
-                records: vec![OwnedBytes::from_static(b"persisted codec corpus").into()],
+                records: vec![crate::AppendRecord {
+                    value: value
+                        .clone()
+                        .unwrap_or_else(|| OwnedBytes::from_static(b"persisted codec corpus")),
+                    headers: headers.clone(),
+                }],
                 if_tail: Some(0),
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"append"))?,
             }),
@@ -186,7 +344,13 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
             WriteRequest::Fork(ForkRequest {
                 source: StreamPath::new("codec/events")?,
                 destination: StreamPath::new("codec/fork")?,
-                at_tail: Some(1),
+                at_tail: Some(value.as_ref().map_or(1, |value| {
+                    value
+                        .as_slice()
+                        .iter()
+                        .take(8)
+                        .fold(0u64, |position, byte| (position << 8) | u64::from(*byte))
+                })),
                 exclude: Vec::new(),
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"fork"))?,
             }),
@@ -198,7 +362,11 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
                 conditions: Vec::new(),
                 mutations: vec![CommitMutation::Append {
                     path: StreamPath::new("codec/events")?,
-                    records: vec![OwnedBytes::from_static(b"committed codec corpus").into()],
+                    records: vec![crate::AppendRecord {
+                        value: value
+                            .unwrap_or_else(|| OwnedBytes::from_static(b"committed codec corpus")),
+                        headers,
+                    }],
                 }],
                 idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
             }),
@@ -206,8 +374,16 @@ fn commands() -> Result<[(&'static str, crate::WriteRequest); 3], StreamError> {
     ])
 }
 
-/// Capture actual journal and framing encoder output without filesystem IO.
-pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
+struct Publication {
+    name: &'static str,
+    command: crate::WriteRequest,
+    observation: crate::IdempotencyObservation,
+    envelope: crate::CommittedEnvelope,
+}
+
+async fn publications(
+    value: Option<crate::OwnedBytes>,
+) -> Result<(crate::MemoryStream, Vec<Publication>), StreamError> {
     use crate::{StreamProvider as _, WriteRequest};
     struct Clock;
     impl crate::UnixMillisClock for Clock {
@@ -215,14 +391,28 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
             42
         }
     }
-    let mut seeds = Vec::new();
     let memory = crate::MemoryStream::new_with_clock(
         crate::MemoryLimits::default(),
         std::sync::Arc::new(Clock),
     );
     #[cfg(feature = "local")]
     let memory = memory.with_authority(crate::RevisionScope::new(b"codec-corpus".to_vec()), 7);
-    for (name, command) in commands()? {
+    let mut publications = Vec::with_capacity(3);
+    for (name, mut command) in commands(value)? {
+        // This history has one source record. Both zero and one are real fork
+        // positions; the journal admission check still exercises the full u64.
+        if let WriteRequest::Fork(request) = &mut command {
+            request.at_tail = request.at_tail.map(|position| position % 2);
+        }
+        #[cfg(any(
+            feature = "local",
+            feature = "postgres",
+            all(
+                any(feature = "wasm", feature = "wasm-journal"),
+                target_arch = "wasm32"
+            )
+        ))]
+        let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
             WriteRequest::Fork(request) => request.idempotency_key.clone(),
@@ -230,6 +420,43 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
                 request.idempotency_key.clone()
             }
         };
+        memory.write(command.clone()).await?;
+        let observation = memory
+            .inspect_idempotency(key)
+            .await?
+            .ok_or(StreamError::InvalidResponse)?;
+        let id = match &observation.outcome {
+            crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) => {
+                receipt.commit_id
+            }
+            crate::IdempotencyOutcome::Fork(receipt) => receipt.commit_id,
+            crate::IdempotencyOutcome::Commit(envelope) => envelope.commit_id,
+            crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict { .. }) => {
+                return Err(StreamError::InvalidResponse);
+            }
+        };
+        let envelope = memory.read_commit(id).await?;
+        publications.push(Publication {
+            name,
+            command,
+            observation,
+            envelope,
+        });
+    }
+    Ok((memory, publications))
+}
+
+/// Capture actual journal and framing encoder output without filesystem IO.
+pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
+    let mut seeds = Vec::new();
+    let (memory, publications) = publications(None).await?;
+    for Publication {
+        name,
+        command,
+        observation,
+        envelope,
+    } in publications
+    {
         #[cfg(any(
             feature = "local",
             feature = "postgres",
@@ -244,26 +471,10 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
             format!("frame-{name}"),
             crate::local::codec_fuzz::frame(&command)?,
         ));
-        memory.write(command).await?;
-        let observation = memory
-            .inspect_idempotency(key)
-            .await?
-            .ok_or(StreamError::InvalidResponse)?;
         seeds.push((
             format!("observation-{name}"),
             persistence::encode_observation(&observation, usize::MAX)?,
         ));
-        let id = match &observation.outcome {
-            crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) => {
-                receipt.commit_id
-            }
-            crate::IdempotencyOutcome::Fork(receipt) => receipt.commit_id,
-            crate::IdempotencyOutcome::Commit(envelope) => envelope.commit_id,
-            crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict { .. }) => {
-                return Err(StreamError::InvalidResponse);
-            }
-        };
-        let envelope = memory.read_commit(id).await?;
         seeds.push((
             format!("envelope-{name}"),
             persistence::encode_envelope(&envelope, usize::MAX)?,
@@ -318,4 +529,26 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         crate::wire_codec::read_response_wire(vec![record]).encode_to_vec(),
     ));
     Ok(seeds)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
+    for (name, bytes) in futures::executor::block_on(seeds())? {
+        for length in [bytes.len(), bytes.len().saturating_sub(1)] {
+            assert!(
+                check(&bytes[..length]),
+                "shared persistence oracle rejected {name} at {length} bytes"
+            );
+        }
+    }
+    #[cfg(feature = "local")]
+    for (name, command) in commands(None)? {
+        let frame = crate::local::codec_fuzz::repeated_command_frame(&command)?;
+        assert!(
+            check(&frame),
+            "shared persistence oracle rejected repeated {name} frame"
+        );
+    }
+    Ok(())
 }

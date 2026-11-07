@@ -323,8 +323,17 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
+    #[cfg(feature = "test-support")]
+    return super::control_trace::checkpoint(checkpoint_tails()).await;
+    #[cfg(not(feature = "test-support"))]
+    checkpoint_tails().await.map(|_| ())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn checkpoint_tails() -> Result<Vec<AgentPath>> {
     use acyclic_stream::LocalStream;
 
+    let mut agents = Vec::new();
     for oversized in [false, true] {
         let directory = tempfile::tempdir()?;
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
@@ -388,6 +397,8 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
         host.drain(&root).await?;
         let parent_before = host.state(&root).await?;
         assert_eq!(parent_before.open_children.len(), 3);
+        agents.push(root.clone());
+        agents.extend(parent_before.open_children.iter().cloned());
         for child in &parent_before.open_children {
             host.drain(child).await?;
         }
@@ -539,7 +550,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
             assert!(archived.alarm().pending().is_none());
         }
     }
-    Ok(())
+    Ok(agents)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -891,6 +902,13 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
 
 #[tokio::test]
 async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
+    #[cfg(feature = "test-support")]
+    return super::control_trace::runtime(spawn_and_archive()).await;
+    #[cfg(not(feature = "test-support"))]
+    spawn_and_archive().await
+}
+
+async fn spawn_and_archive() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
         provider.clone(),
@@ -950,6 +968,8 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
         host.archive(&root, &user(), &by).await?,
         Delivered::Committed { .. }
     ));
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
     let late = InboxRecord::ApprovalRequested(ApprovalRequested {
         child,
         id: intent("late"),
@@ -1057,6 +1077,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         profile: acyclic_harness_core::agent::CreationConfig {
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
+            peers: Default::default(),
         },
         history: None,
         by: user(),
@@ -1072,7 +1093,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     // identifies this result. Refuse both before waiting for the step.
     for unrelated in [intent("s"), another] {
         let reply = host.spawned(&root, inbox, &unrelated);
-        futures::pin_mut!(reply);
+        let mut reply = core::pin::pin!(reply);
         assert!(matches!(
             futures::poll!(reply.as_mut()),
             std::task::Poll::Ready(Err(Error::Conflict(_)))
@@ -1080,7 +1101,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     }
     // Until the parent's step commits, the reply waits rather than guessing.
     let reply = host.spawned(&root, inbox, &spawn);
-    futures::pin_mut!(reply);
+    let mut reply = core::pin::pin!(reply);
     assert!(futures::poll!(reply.as_mut()).is_pending());
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
@@ -1119,6 +1140,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),
@@ -1163,6 +1185,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),

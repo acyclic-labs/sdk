@@ -12,7 +12,7 @@ import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 import {assertNativeCompletion,codexInstalled,installedHost,launchNativeHost,nativeModel,nativePackage} from './native-model.mjs';
 import {ProcessPhases,pairOrders,pairPhases} from './process-phases.mjs';
-import {assertNativeResume} from './native-session-proof.mjs';
+import {assertNativeResume,nativeSessionIdentity} from './native-session-proof.mjs';
 
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
 const quote=text=>"'"+text.replaceAll("'","'\\''")+"'";
@@ -37,7 +37,9 @@ export function assertCodexPairTools(records,installed) {
   } else assert.equal(declaration,undefined,recovery);
  }
 }
-export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live,packageStage}) {
+export async function nativePair({host,binary,mock,plugin,output,source,artifactSource=source,order,live,packageStage,prefixTurns=false}) {
+ assert.ok(!prefixTurns||(live&&host==='codex'),
+  'step=admit prefix turns; recovery=use codex with --live NONSECRET_NATIVE_LOGIN_JSON --prefix-turns');
  assert.ok(order?.length===2&&((order[0]==='bare'&&order[1]==='installed')||
   (order[0]==='installed'&&order[1]==='bare')),
   'step=admit native pair order; recovery=supply one bare and one installed leg');
@@ -83,6 +85,25 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
     await json(join(output,'binding.json'),binding);
     setupSeconds=(performance.now()-setupOrigin)/1000;
     let pluginInstalled=true,builtinPlugins;
+    const runTurn=async(mode,resume)=> {
+     await rm(join(workspace,'parent.txt'),{force:true});
+     const operation=randomUUID();collector=new ProcessPhases(operation);
+     const legEnv={...configuration.env};
+     const launch=await launchNativeHost(host,{...configuration,env:legEnv,
+      url:live?undefined:fixture.url.replace('/installed/','/'+mode+'/'),
+      installed:mode==='installed',input:true,resume});
+     legEnv.ACYCLIC_HOST_ARGS=JSON.stringify(launch.policy);
+     // The wrapper's stdin is cancellation control. Use the same direct host
+     // launch and original process scope for fresh and resumed prompt pipes.
+     const completed=await scope.run(native.program,[...native.args,...launch.args],
+      {cwd:workspace,env:legEnv,scopeOperation:operation},prompt+'\n');
+     captures.push({mode,turn:resume===undefined?'fresh':'resumed',...completed});
+     const completion=assertNativeCompletion(host,completed,answer,host==='claude-code'
+      ?{model:nativeModel(host,live),installed:mode==='installed'}:undefined);
+     const effect=await readFile(join(workspace,'parent.txt'),'utf8');assert.equal(effect,'PARENT');
+     const physical=collector.complete(completed);collector=undefined;
+     return {...completion,effect,physical,transcripts:completed.transcripts};
+    };
     for(const mode of order) {
      // CLI config overrides do not remove the pinned host's advertised plugin
      // tools. Use its original plugin manager, outside both measured launches.
@@ -96,31 +117,27 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      if(live&&host==='codex'&&mode==='bare') {
       await codexInstalled(run,configuration.env.E2E_PLUGIN_BINARY,[]);
      }
-     await rm(join(workspace,'parent.txt'),{force:true});
-     const operation=randomUUID();collector=new ProcessPhases(operation);
-     const legEnv={...configuration.env};
-     const launch=await launchNativeHost(host,{...configuration,env:legEnv,
-      url:live?undefined:fixture.url.replace('/installed/','/'+mode+'/'),installed:mode==='installed',input:true});
-     legEnv.ACYCLIC_HOST_ARGS=JSON.stringify(launch.policy);
-     // Direct launch is essential: the owned wrapper's stdin is a cancellation
-     // control, not this host's prompt pipe. The caller must also retain its
-     // enclosing physical-custody receipt; Node close cannot supply that fact.
-     const completed=await scope.run(native.program,[...native.args,...launch.args],
-      {cwd:workspace,env:legEnv,scopeOperation:operation},prompt+'\n');
-     captures.push({mode,...completed});
-     // Validate original startup metadata in the existing terminal decoder;
-     // missing evidence cannot qualify a bare leg, and needs no second parse.
-     const nativeBuiltins=assertNativeCompletion(host,completed,answer,host==='claude-code'
-      ?{model:nativeModel(host,live),installed:mode==='installed'}:undefined);
+     const fresh=await runTurn(mode);
      if(host==='claude-code') {
-      if(builtinPlugins===undefined)builtinPlugins=nativeBuiltins;
-      else assert.equal(nativeBuiltins,builtinPlugins,'native Claude builtin plugin set changed between paired legs');
+      if(builtinPlugins===undefined)builtinPlugins=fresh.builtinPlugins;
+      else assert.equal(fresh.builtinPlugins,builtinPlugins,'native Claude builtin plugin set changed between paired legs');
      }
-     const effect=await readFile(join(workspace,'parent.txt'),'utf8');assert.equal(effect,'PARENT');
-     samples.push({mode,binding,effect,physical:collector.complete(completed),transcripts:completed.transcripts});
-     collector=undefined;
+     const sample={mode,binding,effect:fresh.effect,physical:fresh.physical,transcripts:fresh.transcripts};
+     if(prefixTurns) {
+      nativeSessionIdentity({id:fresh.session});
+      const resumed=await runTurn(mode,fresh.session);
+      assertNativeResume({id:fresh.session},{id:resumed.session});
+      sample.turns=[{kind:'fresh',...fresh},{kind:'resumed',...resumed}];
+     }
+     samples.push(sample);
     }
     pair=pairPhases(...samples);
+    if(prefixTurns) {
+     assert.notEqual(samples[0].turns[0].session,samples[1].turns[0].session,
+      'step=validate fresh prefix legs; recovery=start each bare/installed leg with a fresh native thread');
+     Object.assign(pair,{schema:'acyclic.native-prefix-pair.v1',
+      resumed_turn_pairs:2,provider_cache_state:null,sdk_prefix_counters:null});
+    }
    }})});
   let records=null;
   if(!live) {
@@ -197,14 +214,15 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
  const [host,binary,mock,plugin,output,count,...extra]=process.argv.slice(2);
  try {
   assert.ok(extra.length===0||((extra.length===2||extra.length===3)&&extra[0]==='--live'
-   &&(extra.length===2||extra[2]==='--workflow')),
-   'step=admit pair arguments; recovery=supply HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT PAIRS [--live NONSECRET_NATIVE_LOGIN_JSON [--workflow]]');
+   &&(extra.length===2||['--workflow','--prefix-turns'].includes(extra[2]))),
+   'step=admit pair arguments; recovery=supply HOST GRAPHCODER MOCK_MODEL PLUGIN NEW_OUTPUT PAIRS [--live NONSECRET_NATIVE_LOGIN_JSON [--workflow|--prefix-turns]]');
   const live=extra.length?JSON.parse(await readFile(extra[1],'utf8')):undefined;
   const packageStage=nativePackage(plugin,join(output,'package'));
   for(const {index,order} of pairOrders(Number(count))) {
    const directory=`pair-${index}`;
    await nativePair({host,binary,mock,plugin,output:join(output,directory),order,
-    source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live,packageStage});
+    source:process.env.E2E_SOURCE,artifactSource:process.env.E2E_ARTIFACT_SOURCE??process.env.E2E_SOURCE,live,packageStage,
+    prefixTurns:extra[2]==='--prefix-turns'});
    // Raw samples stay in their own original pair directory. Append only the
    // completed pair's index; never retain earlier captures or phase objects.
    await appendFile(join(output,'pairs.jsonl'),JSON.stringify({index,order,pair:`${directory}/pair.json`})+'\n');

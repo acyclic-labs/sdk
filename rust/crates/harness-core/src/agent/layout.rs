@@ -214,6 +214,13 @@ impl AgentPath {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with("/children/"))
     }
 
+    /// Whether this agent is a direct child of `parent`, borrowing both paths.
+    /// Checks the complete ancestry without constructing an owned parent.
+    #[must_use]
+    pub fn is_child_of(&self, parent: &Self) -> bool {
+        self.depth == parent.depth + 1 && parent.contains(self)
+    }
+
     /// The agent's own id, the last path segment.
     #[must_use]
     pub fn id(&self) -> AgentId {
@@ -261,7 +268,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}/{}", self.id()))
+        stream(&format!("{STATUSES}/{}", self.id_text()))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -277,18 +284,21 @@ impl AgentPath {
     /// The root of this agent's tree: itself for a root.
     #[must_use]
     pub fn tree_root(&self) -> Self {
-        let end = AGENTS.len() + 1 + ID_HEX;
         Self {
-            text: self.text[..end].to_owned(),
+            text: self.tree_root_text().to_owned(),
             depth: 0,
         }
+    }
+
+    fn tree_root_text(&self) -> &str {
+        &self.text[..AGENTS.len() + 1 + ID_HEX]
     }
 
     /// The status stream of the tree's target `name`, under the tree's root
     /// whichever agent of the tree asks; `children_page` of its parent lists
     /// every target of the tree.
     pub fn target(&self, name: &str) -> Result<StreamPath, Error> {
-        stream(&format!("{}/{TARGETS}/{name}", self.tree_root().text))
+        stream(&format!("{}/{TARGETS}/{name}", self.tree_root_text()))
     }
 
     /// The binding of this agent's own Machine on provisioned target `name`.
@@ -375,6 +385,11 @@ mod tests {
         assert_eq!(root.id(), foreign.id());
         assert!(!root.contains(&foreign));
         assert!(!root.contains(&root.parent().expect("nested root")));
+        assert!(!root.is_child_of(&root));
+        assert!(!root.is_child_of(&foreign));
+        let origin = root.tree_root();
+        assert!(!origin.is_child_of(&origin));
+        assert!(root.is_child_of(&origin));
         for malformed in [
             format!("{root}0"),
             format!("{root}/children/{}", "A".repeat(ID_HEX)),
@@ -410,6 +425,37 @@ mod tests {
             assert_eq!(parsed, descendant);
             assert_eq!(parsed.as_str().as_ptr(), original);
             assert_eq!(parsing.count_total, 0);
+            // Addressing borrows the canonical identity and root; owning either
+            // again is the retained allocation negative control.
+            let (_, status_work) = acyclic_test_support::differential(
+                || stream(&format!("{STATUSES}/{}", parsed.id())).expect("canonical status"),
+                || parsed.status().expect("canonical status"),
+            );
+            let (_, target_work) = acyclic_test_support::differential(
+                || {
+                    stream(&format!("{}/{TARGETS}/pc", parsed.tree_root().text))
+                        .expect("canonical target")
+                },
+                || parsed.target("pc").expect("canonical target"),
+            );
+            for [former, current] in [status_work, target_work] {
+                assert_eq!(current.count_total + 1, former.count_total);
+                assert!(current.bytes_total < former.bytes_total);
+            }
+            let parent = parsed.parent().expect("nested path");
+            let mut foreign_parent = foreign.tree_root();
+            for _ in 0..parent.depth() {
+                foreign_parent = foreign_parent.child(&AgentId::from_bytes(leaf))?;
+            }
+            // A descendant is not necessarily a direct child, and matching
+            // leaf identities under another ancestry do not establish kinship.
+            for candidate in [&parent, &parsed, &root, &foreign_parent, &nested] {
+                assert_eq!(
+                    parsed.is_child_of(candidate),
+                    parsed.parent().as_ref() == Some(candidate),
+                    "direct-child admission changed"
+                );
+            }
             // The former parser allocated an owned id for each ancestor.
             let owned_ids = acyclic_test_support::measure(|| {
                 for id in parsed.as_str().split('/').skip(2).step_by(2) {
@@ -418,6 +464,22 @@ mod tests {
             });
             assert_eq!(owned_ids.count_total, depth as u64 + 1);
             for calls in [1, 100, 1000] {
+                let child_admission = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert!(black_box(&parsed).is_child_of(black_box(&parent)));
+                        assert!(!parsed.is_child_of(black_box(&foreign_parent)));
+                    }
+                });
+                assert_eq!(
+                    child_admission.count_total, 0,
+                    "child admission copied ancestry"
+                );
+                let copied_parent = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert_eq!(black_box(&parsed).parent().as_ref(), Some(&parent));
+                    }
+                });
+                assert_eq!(copied_parent.count_total, calls);
                 let expected = if depth == 1 { [2; 16] } else { leaf };
                 let fixed_identity = acyclic_test_support::measure(|| {
                     for _ in 0..calls {

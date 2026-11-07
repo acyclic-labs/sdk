@@ -89,7 +89,7 @@ async fn alarm_producer_loss_terminates_the_original_authorized_session() {
             state.lose_clock();
         }
         let next = output.next();
-        futures::pin_mut!(next);
+        let mut next = core::pin::pin!(next);
         if !early {
             assert!(futures::poll!(next.as_mut()).is_pending());
             state.lose_clock();
@@ -531,7 +531,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let mut registration = auth.register_change();
     let deadline = auth.deadline(&mut slots);
     let changed = auth.changed(&mut registration, deadline);
-    futures::pin_mut!(changed);
+    let mut changed = core::pin::pin!(changed);
     assert!(futures::poll!(changed.as_mut()).is_pending());
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
     state.publish(

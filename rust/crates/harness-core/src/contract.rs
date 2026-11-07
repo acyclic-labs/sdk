@@ -323,6 +323,12 @@ impl Capabilities {
         self.0.contains(value)
     }
 
+    /// Returns whether no capability is granted.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns whether this set attenuates an ancestor set.
     #[must_use]
     pub fn is_subset_of(&self, ancestor: &Self) -> bool {

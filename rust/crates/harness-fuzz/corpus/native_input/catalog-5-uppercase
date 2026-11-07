@@ -1,0 +1,1 @@
+[{"name":"PLAN","description":"Show private plans/ files","arguments":"none","action":{"kind":"builtin","command":"plan"}}]

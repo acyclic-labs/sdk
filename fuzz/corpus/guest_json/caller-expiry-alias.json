@@ -1,1 +1,1 @@
-{"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":"01","capability":null}
+{"accountId":[97],"actorId":"i","capability":null,"credentialId":"c","expiresAtMs":"01","namespace":"__default","orgId":"o","principal":"p"}

@@ -336,8 +336,9 @@ impl Shared {
                             self.delivery.event(&path, mask, cookie, work)
                         }))
                     } else {
-                        let change = if mask
-                            & (REBINDING | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF)
+                        let change = if mask & (libc::IN_DELETE | libc::IN_MOVED_FROM) != 0 {
+                            HostChange::Departed(path)
+                        } else if mask & (REBINDING | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF)
                             != 0
                         {
                             HostChange::Rebound(path)
@@ -348,7 +349,9 @@ impl Shared {
                             self.delivery.deliver(std::slice::from_ref(&change), work)
                         }));
                         path = match change {
-                            HostChange::Rebound(path) | HostChange::Altered(path) => path,
+                            HostChange::Departed(path)
+                            | HostChange::Rebound(path)
+                            | HostChange::Altered(path) => path,
                             HostChange::Everything => unreachable!("constructed path change"),
                         };
                         answer

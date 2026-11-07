@@ -54,7 +54,7 @@ pub fn serialized_json_digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 3
         feature = "filesystem",
         not(target_arch = "wasm32")
     ))]
-    acyclic_differential::record(super::CodecOperation::Serialize);
+    super::record_serialization::<T>();
     serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(*match writer.hasher {
         Some(mut hasher) => hasher.update(&writer.buffer).finalize(),

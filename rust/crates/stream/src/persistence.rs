@@ -6,8 +6,8 @@ use crate::{
 };
 use prost::Message;
 
-const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";
-const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
+pub(crate) const OBSERVATION_MAGIC: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V1\0";
+pub(crate) const ENVELOPE_MAGIC: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V1\0";
 pub(crate) const OBSERVATION_DOMAIN: &[u8] = b"ACYCLIC-STREAM-OBSERVATION-V";
 pub(crate) const ENVELOPE_DOMAIN: &[u8] = b"ACYCLIC-STREAM-ENVELOPE-V";
 pub(crate) const FACT_VERSION: &[u8] = b"1\0";

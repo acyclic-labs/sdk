@@ -376,7 +376,20 @@ where
     }
 
     /// Runs `command` from `by`, who decides approvals as `approver`.
-    async fn dispatch(
+    #[inline(never)]
+    fn dispatch<'a>(
+        &'a self,
+        command: &'a AgentCommand,
+        by: &'a Sender,
+        approver: &'a str,
+        authorization: &'a CallAuthorization,
+    ) -> BoxProviderFuture<'a, Result<AgentReply, Error>> {
+        // Construct this operation before entering its poll graph. The session
+        // carrier keeps the admitted command; its caller retains one owner.
+        Box::pin(self.dispatch_inner(command, by, approver, authorization))
+    }
+
+    async fn dispatch_inner(
         &self,
         command: &AgentCommand,
         by: &Sender,
@@ -1157,9 +1170,19 @@ where
             };
             server.platform.admitted().await?;
             let approver = server.platform.approver(&principal);
-            let result = server
-                .dispatch(call.command(), &by, &approver, &authorization)
-                .await;
+            let dispatch = server.dispatch(call.command(), &by, &approver, &authorization);
+            #[cfg(test)]
+            {
+                let bytes = std::mem::size_of_val(&dispatch);
+                // Five original references, an operation owner and alignment.
+                let maximum = 8 * std::mem::size_of::<usize>();
+                assert!(
+                    bytes <= maximum,
+                    "server dispatch caller retains {bytes} bytes, above {maximum} bytes"
+                );
+                eprintln!("server dispatch caller: {bytes} bytes");
+            }
+            let result = dispatch.await;
             let query = match call.command() {
                 AgentCommand::Bind { .. }
                 | AgentCommand::Root {}

@@ -1,5 +1,7 @@
 //! Original ordinary and instrumented suites share their real root bindings.
 #[cfg(not(loom))]
+mod agent_control_mapping;
+#[cfg(not(loom))]
 mod agent_model;
 #[cfg(all(not(loom), feature = "filesystem-local", feature = "native-execution"))]
 mod git_executor;
@@ -20,6 +22,11 @@ pub(crate) mod sync {
 mod mcp_loom;
 #[cfg(all(loom, feature = "model-checking"))]
 use mcp_loom::mcp;
+#[cfg(all(loom, feature = "model-checking"))]
+use sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
+};
 #[cfg(all(loom, feature = "model-checking"))]
 mod skill_materializer_loom;
 

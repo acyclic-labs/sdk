@@ -1,0 +1,20 @@
+--- a/rust/crates/stream/src/local/frames.rs
++++ b/rust/crates/stream/src/local/frames.rs
+@@ -59,2 +59,8 @@
+     crate::persistence::header(encoded, domain, version).map_err(|error| match error {
++        StreamError::Unsupported
++            if std::env::var_os("ACYCLIC_CODEC_REFUSAL").as_deref()
++                == Some(std::ffi::OsStr::new(format)) =>
++        {
++            LocalStreamError::Corrupt
++        }
+         StreamError::Unsupported => LocalStreamError::UnsupportedVersion { format },
+@@ -65,2 +71,8 @@
+ fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalStreamError> {
++    if std::env::var_os("ACYCLIC_CODEC_REFUSAL").as_deref()
++        == Some(std::ffi::OsStr::new("journal-domain"))
++        && !header.starts_with(b"ACYCLIC-STREAM-LOCAL-V")
++    {
++        return Ok(0);
++    }
+     let rest = versioned_header(header, b"ACYCLIC-STREAM-LOCAL-V", b"2\0", "journal")?;

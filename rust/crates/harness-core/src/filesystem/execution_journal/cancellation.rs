@@ -56,7 +56,7 @@ mod tests {
                         .await
                         .map_err(|_| Error::Conflict("read producer lost".into()))
                 });
-            futures::pin_mut!(lookup);
+            let mut lookup = core::pin::pin!(lookup);
             assert!(futures::poll!(lookup.as_mut()).is_pending());
             unrelated.cancel();
             assert!(futures::poll!(lookup.as_mut()).is_pending());
@@ -82,7 +82,7 @@ mod tests {
                 .await
                 .map_err(|_| Error::Conflict("read producer lost".into()))
         });
-        futures::pin_mut!(lookup);
+        let mut lookup = core::pin::pin!(lookup);
         assert!(futures::poll!(lookup.as_mut()).is_pending());
         drop(producer);
         assert!(
@@ -92,7 +92,7 @@ mod tests {
         // Without the original cancellation select the same pending read
         // cannot terminate merely because the original stop has fired.
         let (_producer, receiver) = futures::channel::oneshot::channel::<u8>();
-        futures::pin_mut!(receiver);
+        let mut receiver = core::pin::pin!(receiver);
         assert!(futures::poll!(receiver.as_mut()).is_pending());
         Ok(())
     }

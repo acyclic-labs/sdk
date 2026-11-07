@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 autotests = false
 name = "acyclic-fs-fuzz"
 version = "0.0.0"

@@ -475,7 +475,8 @@ fn original_stop_and_source_loss_settle_issuance_without_a_reply() {
                 let _held = (caller, response);
                 pending::<()>().await;
             };
-            futures::pin_mut!(operation, terminal);
+            let operation = core::pin::pin!(operation);
+            let terminal = core::pin::pin!(terminal);
             match futures::future::select(operation, terminal).await {
                 futures::future::Either::Left((Ok(outcome), _)) => match cause {
                     "caller" | "ready-caller" => assert!(matches!(

@@ -1,0 +1,11 @@
+--- a/rust/crates/sdk-generation/src/source_selection.rs
++++ b/rust/crates/sdk-generation/src/source_selection.rs
+@@ -80,7 +80,7 @@
+             let Some(name) = basename(&source.physical_path, windows) else {
+                 return true;
+             };
+-            all || windows && uncertain(&name) || contains(&names, &key(name, windows))
++            all || contains(&names, &key(name, windows))
+         })
+         .cloned()
+         .collect()

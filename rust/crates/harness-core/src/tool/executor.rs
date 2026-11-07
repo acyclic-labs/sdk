@@ -194,6 +194,8 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// `None` or an indeterminate error means completion is still unknown. The
     /// caller retains the original invocation without recording a terminal
     /// failure or executing it again, so a later result can settle that invocation.
+    /// A cancellation rejection proves the call no longer runs and has no
+    /// recorded result; the caller settles it as interrupted.
     fn reconcile<'a>(
         &'a self,
         invocation: ToolInvocation,

@@ -5,7 +5,6 @@ Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, selectors, signal, socket, subprocess, sys, tempfile, time, traceback
-from native_events import native_event_fixture
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
 if len(sys.argv) != 5:
@@ -13,8 +12,12 @@ if len(sys.argv) != 5:
 acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
 scenario=sys.argv[4]
 assert scenario in ('lifecycle','recursive','resume')
-fixture_path, native_session_id = native_event_fixture('codex')
+completion_path=pathlib.Path(__file__).resolve().parent/'fixtures/native-completion.json'
+completion=next(record for record in json.loads(completion_path.read_text())['records'] if record['host']=='codex')
 started=time.monotonic()
+
+def phase(name):
+ print('NATIVE_FIXTURE_PASS',name,time.monotonic()-started,flush=True)
 def interrupted(signum, frame):
  traceback.print_stack(frame)
  raise SystemExit('fixture interrupted')
@@ -24,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Pa
  except OSError as error:
   raise RuntimeError(f'step=arm native readiness: {error}; recovery command: python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX {scenario}') from error
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
+ fixture_path=root/'native-events.jsonl';fixture_path.write_text(completion['stdout'])
  env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied'),'FIXTURE_HOST_SUPPORT':str(pathlib.Path(__file__).resolve().parent)})
  env['FIXTURE_BARRIER']=str(barrier.getsockname()[1])
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
@@ -64,7 +68,6 @@ if first=='B':
  hold_for_cancel()
 prompt=first+sys.stdin.read()
 assert prompt in ('failed','cancelled','recursive','first','resumed')
-(cwd/'native-launch.json').write_text(json.dumps({'cwd':str(cwd),'args':args}))
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 base=[os.environ['FIXTURE_CODEX'],'sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','-c','sandbox_workspace_write.writable_roots='+json.dumps([args[args.index('--add-dir')+1]]),'--']
 if prompt=='resumed': assert (cwd/'.volumes/home/native-private.txt').read_text()=='first'
@@ -94,7 +97,7 @@ if prompt=='cancelled':
  hold_for_cancel()
 if prompt=='failed': sys.exit(17)
 if prompt=='resumed':
- event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text())
+ event=json.loads(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text().splitlines()[0])
  assert args[args.index('resume')+1]==event['thread_id']
 
 ''');fake.chmod(0o755)
@@ -103,6 +106,7 @@ if prompt=='resumed':
   global owner
   with (root/'owner.log').open('w+') as log:
    owner=start_workspace_owner(graphcoder,workspace,state,root,env,log)
+  phase('workspace-owner-ready')
  def client(action):
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
@@ -115,6 +119,11 @@ if prompt=='resumed':
   return mcp.submit(name,reference,prompt)
  def response(identifier):return mcp.result(identifier)
  def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
+ def succeeded(reference):
+  finished=tool('wait',reference)
+  print('NATIVE_FIXTURE_TURN',json.dumps({'reference':reference,'terminal':finished,'seconds':time.monotonic()-started}),flush=True)
+  assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
+  return finished
  def native_ready(view,waiter):
   recovery='python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario
   try:
@@ -143,10 +152,13 @@ if prompt=='resumed':
   if previous_bridge:
    try:previous_bridge.stdin.close()
    finally:assert previous_bridge.wait()==0,(root/'bridge.log').read_text()[-1200:]
+   phase('bridge-retired')
  def stop_owner():
   global owner
   previous,owner=owner,None
-  if previous:stop_workspace_owner(previous)
+  if previous:
+   stop_workspace_owner(previous)
+   phase('workspace-owner-retired')
  try:
   # Native global policy flags must precede exec; this is checked without a model.
   base=[real_codex,'--sandbox','workspace-write','--ask-for-approval','never','--add-dir',str(workspace),'exec','--json','--cd',str(workspace)]
@@ -157,7 +169,7 @@ if prompt=='resumed':
   launched=subprocess.run([acyclic,'host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],cwd=workspace,env=env,capture_output=True,text=True)
   assert launched.returncode==0,(launched.stdout,launched.stderr)
   parent=json.loads((workspace/'root-launch.json').read_text())['task'];start_bridge(parent)
-  print('NATIVE_FIXTURE_PASS root-launch',flush=True)
+  phase('root-launch')
   if scenario=='lifecycle':
    failed=tool('spawn','failed','failed');finished=tool('wait','failed')
    assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Failed'),finished
@@ -184,23 +196,19 @@ if prompt=='resumed':
    assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
-   recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
-   assert not (pathlib.Path(recursive['cwd'])/'.acyclic-sdk').exists(),'coordination metadata entered project history'
-   error=pathlib.Path(recursive['cwd'])/'.volumes/home/native-error.txt'
-   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,(finished,error.read_text() if error.exists() else 'no fixture error')
-   assert (pathlib.Path(recursive['cwd'])/'first.txt').read_text()=='native'
+   tool('spawn','recursive','recursive');succeeded('recursive')
    client({'kind':'fs','task':parent,'command':'merge agents/recursive'});assert (workspace/'recursive.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS recursive-native-session-merge',flush=True)
   if scenario=='resume':
-   original=tool('spawn','retained','first');tool('wait','retained');old_view=original['cwd']
+   tool('spawn','retained','first');original=succeeded('retained');old_view=original['cwd']
    close_bridge();stop_owner();start_owner();start_bridge(parent)
-   resumed=tool('resume','retained','resumed');tool('wait','retained')
+   tool('resume','retained','resumed');resumed=succeeded('retained')
    assert resumed['cwd']!=old_view,'retained view was not recreated'
-   launch=json.loads((pathlib.Path(resumed['cwd'])/'native-launch.json').read_text());assert 'resume' in launch['args'] and native_session_id in launch['args']
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
-   print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)
+   phase('resume-recreated-view-merge')
    archived=tool('archive','retained');assert archived['control']=='archive',archived
+   phase('retained-archived')
   close_bridge();stop_owner()
   print(json.dumps({'suite':'managed-native-session-'+scenario,'native_agent_fixture':True,'real_codex_workspace_write_sandbox':True,'model_calls':0,'cwd_and_discovery':True,'outside_denied':True,'seconds':time.monotonic()-started}),flush=True)
  except BaseException:

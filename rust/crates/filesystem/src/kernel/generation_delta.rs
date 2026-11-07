@@ -22,26 +22,13 @@ pub(crate) async fn apply_generation_delta<O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ObjectId, FsError> {
-    let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
-    let (future, _) = crate::heap_future::in_heap_admitted(
-        &mut frame,
-        |frame, bytes| frame.admit(bytes),
-        |frame| async move {
-            apply_delta(
-                objects,
-                table,
-                delta,
-                limits,
-                frame.accounting(),
-                cancellation,
-            )
-            .await
+    crate::heap_future::in_borrowed_frame!(
+        accounting,
+        |accounting| async move {
+            apply_delta(objects, table, delta, limits, accounting, cancellation).await
         },
-    )?;
-    let mut future = future.erase_task();
-    let result = future.as_mut().await;
-    drop(future);
-    frame.finish(result)
+        erase_task
+    )
 }
 
 async fn apply_delta<O: AsyncObjectStore>(

@@ -115,7 +115,10 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
             &journal,
             &input,
             0,
-            request::ModelStepHistory::Selected(&[]),
+            request::ModelStepRequest {
+                history: request::ModelStepHistory::Selected(&[]),
+                prepared: None,
+            },
             ModelPurpose::Summary,
             &mut DispatchPhase::new(),
         )?

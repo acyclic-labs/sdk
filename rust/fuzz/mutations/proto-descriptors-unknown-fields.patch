@@ -1,0 +1,12 @@
+diff --git a/compatibility/src/descriptor.rs b/compatibility/src/descriptor.rs
+--- a/compatibility/src/descriptor.rs
++++ b/compatibility/src/descriptor.rs
+@@ -95,7 +95,7 @@
+         // flags, including false values. Preserve every other unknown option.
+         let mut unknown = Vec::new();
+         for field in file.take_unknown_fields() {
+-            if field.number() != 8042 {
++            if field.number() != 8042 && field.number() < 10_000 {
+                 field.encode(&mut unknown);
+             }
+         }

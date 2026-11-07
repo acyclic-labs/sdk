@@ -64,42 +64,6 @@ enum OuterError {
 }
 
 #[test]
-fn budgets_fail_on_the_exact_counter() {
-    let observed = WorkCounters {
-        page_reads: 2,
-        ..WorkCounters::default()
-    };
-    let budget = WorkBudget {
-        page_reads: 1,
-        ..WorkBudget::default()
-    };
-    assert_eq!(
-        observed.verify(budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "page_reads",
-            observed: 2,
-            maximum: 1,
-        })
-    );
-    let observed = WorkCounters {
-        source_entries_visited: 3,
-        ..WorkCounters::default()
-    };
-    let budget = WorkBudget {
-        source_entries_visited: 2,
-        ..WorkBudget::default()
-    };
-    assert_eq!(
-        observed.verify(budget),
-        Err(WorkError::BudgetExceeded {
-            counter: "source_entries_visited",
-            observed: 3,
-            maximum: 2,
-        })
-    );
-}
-
-#[test]
 fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
     let failure = OperationFailure::new(
         (),
@@ -118,54 +82,6 @@ fn nested_failure_accounting_never_substitutes_a_sentinel_receipt() {
     assert_eq!(mapped.error, OuterError::Work(WorkError::Overflow));
     assert_eq!(mapped.work.page_reads, u64::MAX);
     assert_ne!(*mapped.work, WorkCounters::UNBOUNDED);
-}
-
-#[test]
-fn every_multiline_counter_addition_fails_closed_on_overflow() {
-    for (left, right) in [
-        (
-            WorkCounters {
-                authority_records_appended: u64::MAX,
-                ..WorkCounters::default()
-            },
-            WorkCounters {
-                authority_records_appended: 1,
-                ..WorkCounters::default()
-            },
-        ),
-        (
-            WorkCounters {
-                authority_bytes_written: u64::MAX,
-                ..WorkCounters::default()
-            },
-            WorkCounters {
-                authority_bytes_written: 1,
-                ..WorkCounters::default()
-            },
-        ),
-        (
-            WorkCounters {
-                backend_read_operations: u64::MAX,
-                ..WorkCounters::default()
-            },
-            WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::default()
-            },
-        ),
-        (
-            WorkCounters {
-                backend_write_operations: u64::MAX,
-                ..WorkCounters::default()
-            },
-            WorkCounters {
-                backend_write_operations: 1,
-                ..WorkCounters::default()
-            },
-        ),
-    ] {
-        assert_eq!(left.checked_add(right), Err(WorkError::Overflow));
-    }
 }
 
 /// Every counter of [`WorkCounters`], as mutable references in declaration
@@ -199,48 +115,71 @@ fn counter_fields(work: &mut WorkCounters) -> [&mut u64; 24] {
     ]
 }
 
-#[test]
-fn in_place_charges_equal_a_verified_sum_for_every_counter() {
-    for field in 0..24 {
-        let mut prior = WorkCounters::default();
-        let mut delta = WorkCounters::default();
-        let mut budget = WorkBudget::UNBOUNDED;
-        *counter_fields(&mut prior)[field] = 7;
-        *counter_fields(&mut delta)[field] = 5;
-        for maximum in [11, 12, 13] {
-            *counter_fields(&mut budget)[field] = maximum;
-            let expected = prior
-                .checked_add(delta)
-                .and_then(|sum| sum.verify(budget).map(|()| sum));
-            assert_eq!(prior.admit(&delta, &budget), expected.map(|_| ()));
-            let mut charged = prior;
-            let outcome = charged.charge(&delta, &budget);
-            assert_eq!(outcome, expected.map(|_| ()));
-            assert_eq!(charged, expected.unwrap_or(prior));
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn full_width_work_arithmetic_preserves_exact_sums_and_refusals(
+        left in proptest::array::uniform24(proptest::prop_oneof![proptest::strategy::Just(0_u64), proptest::strategy::Just(u64::MAX), proptest::num::u64::ANY]),
+        right in proptest::array::uniform24(proptest::prop_oneof![proptest::strategy::Just(0_u64), proptest::strategy::Just(u64::MAX), proptest::num::u64::ANY]),
+        maxima in proptest::array::uniform24(proptest::num::u64::ANY),
+    ) {
+        let make = |values: [u64; 24]| {
+            let mut work = WorkCounters::UNCHARGED;
+            for (field, value) in counter_fields(&mut work).into_iter().zip(values) {
+                *field = value;
+            }
+            work
+        };
+        // Test every field alone, full-width mixed fields, then nonzero mixed
+        // fields whose sums cannot overflow. The wider arithmetic is independent
+        // of the production overflow flags and additive macro.
+        for selected in 0..26 {
+            let values = |input: [u64; 24]| {
+                match selected {
+                    24 => input,
+                    25 => input.map(|value| (value / 2).max(1)),
+                    _ => {
+                        let mut only = [0; 24];
+                        only[selected] = input[selected];
+                        only
+                    }
+                }
+            };
+            let a = values(left);
+            let b = values(right);
+            let prior = make(a);
+            let delta = make(b);
+            let mut sum = WorkCounters::UNCHARGED;
+            let mut overflow = false;
+            for (index, field) in counter_fields(&mut sum).into_iter().enumerate() {
+                let wide = if index == 22 {
+                    u128::from(a[index].max(b[index]))
+                } else { u128::from(a[index]) + u128::from(b[index]) };
+                overflow |= wide > u128::from(u64::MAX);
+                *field = wide as u64;
+            }
+            let expected = if overflow { Err(WorkError::Overflow) } else { Ok(sum) };
+            proptest::prop_assert_eq!(prior.checked_add(delta), expected,
+                "full-width work sum disagreed with wider arithmetic");
             let mut added = prior;
-            assert_eq!(added.try_add_assign(&delta), Ok(()));
-            assert_eq!(Ok(added), prior.checked_add(delta));
+            proptest::prop_assert_eq!(added.try_add_assign(&delta), expected.map(|_| ()));
+            proptest::prop_assert_eq!(added, expected.unwrap_or(prior));
+            // The separate borrowed-verification property checks exact budget
+            // errors and their priority against an independent field oracle.
+            let mut below = sum;
+            let field = selected.min(23);
+            let limits = counter_fields(&mut below);
+            *limits[field] = limits[field].saturating_sub(1);
+            for budget in [WorkBudget::UNBOUNDED, make(maxima), sum, below] {
+                let admitted = expected.and_then(|sum| sum.verify(budget).map(|()| sum));
+                proptest::prop_assert_eq!(prior.admit(&delta, &budget), admitted.map(|_| ()));
+                let mut charged = prior;
+                proptest::prop_assert_eq!(charged.charge(&delta, &budget), admitted.map(|_| ()));
+                proptest::prop_assert_eq!(charged, admitted.unwrap_or(prior));
+            }
         }
-
-        // Peak allocation is a maximum and never overflows; every other
-        // counter fails closed and leaves the counters unchanged.
-        *counter_fields(&mut prior)[field] = u64::MAX;
-        let mut charged = prior;
-        let sum = prior.checked_add(delta);
-        if field == 22 {
-            assert!(sum.is_ok());
-            continue;
-        }
-        assert_eq!(sum, Err(WorkError::Overflow));
-        assert_eq!(
-            charged.charge(&delta, &WorkBudget::UNBOUNDED),
-            Err(WorkError::Overflow)
-        );
-        assert_eq!(charged.try_add_assign(&delta), Err(WorkError::Overflow));
-        assert_eq!(charged, prior);
     }
 }
-
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "performance_native.rs"]
 mod native;

@@ -273,7 +273,8 @@ impl ModelProvider for ResolvedModel {
         acyclic_harness_core::NativeFutureBundle::new(work, || async move {
             let cancelled = work.cancellation_wait()?;
             let exchange = crate::counting::count(self, request, ceiling, Some(work));
-            futures::pin_mut!(cancelled, exchange);
+            let cancelled = core::pin::pin!(cancelled);
+            let exchange = core::pin::pin!(exchange);
             match futures::future::select(cancelled, exchange).await {
                 futures::future::Either::Left(_) => {
                     Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into())
