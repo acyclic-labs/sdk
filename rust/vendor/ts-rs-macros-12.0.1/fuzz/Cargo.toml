@@ -23,6 +23,7 @@ quote = "1"
 syn = { version = "2.0.28", features = ["full", "extra-traits"] }
 termcolor = "1"
 serde_derive_internals = "=0.30.0"
+syn_serde = { package = "syn", version = "=3.0.9", features = ["full"] }
 
 [lib]
 test = false
