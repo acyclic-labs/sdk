@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-core/src/agent/lifecycle.rs b/rust/crates/harness-core/src/agent/lifecycle.rs
+--- a/rust/crates/harness-core/src/agent/lifecycle.rs
++++ b/rust/crates/harness-core/src/agent/lifecycle.rs
+@@ -160,12 +160,6 @@
+                 Some(volumes) => volumes.seal(request).await?,
+                 None => request,
+             };
+-            if let Some(owner) = &self.owner {
+-                owner
+-                    .release(&self.agent, &self.bindings)
+-                    .await
+-                    .map_err(guest)?;
+-            }
+             if let Some(lifecycle) = &self.lifecycle {
+                 lifecycle.close(&self.agent).await.map_err(guest)?;
+             }

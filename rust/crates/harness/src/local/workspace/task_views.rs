@@ -72,13 +72,9 @@ impl LocalWorkspace {
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
-        let name: String = view
-            .workspace()
-            .id()
-            .into_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        // The binding owns this directory. Selecting another Git workspace
+        // must neither share another agent's directory nor orphan this one.
+        let name = hex::encode(self.view().workspace().id().into_bytes());
         let path = parent.path().join(name);
         if !path.try_exists().map_err(storage)? {
             let cancellation = CancellationToken::new();
@@ -122,6 +118,44 @@ impl LocalWorkspace {
             .await?;
         }
         std::fs::canonicalize(&path).map_err(storage)
+    }
+
+    /// Archive releases only the closed agent's original physical project
+    /// binding. Root checkout and shared volumes remain available to owners
+    /// that still hold them; retained logical history is independent.
+    pub(in crate::local) fn release_physical_bindings(
+        &self,
+        bindings: &[crate::agent::VolumeBinding],
+    ) -> Result<()> {
+        if self.mounting != WorkspaceMounting::Physical {
+            return Ok(());
+        }
+        let Some(project) = bindings.iter().find(|binding| binding.name == "project") else {
+            return Ok(());
+        };
+        if project.volume.class() == crate::conversation::VolumeClass::SessionShared {
+            return Ok(());
+        }
+        let id = self
+            .filesystem
+            .workspace_id(&project.volume.storage_name(&mut None)?)
+            .map_err(storage)?;
+        if id == self.view().workspace().id() {
+            return Ok(());
+        }
+        let root = self.held_task_mount_root()?;
+        let parent = match root.open_directory(Path::new(super::PHYSICAL_VIEW_ROOT)) {
+            Ok(parent) => parent,
+            Err(acyclic_fs::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(storage(error)),
+        };
+        parent
+            .remove_tree(Path::new(&hex::encode(id.into_bytes())))
+            .map_err(storage)
     }
 
     // Child admission and tools share this boundary over native mount setup.

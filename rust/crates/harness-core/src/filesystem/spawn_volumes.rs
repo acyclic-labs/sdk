@@ -9,8 +9,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, MAX_OPEN_CHILDREN,
-        Out, SpawnVolumes, VolumeBinding,
+        AgentPath, AgentRecord as _, AgentState, Error, IntentId, MAX_OPEN_CHILDREN, Out,
+        SpawnVolumes, VolumeBinding,
     },
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
@@ -51,15 +51,13 @@ impl From<ForkCutError> for GuestError {
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
 pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
-    cuts: Option<Arc<dyn ForkCuts>>,
+    cuts: Option<Arc<dyn VolumeResources>>,
 }
 
-/// The generation a spawn forks each source volume at. A host that keeps
-/// state beside a volume (a lazy checkout's fork cut) retains that cut for
-/// `destination` under the spawn's creation `operation`, reusing a cut a
-/// stopped attempt retained, and returns its generation; `None` forks the
-/// source's head.
-pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
+/// Physical resources kept beside logical volumes. One owner prepares each
+/// spawn's lazy fork cut and releases a closing agent's physical bindings;
+/// logical volumes and retained history outlive those physical views.
+pub trait VolumeResources: acyclic_stream::ProviderPlatform + 'static {
     /// The generation of workspace `source` that `destination` forks. An
     /// exact `generation` retains that cut or refuses a changed source.
     fn cut<'a>(
@@ -69,6 +67,14 @@ pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
         operation: acyclic_fs::OperationId,
         generation: Option<acyclic_fs::GenerationId>,
     ) -> BoxProviderFuture<'a, Result<Option<acyclic_fs::GenerationId>, ForkCutError>>;
+
+    /// Releases physical resources belonging to these original bindings. This
+    /// does not delete the logical volumes or their retained history.
+    fn release<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        bindings: &'a [VolumeBinding],
+    ) -> BoxProviderFuture<'a, Result<(), crate::Error>>;
 }
 
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
@@ -81,7 +87,7 @@ impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
 
     /// Forks each source at the generation `cuts` chooses.
     #[must_use]
-    pub fn with_fork_cuts(mut self, cuts: Arc<dyn ForkCuts>) -> Self {
+    pub fn with_volume_resources(mut self, cuts: Arc<dyn VolumeResources>) -> Self {
         self.cuts = Some(cuts);
         self
     }
@@ -112,7 +118,7 @@ fn invalid(error: crate::Error) -> Error {
 
 /// The volume `child` binds in place of its parent's non-shared `binding`,
 /// and the creation operation of the spawn commit that creates it. A host
-/// that keeps state beside a forked volume prepares it through [`ForkCuts`].
+/// that keeps state beside a forked volume prepares it through [`VolumeResources`].
 fn spawned_volume(
     child: &AgentPath,
     binding: &VolumeBinding,
@@ -242,6 +248,19 @@ where
     P: AuthorityProvider + ?Sized + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn release<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        bindings: &'a [VolumeBinding],
+    ) -> BoxProviderFuture<'a, Result<(), Error>> {
+        Box::pin(async move {
+            if let Some(resources) = &self.cuts {
+                resources.release(agent, bindings).await.map_err(invalid)?;
+            }
+            Ok(())
+        })
+    }
+
     fn bind(&self, parent: &AgentState, outs: &mut [Out]) -> Result<Option<Participant>, Error> {
         let requested: Vec<Requested> = outs
             .iter()
@@ -300,20 +319,7 @@ where
     ) -> Result<Box<dyn Composition>, GuestError> {
         let requested = requested(participant)?;
         let next = crate::agent::checkpoint_state(next).map_err(guest)?;
-        let parent = match (previous, delivered) {
-            (Some(previous), _) => crate::agent::checkpoint_state(previous).map_err(guest)?,
-            (None, Some(record)) => match InboxRecord::decode(&record.value).map_err(guest)? {
-                InboxRecord::ForkAdopted(adopted) => {
-                    let path = match &adopted.parent {
-                        Some(parent) => parent.child(&adopted.agent).map_err(guest)?,
-                        None => AgentPath::root(&adopted.agent),
-                    };
-                    AgentState::adopted(path, &adopted).map_err(guest)?
-                }
-                _ => return Err(guest("first agent input is not ForkAdopted")),
-            },
-            (None, None) => return Err(guest("spawn has no committed parent")),
-        };
+        let parent = crate::agent::committed_state(previous, delivered).map_err(guest)?;
         if parent.path != next.path || parent.volumes != next.volumes {
             return Err(guest(
                 "spawn parent bindings differ from its committed state",
@@ -342,7 +348,7 @@ where
 /// The participant forking and creating one step's child volumes.
 struct SpawnFork<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
-    cuts: Option<Arc<dyn ForkCuts>>,
+    cuts: Option<Arc<dyn VolumeResources>>,
     planned: Vec<Planned>,
     parent: AgentPath,
     history: Option<(AgentState, AgentState)>,
