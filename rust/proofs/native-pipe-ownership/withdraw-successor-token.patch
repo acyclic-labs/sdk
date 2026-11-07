@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/windows.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/windows.rs
+@@ -63,6 +63,4 @@
+                 // admitted a successor. Never withdraw that successor's token.
+-                let _ =
+-                    operation
+-                        .token
+-                        .compare_exchange(*token, 0, Ordering::SeqCst, Ordering::SeqCst);
++                let _ = token;
++                operation.token.store(0, Ordering::SeqCst);
+             }

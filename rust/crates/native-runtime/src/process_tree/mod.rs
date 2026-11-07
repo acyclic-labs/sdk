@@ -657,6 +657,11 @@ impl ProcessTree {
     /// closed, queued stdin accepts bytes, or the direct child exits. Its
     /// owner then reads without waiting, as before; no thread or timer runs
     /// while it waits.
+    ///
+    /// A pipe has one pending observation. Competing admission returns
+    /// `AlreadyExists` before replacing its original event producer. Drop
+    /// the previous observation before rearming, or transfer its pipe, which
+    /// cancels that observation before handing ownership to its reader.
     pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
         self.readiness_for(true)
     }

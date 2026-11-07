@@ -1,0 +1,14 @@
+--- a/rust/crates/native-runtime/src/process_tree/events/windows.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/windows.rs
+@@ -321,10 +321,3 @@
+     fn arm(self: &Arc<Self>, token: usize) -> io::Result<Option<Registration>> {
+-        self.token
+-            .compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst)
+-            .map_err(|_| {
+-                io::Error::new(
+-                    io::ErrorKind::AlreadyExists,
+-                    "native pipe already has a live observation; drop it before rearming",
+-                )
+-            })?;
++        self.token.store(token, Ordering::SeqCst);
+         // This original registration owns rollback even when readiness is

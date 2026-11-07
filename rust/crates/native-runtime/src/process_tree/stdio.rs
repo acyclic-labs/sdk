@@ -97,10 +97,19 @@ mod tests {
                 Poll::Ready(())
             })
             .await;
+            assert_eq!(
+                tree.readiness()
+                    .err()
+                    .expect("competing pipe observation was admitted")
+                    .kind(),
+                io::ErrorKind::AlreadyExists,
+                "competing pipe observation replaced its original producer",
+            );
             let original = Arc::clone(tree.readers[0].as_ref().ok_or(io::ErrorKind::BrokenPipe)?);
             let input = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
             let mut input = ProcessPipeWriter::from_stdin(input)?;
-            let output = ProcessPipeReader::take_stdout(&mut tree)?;
+            let mut output = ProcessPipeReader::take_stdout(&mut tree)
+                .expect("stdout handoff replaced the original completion owner");
             assert!(
                 matches!(
                     Pin::new(&mut previous)
@@ -109,7 +118,24 @@ mod tests {
                 ),
                 "stdout handoff left its previous observation pending",
             );
+            {
+                let mut byte = [0];
+                let mut read = std::pin::pin!(output.read(&mut byte));
+                std::future::poll_fn(|cx| {
+                    assert!(read.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+            }
             drop(previous);
+            assert_eq!(
+                events::arm(&[events::Source::Pipe(&output.operation)], None)
+                    .err()
+                    .expect("old observation removed its successor's pipe claim")
+                    .kind(),
+                io::ErrorKind::AlreadyExists,
+                "old observation removed its successor's pipe claim",
+            );
             let mut diagnostic_wait = tree.readiness()?;
             let diagnostic = tree.take_stderr().ok_or(io::ErrorKind::BrokenPipe)?;
             assert!(

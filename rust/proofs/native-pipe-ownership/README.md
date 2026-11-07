@@ -42,6 +42,20 @@ Both inspect one fixed slot; no second registry, search or readiness retry is ad
 Capture's identity check also retains its original strong references, so an
 allocator cannot make a replacement appear identical by reusing an address.
 
+One pending pipe operation admits one observation. A competing observation
+returns `AlreadyExists` before changing its token or native operation. The
+original registration retains that operation and withdraws only its exact token
+on drop, including immediate readiness and refused admission. A retired wait
+cannot clear a successor's claim. The same real-child protocol property checks
+both refusals before releasing the child's original input event; no clock or
+readiness probe is involved.
+
+Admission replaces one atomic token store with one compare/exchange and one
+strong-reference increment. Drop adds one compare/exchange and one reference
+decrement. These fixed operations buy exclusive observation, rollback and
+source lifetime. They add zero allocations, copies, native calls, round trips
+or durability barriers, with no index, scan, retry or historical growth.
+
 The original Windows execution failed four capture/cleanup assertions and
 five console properties, including two blocked report waits. The controls
 below restore each planted bug on the corrected source. Require each named
@@ -53,6 +67,8 @@ $controls = @(
     @('replace-readers.patch', 'process_tree::tests::stopped_capture_preserves_output_prefix_and_cleanup_observation', 'capture replaced the original pipe completion owners'),
     @('replace-transferred-reader.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', 'stdout handoff replaced the original completion owner'),
     @('omit-transfer-retirement.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', 'stdout handoff left its previous observation pending'),
+    @('replace-observation-token.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', 'competing pipe observation was admitted'),
+    @('withdraw-successor-token.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', "old observation removed its successor's pipe claim"),
     @('omit-report-boundary.patch', 'process_tree::windows_create::tests::a_child_inherits_only_its_standard_handles', 'console probe record framing lost')
 )
 foreach ($control in $controls) {

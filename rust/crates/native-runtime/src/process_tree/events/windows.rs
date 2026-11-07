@@ -37,22 +37,35 @@ pub(super) struct Poller {
     port: OwnedHandle,
 }
 
-/// A registered process wait, unregistered when its wait is dropped.
-pub(super) struct Registration(Option<HANDLE>);
+/// Original native interest, released only by its owning observation.
+pub(super) enum Registration {
+    Process(HANDLE),
+    Pipe(Arc<PipeOperation>, usize),
+}
 
-// SAFETY: a registered wait handle has no thread affinity, and only the one
-// owning Registration unregisters it.
+// SAFETY: a registered wait handle has no thread affinity; the pipe operation
+// is Send + Sync. Only this original Registration releases its own interest.
 unsafe impl Send for Registration {}
-// SAFETY: shared access never touches the handle; only Drop does.
+// SAFETY: shared access never touches the handle or changes the pipe claim.
 unsafe impl Sync for Registration {}
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        if let Some(wait) = self.0.take() {
-            // SAFETY: this owned registration is released once. A null
-            // completion event returns at once; a callback still running
-            // posts only a token, which the hub ignores once disarmed.
-            unsafe { UnregisterWaitEx(wait, std::ptr::null_mut()) };
+        match self {
+            Self::Process(wait) => {
+                // SAFETY: this owned registration is released once. A null
+                // completion event returns at once; a callback still running
+                // posts only a token, which the hub ignores once disarmed.
+                unsafe { UnregisterWaitEx(*wait, std::ptr::null_mut()) };
+            }
+            Self::Pipe(operation, token) => {
+                // A transfer may already have retired this observation and
+                // admitted a successor. Never withdraw that successor's token.
+                let _ =
+                    operation
+                        .token
+                        .compare_exchange(*token, 0, Ordering::SeqCst, Ordering::SeqCst);
+            }
         }
     }
 }
@@ -306,9 +319,19 @@ impl PipeOperation {
     }
 
     fn arm(self: &Arc<Self>, token: usize) -> io::Result<Option<Registration>> {
-        self.token.store(token, Ordering::SeqCst);
+        self.token
+            .compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "native pipe already has a live observation; drop it before rearming",
+                )
+            })?;
+        // This original registration owns rollback even when readiness is
+        // immediate or native admission refuses. Retain the pending operation.
+        let registration = Registration::Pipe(Arc::clone(self), token);
         if self.pending() {
-            return Ok(Some(Registration(None)));
+            return Ok(Some(registration));
         }
         if self.kind == Kind::Write {
             // Nothing in flight: the writer has a result or room to write.
@@ -321,7 +344,7 @@ impl PipeOperation {
             // operation owns until the read completes; so does the OVERLAPPED.
             unsafe { ReadFile(self.handle, empty, 0, std::ptr::null_mut(), overlapped) }
         }) {
-            Ok(None) => Ok(Some(Registration(None))),
+            Ok(None) => Ok(Some(registration)),
             // Data, end of file or a broken pipe: the reader observes it now.
             Ok(Some(_)) | Err(_) => Ok(None),
         }
@@ -396,7 +419,7 @@ impl Poller {
                 {
                     return Err(io::Error::last_os_error());
                 }
-                Ok(Some(Registration(Some(wait))))
+                Ok(Some(Registration::Process(wait)))
             }
             Source::Pipe(operation) => operation.arm(token),
         }
