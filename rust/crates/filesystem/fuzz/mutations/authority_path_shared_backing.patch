@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/distributed/native.rs
++++ b/rust/crates/filesystem/src/distributed/native.rs
+@@ -354,7 +354,7 @@
+         let bytes =
+             crate::arc_layout::allocation_bytes(payload).map_err(|_| crate::WorkError::Overflow)?;
+         self.accounting()
+-            .claim_owned(bytes as u64, 1)
++            .claim_owned(text.len() as u64, 1)
+             .map_err(authority_error)?;
+         let path = StreamPath::new(text).map_err(map_stream_error)?;
+         self.charge(copying)?;

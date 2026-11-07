@@ -110,6 +110,9 @@ proptest::proptest! {
             b"fs/authorities/", identity, &suffix, reference.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
         let actual = work.path(&AuthorityPlacement::default(), authority, &suffix, generation);
+        if limit == 6 {
+            proptest::prop_assert!(actual.is_err(), "path payload admission omitted shared backing");
+        }
         match (actual, old_result) {
             (Ok(actual), Ok(old)) => {
                 proptest::prop_assert_eq!(actual.as_str(), old.as_str());

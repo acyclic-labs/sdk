@@ -349,8 +349,12 @@ impl<'a> AuthorityWork<'a> {
         }
         let copying = codec_work(0, text.len() as u64, 0);
         self.admit(copying)?;
+        let payload =
+            std::alloc::Layout::array::<u8>(text.len()).map_err(|_| crate::WorkError::Overflow)?;
+        let bytes =
+            crate::arc_layout::allocation_bytes(payload).map_err(|_| crate::WorkError::Overflow)?;
         self.accounting()
-            .claim_owned(text.len() as u64, 1)
+            .claim_owned(bytes as u64, 1)
             .map_err(authority_error)?;
         let path = StreamPath::new(text).map_err(map_stream_error)?;
         self.charge(copying)?;
