@@ -50,6 +50,10 @@ tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"], optio
 [lints]
 workspace = true
 
+[[example]]
+name = "capture_native_hooks"
+required-features = ["native"]
+
 [[bin]]
 name = "git_argv"
 required-features = ["native"]

@@ -1,0 +1,1 @@
+{"hooks":[{"command":"'acyclic' __hook claude-code PermissionRequest","statusMessage":"Acyclic is routing the workspace","timeout":120,"type":"command"}],"matcher":"^mcp__plugin_acyclic_acyclic-sessions__spawn$"}
