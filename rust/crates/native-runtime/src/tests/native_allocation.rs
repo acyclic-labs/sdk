@@ -210,7 +210,8 @@ fn retired_waiter_keeps_full_funding_until_the_last_notifier_drops() -> io::Resu
             admission.register_existing(&node, Waker::noop());
         }
         let retained = Arc::clone(&node);
-        wake_capacity_waiter(admission.retire_owner(node));
+        wake_capacity_waiter(admission.retire_owner(&node));
+        drop(node);
         assert_eq!(admission.waiter_count, 0);
         assert_eq!(
             observed.memory.load(Ordering::Acquire),
@@ -236,9 +237,11 @@ fn retired_waiter_does_not_retain_neighbor_allocations() -> io::Result<()> {
         admission.register_existing(node, Waker::noop());
     }
     let retired = acyclic_test_support::measure(|| {
-        wake_capacity_waiter(admission.retire_owner(Arc::clone(&retained)));
-        wake_capacity_waiter(admission.retire_owner(first));
-        wake_capacity_waiter(admission.retire_owner(last));
+        wake_capacity_waiter(admission.retire_owner(&retained));
+        wake_capacity_waiter(admission.retire_owner(&first));
+        drop(first);
+        wake_capacity_waiter(admission.retire_owner(&last));
+        drop(last);
     });
     assert_eq!(admission.waiter_count, 0);
     let state = retained.state.lock().map_err(|_| io::ErrorKind::Other)?;

@@ -1,6 +1,110 @@
 use super::*;
 
 #[test]
+fn cancelled_original_submission_retires_waiter_outside_admission() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::admission::cancelled_original_submission_retires_waiter_outside_admission",
+    )? {
+        return Ok(());
+    }
+    struct Retired {
+        admission: Weak<crate::sync::Mutex<crate::workers::AdmissionState>>,
+        retired: Arc<AtomicBool>,
+        woken: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl std::task::Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Release);
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+            let admission = self.admission.upgrade().expect("original pool owner");
+            assert!(
+                admission.try_lock().is_ok(),
+                "original waiter retired under the admission lock"
+            );
+            if self.panic {
+                std::panic::panic_any("original waiter retirement panic");
+            }
+        }
+    }
+    struct Successor(Arc<AtomicBool>);
+    impl Wake for Successor {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _defer = InlineBlocking::defer();
+    initialize_native_io_services()?;
+    let original = workers(&BLOCKING_WORKERS, true)?;
+    for panic in [false, true] {
+        // The configured production workers are physically occupied and their
+        // channel is full before this public submission registers its observer.
+        let saturation = Saturation::new(&BLOCKING_WORKERS)?;
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let retired = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicBool::new(false));
+        let body = Arc::new(AtomicBool::new(false));
+        let entered = Arc::clone(&body);
+        let mut task = run_blocking_io(
+            move || entered.store(true, Ordering::Release),
+            Some((budget.clone(), true)),
+        )?;
+        let waker = Waker::from(Arc::new(Retired {
+            admission: Arc::downgrade(&original.admission),
+            retired: Arc::clone(&retired),
+            woken: Arc::clone(&woken),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut task)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(task.waiter.is_some() && task.pending.is_some());
+        let notified = Arc::new(AtomicBool::new(false));
+        let next = Waker::from(Arc::new(Successor(Arc::clone(&notified))));
+        let mut successor = run_blocking_io(|| 37, None)?;
+        assert!(
+            Pin::new(&mut successor)
+                .poll(&mut Context::from_waker(&next))
+                .is_pending()
+        );
+        drop(waker);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(task)));
+        assert!(
+            original.admission.try_lock().is_ok(),
+            "original waiter retirement poisoned admission"
+        );
+        if panic {
+            let Err(payload) = result else {
+                panic!("original waiter retirement panic missing");
+            };
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"original waiter retirement panic")
+            );
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert!(!woken.load(Ordering::Acquire));
+        assert!(!body.load(Ordering::Acquire));
+        assert!(
+            notified.load(Ordering::Acquire),
+            "retirement lost its successor wake"
+        );
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+        drop(saturation);
+        assert_eq!(complete(successor)?, 37);
+    }
+    Ok(())
+}
+
+#[test]
 fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
     let temporary = tempfile::NamedTempFile::new()?;
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;

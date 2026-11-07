@@ -1,0 +1,129 @@
+diff --git b/rust/crates/native-runtime/src/tests/native_allocation.rs a/rust/crates/native-runtime/src/tests/native_allocation.rs
+index f91e662eeaa..263085f646c 100644
+--- b/rust/crates/native-runtime/src/tests/native_allocation.rs
++++ a/rust/crates/native-runtime/src/tests/native_allocation.rs
+@@ -210,8 +210,7 @@ fn retired_waiter_keeps_full_funding_until_the_last_notifier_drops() -> io::Resu
+             admission.register_existing(&node, Waker::noop());
+         }
+         let retained = Arc::clone(&node);
+-        wake_capacity_waiter(admission.retire_owner(&node));
+-        drop(node);
++        wake_capacity_waiter(admission.retire_owner(node));
+         assert_eq!(admission.waiter_count, 0);
+         assert_eq!(
+             observed.memory.load(Ordering::Acquire),
+@@ -237,11 +236,9 @@ fn retired_waiter_does_not_retain_neighbor_allocations() -> io::Result<()> {
+         admission.register_existing(node, Waker::noop());
+     }
+     let retired = acyclic_test_support::measure(|| {
+-        wake_capacity_waiter(admission.retire_owner(&retained));
+-        wake_capacity_waiter(admission.retire_owner(&first));
+-        drop(first);
+-        wake_capacity_waiter(admission.retire_owner(&last));
+-        drop(last);
++        wake_capacity_waiter(admission.retire_owner(Arc::clone(&retained)));
++        wake_capacity_waiter(admission.retire_owner(first));
++        wake_capacity_waiter(admission.retire_owner(last));
+     });
+     assert_eq!(admission.waiter_count, 0);
+     let state = retained.state.lock().map_err(|_| io::ErrorKind::Other)?;
+diff --git b/rust/crates/native-runtime/src/workers/admission.rs a/rust/crates/native-runtime/src/workers/admission.rs
+index 5a55551d60f..8eef7ffc39d 100644
+--- b/rust/crates/native-runtime/src/workers/admission.rs
++++ a/rust/crates/native-runtime/src/workers/admission.rs
+@@ -80,9 +80,8 @@ impl AdmissionState {
+     }
+ 
+     /// Unlinks the owner's waiter and returns the next waiter's waker. The
+-    /// caller retains the retired owner until the admission lock is released.
+-    /// Its allocation stays funded while any notifier still owns the node.
+-    pub(crate) fn retire_owner(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
++    /// allocation stays funded while a notifier still owns the retired node.
++    pub(crate) fn retire_owner(&mut self, node: Arc<CapacityWaiter>) -> Option<Waker> {
+         let mut state = node
+             .state
+             .lock()
+@@ -96,7 +95,7 @@ impl AdmissionState {
+         if self
+             .notify_next
+             .as_ref()
+-            .is_some_and(|current| Arc::ptr_eq(current, node))
++            .is_some_and(|current| Arc::ptr_eq(current, &node))
+         {
+             self.notify_next = next.clone();
+         }
+@@ -118,7 +117,9 @@ impl AdmissionState {
+             self.tail = previous.as_ref().map_or_else(Weak::new, Arc::downgrade);
+         }
+         self.waiter_count -= 1;
++        // The owner's reference ends here; a notifier may still hold the node.
+         drop(state);
++        drop(node);
+         if previous.is_none() {
+             self.head.as_ref().map(|head| {
+                 head.state
+@@ -199,9 +200,6 @@ pub(crate) fn poll_submission_with(
+     }
+     let observation = job.queue_observation();
+     job.stage(1);
+-    // Declare the owner before the guard so callback unwind also unlocks
+-    // admission before retiring this node.
+-    let retired;
+     let mut admission = workers
+         .admission
+         .lock()
+@@ -218,13 +216,8 @@ pub(crate) fn poll_submission_with(
+     match workers.sender.try_send(job) {
+         Ok(()) => {
+             admission.queued_jobs += 1;
+-            retired = waiter.take();
+-            let next = retired
+-                .as_ref()
+-                .and_then(|node| admission.retire_owner(node));
++            let next = waiter.take().and_then(|node| admission.retire_owner(node));
+             drop(admission);
+-            wake_capacity_waiter(next);
+-            drop(retired);
+             if let Some(observation) = observation {
+                 obs::project(move || {
+                     observation.record("native.queued", true);
+@@ -232,6 +225,7 @@ pub(crate) fn poll_submission_with(
+                 });
+             }
+             drop(prepaid);
++            wake_capacity_waiter(next);
+             Poll::Ready(Ok(()))
+         }
+         Err(mpsc::TrySendError::Full(mut job)) => {
+@@ -257,17 +251,13 @@ pub(crate) fn poll_submission_with(
+             Poll::Pending
+         }
+         Err(mpsc::TrySendError::Disconnected(job)) => {
+-            retired = waiter.take();
+-            let next = retired
+-                .as_ref()
+-                .and_then(|node| admission.retire_owner(node));
++            let next = waiter.take().and_then(|node| admission.retire_owner(node));
+             drop(admission);
+-            wake_capacity_waiter(next);
+-            drop(retired);
+             let error = io::Error::from(io::ErrorKind::BrokenPipe);
+             job.record_submission_error(&error);
+             drop(job);
+             drop(prepaid);
++            wake_capacity_waiter(next);
+             Poll::Ready(Err(error))
+         }
+     }
+@@ -281,10 +271,9 @@ pub(crate) fn remove_capacity_waiter(workers: &NativeWorkers, waiter: Option<Arc
+         .admission
+         .lock()
+         .unwrap_or_else(std::sync::PoisonError::into_inner);
+-    let next = admission.retire_owner(&waiter);
++    let next = admission.retire_owner(waiter);
+     drop(admission);
+     wake_capacity_waiter(next);
+-    drop(waiter);
+ }
+ 
+ pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
