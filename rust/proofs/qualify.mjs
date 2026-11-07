@@ -15,6 +15,20 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "journal-follow-progress": [
+    "rust/crates/stream/src/journal_provider.rs", "acyclic-cloudflare-conformance", "",
+    "journal failure left a public follow parked", [],
+    {
+      runner: ["node", "rust/proofs/journal-follow-progress/run.mjs"],
+      negativeExit: 1,
+      failed: true,
+      completed: ["journal public follow retirement PASS"],
+      mutations: [
+        { patch: "rust/proofs/journal-follow-progress/retirement.patch", label: "missing-follow-retirement", diagnostic: "journal failure left a public follow parked" },
+        { patch: "rust/proofs/journal-follow-progress/publication.patch", source: "rust/crates/stream/src/lib/revision.rs", label: "unrelated-publication-wake", diagnostic: "unrelated publication woke retirement observer" },
+      ],
+    },
+  ],
   "local-revision-failure-progress": [
     "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
     "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
@@ -687,7 +701,8 @@ if (claim === "--help" && extra.length === 0) {
   function check(label, selected = command) {
     if (oracle) require(readFileSync(oraclePath).equals(oracle));
     mkdirSync(directory, { recursive: true });
-    const result = run("cargo", selected, new URL(`${label}.log`, directory));
+    const invocation = options.runner ?? ["cargo", ...selected];
+    const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
       const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(sourcePath)), oracle_sha256: sha256(oracle) };
@@ -696,7 +711,7 @@ if (claim === "--help" && extra.length === 0) {
       require(readFileSync(oraclePath).equals(oracle));
       require(result.output.includes("Starting 1 test across 1 binary"));
     }
-    console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
+    console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
@@ -722,8 +737,8 @@ if (claim === "--help" && extra.length === 0) {
         const mutated = check(mutation.label, mutation.command ?? command);
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
-          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
-            && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+          : mutated.status === (options.negativeExit ?? (options.nextest ? 100 : 101)) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && (options.nextest || mutated.output.includes(options.failed === true ? mutation.diagnostic : options.failed ?? "0 passed; 1 failed")));
       } finally {
         writeFileSync(mutatedPath, original);
       }

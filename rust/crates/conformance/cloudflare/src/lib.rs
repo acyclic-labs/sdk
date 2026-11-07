@@ -5,4 +5,6 @@ mod actors;
 #[cfg(target_arch = "wasm32")]
 mod hosting;
 #[cfg(target_arch = "wasm32")]
+mod journal_progress;
+#[cfg(target_arch = "wasm32")]
 mod wasm;

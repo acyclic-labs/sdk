@@ -442,6 +442,8 @@ pub struct AppliedRevisions {
     scope: RevisionScope,
     incarnation: u128,
     applied: watch::Sender<Applied>,
+    #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+    retired: tokio::sync::Notify,
 }
 
 impl std::fmt::Debug for AppliedRevisions {
@@ -466,6 +468,8 @@ impl AppliedRevisions {
                 closed: false,
             })
             .0,
+            #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+            retired: tokio::sync::Notify::new(),
         }
     }
 
@@ -531,6 +535,20 @@ impl AppliedRevisions {
     /// Ends this incarnation: every parked and later wait refuses as unavailable.
     pub fn close(&self) {
         self.applied.send_modify(|applied| applied.closed = true);
+        #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+        self.retired.notify_waiters();
+    }
+
+    #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+    pub(crate) async fn closed(&self) {
+        // Register before reading the retained terminal bit. Ordinary revision
+        // advances never wake an unrelated follow's retirement observer.
+        let retired = std::pin::pin!(self.retired.notified());
+        let mut retired = retired;
+        retired.as_mut().enable();
+        if !self.applied.borrow().closed {
+            retired.await;
+        }
     }
 
     /// Selects this authority's floor from `cut`. A token naming another
