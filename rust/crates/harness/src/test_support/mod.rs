@@ -29,6 +29,8 @@ pub fn check_native_child_reference(input: &[u8]) {
     use crate::local::host_workspace::child_reference;
     use std::path::{Component, Path};
 
+    crate::agent::codec_fuzz::check(input);
+
     let mut identity = [0; 16];
     for (destination, source) in identity.iter_mut().zip(input) {
         *destination = *source;

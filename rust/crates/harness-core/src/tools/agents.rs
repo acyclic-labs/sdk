@@ -173,9 +173,7 @@ impl AgentTool {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = IntentId::try_from(format!("{SPAWN}{}", input.name)) else {
-                    return Ok(rejected(
-                        "name must be short printable ASCII without spaces",
-                    ));
+                    return Ok(rejected("name must use printable ASCII without spaces"));
                 };
                 let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(

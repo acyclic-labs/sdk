@@ -973,7 +973,7 @@ fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
 }
 
 /// Whether a driver's effect fits the record that carries it.
-fn admissible(out: &Out) -> bool {
+fn admissible(out: &Out, path: &AgentPath) -> bool {
     match out {
         Out::Steered(_) => true,
         Out::Conversation(record) => record.len() <= super::MAX_RECORD_BYTES,
@@ -983,11 +983,16 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. }
-        | Out::Checkpoint
-        | Out::Roster(_)
-        | Out::Notices(_)
-        | Out::GoalCompleted { .. } => true,
+        Out::Archive { id, .. } => {
+            let by = super::Sender::Agent { path: path.clone() };
+            super::AgentRecord::encode(&InboxRecord::Archive(super::Control {
+                by: by.clone(),
+                id: id.clone(),
+            }))
+            .is_ok()
+                && super::AgentRecord::encode(&super::Closed { by, id: id.clone() }).is_ok()
+        }
+        Out::Checkpoint | Out::Roster(_) | Out::Notices(_) | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes.iter()).is_ok(),
     }
 }
@@ -1049,9 +1054,13 @@ async fn run<T: TurnDriver + ?Sized>(
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.
-    if !turn.outs.iter().all(admissible)
+    if !turn.outs.iter().all(|out| admissible(out, &state.path))
         || matches!(&turn.wait, Wait::Host(host) if super::records::check_text(host).is_err())
-        || matches!(&turn.wait, Wait::Approval { binding: Some(binding), .. } if binding.validate().is_err())
+        || matches!(&turn.wait, Wait::Approval { id, binding } if super::AgentRecord::encode(&StatusRecord {
+            phase: Phase::WaitingApproval { id: id.clone(), binding: binding.clone() },
+            cursor: u64::MAX,
+            conversation: u64::MAX,
+        }).is_err())
     {
         turn = TurnStep {
             checkpoint: None,

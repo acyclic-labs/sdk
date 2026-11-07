@@ -3,18 +3,35 @@
 use super::*;
 
 #[tokio::test]
-async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
-    let invalid = [String::new(), "x".repeat(MAX_INTENT_BYTES + 1), "\0".into()]
+async fn an_invalid_turn_fails_before_publishing_status_or_effects() -> Result {
+    for length in [129, 255, MAX_RECORD_BYTES] {
+        acyclic_harness_core::agent::codec_fuzz::check(&vec![b'a'; length]);
+    }
+    let invalid = [String::new(), "x".repeat(MAX_NAME_BYTES + 1), "\0".into()]
         .into_iter()
         .map(Wait::Host)
-        .chain([Wait::Approval {
-            id: intent("invalid-action"),
-            binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
-                operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
-                action_digest: [0; 32],
+        .chain([
+            Wait::Approval {
+                id: intent("invalid-action"),
+                binding: Some(acyclic_harness_core::interaction::ApprovalBinding {
+                    operation_id: acyclic_harness_core::OperationId::from_bytes([1; 16]),
+                    action_digest: [0; 32],
+                }),
+            },
+            Wait::Approval {
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
+                binding: None,
+            },
+        ])
+        .map(|wait| (wait, None))
+        .chain([(
+            Wait::Input,
+            Some(Out::Archive {
+                target: AgentPath::root(&id(9)),
+                id: intent(&"a".repeat(MAX_RECORD_BYTES)),
             }),
-        }]);
-    for wait in invalid {
+        )]);
+    for (wait, extra) in invalid {
         let (root, mut state) = one_below_the_child_limit()?;
         state.turn = Some(Progress {
             inbox: 0,
@@ -24,13 +41,15 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
         let driver = script(vec![TurnStep {
             checkpoint: Some(vec![]),
             reserved_children: 0,
-            outs: vec![Out::Spawn {
+            outs: std::iter::once(Out::Spawn {
                 profile: None,
                 history: None,
                 intent: intent("spawn:invalid-host"),
                 brief: None,
                 volumes: vec![],
-            }],
+            })
+            .chain(extra)
+            .collect(),
             wait,
             drops: None,
         }]);
@@ -57,11 +76,16 @@ async fn an_invalid_wait_fails_before_publishing_status_or_effects() -> Result {
             "invalid wait published unchecked effects"
         );
         StatusRecord {
-            phase: result.state.phase,
+            phase: result.state.phase.clone(),
             cursor: u64::MAX,
             conversation: u64::MAX,
         }
         .encode()?;
+        lower(
+            &result,
+            1,
+            acyclic_stream::IdempotencyKey::new("invalid-turn")?,
+        )?;
     }
     Ok(())
 }

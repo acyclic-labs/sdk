@@ -52,6 +52,25 @@ grandchild paths must fail with an invalid-input classification before storage
 is involved. Arbitrary canonical input exercises the same direct-child check.
 This checks reference syntax and routing, not mount confinement or process lifetime.
 
+The same target invokes the retained agent codec oracle. Intent text has no
+independent name cap; the complete encoded frame remains the record writer's
+and reader's boundary. `maximum` is the original 255-byte request that exposed
+the former 128-byte intent cap. `intent-frame-overflow` is an explicitly
+authored 65,536-byte request, not an external response. The shared codec oracle
+preserves fitting identities exactly and requires typed refusal above the
+complete frame. `mutations/native_child_intent_cap.patch` restores the actual
+primitive cap; the unchanged oracle must fail. The persisted record shape and
+version are unchanged.
+
+The existing real actor control
+`agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects`
+also exercises long identity round trips and frame refusal, then drives the
+actual step and commit lowering with oversized approval and archive identities.
+Both must settle as a bounded failure before publishing any driver effect.
+`mutations/native_intent_frame_guard.patch` removes those production guards and
+must fail this unchanged control. Run it with
+`cargo test -p acyclic-harness-core --test main agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects -- --exact`.
+
 The corpus contains explicitly authored user references, including `first`
 (the input used by the real-owner receipt control), parent/current paths,
 both separators, non-ASCII input and the component-size boundary. These are
@@ -64,6 +83,7 @@ failure control.
 The real-owner control
 `local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership`
 uses the production owner and native process custody for all three host adapters.
+Its local reference fills the portable 255-byte component.
 Local names and canonical paths retain one live process, replay retains the
 original prompt, cancellation physically retires that process, and archived
 sessions refuse spawn and send, including exact prompt replay. It also requires

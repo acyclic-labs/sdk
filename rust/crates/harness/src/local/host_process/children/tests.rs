@@ -38,11 +38,12 @@ async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Res
 }
 
 fn references(host: &str, cwd: &Path) -> Result {
+    let reference = "a".repeat(255);
     let (mut sessions, parent) = children(host, cwd, "reference-custody")?;
     let (mut running, view) = claim(
         &mut sessions,
         cwd,
-        "child",
+        &reference,
         SessionAction::Spawn {
             prompt: "work".into(),
         },
@@ -55,10 +56,10 @@ fn references(host: &str, cwd: &Path) -> Result {
         .spawn(&mut command, running.claim.operation)?;
     shell_pid(&mut running)?;
     sessions.children.insert(key.clone(), running);
-    let replay = sessions.spawn("child", "work".into())?;
+    let replay = sessions.spawn(&reference, "work".into())?;
     assert_eq!(replay["task"], key);
     assert_eq!(sessions.children.len(), 1);
-    assert!(sessions.wait("child")?.is_none());
+    assert!(sessions.wait(&reference)?.is_none());
     assert!(sessions.wait(&key)?.is_none());
     assert_eq!(sessions.accepted.len(), 1);
     let grandchild = crate::local::host_owner::child(&task, "grandchild")?;
@@ -73,7 +74,7 @@ fn references(host: &str, cwd: &Path) -> Result {
         cwd,
         HostAction::Fs {
             task,
-            command: "merge agents/child".into(),
+            command: format!("merge agents/{reference}"),
         },
     )
     .expect_err("a leaf cannot merge its own changes");
@@ -85,19 +86,19 @@ fn references(host: &str, cwd: &Path) -> Result {
     sessions.cancel(&key)?;
     assert!(!sessions.running());
     let local = sessions
-        .wait("child")?
+        .wait(&reference)?
         .ok_or("cancelled child is still running")?;
     let full = sessions
         .wait(&key)?
         .ok_or("cancelled path is still running")?;
     assert_eq!(local["task"], full["task"]);
     assert_eq!(local["control"], "interrupt");
-    sessions.archive("child")?;
+    sessions.archive(&reference)?;
     for result in [
         sessions.resume(&key, "next".into()),
-        sessions.spawn("child", "work".into()),
-        sessions.spawn("child", "different".into()),
-        sessions.send("child", "next".into()),
+        sessions.spawn(&reference, "work".into()),
+        sessions.spawn(&reference, "different".into()),
+        sessions.send(&reference, "next".into()),
         sessions.send(&key, "next".into()),
     ] {
         let refused = result.expect_err("an archived reference cannot resume");
