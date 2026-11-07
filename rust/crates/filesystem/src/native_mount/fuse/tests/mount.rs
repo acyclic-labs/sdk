@@ -44,18 +44,21 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
             .ok_or(NativeMountError::Lifecycle(
                 "committed source has no stable view stamp",
             ))?;
-    session
-        .core
-        .wait_for_invalidation(session.core.state_to_finish(), Some(target), &work)?;
+    let core = Arc::clone(
+        &session
+            .driver
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle("mounted session has no driver"))?
+            .core,
+    );
+    core.wait_for_invalidation(core.state_to_finish(), Some(target), &work)?;
     assert!(
         !added.exists(),
         "completed invalidation retained a removed entry"
     );
     assert!(session.stop()?);
     assert!(matches!(
-        session
-            .core
-            .wait_for_invalidation(session.core.state_to_finish(), Some(target), &work,),
+        core.wait_for_invalidation(core.state_to_finish(), Some(target), &work),
         Err(NativeMountError::Lifecycle("session is stopped"))
     ));
     Ok(())
