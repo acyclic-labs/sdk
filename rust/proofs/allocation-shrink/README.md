@@ -14,6 +14,11 @@ same property and original meter. The inverse also restores that revision's
 Darwin production dependency, retaining current tests, so the original Linux-only
 borrowed constructor cannot turn the semantic control into a compilation failure:
 
+The inverse also restores that pin's original closed-spawn argument body. This
+keeps the Unix dependency consistent with the original Linux-only borrowed
+constructor while retaining current tests. Dependency restoration is not a
+semantic negative.
+
 ```sh
 git apply rust/proofs/allocation-shrink/original-custody.patch
 git diff --exit-code e85420c325d53887e9d8e10b81190f08761cc2ef -- rust/crates/native-runtime/src/meter/allocation.rs

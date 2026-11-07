@@ -13,6 +13,11 @@ that revision's Darwin production dependency, retaining the current tests. This
 keeps its Linux-only borrowed constructor consistent with the original member
 storage; an unavailable constructor cannot stand in for the owner-order failure:
 
+The inverse also restores that pin's original closed-spawn argument body. Its
+Unix dependency must not call the newer borrowed constructor on macOS while the
+original allocation file exposes that constructor only on Linux. Current tests
+remain present; this dependency restoration is not a semantic negative.
+
 ```sh
 git apply rust/proofs/allocation-owner/original-owner-order.patch
 git diff --exit-code 4a3122d094a1a82d7605b4fcb8e4cadb106365d4 -- rust/crates/native-runtime/src/meter/allocation.rs

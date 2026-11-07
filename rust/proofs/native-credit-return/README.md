@@ -30,6 +30,11 @@ revision; select only the five destructor properties below.
 
 Run from the repository root:
 
+The inverse also restores the documented pin's original closed-spawn argument
+body, keeping its Unix dependency consistent with the original Linux-only
+borrowed constructor. Current tests remain present; a missing constructor cannot
+qualify a destructor failure.
+
 ```sh
 git apply --check rust/proofs/native-credit-return/original-destructors.patch
 git apply rust/proofs/native-credit-return/original-destructors.patch
