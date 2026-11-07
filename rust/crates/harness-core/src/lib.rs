@@ -159,6 +159,7 @@ impl NativeIndexWork<'_> {
         Ok(None)
     }
 }
+
 impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
     type Error = Error;
     type Allocation = NativeCustody;
@@ -171,7 +172,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
         let _ = (self.0, items);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = self.0 {
-            original.admit(acyclic_fs::WorkCounters {
+            original.charge(acyclic_fs::WorkCounters {
                 items_examined: items,
                 ..Default::default()
             })?;
