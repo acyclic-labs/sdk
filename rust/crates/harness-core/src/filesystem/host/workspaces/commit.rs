@@ -247,8 +247,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 let authority = authority.clone();
                                 async move {
                                     let check = || -> Result<()> {
-                                        require_publication_fence(fence)?;
-                                        require_publication_fence(root_fence)?;
+                                        require_publication_fence(fence, "volume")?;
+                                        require_publication_fence(root_fence, "root")?;
                                         if let Some(authority) = &authority {
                                             let io = PreparationIo::from_native_work(&work)?;
                                             authority.0.verify(

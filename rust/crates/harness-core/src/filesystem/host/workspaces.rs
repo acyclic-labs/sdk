@@ -62,19 +62,33 @@ fn require_publication_time(
 ) -> Result<()> {
     if let FilePublication::Authorized(_, grant, root_fence) = publication {
         grant.recheck(io)?;
-        require_publication_fence(root_fence)?;
+        require_publication_fence(root_fence, "root")?;
     }
-    require_publication_fence(publication.fence())
+    require_publication_fence(publication.fence(), "volume")
 }
 
-fn require_publication_fence(fence: Option<acyclic_fs::access::PolicyFence>) -> Result<()> {
+/// Refuses a write outside its decision's validity interval, naming the
+/// fence, its interval and the clock reading that fell outside it.
+fn require_publication_fence(
+    fence: Option<acyclic_fs::access::PolicyFence>,
+    which: &str,
+) -> Result<()> {
     let now = access::access_now()?;
-    if fence.is_some_and(|fence| !fence.valid_at(now)) {
-        return Err(Error::Unauthorized(
-            "filesystem write authority expired".into(),
-        ));
+    match fence {
+        Some(fence) if !fence.valid_at(now) => {
+            let (from, until) = fence.interval();
+            let until = until.map_or_else(|| "unbounded".to_owned(), |until| until.to_string());
+            let state = if now < from {
+                "not yet valid"
+            } else {
+                "expired"
+            };
+            Err(Error::Unauthorized(format!(
+                "filesystem write authority {state}: {which} fence valid from {from} until {until}, now {now} (Unix seconds)"
+            )))
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
