@@ -1,0 +1,28 @@
+diff --git b/rust/crates/harness-core/src/tools/native/arguments.rs a/rust/crates/harness-core/src/tools/native/arguments.rs
+index fd53265562..b1a55a3c15 100644
+--- b/rust/crates/harness-core/src/tools/native/arguments.rs
++++ a/rust/crates/harness-core/src/tools/native/arguments.rs
+@@ -112,0 +113,8 @@ impl<'a> Resolved<'a> {
++    fn as_str(self) -> Option<&'a str> {
++        match self {
++            Self::Value(value) => value.as_str(),
++            Self::Text(value) => Some(value),
++            _ => None,
++        }
++    }
++
+@@ -241,12 +249,2 @@ fn resolve<'a>(template: &'a Value, call: &Call<'a>) -> Result<Option<Resolved<'
+-            let mut operation = [0; 36];
+-            let text = match value {
+-                Resolved::Value(value) => value.as_str(),
+-                Resolved::Text(value) => Some(value),
+-                Resolved::Operation(value) => Some(
+-                    uuid::Uuid::from_bytes(value.into_bytes())
+-                        .hyphenated()
+-                        .encode_lower(&mut operation) as &str,
+-                ),
+-                _ => None,
+-            };
+-            let case = text
++            let case = value
++                .as_str()

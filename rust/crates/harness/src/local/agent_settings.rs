@@ -28,8 +28,9 @@ pub(super) struct Volumes<'a> {
     pub(super) maximum_bytes: u64,
 }
 
-/// Imports resolve in the home over the seed; `sys/` only in the seed.
-struct Tree<'a> {
+/// One session admission's pinned home over the seed; `sys/` only in the seed.
+/// Every settings entry point borrows this tree and its original read grant.
+pub(super) struct Tree<'a> {
     volumes: &'a Volumes<'a>,
     read: ContentGrant,
     generation: crate::resources::GenerationRef,
@@ -80,7 +81,7 @@ impl config::Tree for Tree<'_> {
 /// module's admission. Invalid or rejected enforcement settings refuse the
 /// session; the seed applies only when the home module is absent.
 pub(super) async fn admit(
-    volumes: &Volumes<'_>,
+    tree: &Tree<'_>,
     agent: AgentId,
     started: (Model, Arc<dyn ModelProvider>),
     resolve: Resolve<'_>,
@@ -90,7 +91,6 @@ pub(super) async fn admit(
     ),
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<Settings> {
-    let tree = Tree::new(volumes).await?;
     let seed = Layer {
         name: "seed",
         generation: "",
@@ -98,7 +98,7 @@ pub(super) async fn admit(
     };
     let home = tree.home(config::AGENT).await?;
     let Some((version, bytes)) = home else {
-        return settle(&[seed], &tree, started, resolve, compaction)
+        return settle(&[seed], tree, started, resolve, compaction)
             .await
             .map_err(Refused::seed);
     };
@@ -111,17 +111,17 @@ pub(super) async fn admit(
         },
     ];
     admitted(
-        volumes,
+        tree.volumes,
         agent,
         (config::AGENT, &version),
-        settle(&layers, &tree, started, resolve, compaction).await,
+        settle(&layers, tree, started, resolve, compaction).await,
         clock,
     )
     .await
 }
 
 impl<'a> Tree<'a> {
-    async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
+    pub(super) async fn new(volumes: &'a Volumes<'a>) -> Result<Self> {
         let read = ContentGrant::verify_directory_read(
             volumes.verifier,
             volumes.signed,
@@ -212,12 +212,11 @@ async fn record(
 /// manifests refuse the session rather than remove its guards.
 #[cfg(any(test, feature = "hooks"))]
 pub(super) async fn plugins(
-    volumes: &Volumes<'_>,
+    tree: &Tree<'_>,
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
     use crate::plugins::{MANIFEST, load};
-    let tree = Tree::new(volumes).await?;
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -231,7 +230,7 @@ pub(super) async fn plugins(
         error => error,
     };
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
-        return Ok(load(&tree, &[seed], &enabler).await.map_err(seeded)?.rules);
+        return Ok(load(tree, &[seed], &enabler).await.map_err(seeded)?.rules);
     };
     let layers = [
         seed,
@@ -242,10 +241,10 @@ pub(super) async fn plugins(
         },
     ];
     admitted(
-        volumes,
+        tree.volumes,
         agent,
         (MANIFEST, &version),
-        load(&tree, &layers, &enabler)
+        load(tree, &layers, &enabler)
             .await
             .map(|enabled| enabled.rules)
             .map_err(Refused::evaluated),
@@ -508,6 +507,10 @@ mod tests {
         .await?;
         for (path, source) in [
             (
+                "agent.ts",
+                "import {enabled} from './switch.ts'; export default base => ({...base, sampling: {temperature: enabled ? 0.25 : 0.75}});",
+            ),
+            (
                 "plugins.ts",
                 "import {enabled} from './switch.ts'; export default {guard: {enabled}};",
             ),
@@ -542,20 +545,42 @@ mod tests {
         ] {
             crate::local::tests::settings::write(&harness, path, source).await?;
         }
-        let enabler = harness.root.to_string();
-        let (version, bytes) = original.home(crate::plugins::MANIFEST).await?.unwrap();
-        let layers = [Layer {
-            name: "home",
-            generation: &version,
-            bytes: Some(&bytes),
-        }];
-        let enabled = crate::plugins::load(&original, &layers, &enabler).await?;
-        assert_eq!(enabled.names, ["guard"]);
-        assert!(!enabled.rules.is_empty());
+        let disabled = crate::context::CompactionPolicy::Disabled;
+        let clock = harness.clock.as_ref();
+        let enabled = plugins(&original, harness.root, clock).await?;
+        assert!(
+            !enabled.is_empty(),
+            "plugin admission refreshed its pinned home generation"
+        );
+        let settings = admit(
+            &original,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            clock,
+        )
+        .await?;
+        assert_eq!(
+            settings.sampling.and_then(|sampling| sampling.temperature),
+            Some(0.25),
+            "settings admission refreshed its pinned home generation"
+        );
         let current = Tree::new(&volumes).await?;
-        let disabled = crate::plugins::load(&current, &layers, &enabler).await?;
-        assert!(disabled.names.is_empty());
-        assert!(disabled.rules.is_empty());
+        assert!(plugins(&current, harness.root, clock).await?.is_empty());
+        let settings = admit(
+            &current,
+            harness.root,
+            harness.agent()?.clone(),
+            None,
+            (&disabled, &None),
+            clock,
+        )
+        .await?;
+        assert_eq!(
+            settings.sampling.and_then(|sampling| sampling.temperature),
+            Some(0.75)
+        );
         Ok(())
     }
 }

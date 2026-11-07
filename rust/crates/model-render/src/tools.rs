@@ -5,6 +5,15 @@ use crate::{Family, RenderError};
 use serde::{Serialize, ser::SerializeSeq};
 use std::borrow::Cow;
 
+/// Whether summary generation retains executable provider-owned declarations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SummaryHeader {
+    /// Retain the admitted ordinary header and its protocol restrictions.
+    Keep,
+    /// Omit provider-owned tools while retaining client function declarations.
+    StripExecutableBuiltins,
+}
+
 /// One model-visible declaration. The schema view is supplied by the shared
 /// schema boundary, so rendering never clones or transforms a schema tree.
 pub enum ToolDeclaration<'a, P> {
@@ -30,11 +39,22 @@ pub enum ToolDeclaration<'a, P> {
     WebSearch,
 }
 
+impl<P> ToolDeclaration<'_, P> {
+    fn is_server(&self) -> bool {
+        match self {
+            Self::Function { .. } | Self::Freeform { .. } => false,
+            Self::WebSearch => true,
+        }
+    }
+}
+
 /// A declaration list admitted once and serialized in its original order.
 /// Creating it transfers the vector; serialization allocates no staging tree.
 pub struct ToolDeclarations<'a, P> {
     family: Family,
     declarations: Vec<ToolDeclaration<'a, P>>,
+    server_tools: bool,
+    summary_header: SummaryHeader,
 }
 
 impl<'a, P> ToolDeclarations<'a, P> {
@@ -60,7 +80,7 @@ impl<'a, P> ToolDeclarations<'a, P> {
             if let ToolDeclaration::Function { name, .. } = declaration {
                 search_function |= name == "web_search";
             }
-            if matches!(declaration, ToolDeclaration::WebSearch) {
+            if declaration.is_server() {
                 if family == Family::Chat || search {
                     return Err(RenderError::InvalidItem(
                         "unsupported or repeated native web search declaration",
@@ -77,7 +97,17 @@ impl<'a, P> ToolDeclarations<'a, P> {
         Ok(Self {
             family,
             declarations,
+            server_tools: search,
+            summary_header: SummaryHeader::Keep,
         })
+    }
+
+    /// Pins the summary header choice with the same immutable declaration list.
+    /// Ordinary declarations and their order are unaffected.
+    #[must_use]
+    pub fn with_summary_header(mut self, choice: SummaryHeader) -> Self {
+        self.summary_header = choice;
+        self
     }
 
     /// Whether an ordinary request can omit its tool field.
@@ -91,18 +121,35 @@ impl<'a, P> ToolDeclarations<'a, P> {
 
     /// GenerateContent's NONE controls function declarations only; it cannot
     /// establish that a built-in server tool will not execute.
-    pub(crate) fn has_server_tools(&self) -> bool {
-        self.declarations
-            .iter()
-            .any(|tool| matches!(tool, ToolDeclaration::WebSearch))
+    pub(crate) const fn has_server_tools(&self) -> bool {
+        self.server_tools
     }
 }
 
 impl<P: Serialize> Serialize for ToolDeclarations<'_, P> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.encode(serializer, true)
+    }
+}
+
+impl<P: Serialize> ToolDeclarations<'_, P> {
+    pub(crate) fn summary_tools(&self) -> Option<impl Serialize + '_> {
+        (self.server_tools && self.summary_header == SummaryHeader::StripExecutableBuiltins)
+            .then_some(ClientTools(self))
+    }
+
+    fn encode<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include_server: bool,
+    ) -> Result<S::Ok, S::Error> {
         let mut sequence = serializer.serialize_seq(None)?;
         let mut remaining = self.declarations.as_slice();
         while let Some((first, rest)) = remaining.split_first() {
+            if !include_server && first.is_server() {
+                remaining = rest;
+                continue;
+            }
             if self.family == Family::Gemini && matches!(first, ToolDeclaration::Function { .. }) {
                 // Group only consecutive functions. Grouping across a server
                 // declaration would change the frozen profile's tool order.
@@ -128,6 +175,13 @@ impl<P: Serialize> Serialize for ToolDeclarations<'_, P> {
             }
         }
         sequence.end()
+    }
+}
+
+struct ClientTools<'a, 'b, P>(&'a ToolDeclarations<'b, P>);
+impl<P: Serialize> Serialize for ClientTools<'_, '_, P> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.encode(serializer, false)
     }
 }
 

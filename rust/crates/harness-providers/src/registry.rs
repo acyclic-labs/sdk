@@ -183,7 +183,7 @@ impl Registry {
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
             files: self.files.clone(),
-            estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
+            accounting: crate::resolved::Accounting::new(config.adapter),
             model,
             profile: None,
             config,
@@ -193,7 +193,6 @@ impl Registry {
             key,
             credential_scope,
             transport,
-            usage: std::sync::Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login,
         })

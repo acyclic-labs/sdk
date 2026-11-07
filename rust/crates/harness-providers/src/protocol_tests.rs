@@ -13,7 +13,7 @@ fn total(count: &acyclic_harness_core::context::ModelTokenCount) -> u32 {
 async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model() -> Result<()> {
     for (adapter, fixture) in fixtures() {
         let (mut provider, _) = provider(adapter, 200);
-        assert_eq!(provider.estimator.tokens(1000), Some(500));
+        assert_eq!(provider.accounting.estimator.tokens(1000), Some(500));
         let dense = fixture
             .replace("\"input_tokens\":5", "\"input_tokens\":512")
             .replace("\"prompt_tokens\":5", "\"prompt_tokens\":512")
@@ -32,7 +32,7 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
             .len();
         assert!(initial > 0);
         assert_eq!(
-            provider.estimator.tokens(bytes),
+            provider.accounting.estimator.tokens(bytes),
             Some(bytes.div_ceil(2) as u32)
         );
         provider
@@ -46,7 +46,14 @@ async fn token_estimates_start_at_two_bytes_and_only_tighten_per_resolved_model(
         );
         // Usage calibrates provider wire bytes. Canonical transcript weights
         // differ with framing and are not verified admission token counts.
-        assert!(provider.estimator.tokens(bytes).expect("wire estimate") >= 512);
+        assert!(
+            provider
+                .accounting
+                .estimator
+                .tokens(bytes)
+                .expect("wire estimate")
+                >= 512
+        );
         provider
             .generate(&prepared, dispatch)
             .try_collect::<Vec<_>>()

@@ -234,10 +234,11 @@ impl<'io> StockExecution<'io> {
             RecordedCall::Completed {
                 result, projection, ..
             } => {
-                if let Some(authorization) = tool
-                    .executor
-                    .authorize_replay(context.as_ref(), &invocation)
-                {
+                if let Some(authorization) = tool.executor.authorize_replay(
+                    context.as_ref(),
+                    &invocation,
+                    self.native_work(),
+                ) {
                     authorization.await?;
                 }
                 self.replay_tool_output(
@@ -467,10 +468,21 @@ impl<'io> StockExecution<'io> {
         // records that target. A call its declaration refuses runs nowhere;
         // admission settles the refusal.
         let canonical = match self.stock.tools.get(&invocation.name, None, None)? {
-            Some(tool) => tool.executor.canonical(invocation).ok().flatten(),
+            Some(tool) => match tool.executor.canonical(invocation, self.native_work()) {
+                Ok(canonical) => canonical,
+                // A declaration refusal is settled by admission. Resource and
+                // cancellation failures must retain the original typed error.
+                Err(Error::Invalid(_)) => None,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Err(Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ..
+                }) => None,
+                Err(error) => return Err(error),
+            },
             None => None,
         };
-        let invocation = canonical.as_ref().unwrap_or(invocation);
+        let invocation = canonical.as_deref().unwrap_or(invocation);
         if let Some(original) = original {
             if let Some(identity) = original.filesystem {
                 return if original.target.is_none()
@@ -629,8 +641,8 @@ impl<'io> StockExecution<'io> {
         // Evaluation, the prompt and the approval request are charged to the
         // call's original ledger; the prompt's custody is held while it settles.
         // Policy and approval judge the canonical call, whatever its spelling.
-        let canonical = tool.executor.canonical(invocation)?;
-        let judged = canonical.as_ref().unwrap_or(invocation);
+        let canonical = tool.executor.canonical(invocation, self.native_work())?;
+        let judged = canonical.as_deref().unwrap_or(invocation);
         let judged_tool = tool.executor.capability().unwrap_or(tool);
         let (decision, custody) = policy.evaluate(judged, scope, self.io)?.await?;
         if !identity_matches()? {

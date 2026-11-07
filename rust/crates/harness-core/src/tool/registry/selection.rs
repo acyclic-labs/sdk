@@ -13,7 +13,7 @@ impl ToolRegistry {
             .data
             .selected
             .values()
-            .any(|selection| matches!(selection, ModelSelection::Native(_)))
+            .any(|selection| matches!(selection, ModelSelection::Native { .. }))
         {
             return Err(Error::Conflict(
                 "native declarations bind after the manifest pins".into(),
@@ -110,8 +110,8 @@ impl ToolRegistry {
 
     /// Presents capability `name` to the model as `natives`, declarations
     /// already registered and selected under their own names. Calls under the
-    /// capability's own name are no longer offered, unless that is the one
-    /// declaration being presented; its selected revision then stays callable.
+    /// capability's own name are no longer offered, unless included among the
+    /// declarations; its selected revision then stays callable.
     pub(crate) fn present_natively(&mut self, name: &str, natives: Vec<String>) -> Result<()> {
         let selection = Arc::make_mut(&mut self.data)
             .selected
@@ -120,7 +120,23 @@ impl ToolRegistry {
         if natives.len() == 1 && natives[0] == name {
             return Ok(());
         }
-        *selection = ModelSelection::Native(natives);
+        let revision = if natives.iter().any(|native| native == name) {
+            match std::mem::replace(selection, ModelSelection::Hidden) {
+                ModelSelection::Revision(revision) => Some(revision),
+                previous => {
+                    *selection = previous;
+                    return Err(Error::Conflict(format!(
+                        "native declaration {name} requires a selected revision"
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+        *selection = ModelSelection::Native {
+            revision,
+            names: natives,
+        };
         Ok(())
     }
 
@@ -167,6 +183,17 @@ impl ToolRegistry {
         revision: Option<&str>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
+        self.get_shared(name, revision, io)
+            .map(|tool| tool.map(Arc::as_ref))
+    }
+
+    /// Resolves the same selection while retaining the original executor owner.
+    pub(crate) fn get_shared(
+        &self,
+        name: &str,
+        revision: Option<&str>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<&Arc<Tool>>> {
         #[cfg(feature = "filesystem")]
         if revision.is_none()
             && let Some(io) = io
@@ -181,7 +208,11 @@ impl ToolRegistry {
             None => match name.rsplit_once('@') {
                 Some(pinned) => pinned,
                 None => match self.data.selected.get(name) {
-                    Some(ModelSelection::Revision(revision)) => (name, revision.as_str()),
+                    Some(ModelSelection::Revision(revision))
+                    | Some(ModelSelection::Native {
+                        revision: Some(revision),
+                        ..
+                    }) => (name, revision.as_str()),
                     _ => return Ok(None),
                 },
             },
@@ -190,7 +221,7 @@ impl ToolRegistry {
             if let Some(work) = work.as_deref_mut() {
                 work.check_cancellation()?;
             }
-            Ok(lookup::get(&self.data.versions, name, revision).map(Arc::as_ref))
+            Ok(lookup::get(&self.data.versions, name, revision))
         })
     }
 
@@ -234,7 +265,7 @@ impl ToolRegistry {
             names()
                 .flat_map(move |name| {
                     let natives = match self.data.selected.get(name) {
-                        Some(ModelSelection::Native(natives)) if capabilities => Some(natives),
+                        Some(ModelSelection::Native { names, .. }) if capabilities => Some(names),
                         _ => None,
                     };
                     let own = natives.is_none().then_some(name);
@@ -245,8 +276,15 @@ impl ToolRegistry {
                         return Some(Err(error));
                     }
                     match self.data.selected.get(name) {
-                        Some(ModelSelection::Revision(revision)) => Some(Ok((name, revision))),
-                        Some(ModelSelection::Hidden | ModelSelection::Native(_)) | None => None,
+                        Some(ModelSelection::Revision(revision))
+                        | Some(ModelSelection::Native {
+                            revision: Some(revision),
+                            ..
+                        }) => Some(Ok((name, revision))),
+                        Some(
+                            ModelSelection::Hidden | ModelSelection::Native { revision: None, .. },
+                        )
+                        | None => None,
                         Some(ModelSelection::Ambiguous) => {
                             Some(Err(crate::executor::stock_boundary(
                                 io,

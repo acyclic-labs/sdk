@@ -1,5 +1,35 @@
 use super::*;
 
+/// A canonical call and the original allocation custody of its adapted fields.
+/// The invocation is destroyed before its custody is released.
+#[derive(Debug)]
+pub struct CanonicalInvocation {
+    pub(crate) invocation: ToolInvocation,
+    pub(crate) custody: [crate::NativeCustody; 2],
+}
+
+impl CanonicalInvocation {
+    /// Retains the adapted arguments and identity fields on their original ledger.
+    pub fn new(
+        invocation: ToolInvocation,
+        arguments_custody: crate::NativeCustody,
+        identity_custody: crate::NativeCustody,
+    ) -> Self {
+        Self {
+            invocation,
+            custody: [arguments_custody, identity_custody],
+        }
+    }
+}
+
+impl std::ops::Deref for CanonicalInvocation {
+    type Target = ToolInvocation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.invocation
+    }
+}
+
 /// One admitted invocation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
