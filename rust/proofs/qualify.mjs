@@ -33,6 +33,11 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "ready-alarm-progress": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "an earlier committed deadline must rearm the shared dispatcher", [],
+  ],
   "ready-waker-custody": [
     "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
     "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
