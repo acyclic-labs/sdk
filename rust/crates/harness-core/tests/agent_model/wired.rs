@@ -18,10 +18,8 @@ use acyclic_harness_core::{
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath,
-    StreamProvider,
+    BoxProviderFuture, CommitId, CommitOutcome, CommittedEnvelope, IdempotencyKey,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError, StreamProvider,
 };
 use std::sync::Arc;
 
@@ -1545,7 +1543,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
             .phase,
         Phase::Idle
     );
-    let counted = acyclic_stream::testing::Counted::new(stream.clone());
+    let counted = acyclic_stream::testing::Counted::new((*stream).clone());
     let ledger = counted.ledger();
     let sample = ledger.start_sample();
     assert_eq!(
