@@ -9,7 +9,7 @@ async fn workspace_creation_recovers_at_every_provider_cut() -> Result<(), Box<d
             let objects = acyclic_objects::MemoryObjects::memory();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::LogicalObjectStore::new(Arc::new(objects)),
+                crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);

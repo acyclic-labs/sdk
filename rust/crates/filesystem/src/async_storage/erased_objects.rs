@@ -2,7 +2,7 @@
 //!
 //! Layers above the filesystem hold a [`SharedObjectStore`], so no backend type
 //! is threaded through them and no backend future is nested in theirs. Every
-//! [`AsyncObjectStore`] is a [`DynObjectStore`], and `dyn DynObjectStore`
+//! [`AsyncObjectStore`] is a [`DynObjectStore`], and the shared handle
 //! forwards back to [`AsyncObjectStore`]. Each asynchronous call through the
 //! erased form costs one boxed future.
 use crate::async_storage::{AsyncObjectStore, AuthorityWork, PublicationScope};
@@ -250,28 +250,28 @@ impl<T: AsyncObjectStore> DynObjectStore for T {
 // Every method forwards, defaults included, so an erased store keeps its
 // backend's own behaviour rather than the contract's defaults. The async
 // blocks name the call's two borrows, which one boxed lifetime cannot.
-impl AsyncObjectStore for dyn DynObjectStore + '_ {
+impl AsyncObjectStore for SharedObjectStore {
     fn requires_child_first_publication(&self) -> bool {
-        self.dyn_requires_child_first_publication()
+        self.0.dyn_requires_child_first_publication()
     }
     fn maximum_reference_bytes(&self) -> usize {
-        self.dyn_maximum_reference_bytes()
+        self.0.dyn_maximum_reference_bytes()
     }
     fn prepare_hashed(
         &self,
         object: HashedObject,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<HashedObject, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_prepare_hashed(object, context).await }
+        async move { self.0.dyn_prepare_hashed(object, context).await }
     }
     fn supports_decoded_cache(&self) -> bool {
-        self.dyn_supports_decoded_cache()
+        self.0.dyn_supports_decoded_cache()
     }
     fn decoded_cache_lookup(
         &self,
         key: crate::async_storage::DecodedCacheKey,
     ) -> Result<crate::async_storage::DecodedCacheLookup<'_>, ObjectStoreError> {
-        self.dyn_decoded_cache_lookup(key)
+        self.0.dyn_decoded_cache_lookup(key)
     }
     fn put(
         &self,
@@ -279,7 +279,7 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put(object_id, bytes, context).await }
+        async move { self.0.dyn_put(object_id, bytes, context).await }
     }
     fn put_stored(
         &self,
@@ -287,35 +287,35 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_stored(object_id, bytes, context).await }
+        async move { self.0.dyn_put_stored(object_id, bytes, context).await }
     }
     fn put_hashed(
         &self,
         object: HashedObject,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_hashed(object, context).await }
+        async move { self.0.dyn_put_hashed(object, context).await }
     }
     fn put_many(
         &self,
         writes: &[ObjectWrite],
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_many(writes, context).await }
+        async move { self.0.dyn_put_many(writes, context).await }
     }
     fn put_many_hashed(
         &self,
         objects: &[HashedObject],
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_put_many_hashed(objects, context).await }
+        async move { self.0.dyn_put_many_hashed(objects, context).await }
     }
     fn flush_before_publish(
         &self,
         scope: PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<PublicationHold, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_flush_before_publish(scope, context).await }
+        async move { self.0.dyn_flush_before_publish(scope, context).await }
     }
     fn historical_generation_evidence(
         &self,
@@ -326,14 +326,15 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Evidence, ObjectStoreError>> + ProviderTask {
         async move {
-            self.dyn_historical_generation_evidence(
-                authority_id,
-                record,
-                maximum_bytes,
-                maximum_objects,
-                context,
-            )
-            .await
+            self.0
+                .dyn_historical_generation_evidence(
+                    authority_id,
+                    record,
+                    maximum_bytes,
+                    maximum_objects,
+                    context,
+                )
+                .await
         }
     }
     fn read(
@@ -342,7 +343,7 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         maximum_bytes: u64,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read(object_id, maximum_bytes, context).await }
+        async move { self.0.dyn_read(object_id, maximum_bytes, context).await }
     }
     fn read_stored(
         &self,
@@ -351,7 +352,8 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<ObjectRead, ObjectStoreError>> + ProviderTask {
         async move {
-            self.dyn_read_stored(object_id, maximum_bytes, context)
+            self.0
+                .dyn_read_stored(object_id, maximum_bytes, context)
                 .await
         }
     }
@@ -360,34 +362,38 @@ impl AsyncObjectStore for dyn DynObjectStore + '_ {
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Reads, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read_many(requests, context).await }
+        async move { self.0.dyn_read_many(requests, context).await }
     }
     fn read_many_stored(
         &self,
         requests: &[ObjectReadRequest],
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<Reads, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_read_many_stored(requests, context).await }
+        async move { self.0.dyn_read_many_stored(requests, context).await }
     }
     fn contains(
         &self,
         object_id: ObjectId,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<bool, ObjectStoreError>> + ProviderTask {
-        async move { self.dyn_contains(object_id, context).await }
+        async move { self.0.dyn_contains(object_id, context).await }
     }
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
-        self.dyn_collection()
+        self.0.dyn_collection()
     }
     fn collection_sweeps(&self) -> u64 {
-        self.dyn_collection_sweeps()
+        self.0.dyn_collection_sweeps()
     }
 }
 
 /// A shared, type-erased object backend.
-pub type SharedObjectStore = std::sync::Arc<dyn DynObjectStore>;
+///
+/// The handle keeps erased backend lifetimes inside this boundary, so callers'
+/// futures capture a concrete shared owner rather than an unsized trait object.
+#[derive(Clone)]
+pub struct SharedObjectStore(std::sync::Arc<dyn DynObjectStore>);
 
 /// Erases one object backend into a [`SharedObjectStore`].
 pub fn shared_objects<O: AsyncObjectStore + 'static>(objects: O) -> SharedObjectStore {
-    std::sync::Arc::new(objects)
+    SharedObjectStore(std::sync::Arc::new(objects))
 }

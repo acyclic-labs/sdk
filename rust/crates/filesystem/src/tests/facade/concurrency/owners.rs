@@ -281,7 +281,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
             dispatch_gate: None,
             _retirement: None,
         },
-        Arc::clone(&volume.fs.inner.objects),
+        volume.fs.inner.objects.clone(),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -470,7 +470,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
             dispatch_gate: None,
             _retirement: None,
         },
-        Arc::clone(&volume.fs.inner.objects),
+        volume.fs.inner.objects.clone(),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -638,7 +638,7 @@ async fn check_successor_intake(
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: None,
         },
-        Arc::clone(&volume.fs.inner.objects),
+        volume.fs.inner.objects.clone(),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -826,7 +826,7 @@ async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> 
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: None,
         },
-        Arc::clone(&volume.fs.inner.objects),
+        volume.fs.inner.objects.clone(),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -932,7 +932,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
                 dispatch_gate: Some(Arc::clone(&gate)),
                 _retirement: None,
             },
-            Arc::clone(&volume.fs.inner.objects),
+            volume.fs.inner.objects.clone(),
             EmbeddedCapabilities::MEMORY,
         );
         let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -1061,7 +1061,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
             dispatch_gate: Some(Arc::clone(&gate)),
             _retirement: Some(Arc::new(Retirement(Some(retired)))),
         },
-        Arc::clone(&volume.fs.inner.objects),
+        volume.fs.inner.objects.clone(),
         EmbeddedCapabilities::MEMORY,
     );
     let actual = Arc::downgrade(&observer.inner);
