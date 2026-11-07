@@ -33,6 +33,11 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "dispatcher-clock-retirement": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::clock::running_dispatcher_reports_its_original_clock_retirement",
+    "dispatcher did not return its original retired clock failure", [],
+  ],
   "system-clock-runtime-retirement": [
     "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
     "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
