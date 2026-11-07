@@ -1,0 +1,18 @@
+diff --git a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+index e633e78d586..7312e06b96f 100644
+--- a/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/deadlines.rs
+@@ -66,7 +66,12 @@ impl Deadlines {
+     }
+ 
+     pub(super) fn first(&self) -> Option<(Instant, usize)> {
+-        completed(self.index.first(&mut Work(&self.counts))).map(|(_, value)| *value)
++        let first = completed(self.index.first(&mut Work(&self.counts)));
++        let mut cursor = first;
++        while let Some((key, _)) = cursor {
++            cursor = completed(self.index.seek_after(*key, &mut Work(&self.counts)));
++        }
++        first.map(|(_, value)| *value)
+     }
+ 
+     pub(super) fn remove(&mut self, key: Key) {

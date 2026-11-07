@@ -290,13 +290,31 @@ mod tests {
         drop(mixed);
 
         // Count the actual registry acquisitions at one and 100,000 live
-        // deadlines. Deadline ordering itself remains logarithmic; independent
-        // source admission and withdrawal visit just their original owner.
+        // deadlines. Deadline index work is bounded by the actual clock/token
+        // key width; source admission and withdrawal visit their original owner.
         for population in [1, 100_000] {
             let retained = (0..population)
                 .map(|_| pool.arm(&[], Some(deadline)))
                 .collect::<io::Result<Vec<_>>>()?;
             let live = reading.registry().armed.len();
+            let before = reading.registry().timers.examined();
+            let allocations = reading.registry().timers.allocations();
+            let deadline_wait = super::super::arm_on(reading, &[], Some(deadline))?;
+            let admitted = reading.registry().timers.examined() - before;
+            assert!(
+                admitted <= 25 * std::mem::size_of::<super::super::deadlines::Key>() as u64 + 3,
+                "deadline admission scanned the live population: {admitted}"
+            );
+            assert!(reading.registry().timers.allocations() - allocations <= 2);
+            let before = reading.registry().timers.examined();
+            let allocations = reading.registry().timers.allocations();
+            drop(deadline_wait);
+            let retired = reading.registry().timers.examined() - before;
+            assert!(
+                retired <= 17 * std::mem::size_of::<super::super::deadlines::Key>() as u64 + 1,
+                "deadline retirement scanned the live population: {retired}"
+            );
+            assert_eq!(reading.registry().timers.allocations(), allocations);
             let before = [
                 reading.locks.load(Ordering::Relaxed),
                 writing.locks.load(Ordering::Relaxed),

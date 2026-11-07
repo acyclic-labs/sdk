@@ -123,7 +123,9 @@ For example, the startup omission is checked on every supported platform:
 Source selection is one indexed lookup; admission and withdrawal touch only
 that original producer. One-source waits use one `Signal` allocation instead
 of a `Signal` plus a registration vector. Deadline-only waits retain one
-allocation. Multiple-source waits use one `Signal` plus one pre-sized vector
+`Signal` allocation, plus the bounded index backing described in
+[`native-deadline-index`](../native-deadline-index/README.md).
+Multiple-source waits use one `Signal` plus one pre-sized vector
 for the remaining registrations, and one live registry entry per source rather
 than one entry for the whole wait. Each entry requires one admission and one
 withdrawal lock; no operation visits all producers. A deadline-only selection
@@ -137,8 +139,9 @@ It removes the possible unbounded wait after a refused native registration.
 The shared startup latch and pool allocation are paid once. Native queues and
 threads grow from one to the number of available CPUs, independently of agents
 or wait history. Batch dispatch and terminal delivery remain proportional to
-the entries delivered. Hash indexes retain their amortized cost, and the
-existing `BTreeSet` deadline ordering remains logarithmic. These controls prove
-constant original-owner lookup and a fixed number of registry acquisitions;
-they do not claim worst-case constant allocation, hashing or deadline work.
+the entries delivered. Hash indexes retain their amortized cost. Deadline
+ordering uses the shared fixed-width index and its actual clock/key controls
+linked above. These ownership controls prove constant original-owner lookup
+and a fixed number of registry acquisitions; they do not claim worst-case
+constant allocation or hashing.
 Native Windows and macOS execution remain separate platform obligations.

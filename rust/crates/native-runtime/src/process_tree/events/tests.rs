@@ -25,12 +25,12 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
         let token = registry.next;
         assert!(
             registry
-                .registered(&hub.poller, token, &immediate, Some(earlier), true)
+                .registered(&hub.poller, token, &immediate, Some(earlier), true)?
                 .is_none()
         );
         assert!(registry.armed.is_empty());
         assert!(registry.positions.is_empty());
-        assert!(registry.timers.is_empty());
+        assert!(registry.timers.first().is_none());
     }
     let mut later = arm_on(&hub, &[], Some(distant))?;
     let mut ready = Vec::new();
@@ -73,11 +73,7 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
                 .positions
                 .contains_key(&first.first.as_ref().unwrap().token)
         );
-        assert!(
-            !registry
-                .timers
-                .contains(&(earlier, first.first.as_ref().unwrap().token))
-        );
+        assert_eq!(registry.timers.first().map(|(at, _)| at), Some(distant));
         assert!(
             registry
                 .positions
@@ -100,7 +96,10 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     {
         let registry = hub.registry();
         assert!(!registry.positions.contains_key(&cancelled_token));
-        assert!(!registry.timers.contains(&(distant, cancelled_token)));
+        assert_eq!(
+            registry.timers.first(),
+            Some((distant, later.first.as_ref().unwrap().token))
+        );
     }
     hub.dispatch(&mut ready, distant);
     assert!(notified.0.load(Ordering::Acquire));
@@ -111,7 +110,7 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     let registry = hub.registry();
     assert!(registry.armed.is_empty());
     assert!(registry.positions.is_empty());
-    assert!(registry.timers.is_empty());
+    assert!(registry.timers.first().is_none());
     Ok(())
 }
 
@@ -469,7 +468,7 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
     let registry = hub.registry();
     assert!(registry.armed.is_empty());
     assert!(registry.positions.is_empty());
-    assert!(registry.timers.is_empty());
+    assert!(registry.timers.first().is_none());
     drop(registry);
     drop((pending, early));
 

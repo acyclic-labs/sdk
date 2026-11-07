@@ -8,7 +8,7 @@
 //! the first of them to fire wakes the waiter. An async waiter costs a waker;
 //! a synchronous caller parks its own thread.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -81,6 +81,7 @@ impl Source<'_> {
     }
 }
 
+mod deadlines;
 mod outcome;
 mod pool;
 mod signal;
@@ -97,7 +98,7 @@ fn copy_error(error: &io::Error) -> io::Error {
 
 struct Armed {
     signal: Arc<Signal>,
-    wake_at: Option<Instant>,
+    deadline: Option<deadlines::Key>,
 }
 
 #[derive(Default)]
@@ -109,7 +110,7 @@ struct Registry {
     positions: HashMap<usize, usize>,
     #[cfg(unix)]
     sources: HashMap<SourceKey, usize>,
-    timers: BTreeSet<(Instant, usize)>,
+    timers: deadlines::Deadlines,
     failure: Option<Arc<io::Error>>,
 }
 
@@ -121,25 +122,27 @@ impl Registry {
         signal: &Arc<Signal>,
         wake_at: Option<Instant>,
         ready: bool,
-    ) -> Option<Failure> {
+    ) -> io::Result<Option<Failure>> {
         if ready {
-            return None;
+            return Ok(None);
         }
-        let earliest = wake_at.filter(|at| self.timers.first().is_none_or(|(first, _)| at < first));
-        if let Some(at) = wake_at {
-            self.timers.insert((at, token));
-        }
+        let earliest =
+            wake_at.is_some_and(|at| self.timers.first().is_none_or(|(first, _)| at < first));
+        let deadline = wake_at
+            .map(|at| self.timers.insert(at, token))
+            .transpose()?;
         self.positions.insert(token, self.armed.len());
         self.armed.push((
             token,
             Armed {
                 signal: Arc::clone(signal),
-                wake_at,
+                deadline,
             },
         ));
-        earliest
-            .and_then(|_| poller.notify().err())
-            .and_then(|error| self.fail(error))
+        Ok(earliest
+            .then(|| poller.notify())
+            .and_then(Result::err)
+            .and_then(|error| self.fail(error)))
     }
 
     fn remove(&mut self, token: usize) -> Option<Armed> {
@@ -148,8 +151,8 @@ impl Registry {
         if let Some((moved, _)) = self.armed.get(position) {
             self.positions.insert(*moved, position);
         }
-        if let Some(at) = armed.wake_at {
-            self.timers.remove(&(at, token));
+        if let Some(key) = armed.deadline {
+            self.timers.remove(key);
         }
         Some(armed)
     }
@@ -363,14 +366,14 @@ impl Hub {
                     fired.push((armed.signal, ProcessWaitOutcome::Ready));
                 }
             }
-            while let Some(&(at, token)) = registry.timers.first() {
+            while let Some((at, token)) = registry.timers.first() {
                 if at > now {
                     break;
                 }
                 if let Some(armed) = registry.remove(token) {
                     fired.push((armed.signal, ProcessWaitOutcome::Deadline));
                 } else {
-                    registry.timers.remove(&(at, token));
+                    unreachable!("a deadline retains its original armed registration");
                 }
             }
         }
@@ -571,7 +574,7 @@ impl<'a> Wait<'a> {
                 ready = entry._native.is_none();
             }
             let failure =
-                registry.registered(&hub.poller, entry.token, &self.signal, wake_at, ready);
+                registry.registered(&hub.poller, entry.token, &self.signal, wake_at, ready)?;
             (ready, failure)
         };
         if self.first.is_none() {

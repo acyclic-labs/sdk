@@ -515,7 +515,7 @@ mod tests {
         let registry = hub.registry();
         assert!(registry.armed.is_empty());
         assert!(registry.positions.is_empty());
-        assert!(registry.timers.is_empty());
+        assert!(registry.timers.first().is_none());
         Ok(())
     }
 }
