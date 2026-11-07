@@ -37,8 +37,9 @@ The `fuzz` package includes the production attribute parser directly. Its
 `serde_attributes` target exercises all four metadata parsers and compares
 transparent field selection with Serde's own checked serialization AST. The
 `wire-item.rs` corpus entry is captured from `rust/crates/model-render/src/item.rs`
-(`WireItem`, including its skipped cache); the two unit-marker entries are copied
-from that file's Serde attributes. The remaining entries cover the named,
+(`WireItem`, including its skipped cache); `request.rs` is the original private
+reservation `Request` enum in `rust/crates/actors/src/reservation.rs`, including
+its tagged representation and ingress restriction. The remaining entries cover the named,
 marker-only and invalid container shapes used by the representation control.
 Run `cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/vendor/ts-rs-macros-12.0.1/fuzz --features fuzzing serde_attributes --target x86_64-unknown-linux-gnu --dev -- -runs=0`
 to replay that corpus with coverage instrumentation. The selection mutation must
