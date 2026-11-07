@@ -134,8 +134,8 @@ fn descriptor_limit() -> u64 {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: getrlimit writes only the struct it is given.
     #[allow(unsafe_code, reason = "FFI: getrlimit")]
+    // SAFETY: getrlimit writes only the struct it is given.
     let status = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
     if status == 0 { limit.rlim_cur } else { 0 }
 }

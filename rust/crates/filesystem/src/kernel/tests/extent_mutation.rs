@@ -2,7 +2,7 @@ use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::kernel::extent::extent_page_encoded_length;
-use crate::kernel::{ExtentChild, decode_extent_page, encode_extent_page};
+use crate::kernel::{ExtentChild, decode_extent_page};
 use crate::memory::MemoryObjectStore;
 
 use crate::storage::object_digest;

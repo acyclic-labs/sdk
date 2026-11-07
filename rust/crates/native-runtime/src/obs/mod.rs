@@ -129,7 +129,11 @@ impl OperationSpan {
         // A registry span can be enabled while one of its layers filters it.
         // Enter the retained caller as well so that layer keeps its ancestry.
         with_dispatch(&self.dispatch, || {
-            self.caller.in_scope(|| self.span.in_scope(work))
+            // Enter guards retain the same unwind order without forwarding a
+            // potentially large producer result through two more closures.
+            let _caller = self.caller.enter();
+            let _operation = self.span.enter();
+            work()
         })
     }
     /// Release a completed operation while retaining its originating caller for

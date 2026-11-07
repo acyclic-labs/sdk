@@ -11,7 +11,7 @@ use crate::kernel::{
 use crate::kernel::{
     Extent, ExtentKind, ExtentPage, GenerationExportManifestError, LogicalName, NameEncoding,
     PublicationEvidenceError, TreeEntry, decode_generation_publication_evidence,
-    encode_extent_page, encode_generation_publication_evidence, prove_generation_closure,
+    encode_generation_publication_evidence, prove_generation_closure,
 };
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::model::{Lifecycle, VolumeConfig};

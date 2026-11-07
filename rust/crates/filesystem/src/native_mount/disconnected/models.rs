@@ -16,30 +16,40 @@ fn check_case(name: &str, scenario: impl Fn() + Send + Sync + 'static) {
     }
 }
 
-fn remount(
-    destination: &Path,
-    kernel: &kernel::Kernel,
-) -> Result<MountDestinationGuard, NativeMountError> {
-    let work = NativeMaterializationWork::new(
+#[inline(never)]
+fn work() -> Result<Box<NativeMaterializationWork>, NativeMountError> {
+    NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
-    .map_err(|(error, _)| NativeMountError::from(error))?;
-    let mut guard = None;
+    .map(Box::new)
+    .map_err(|(error, _)| NativeMountError::from(error))
+}
+
+// Keep independent model phases out of the caller's coroutine frame.
+#[inline(never)]
+fn remount(
+    destination: &Path,
+    kernel: &kernel::Kernel,
+) -> Result<Box<Option<MountDestinationGuard>>, NativeMountError> {
+    let work = work()?;
+    // Recovery runs while this owner remains live. Keep both its construction
+    // slot and return value off the coroutine stack, without releasing custody.
+    let mut guard = Box::new(None);
     // The startup path's actual acquisition, including registry, physical fence
     // files and work accounting. Only the subsequent mount syscall is fake.
     MountDestinationGuard::acquire_with_work(destination, true, &work, &mut guard, false)?;
     kernel.mount();
-    guard.ok_or(NativeMountError::ControlPending)
+    if guard.is_some() {
+        Ok(guard)
+    } else {
+        Err(NativeMountError::ControlPending)
+    }
 }
 
-fn scenario(
-    destination: &Path,
-    base: rustix::fs::Statx,
-    helper_stat: rustix::fs::Stat,
-    broken: bool,
-) {
-    let kernel = kernel::Kernel::install(base, helper_stat, broken, true);
+#[inline(never)]
+fn scenario(destination: &Path, base: rustix::fs::Statx, helper_stat: rustix::fs::Stat) {
+    let kernel = kernel::Kernel::install(base, helper_stat, true);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let peer_kernel = kernel.clone();
     let peer_destination = destination.to_path_buf();
@@ -62,13 +72,14 @@ fn scenario(
     kernel.assert_safe();
 }
 
+#[inline(never)]
 fn remount_first(
     destination: &Path,
     base: rustix::fs::Statx,
     helper_stat: rustix::fs::Stat,
     retained: bool,
 ) {
-    let kernel = kernel::Kernel::install(base, helper_stat, false, false);
+    let kernel = kernel::Kernel::install(base, helper_stat, false);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let mounted = remount(destination, &kernel).unwrap();
     if retained {
@@ -119,25 +130,9 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
             move || remount_first(&contended_destination, base, helper_stat, retained),
         );
     }
-    let positive_destination = destination.clone();
     check_case("recovery-first", move || {
-        scenario(&positive_destination, base, helper_stat, false)
+        scenario(&destination, base, helper_stat)
     });
-    let error = std::panic::catch_unwind(move || {
-        check_case("early-release", move || {
-            scenario(&destination, base, helper_stat, true)
-        })
-    })
-    .expect_err("early release of the real fence was accepted");
-    let message = error
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| error.downcast_ref::<&str>().copied())
-        .unwrap_or("");
-    assert!(
-        message.contains("helper detached a live remount after early fence release")
-            || message.contains("remount acquired the fence before helper exit")
-            || message.contains("recovery fence released before helper exit"),
-        "{message}"
-    );
+    // The kept recovery-early-release source mutation runs these same custody
+    // assertions against the production ordering, without a test-only branch.
 }

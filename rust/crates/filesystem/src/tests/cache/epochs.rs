@@ -47,10 +47,7 @@ async fn original_fill_epoch_survives_clear_reply_loss_and_reentrant_destruction
             }
             let (release, receiver) = tokio::sync::oneshot::channel();
             let cache = CachedObjectStore::new(
-                PausedStore {
-                    inner: Arc::clone(&inner),
-                    release: std::sync::Mutex::new(Some(receiver)),
-                },
+                PausedStore::new(Arc::clone(&inner), Some(receiver)),
                 options(4, 128),
             )?;
             let peer = cache.share_cache_with(())?;

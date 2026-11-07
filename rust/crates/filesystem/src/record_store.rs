@@ -8,6 +8,12 @@ pub(crate) trait Revisioned {
     fn revision(&self) -> u64;
 }
 
+impl<V: Revisioned> Revisioned for Box<V> {
+    fn revision(&self) -> u64 {
+        (**self).revision()
+    }
+}
+
 macro_rules! revisioned {
     ($($type:ty),+ $(,)?) => {$(
         impl Revisioned for $type {
@@ -46,7 +52,9 @@ pub(crate) struct Poisoned;
 /// Process-local revision-checked record map behind every memory adapter.
 /// Lock order: a leaf lock. No other record lock, callback, or await is held
 /// inside `locked`; callers receive owned values after releasing the guard.
-pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, V>>);
+// A B-tree node holds several values. Keep record bodies out of insertion and
+// split frames even when a revisioned record contains a large pending action.
+pub(crate) struct MemoryRecords<K, V>(pub(crate) Mutex<BTreeMap<K, Box<V>>>);
 
 impl<K, V> Default for MemoryRecords<K, V> {
     fn default() -> Self {
@@ -55,7 +63,7 @@ impl<K, V> Default for MemoryRecords<K, V> {
 }
 
 impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
-    fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, V>) -> T) -> Result<T, Poisoned> {
+    fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, Box<V>>) -> T) -> Result<T, Poisoned> {
         self.0
             .lock()
             .map(|mut records| action(&mut records))
@@ -63,7 +71,7 @@ impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
     }
 
     pub(crate) fn load(&self, key: &K) -> Result<Option<V>, Poisoned> {
-        self.locked(|records| records.get(key).cloned())
+        self.locked(|records| records.get(key).map(|record| (**record).clone()))
     }
 
     pub(crate) fn keys(&self) -> Result<Vec<K>, Poisoned> {
@@ -80,7 +88,14 @@ impl<K: Ord + Clone, V: Clone + Revisioned> MemoryRecords<K, V> {
         self.locked(|records| {
             let matched = stored_revision(records, &key) == expected;
             if matched {
-                records.insert(key, replacement);
+                match records.entry(key) {
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        **entry.get_mut() = replacement;
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(Box::new(replacement));
+                    }
+                }
             }
             matched
         })
