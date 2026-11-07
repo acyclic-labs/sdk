@@ -51,7 +51,7 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
     let (right_run, right_view) = claim(&mut right, cwd, "shared", spawn())
         .map_err(|cause| failed("parent-scoped child reference", cause))?;
     assert_ne!(left_task, right_run.claim.agent);
-    let mut nested = NativeChildren::own(host, cwd, left_task.clone(), Vec::new())?;
+    let mut nested = NativeChildren::own(host, cwd, left_task.clone(), left.flags.clone())?;
     let (nested_run, nested_view) = claim(&mut nested, cwd, "shared", spawn())?;
     assert!(nested_run.claim.agent.is_child_of(&left_task));
     let events = match host {
@@ -417,22 +417,23 @@ pub(super) fn children(
         },
     )?;
     let parent: AgentPath = serde_json::from_value(root["task"].clone())?;
-    let held = acyclic_fs::hold_root(cwd)?.create_directories(
-        &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
-        acyclic_fs::NativeDurability::Durable,
-    )?;
-    let ownership = FileLock::try_acquire(
-        held.open_file(Path::new("fixture.lock"), true)?,
-        FileLockMode::Exclusive,
-    )?;
-    let sessions = NativeChildren::with(
-        host,
-        cwd.to_path_buf(),
-        parent.clone(),
-        Vec::new(),
-        ownership,
-        held,
-    );
+    let policy: &[&str] = match host {
+        "codex" => &[
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+        ],
+        "claude-code" => &["--settings", "{}", "--permission-mode", "default"],
+        "pi" => &[],
+        _ => return Err(failed("select native host policy", host)),
+    };
+    let supplied = policy
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let flags = launch::parent_flags(host, &supplied, cwd)?;
+    let sessions = NativeChildren::own(host, cwd, parent.clone(), flags)?;
     Ok((sessions, parent))
 }
 
