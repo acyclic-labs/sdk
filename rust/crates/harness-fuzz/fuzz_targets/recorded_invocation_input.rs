@@ -12,19 +12,12 @@ use acyclic_harness::{
     model::{ModelContentPart, ToolCall, ToolResultContent},
     projection::{SelectedModelContext, select_model_context},
     resources::ProviderRef,
-    tool::{ToolInvocation, ToolResult},
+    tool::ToolResult,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, marker::PhantomData};
 
-#[derive(Deserialize, Serialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
-#[serde(deny_unknown_fields)]
-pub struct Record {
-    pub invocation: ToolInvocation,
-    pub metadata: Value,
-}
+pub use acyclic_harness::tool::RecordedInvocation as Record;
 
 struct Resolver(BTreeMap<String, Vec<u8>>);
 impl ContentResidencyVerifier for Resolver {
@@ -68,6 +61,13 @@ fn reference(path: &str, bytes: &[u8]) -> FileRef {
 }
 
 pub fn assert_replay(record: Record, limits: Limits) {
+    // This vector exercises provisional model admission, before dispatch binds
+    // the execution target and filesystem authority into the same envelope.
+    let record = Record {
+        target: None,
+        filesystem: None,
+        ..record
+    };
     if record
         .invocation
         .validate_recorded(&record.metadata, limits, None)
@@ -208,6 +208,10 @@ pub fn check(data: &[u8]) {
         &mut |_| Ok(()),
     );
     if let Ok(record) = parsed {
+        // Retain every field when reading an already bound durable envelope.
+        let encoded = serde_json::to_vec(&record).unwrap();
+        let decoded: Record = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
         assert_replay(
             record,
             Limits {

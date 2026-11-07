@@ -4,7 +4,7 @@ use acyclic_harness_client::{AgentCommand, ExecutionPosition, ExecutionQuery, Re
 use acyclic_harness_core::{
     agent::AgentPath,
     executor::{ExecutionEvent, ExecutionPayloadField},
-    tool::{ToolInvocation, ToolResult},
+    tool::{RecordedInvocation, ToolResult},
 };
 
 pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u64) -> Result {
@@ -46,18 +46,26 @@ pub(super) async fn verify(endpoint: &dyn Endpoint, agent: &AgentPath, input: u6
             }
             match &record.event {
                 ExecutionEvent::ToolStarted { step, call_id, .. } => {
-                    let mut recorded: serde_json::Value = serde_json::from_slice(
-                        &read(
-                            endpoint,
-                            agent,
-                            input,
-                            record.sequence,
-                            ExecutionPayloadField::Invocation,
-                        )
-                        .await?,
-                    )?;
-                    let invocation: ToolInvocation =
-                        serde_json::from_value(recorded["invocation"].take())?;
+                    let bytes = read(
+                        endpoint,
+                        agent,
+                        input,
+                        record.sequence,
+                        ExecutionPayloadField::Invocation,
+                    )
+                    .await?;
+                    let recorded: RecordedInvocation = serde_json::from_slice(&bytes)?;
+                    // Mutate the actual producer's envelope, not a parallel
+                    // fixture. Readers must reject an unknown outer field even
+                    // when its original invocation remains valid.
+                    let mut foreign: serde_json::Value = serde_json::from_slice(&bytes)?;
+                    foreign["foreign_invocation_authority"] = true.into();
+                    if serde_json::from_value::<RecordedInvocation>(foreign).is_ok() {
+                        return Err(
+                            "execution invocation accepted foreign envelope authority".into()
+                        );
+                    }
+                    let invocation = recorded.invocation;
                     if pending.is_some()
                         || invocation.call_id != *call_id
                         || invocation.name != TOOL

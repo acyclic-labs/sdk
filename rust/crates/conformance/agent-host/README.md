@@ -85,3 +85,11 @@ the existing `local::local_native` vector must then fail with
 `execution cursor retired an input without its actor fence`. This control
 derives its page from the real serving result; it introduces no alternate
 execution model or readiness loop.
+
+Original invocation payloads use the public
+`acyclic_harness_core::tool::RecordedInvocation` persistence envelope, including
+provider metadata and retained execution authority. The same production decoder
+also serves the retained `recorded_invocation` fuzz target. The public serving
+vector rejects an unknown outer field derived from its actual invocation bytes;
+`mutations/execution_invocation_authority_loss.patch` removes that decoder guard
+and must fail with `execution invocation accepted foreign envelope authority`.

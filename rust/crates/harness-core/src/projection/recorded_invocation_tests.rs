@@ -16,6 +16,8 @@ fn record(arguments: Value, metadata: Value) -> Record {
             arguments,
         },
         metadata,
+        target: None,
+        filesystem: None,
     }
 }
 
