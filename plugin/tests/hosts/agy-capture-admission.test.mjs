@@ -26,10 +26,10 @@ test("native AGY refuses a failed shared capture before provider admission and a
   let step = "create exclusive native profile";
   const scope = new Processes();
   try {
-    root = hostFixtureDirectory("agy capture admission ");
-    const workspace = join(root, "workspace"), profile = join(root, "profile");
+    root = hostFixtureDirectory("agy-capture-admission-");
+    const workspace = join(root, "workspace with spaces"), profile = join(root, "profile with spaces");
     await mkdir(workspace);
-    const bins = join(root, "bin"); await mkdir(bins);
+    const bins = join(root, "bin with spaces"); await mkdir(bins);
     const agy = join(bins, process.platform === "win32" ? "agy.exe" : "agy");
     // The native host self-updates. Its mutable installation belongs to this
     // fixture; the caller's retained executable must stay unchanged.
@@ -74,7 +74,7 @@ test("native AGY refuses a failed shared capture before provider admission and a
       assert.equal(version.code, 0, version.stderr);
       assert.equal(version.stdout.trim(), "1.5.2", "use the native release that produced the retained hook corpus");
       step = "install the shipping package through the native plugin manager";
-      const staged = await nativePackage(binary, join(root, "package"))();
+      const staged = await nativePackage(binary, join(root, "package with spaces"))();
       const installed = await run(staged.executable, ["install", "agy", "--plugin-root", staged.packageRoot]);
       assert.equal(installed.code, 0, installed.stderr);
       step = "start the original shared workspace owner";
