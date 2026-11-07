@@ -189,7 +189,7 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         .await?;
     let id = volume_authority_id(workspace.id().volume_id());
     let empty = acyclic_objects::MemoryObjects::memory();
-    let current_only = crate::LogicalObjectStore::new(Arc::new(empty));
+    let current_only = crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(empty)));
     assert!(matches!(
         page(
             &authority,
@@ -227,8 +227,9 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         page(&authority, &current_only, id, cursor(&durable[0])?, 1).await,
         Err(AccountingError::Filesystem(_))
     ));
-    let initial_only =
-        crate::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()));
+    let initial_only = crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(
+        acyclic_objects::MemoryObjects::memory(),
+    )));
     super::archive::copy_generation(
         &objects,
         &initial_only,

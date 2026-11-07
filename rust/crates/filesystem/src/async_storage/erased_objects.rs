@@ -250,7 +250,7 @@ impl<T: AsyncObjectStore> DynObjectStore for T {
 // Every method forwards, defaults included, so an erased store keeps its
 // backend's own behaviour rather than the contract's defaults. The async
 // blocks name the call's two borrows, which one boxed lifetime cannot.
-impl AsyncObjectStore for dyn DynObjectStore {
+impl AsyncObjectStore for dyn DynObjectStore + '_ {
     fn requires_child_first_publication(&self) -> bool {
         self.dyn_requires_child_first_publication()
     }

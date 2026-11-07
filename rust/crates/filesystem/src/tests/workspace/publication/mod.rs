@@ -166,10 +166,7 @@ impl acyclic_stream::StreamProvider for CutStream {
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_stream::NativeStreamProvider for CutStream {}
 
-type CutFs = Fs<
-    crate::distributed::StreamAuthorityStore<CutStream>,
-    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
->;
+type CutFs = Fs<crate::distributed::StreamAuthorityStore<CutStream>, crate::MemoryObjectBackend>;
 
 async fn first_fork_record(
     stream: &Arc<acyclic_stream::MemoryStream>,
@@ -199,7 +196,7 @@ async fn assert_fork_state_exact(
     stream: &Arc<acyclic_stream::MemoryStream>,
     source: &crate::Generation<
         crate::distributed::StreamAuthorityStore<CutStream>,
-        crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
+        crate::MemoryObjectBackend,
     >,
     source_volume: crate::foundation::VolumeId,
     destination: WorkspaceId,
@@ -276,7 +273,7 @@ async fn fork_through_every_cut(
             let objects = acyclic_objects::MemoryObjects::memory();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::LogicalObjectStore::new(Arc::new(objects)),
+                crate::shared_objects(crate::LogicalObjectStore::new(Arc::new(objects))),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             let main = unbounded!(fs, create_workspace("repo"))?;
