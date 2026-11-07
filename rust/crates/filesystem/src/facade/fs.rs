@@ -279,7 +279,7 @@ pub type MemoryFs = Fs<MemoryAuthorityBackend, MemoryObjectBackend>;
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Filesystem authority adapter backed by the public in-memory Stream provider.
 pub type MemoryAuthorityBackend =
-    crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
+    crate::distributed::StreamAuthorityStore<dyn crate::distributed::AuthorityProvider>;
 
 #[cfg(any(test, all(feature = "memory", feature = "distributed")))]
 /// Shared filesystem object adapter backed by the public in-memory Objects provider.

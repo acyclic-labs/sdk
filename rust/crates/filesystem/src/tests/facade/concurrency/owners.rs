@@ -3,7 +3,7 @@ use super::*;
 
 #[derive(Clone)]
 struct ForeignOwner {
-    inner: Arc<crate::StreamAuthorityStore<acyclic_stream::MemoryStream>>,
+    inner: Arc<crate::MemoryAuthorityBackend>,
     claims: Arc<acyclic_stream::OperationClaims>,
     forbid_probe: Arc<std::sync::atomic::AtomicBool>,
     racing_operation: Option<OperationId>,

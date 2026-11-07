@@ -24,7 +24,7 @@ impl Fixture {
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let objects = acyclic_objects::MemoryObjects::memory();
         let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects));
-        let authority = acyclic_fs::distributed::StreamAuthorityStore::new(stream);
+        let authority = acyclic_fs::MemoryAuthorityBackend::new(stream);
         let provider = ProviderRef::new(
             "retention".into(),
             "filesystem".into(),
