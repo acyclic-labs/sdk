@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/wall_alarm/wait.rs
++++ b/rust/crates/native-runtime/src/wall_alarm/wait.rs
+@@ -53,7 +53,7 @@
+                         "step=wall-alarm-wait; recovery=restart the lost alarm owner",
+                     )
+                 })?
+-                .map_err(|error| retained_error(&error))
++                .map_err(|error| retained_error(&error)).or(Ok::<(), io::Error>(()))
+         })
+     }
+ }
