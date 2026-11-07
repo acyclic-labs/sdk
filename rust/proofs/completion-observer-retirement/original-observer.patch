@@ -1,0 +1,19 @@
+diff --git b/rust/crates/native-runtime/src/completion/mod.rs a/rust/crates/native-runtime/src/completion/mod.rs
+index 6ad1b51eaae..55338b5df9f 100644
+--- b/rust/crates/native-runtime/src/completion/mod.rs
++++ a/rust/crates/native-runtime/src/completion/mod.rs
+@@ -339,12 +339,10 @@ impl<T> Drop for NativeCompletion<T> {
+             completion.complete_after(self.predecessor.take());
+         }
+         if let Some(state) = &self.state {
+-            let retired = state
++            state
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+-                .waker
+-                .take();
+-            drop(retired);
++                .waker = None;
+         }
+         let Some(waiter) = self.waiter.take() else {
+             return;

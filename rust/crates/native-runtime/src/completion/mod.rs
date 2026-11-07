@@ -339,10 +339,12 @@ impl<T> Drop for NativeCompletion<T> {
             completion.complete_after(self.predecessor.take());
         }
         if let Some(state) = &self.state {
-            state
+            let retired = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .waker = None;
+                .waker
+                .take();
+            drop(retired);
         }
         let Some(waiter) = self.waiter.take() else {
             return;

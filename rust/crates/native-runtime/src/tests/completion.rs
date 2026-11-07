@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn cancelled_original_driver_retires_observer_outside_completion_lock() -> io::Result<()> {
+    struct Observer {
+        dropped: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl Wake for Observer {
+        fn wake(self: Arc<Self>) {}
+    }
+    impl Drop for Observer {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+            if self.panic {
+                std::panic::panic_any("original driver observer retirement");
+            }
+        }
+    }
+
+    for panic in [false, true] {
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let meter: Arc<dyn NativeReadMeter> = budget.clone();
+        let (mut observation, producer) = NativeCompletion::<usize>::from_driver(&meter)?;
+        let original = Arc::clone(observation.state.as_ref().unwrap());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let waker = Waker::from(Arc::new(Observer {
+            dropped: Arc::clone(&dropped),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut observation)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(observation)));
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "original observer was retained"
+        );
+        assert!(
+            original.try_lock().is_ok(),
+            "original observer was destroyed under the completion lock"
+        );
+        if panic {
+            assert_eq!(
+                retired.unwrap_err().downcast_ref::<&str>(),
+                Some(&"original driver observer retirement")
+            );
+        } else {
+            assert!(retired.is_ok());
+        }
+        // Observer cancellation cannot consume the original driver's physical
+        // terminal custody or release its allocation before publication.
+        assert!(budget.memory.load(Ordering::Acquire) > 0);
+        producer.complete(Ok(37));
+        drop(original);
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn original_driver_publication_preserves_terminal_wake_and_allocation_custody() -> io::Result<()> {
     #[derive(Default)]
     struct ObservedWake(AtomicU64);
