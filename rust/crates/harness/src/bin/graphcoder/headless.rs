@@ -17,6 +17,16 @@ use std::{
 };
 
 type Failure = Box<dyn std::error::Error>;
+use acyclic_harness::completion::Exit;
+
+/// A settled line's error as one stderr reason, naming its prompt.
+fn id_error(line: &Value, error: &Value) -> String {
+    let id = line.get("id").and_then(Value::as_str).unwrap_or("?");
+    match error.as_str() {
+        Some(error) => format!("prompt {id} failed: {error}"),
+        None => format!("prompt {id} failed: {error}"),
+    }
+}
 use acyclic_harness::client::ExecutionPosition;
 
 mod input;
@@ -508,7 +518,7 @@ pub(super) async fn prompt(
     operation: &str,
     prompt: &str,
     output: &mut Output,
-) -> Result<u8, Failure> {
+) -> Result<(), Failure> {
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(operation, prompt).await?;
     // Stdin is read only once an approval asks for an answer.
@@ -537,14 +547,7 @@ pub(super) async fn prompt(
                 continue;
             }
         };
-        diagnostic(
-            &mut diagnostics,
-            acyclic_native_runtime::InheritedOutput::stderr,
-            conversation.task(),
-            format!("graphcoder: {reason}\n"),
-        )
-        .await?;
-        return Ok(1);
+        return Err(Box::new(Exit::failed(reason)));
     }
 }
 
@@ -591,11 +594,17 @@ async fn print(
     conversation: &Conversation,
     entry: &ConversationEntry,
     output: &mut Output,
-) -> Result<u8, Failure> {
+) -> Result<(), Failure> {
     let mut text = conversation.output_text(entry).await?;
     text.push('\n');
     output.write(conversation.task(), text.into_bytes()).await?;
-    Ok(u8::from(!entry.outcome.is_completed()))
+    if entry.outcome.is_completed() {
+        return Ok(());
+    }
+    Err(Box::new(Exit::failed(format!(
+        "the turn {:?}",
+        entry.outcome
+    ))))
 }
 
 /// The printed answer of prompt `id`, settled as `entry`.
@@ -749,12 +758,25 @@ struct Outstanding {
     uncertain: Vec<(String, String, String)>,
     /// The reason the agent ended, once a status said so.
     finished: Option<String>,
-    failed: bool,
+    /// The first prompt failure; the exit reports it.
+    failed: Option<String>,
     schema: Option<acyclic_harness::model::OutputSchema>,
     final_output: Option<std::path::PathBuf>,
 }
 
 impl Outstanding {
+    fn fail(&mut self, reason: String) {
+        self.failed.get_or_insert(reason);
+    }
+
+    /// The run's exit: success, or the first prompt failure as its reason.
+    fn exit(&mut self) -> Result<(), Failure> {
+        match self.failed.take() {
+            None => Ok(()),
+            Some(reason) => Err(Box::new(Exit::failed(reason))),
+        }
+    }
+
     async fn settle(
         &mut self,
         conversation: &Conversation,
@@ -783,7 +805,9 @@ impl Outstanding {
         };
         match line {
             Some(line) => {
-                self.failed |= line.get("error").is_some();
+                if let Some(error) = line.get("error") {
+                    self.fail(id_error(&line, error));
+                }
                 let line = final_value(line, self.schema.as_ref(), self.final_output.as_deref())?;
                 emit(output, &line, self.events_operation.as_deref()).await?;
                 Ok(true)
@@ -811,7 +835,7 @@ impl Outstanding {
             // A refused prompt, such as an unknown `/name`, is its own
             // record; the stream goes on.
             Sent::Refused(reason) => {
-                self.failed = true;
+                self.fail(format!("prompt {id} refused: {reason}"));
                 emit(
                     output,
                     &json!({"id": id, "error": reason}),
@@ -874,7 +898,7 @@ pub(super) async fn jsonl(
     schema: Option<acyclic_harness::model::OutputSchema>,
     final_output: Option<std::path::PathBuf>,
     input_format: super::args::InputFormat,
-) -> Result<u8, Failure> {
+) -> Result<(), Failure> {
     let mut framed = EventOutput {
         writer: output,
         task: conversation.task(),
@@ -986,7 +1010,7 @@ pub(super) async fn jsonl(
                         && export.position.input >= export.cut.max(outstanding.accepted_tail)
                 });
                 match &projection {
-                    None => return Ok(u8::from(outstanding.failed)),
+                    None => return outstanding.exit(),
                     Some(projection) if drain.is_none() && execution_complete => {
                         // This single reopen establishes opening cuts after every
                         // input settled. The follows themselves deliver the cuts;
@@ -1005,11 +1029,11 @@ pub(super) async fn jsonl(
                     {
                         emit(
                             output,
-                            &json!({"kind": "completed", "success": !outstanding.failed}),
+                            &json!({"kind": "completed", "success": outstanding.failed.is_none()}),
                             event_operation,
                         )
                         .await?;
-                        return Ok(u8::from(outstanding.failed));
+                        return outstanding.exit();
                     }
                     Some(_) => {}
                 }
@@ -1175,7 +1199,7 @@ pub(super) async fn jsonl(
                 // until stdin closes.
                 if let Some(reason) = ended {
                     for (inbox, (_, id)) in std::mem::take(&mut outstanding.pending) {
-                        outstanding.failed = true;
+                        outstanding.fail(format!("prompt {id} failed: {reason}"));
                         emit(
                             output,
                             &json!({"id": id, "inbox": inbox, "error": reason}),
@@ -1406,7 +1430,7 @@ mod tests {
                 .await;
                 entered.send(()).unwrap();
                 writing.await?;
-                Ok(0)
+                Ok(())
             };
             let host = async {
                 let mut owner = BufReader::new(owner);
@@ -1453,8 +1477,14 @@ mod tests {
                 host,
             );
             match terminal {
-                Terminal::Cancel => assert_eq!(result?, 143),
-                Terminal::Drain => assert_eq!(result?, 0),
+                Terminal::Cancel => assert_eq!(
+                    result
+                        .unwrap_err()
+                        .downcast_ref::<acyclic_harness::completion::Exit>()
+                        .map(|exit| exit.code().get()),
+                    Some(143)
+                ),
+                Terminal::Drain => result?,
                 Terminal::ReaderLost => assert_eq!(
                     result
                         .unwrap_err()

@@ -357,6 +357,8 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let refused = graphcoder(&nested, &model.catalog, vec!["doctor"], "").await;
     let stdout = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(1), "{stdout}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("1 startup refusal(s)"), "{stderr}");
     assert!(
         stdout.starts_with("refused: ")
             && stdout.contains("separate from the checkout")
@@ -393,6 +395,11 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
                 .map(|line| serde_json::from_str::<Value>(line).unwrap())
                 .collect::<Vec<_>>();
             assert_eq!(output.status.success(), !refused, "{output:?}");
+            // A nonzero exit carries its reason on stderr in both formats.
+            if refused {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains(": prompt refused refused: "), "{stderr}");
+            }
             let results = records
                 .iter()
                 .filter(|record| record["id"] == "refused")
