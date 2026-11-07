@@ -121,10 +121,15 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
         incoming: createClient(StreamSessionService, transport).session(input, { signal }),
         async fail(error: unknown): Promise<never> {
           if (!signal.aborted && !statusReceived && rpc !== undefined) {
-            // Finish our request half without replacing the peer's reset code.
-            // The response has ended or failed; the same RPC produces close.
-            rpc.end();
-            await closed;
+            // The peer's close carries its final reset code. Local cleanup
+            // would replace it; only caller cancellation may close this RPC.
+            const request = rpc;
+            const abort = (): void => request.close(constants.NGHTTP2_CANCEL);
+            signal.addEventListener("abort", abort, { once: true });
+            try {
+              if (signal.aborted) abort();
+              await closed;
+            } finally { signal.removeEventListener("abort", abort); }
           }
           const interrupted = !signal.aborted && !statusReceived
             && ((connection !== undefined && (connection.closed || connection.destroyed))
