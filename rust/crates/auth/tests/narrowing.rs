@@ -433,3 +433,61 @@ fn billed_execution_requires_one_surviving_owner_for_every_allowance() {
         "separate allowances cannot select different execution owners"
     );
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn execution_allowances_require_one_eligible_grant(
+        ceilings in proptest::array::uniform3((
+            proptest::option::of(0_u64..4),
+            proptest::option::of(0_u64..4),
+            proptest::option::of(0_u64..4),
+        )),
+        requested in (0_u64..4, 0_u64..4, 0_u64..4),
+        masks in proptest::array::uniform2(1_u8..4),
+    ) {
+        let owners = ["actors/a", "managed_agents/a", "actors/b"];
+        let grants = ceilings.iter().zip(owners).map(|(&(cpu, memory, concurrency), owner)| {
+            let mut grant = owned_execution("execution/job-execute", owner);
+            if let GrantKind::Execution(execution) = &mut grant.kind {
+                execution.cpu_millis = cpu;
+                execution.memory_bytes = memory;
+                execution.max_concurrency = concurrency;
+            }
+            grant
+        }).collect();
+        let caveats = masks.into_iter().map(|mask| {
+            let products = [(1, "actors"), (2, "managed_agents")].into_iter()
+                .filter_map(|(bit, product)| (mask & bit != 0).then_some(product))
+                .collect::<Vec<_>>();
+            allowance(&products)
+        }).collect();
+        let blocks = attenuate(&chain(grants), caveats, vec![6; 32])
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        let expected = ceilings.iter().enumerate().any(|(index, &(cpu, memory, concurrency))| {
+            cpu.is_none_or(|limit| requested.0 <= limit)
+                && memory.is_none_or(|limit| requested.1 <= limit)
+                && concurrency.is_none_or(|limit| requested.2 <= limit)
+                && masks.iter().all(|mask| mask & if index == 1 { 2 } else { 1 } != 0)
+        });
+        let attributes = RecordAttributes::default();
+        let mut usage = limits(None);
+        usage.concurrency = Some(requested.2);
+        let request = Request {
+            target: Target::Resource { action: "execution/job-execute", resource: "execution:/work" },
+            audience: "workers:/app",
+            holder: None,
+            now_unix_seconds: 2,
+            keys: &[],
+            attributes: &attributes,
+            usage: &usage,
+            cpu_millis: requested.0,
+            memory_bytes: requested.1,
+        };
+        proptest::prop_assert_eq!(
+            permits(&blocks, &request, PolicyDecision::Allow, Scope::Exact).is_ok(),
+            expected,
+            "billing allowance combined incompatible grants",
+        );
+    }
+}
