@@ -276,31 +276,38 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
     let budget = owned_context_budget();
     let cancel = acyclic_fs::CancellationToken::new();
     let measured = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
-    plan(&measured)?;
-    let required = budget.items_examined - measured.remaining()?.items_examined;
+    let mut result = None;
+    let physical = acyclic_test_support::measure(|| result = Some(plan(&measured)));
+    result.unwrap()?;
+    let remaining = measured.remaining()?;
+    let required_items = budget.items_examined - remaining.items_examined;
+    let required_allocations = budget.allocation_operations - remaining.allocation_operations;
+    assert_eq!(
+        required_allocations, physical.count_total,
+        "physical backing and original claims differ"
+    );
     assert_eq!(measured.owned_bytes()?, 0);
-    let mut rejected = 0;
-    let mut admitted = 0;
     // Exercise every original admission boundary through the exact successful
     // cost, rather than stopping at a fixed allowance unrelated to the input.
-    for items in 0..=required {
-        let mut budget = owned_context_budget();
-        budget.items_examined = items;
-        let cancel = acyclic_fs::CancellationToken::new();
-        let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
-        let result = plan(&io);
-        if result.is_err() {
-            rejected += 1;
-        } else {
-            admitted += 1;
+    for (allocations, required) in [(false, required_items), (true, required_allocations)] {
+        for credit in 0..=required {
+            let mut budget = owned_context_budget();
+            if allocations {
+                budget.allocation_operations = credit;
+            } else {
+                budget.items_examined = credit;
+            }
+            let cancel = acyclic_fs::CancellationToken::new();
+            let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
+            let result = plan(&io);
+            assert_eq!(result.is_ok(), credit == required);
+            assert_eq!(
+                io.owned_bytes()?,
+                0,
+                "selection leaked custody at {credit} credit (allocations={allocations})"
+            );
         }
-        assert_eq!(
-            io.owned_bytes()?,
-            0,
-            "selection leaked custody at {items} items"
-        );
     }
-    assert!(rejected > 0 && admitted > 0);
     Ok(())
 }
 
