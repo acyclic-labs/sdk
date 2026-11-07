@@ -47,6 +47,18 @@ acyclic host claude-code -- --model claude-haiku-5-5 \
 acyclic host pi --
 ```
 
+For a headless root, pass `--headless` before the policy separator. Input goes
+directly to the native host and its native JSON events go to standard output:
+
+```sh
+printf '%s' 'Inspect this workspace' | acyclic host codex --headless -- \
+  --sandbox workspace-write --ask-for-approval never
+```
+
+Headless roots and managed children use the same native command construction.
+Only policy arguments are inherited by children; the root's invocation mode is
+not part of their policy. The native process exits before filesystem capture.
+
 Direct native sessions continue to work normally. Managed spawn requires the
 launcher context; host metadata does not provide the effective security policy,
 so the plugin does not guess it. Native configuration directories remain owned

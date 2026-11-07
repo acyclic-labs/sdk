@@ -60,12 +60,18 @@ async function effects(prompt){
 
 async function host(){
  const args=process.argv.slice(3),workspace=process.env.FIXTURE_WORKSPACE;
- if(!args.includes('exec')){
-  assert.deepEqual(args,['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace]);
+ if(process.cwd()===workspace){
+  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace];
+  const headless=process.env.FIXTURE_ROOT_HEADLESS==='1';
+  assert.deepEqual(args,[...policy,...(headless?['exec','--json','--cd',workspace,'-']:[])]);
   assert.equal(process.cwd(),process.env.ACYCLIC_WORKSPACE);
   assert.equal(process.cwd(),workspace);
-  assert.deepEqual(JSON.parse(process.env.ACYCLIC_HOST_ARGS),args);
-  await writeFile('root-launch.json',JSON.stringify({task:process.env.ACYCLIC_TASK,args}));
+  assert.deepEqual(JSON.parse(process.env.ACYCLIC_HOST_ARGS),policy);
+  if(headless){
+   assert.equal(readFileSync(0,'utf8'),'headless-root-input');
+   writeSync(1,'headless-root-input');
+  }
+  await writeFile('root-launch.json',JSON.stringify({task:process.env.ACYCLIC_TASK,args:policy}));
   return;
  }
  assert.deepEqual(args.slice(6,8),['exec','--json']);
@@ -132,7 +138,8 @@ async function scenario(){
  const env=environment(root,{...nativeEnvironment(),PATH:bin+delimiter+process.env.PATH,
   FIXTURE_NODE:process.execPath,FIXTURE_DRIVER:driver,FIXTURE_CODEX:native.program,
   FIXTURE_CODEX_ARGS:JSON.stringify(native.args),FIXTURE_EVENTS:fixture,
-  FIXTURE_ACYCLIC:resolve(acyclic),FIXTURE_WORKSPACE:workspace,FIXTURE_OUTSIDE:join(state,'denied')});
+  FIXTURE_ACYCLIC:resolve(acyclic),FIXTURE_WORKSPACE:workspace,FIXTURE_OUTSIDE:join(state,'denied'),
+  FIXTURE_ROOT_HEADLESS:name==='resume'?'1':'0'});
  await writeFile(join(workspace,'AGENTS.md'),'native instruction discovery fixture');
  const launcher=join(bin,process.platform==='win32'?'codex.cmd':'codex');
  await writeFile(launcher,process.platform==='win32'
@@ -188,8 +195,11 @@ async function scenario(){
    const parsed=await scope.run(native.program,[...native.args,...base,...tail],opts);assert.equal(parsed.code,0,parsed.stdout+parsed.stderr);
   }
   await startOwner();
-  const launched=await scope.run(resolve(acyclic),['host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],opts);
+  const headless=name==='resume';
+  const launched=await scope.run(resolve(acyclic),['host','codex',...(headless?['--headless']:[]),'--',
+   '--sandbox','workspace-write','--ask-for-approval','never'],opts,headless?'headless-root-input':undefined);
   assert.equal(launched.code,0,launched.stdout+launched.stderr);
+  if(headless)assert.equal(launched.stdout,'headless-root-input');
   parent=JSON.parse(await readFile(join(workspace,'root-launch.json'),'utf8')).task;
   await startBridge();announce('root-launch');
   if(name==='lifecycle'){
