@@ -134,7 +134,12 @@ pub(super) fn open_member(
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<ExitWatch<'_>> {
     let watch = open_watch(id, meter)?;
-    register_event(&watch, id, libc::NOTE_EXIT)?;
+    // A group member is not necessarily our child. Without a registered
+    // producer we cannot waitid it, infer group emptiness or wait on this
+    // empty queue. Preserve the native refusal and original tree custody.
+    complete_registration(register_event(&watch, id, libc::NOTE_EXIT)?, || {
+        Err(io::Error::from_raw_os_error(libc::ESRCH))
+    })?;
     Ok(watch)
 }
 

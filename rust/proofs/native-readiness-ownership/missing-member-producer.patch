@@ -1,0 +1,13 @@
+--- a/rust/crates/native-runtime/src/process_tree/exit_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/exit_wait.rs
+@@ -137,9 +137,7 @@
+     // A group member is not necessarily our child. Without a registered
+     // producer we cannot waitid it, infer group emptiness or wait on this
+     // empty queue. Preserve the native refusal and original tree custody.
+-    complete_registration(register_event(&watch, id, libc::NOTE_EXIT)?, || {
+-        Err(io::Error::from_raw_os_error(libc::ESRCH))
+-    })?;
++    register_event(&watch, id, libc::NOTE_EXIT)?;
+     Ok(watch)
+ }
+ 

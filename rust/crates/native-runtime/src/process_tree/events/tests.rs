@@ -8,6 +8,9 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     let hub = Hub {
         poller: platform::Poller::new()?,
         registry: Mutex::new(Registry::default()),
+        stride: 1,
+        service_failure: Arc::new(OnceLock::new()),
+        locks: std::sync::atomic::AtomicUsize::new(0),
     };
     let now = Instant::now();
     let earlier = now + Duration::from_secs(1);
@@ -65,13 +68,25 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     assert!(Pin::new(&mut later).poll(&mut context).is_pending());
     {
         let registry = hub.registry();
-        assert!(!registry.positions.contains_key(&first.token));
-        assert!(!registry.timers.contains(&(earlier, first.token)));
-        assert!(registry.positions.contains_key(&later.token));
+        assert!(
+            !registry
+                .positions
+                .contains_key(&first.first.as_ref().unwrap().token)
+        );
+        assert!(
+            !registry
+                .timers
+                .contains(&(earlier, first.first.as_ref().unwrap().token))
+        );
+        assert!(
+            registry
+                .positions
+                .contains_key(&later.first.as_ref().unwrap().token)
+        );
     }
     // A duplicated source packet cannot replace the retained deadline result.
     notified.0.store(false, Ordering::Release);
-    ready.push(first.token);
+    ready.push(first.first.as_ref().unwrap().token);
     hub.dispatch(&mut ready, earlier);
     assert!(!notified.0.load(Ordering::Acquire));
     assert!(matches!(
@@ -80,7 +95,7 @@ fn deadlines_use_the_original_dispatch_cut_and_retained_native_wake() -> io::Res
     ));
 
     let cancelled = arm_on(&hub, &[], Some(distant))?;
-    let cancelled_token = cancelled.token;
+    let cancelled_token = cancelled.first.as_ref().unwrap().token;
     drop(cancelled);
     {
         let registry = hub.registry();
@@ -200,11 +215,12 @@ fn descriptor_readiness_retires_with_its_original_source() -> io::Result<()> {
         Poll::Ready(ProcessWaitOutcome::Cancelled)
     ));
     assert_ne!(
-        hub()?
+        pool()?
+            .source(SourceKey::Descriptor(descriptor))
             .registry()
             .sources
             .get(&SourceKey::Descriptor(descriptor)),
-        Some(&original.token),
+        Some(&original.first.as_ref().unwrap().token),
         "a closed source cannot retain its original claim"
     );
     tree.terminate(None)?;
@@ -220,6 +236,9 @@ fn descriptor_readiness_rolls_back_only_its_own_partial_native_admission() -> io
     let hub = Hub {
         poller: platform::Poller::new()?,
         registry: Mutex::new(Registry::default()),
+        stride: 1,
+        service_failure: Arc::new(OnceLock::new()),
+        locks: std::sync::atomic::AtomicUsize::new(0),
     };
     let (reader, mut writer) = std::io::pipe()?;
     let (other, mut other_writer) = std::io::pipe()?;
@@ -374,6 +393,9 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
         Ok(Hub {
             poller: platform::Poller::refused_wait()?,
             registry: Mutex::new(Registry::default()),
+            stride: 1,
+            service_failure: Arc::new(OnceLock::new()),
+            locks: std::sync::atomic::AtomicUsize::new(0),
         })
     }
     fn failure(wait: &mut Wait<'_>, context: &mut Context<'_>) -> Arc<io::Error> {
@@ -495,7 +517,7 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
 
     // Tokens cannot wrap onto another live wait or the native WAKE key.
     let hub = isolated()?;
-    hub.registry().next = u64::MAX - 1;
+    hub.registry().next = usize::MAX - 1;
     assert!(arm_on(&hub, &[], None).is_err());
     assert!(hub.registry().armed.is_empty());
     assert!(hub.registry().positions.is_empty());

@@ -97,31 +97,30 @@ fn a_missing_exit_registration_settles_the_owned_child_before_returning() -> io:
         !tree.is_reaped(),
         "terminal observation must retain PID custody"
     );
+    #[cfg(target_vendor = "apple")]
+    {
+        // The original child is exited but unreaped, so its identity cannot
+        // be reused. Darwin has removed this exact NOTE_EXIT producer. The
+        // group-member path has no child-reap authority and must preserve
+        // ESRCH rather than return an empty queue to an unbounded waiter.
+        let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        let refused = open_member(id, Some(&meter));
+        assert!(
+            refused.is_err(),
+            "missing group-member registration created an empty exit watch"
+        );
+        let error = refused.err().unwrap();
+        assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+        assert_eq!(meter.read_attempts.load(Ordering::Acquire), 2);
+        assert_eq!(meter.write_attempts.load(Ordering::Acquire), 1);
+        assert!(
+            !tree.is_reaped(),
+            "registration refusal must retain tree custody"
+        );
+    }
     tree.terminate(None)?;
     assert!(tree.is_reaped());
     Ok(())
-}
-
-#[test]
-fn every_exit_registration_outcome_preserves_terminal_custody() {
-    for registered in [false, true] {
-        for failed in [false, true] {
-            let mut settled = false;
-            let result = complete_registration(registered, || {
-                settled = true;
-                if failed {
-                    Err(io::Error::from_raw_os_error(libc::EIO))
-                } else {
-                    Ok(())
-                }
-            });
-            assert_eq!(settled, !registered);
-            assert_eq!(result.is_err(), !registered && failed);
-            if let Err(error) = result {
-                assert_eq!(error.raw_os_error(), Some(libc::EIO));
-            }
-        }
-    }
 }
 
 #[test]

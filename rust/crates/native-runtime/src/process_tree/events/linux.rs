@@ -6,7 +6,7 @@ use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
 use std::time::Duration;
 
-const WAKE: u64 = u64::MAX;
+const WAKE: usize = usize::MAX;
 
 pub(super) struct Poller {
     epoll: OwnedFd,
@@ -50,7 +50,7 @@ impl Poller {
         };
         let mut event = libc::epoll_event {
             events: libc::EPOLLIN.cast_unsigned(),
-            u64: WAKE,
+            u64: WAKE as u64,
         };
         // SAFETY: both fds are owned and live; the event is initialized.
         check(unsafe {
@@ -64,10 +64,10 @@ impl Poller {
         Ok(Self { epoll, wake })
     }
 
-    fn interest(&self, fd: RawFd, events: libc::c_int, token: u64) -> io::Result<()> {
+    fn interest(&self, fd: RawFd, events: libc::c_int, token: usize) -> io::Result<()> {
         let mut event = libc::epoll_event {
             events: (events | libc::EPOLLONESHOT).cast_unsigned(),
-            u64: token,
+            u64: token as u64,
         };
         // SAFETY: the caller's borrowed fd is live for this call, and the
         // epoll fd is owned by this poller.
@@ -99,7 +99,7 @@ impl Poller {
     pub(super) fn register(
         &self,
         source: Source<'_>,
-        token: u64,
+        token: usize,
     ) -> io::Result<Option<Registration>> {
         let (fd, events) = match source {
             Source::Readable(fd) | Source::Exit(fd) => {
@@ -133,7 +133,7 @@ impl Poller {
         }
     }
 
-    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+    pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<usize>) -> io::Result<()> {
         let milliseconds = timeout.map_or(-1, |timeout| {
             libc::c_int::try_from(timeout.as_nanos().div_ceil(1_000_000))
                 .unwrap_or(libc::c_int::MAX)
@@ -151,7 +151,7 @@ impl Poller {
         let count = usize::try_from(check(count)?).map_err(io::Error::other)?;
         for event in events.iter().take(count) {
             let token = event.u64;
-            if token == WAKE {
+            if token == WAKE as u64 {
                 let mut counter = 0_u64;
                 let drained = loop {
                     // SAFETY: an eight-byte read into an owned counter drains the eventfd.
@@ -175,7 +175,7 @@ impl Poller {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
             } else {
-                ready.push(token);
+                ready.push(token as usize);
             }
         }
         Ok(())
