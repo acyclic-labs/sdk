@@ -81,17 +81,24 @@ async fn original_generation_denies_identity_scratch_before_provider_calls()
     })?;
     let mut accounting = KernelAccounting::native(&limited, &cancellation);
     let before = original.receipt();
-    let error = (apply_generation_mutations_retaining_with_accounting(
+    let mutation = apply_generation_mutations_retaining_with_accounting(
         &NoGenerationCalls,
         &fixture.generation,
         operations,
         config(),
         &mut accounting,
         &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("exhausted original allocated identity scratch")?;
+    );
+    let bytes = std::mem::size_of_val(&mutation);
+    assert!(
+        bytes <= 1024,
+        "generation mutation retained a {bytes}-byte body"
+    );
+    eprintln!("generation mutation future: {bytes} bytes");
+    let error = mutation
+        .await
+        .err()
+        .ok_or("exhausted original allocated identity scratch")?;
     assert!(matches!(
         error,
         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(

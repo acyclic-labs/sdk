@@ -544,12 +544,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;
             let version = bounded_io::hex_key(generation_reference.as_resource().key(), io)?;
-            {
-                match io {
-                    Some(io) => bounded_io::retain(&generation, Some(io)).await?,
-                    None => retain_published_generation(&generation).await?,
-                }
-            }
+            bounded_io::retain(&generation, io).await?;
             crate::executor::with_history_io(io, |work| provisional.pin_version(version, work))?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;

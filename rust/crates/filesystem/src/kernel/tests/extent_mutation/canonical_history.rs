@@ -190,16 +190,21 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
         change: Change::Truncate(150),
     };
     let mut unchecked = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let omitted_end = persistent_btree::apply_with_accounting::<_, ExtentFormat, ExtentEdit>(
+    let edits = [truncate];
+    let rewrite = persistent_btree::apply_with_accounting::<_, ExtentFormat, ExtentEdit>(
         &store,
         (leaf, Some(&0), None),
-        &[truncate],
+        &edits,
         1,
         DecodeLimits::default(),
         &mut unchecked,
         &cancellation,
-    )
-    .await?;
+    );
+    // The caller holds fixed inputs and the funded traversal's pointer.
+    let bytes = std::mem::size_of_val(&rewrite);
+    assert!(bytes <= 1024, "tree rewrite retained a {bytes}-byte frame");
+    eprintln!("tree rewrite caller future: {bytes} bytes");
+    let omitted_end = rewrite.await?;
     assert_eq!(
         flatten_extent_tree(&store, omitted_end.value).await?,
         [hole(0, 100)]

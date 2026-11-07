@@ -199,7 +199,15 @@ async fn original_closure_custody<S: crate::AsyncObjectStore>(
     let (proof, guard) = {
         let meter = ProofMeter::from_accounting(work.accounting())?;
         let mut context = ProofContext::new(store, limits(), meter.clone());
-        let proof = context.prove(generation).await?;
+        let future = context.prove(generation);
+        let bytes = std::mem::size_of_val(&future);
+        // The caller retains only its borrowed meter and fixed proof inputs.
+        assert!(
+            bytes <= 1024,
+            "closure caller retained a {bytes}-byte traversal frame"
+        );
+        eprintln!("closure caller future: {bytes} bytes");
+        let proof = future.await?;
         assert_eq!(proof.0.work, meter.work());
         proof
     };

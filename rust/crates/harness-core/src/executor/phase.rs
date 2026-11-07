@@ -138,11 +138,13 @@ impl DispatchPhase {
 
 /// Dispatch claims use the provider's pre-admitted durable publication. A
 /// barrier constructed after a committed start could strand an unissued effect.
-pub(crate) async fn claim<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+pub(crate) fn claim<T>(
+    future: impl std::future::Future<Output = Result<T>>,
+) -> impl std::future::Future<Output = Result<T>> {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    return acyclic_stream::requiring_durability(future).await;
+    return acyclic_stream::requiring_durability(future);
     #[cfg(not(all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-    future.await
+    future
 }
 
 /// Semantic publication scopes, not a count of commits or physical flushes.

@@ -38,6 +38,27 @@ pub(crate) struct ProofContext<'a, S> {
     object_bytes: u64,
 }
 
+// The proof's existing meter funds its traversal frame, including cancellation.
+impl<S> crate::heap_future::FrameContext for ProofContext<'_, S> {
+    fn claim_frame(
+        &mut self,
+        bytes: u64,
+    ) -> Result<crate::kernel::allocation::KernelOwnedAllocation, crate::FsError> {
+        self.meter
+            .with_accounting(|accounting| accounting.claim_owned(bytes, u64::from(bytes != 0)))
+    }
+
+    fn retire_frame(
+        &mut self,
+        allocation: crate::kernel::allocation::KernelOwnedAllocation,
+        bytes: u64,
+    ) -> Result<(), crate::FsError> {
+        self.meter.with_accounting(|accounting| {
+            crate::kernel::retire_allocation(allocation, bytes, accounting)
+        })
+    }
+}
+
 struct PublicationOrder<'a> {
     seen: u64,
     objects: ProofVec<'a, ObjectId>,
@@ -118,40 +139,60 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     /// Proves the closure, reusing its immediate parent's published proof.
-    pub(crate) async fn prove_cached(
+    pub(crate) fn prove_cached(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
-    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
-        self.prove_cached_from(generation_root, cache, None).await
+    ) -> impl std::future::Future<
+        Output = Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError>,
+    > {
+        self.prove_cached_from(generation_root, cache, None)
     }
 
     /// A combiner prefix may instead use its authenticated current authority
     /// root. Its successful CAS keeps that root live while collection marks;
     /// arbitrary older published roots are not eligible for this shortcut.
-    pub(crate) async fn prove_cached_from(
+    pub(crate) fn prove_cached_from(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
         authority_root: Option<ObjectId>,
-    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+    ) -> impl std::future::Future<
+        Output = Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError>,
+    > {
         self.prove_reusing(generation_root, cache, None, authority_root)
-            .await
     }
 
     /// A fork extends its source's original published proof, or its volume's
     /// latest proof; the fork's own proof goes to its own volume.
-    pub(crate) async fn prove_fork(
+    pub(crate) fn prove_fork(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
         source: (crate::VolumeId, Option<PublishedProof>),
-    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+    ) -> impl std::future::Future<
+        Output = Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError>,
+    > {
         self.prove_reusing(generation_root, cache, Some(source), None)
-            .await
     }
 
     async fn prove_reusing(
+        &mut self,
+        generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
+        source: Option<(crate::VolumeId, Option<PublishedProof>)>,
+        authority_root: Option<ObjectId>,
+    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+        Self::require_kind(generation_root, ObjectKind::GenerationRoot)?;
+        crate::heap_future::in_borrowed_frame!(self, |proof| proof.prove_reusing_inner(
+            generation_root,
+            cache,
+            source,
+            authority_root,
+        ))
+    }
+
+    async fn prove_reusing_inner(
         &mut self,
         generation_root: ObjectId,
         cache: Option<&Mutex<CachedProofs>>,
@@ -162,7 +203,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let epochs = store.collection().map(|collection| collection.epochs());
         // Before the first object read: a collection begun later makes this proof stale.
         let began = crate::collection::CollectionEpoch::read(epochs);
-        Self::require_kind(generation_root, ObjectKind::GenerationRoot)?;
         let root_bytes = self.read_object(generation_root, false).await?;
         let root = self.meter.decode_steps(|observe| {
             crate::kernel::generation::decode_generation_root(
