@@ -16,7 +16,7 @@
       },
       {
         "when": {
-          "contains": "Summarize this conversation"
+          "contains": "preserve the fact"
         },
         "text": [
           "COMPACTED_E2E_FACT"
@@ -50,16 +50,31 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "\u25cb"
-            ]
+              "○"
+            ],
+            "task_failure": "model HTTP status 409"
           },
-          "prompt": "/compact preserve the fact"
+          "prompt": "/compact refuse unmatched summary"
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_FIRST",
+              "○"
+            ],
+            "task_failure": "model HTTP status 409"
+          },
+          "prompt": "/compact preserve the fact",
+          "after_request": {
+            "path": "responses",
+            "step": null
+          }
         },
         {
           "when": {
             "contains": [
               "Compacted conversation",
-              "\u25cb"
+              "○"
             ]
           },
           "prompt": "after compact",
@@ -72,7 +87,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "\u25cb"
+              "○"
             ]
           },
           "send": "\u0004"
@@ -81,7 +96,7 @@
     }
   ],
   "assert": {
-    "requests": 3,
+    "requests": 4,
     "last_model_contains": [
       "COMPACTED_E2E_FACT"
     ],
