@@ -709,7 +709,7 @@ async fn replacement_view_waits_for_original_retirement_and_reports_producer_los
             .request(
                 &child,
                 OperationId::new(),
-                &Event::Control {
+                &agents::Event::Control {
                     control: Control::Archive,
                 },
             )
