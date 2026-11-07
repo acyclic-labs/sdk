@@ -61,7 +61,7 @@ fn run_cut(
         .env("ACYCLIC_CORE_STATE_CRASH_POINT", point.to_string())
         .env("ACYCLIC_CORE_STATE_CRASH_REPORT", &report)
         .stdout(acyclic_native_runtime::ProcessStdio::piped())
-        .stderr(acyclic_native_runtime::ProcessStdio::null());
+        .stderr(acyclic_native_runtime::ProcessStdio::piped());
     if owned {
         child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
     }
@@ -93,8 +93,9 @@ fn run_cut(
         Ok(output) => {
             assert!(
                 output.status.success(),
-                "crash child failed before publishing point {point}: {}",
-                output.status
+                "crash child failed before publishing point {point}: {}; stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
             );
             assert!(!cut_reached && !report.exists());
             false
@@ -104,7 +105,8 @@ fn run_cut(
                 cut_reached
                     && failure.error.kind() == std::io::ErrorKind::Interrupted
                     && failure.cleanup_completed,
-                "crash point {point} was not killed and reaped: {failure:?}"
+                "crash point {point} was not killed and reaped: {failure:?}; stderr: {}",
+                String::from_utf8_lossy(&failure.stderr)
             );
             true
         }
@@ -204,4 +206,27 @@ fn a_panicking_cut_still_drains_every_other_cut_before_returning() {
     });
     assert!(result.is_err());
     assert_eq!(finished.load(Ordering::SeqCst), 36);
+}
+
+#[test]
+fn a_failed_namespace_open_retains_its_native_child_error() {
+    let directory = tempfile::tempdir().unwrap();
+    // A failed namespace open never reaches a snapshot or physical cut.
+    let rejected = directory.path().join("rejected");
+    let root = rejected.join("run-1/state");
+    std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+    std::fs::write(&root, b"not a directory").unwrap();
+    let original = format!(
+        "{:?}",
+        LocalCoreStateStore::open_owned(&root).err().unwrap()
+    );
+    let failure = std::panic::catch_unwind(|| run_cut(&rejected, &[], true, 1))
+        .expect_err("a failed namespace open must not count as a physical cut");
+    let message = failure
+        .downcast_ref::<String>()
+        .expect("the supervisor must retain the original child error");
+    assert!(
+        message.contains(&original),
+        "original error lost: {message}"
+    );
 }
