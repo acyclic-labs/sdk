@@ -133,10 +133,8 @@ async fn spawn_shaped_composition_commits_every_fork_with_the_caller_mutations()
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
-    let placed_store = StreamAuthorityStore::with_placement(
-        Arc::clone(&stream),
-        AuthorityPlacement::new(VOLUMES)?,
-    );
+    let placed_store =
+        StreamAuthorityStore::with_placement(stream.clone(), AuthorityPlacement::new(VOLUMES)?);
     let before = placed_store.authorities(64).await?.len();
     let commit = compose(&fs, &source, true).await?;
     assert_eq!(
@@ -185,10 +183,8 @@ async fn a_rejected_caller_condition_leaves_no_forked_volume() -> Result<(), Box
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
-    let placed_store = StreamAuthorityStore::with_placement(
-        Arc::clone(&stream),
-        AuthorityPlacement::new(VOLUMES)?,
-    );
+    let placed_store =
+        StreamAuthorityStore::with_placement(stream.clone(), AuthorityPlacement::new(VOLUMES)?);
     let before = placed_store.authorities(64).await?.len();
     let commit = compose(&fs, &source, false).await?;
     let FilesystemCommitOutcome::Rejected(conflicts) = unbounded!(fs, submit_commit(commit))?
@@ -356,10 +352,8 @@ async fn a_source_advancing_before_commit_refuses_the_spawn() -> Result<(), Box<
     let stream = Arc::new(MemoryStream::default());
     let fs = placed(&stream)?;
     let source = parent(&fs, &stream).await?;
-    let placed_store = StreamAuthorityStore::with_placement(
-        Arc::clone(&stream),
-        AuthorityPlacement::new(VOLUMES)?,
-    );
+    let placed_store =
+        StreamAuthorityStore::with_placement(stream.clone(), AuthorityPlacement::new(VOLUMES)?);
     let mut commit = compose(&fs, &source, true).await?;
     unbounded!(fs, require_head(&source, &mut commit))?;
     let before = placed_store.authorities(64).await?.len();
@@ -635,16 +629,13 @@ async fn a_failed_cache_refresh_keeps_the_committed_receipt() -> Result<(), Box<
                     .await
             )?
         } else {
-            StreamAuthorityStore::with_placement(
-                Arc::clone(&stream),
-                AuthorityPlacement::new(VOLUMES)?,
-            )
-            .settle(
-                commit,
-                outcome,
-                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled),
-            )
-            .await?
+            StreamAuthorityStore::with_placement(stream.clone(), AuthorityPlacement::new(VOLUMES)?)
+                .settle(
+                    commit,
+                    outcome,
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled),
+                )
+                .await?
         };
         let FilesystemCommitOutcome::Committed(settled) = settled else {
             return Err("a committed outcome settled as something else".into());

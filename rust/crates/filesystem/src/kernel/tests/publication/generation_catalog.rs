@@ -215,7 +215,11 @@ mod probe {
 async fn fixture(
     count: u8,
     repeat: bool,
-) -> TestResult<(StreamAuthorityStore, Vec<GuardedAppend>)> {
+) -> TestResult<(
+    StreamAuthorityStore,
+    Arc<probe::Provider>,
+    Vec<GuardedAppend>,
+)> {
     fixture_with_fence(count, repeat, None).await
 }
 
@@ -223,8 +227,13 @@ async fn fixture_with_fence(
     count: u8,
     repeat: bool,
     fence: Option<bool>,
-) -> TestResult<(StreamAuthorityStore, Vec<GuardedAppend>)> {
-    let store = StreamAuthorityStore::new(Arc::new(probe::Provider::default()));
+) -> TestResult<(
+    StreamAuthorityStore,
+    Arc<probe::Provider>,
+    Vec<GuardedAppend>,
+)> {
+    let provider = Arc::new(probe::Provider::default());
+    let store = StreamAuthorityStore::new(provider.clone());
     let objects = MemoryObjectStore::default();
     let fs = crate::Fs::new(store.clone(), objects, crate::EmbeddedCapabilities::MEMORY);
     let objects = fs.objects();
@@ -326,7 +335,7 @@ async fn fixture_with_fence(
         };
         base = candidate;
     }
-    Ok((store, members))
+    Ok((store, provider, members))
 }
 
 fn measured<'a>(
@@ -348,8 +357,7 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
     for native in [false, true] {
         for count in [1, 4] {
             for repeat in [false, true] {
-                let (store, members) = fixture(count, repeat).await?;
-                let provider = store.provider();
+                let (store, provider, members) = fixture(count, repeat).await?;
                 let (reads, appends) = provider.requests();
                 let cancel = CancellationToken::new();
                 let original = crate::NativeMaterializationWork::new(
@@ -477,9 +485,8 @@ async fn generation_catalog_single_group_and_quote_use_receipts_without_prefligh
 async fn epoch_fence_uses_one_provider_request_without_a_head_probe() -> TestResult {
     crate::initialize_test_native_io();
     for native in [false, true] {
-        let (store, members) = fixture(1, false).await?;
+        let (store, provider, members) = fixture(1, false).await?;
         let first = members.first().ok_or("no member")?;
-        let provider = store.provider();
         let (reads, appends) = provider.requests();
         let cancel = CancellationToken::new();
         let original =
@@ -517,9 +524,8 @@ async fn epoch_fence_uses_one_provider_request_without_a_head_probe() -> TestRes
 async fn epoch_fence_recovers_only_the_actual_conflict_tail_across_writer_owners() -> TestResult {
     crate::initialize_test_native_io();
     for native in [false, true] {
-        let (store, members) = fixture(1, false).await?;
+        let (store, provider, members) = fixture(1, false).await?;
         let first = members.first().ok_or("no member")?;
-        let provider = store.provider();
         // Separate process-local claim registries share the actual durable
         // provider; the second actor cannot update the first actor's journal.
         let cancel = CancellationToken::new();
@@ -557,7 +563,7 @@ async fn epoch_fence_revalidates_cached_mismatches_before_conflict_or_takeover()
     crate::initialize_test_native_io();
     for native in [false, true] {
         for matches_current in [false, true] {
-            let (store, members) = fixture(1, false).await?;
+            let (store, provider, members) = fixture(1, false).await?;
             let first = members.first().ok_or("no member")?;
             let cancel = CancellationToken::new();
             let original =
@@ -570,7 +576,7 @@ async fn epoch_fence_revalidates_cached_mismatches_before_conflict_or_takeover()
             else {
                 return Err("initial fence conflicted".into());
             };
-            let peer = StreamAuthorityStore::new(Arc::new(store.provider().peer()));
+            let peer = StreamAuthorityStore::new(Arc::new(provider.peer()));
             let crate::FenceOutcome::Advanced(actual) =
                 peer.fence(first.authority_id, owned, &mut work).await?
             else {
@@ -606,9 +612,9 @@ async fn epoch_fence_preserves_generation_facts_and_the_authority_record_identit
     for native in [false, true] {
         for count in [1, 4] {
             for repeat in [false, true] {
-                let (store, members) = fixture_with_fence(count, repeat, Some(native)).await?;
+                let (store, provider, members) =
+                    fixture_with_fence(count, repeat, Some(native)).await?;
                 let first = members.first().ok_or("no member")?;
-                let provider = store.provider();
                 let cancel = CancellationToken::new();
                 let original = crate::NativeMaterializationWork::new(
                     crate::performance::BOUNDARY_BUDGET,
@@ -678,9 +684,8 @@ async fn in_flight_publication_quotes_reuse_only_the_last_durable_projection() -
     crate::initialize_test_native_io();
     for native in [false, true] {
         for count in [1, 4] {
-            let (store, members) = fixture(count, false).await?;
+            let (store, provider, members) = fixture(count, false).await?;
             let first = members.first().ok_or("no member")?;
-            let provider = store.provider();
             let gate = provider.hold_next_commit();
             let cancel = CancellationToken::new();
             let original =
@@ -771,8 +776,7 @@ async fn rejected_preparation_preserves_the_receipt_owned_frontier() -> TestResu
     for native in [false, true] {
         for count in [1, 4] {
             for rejected_index in 0..usize::from(count) {
-                let (store, members) = fixture(count, false).await?;
-                let provider = store.provider();
+                let (store, provider, members) = fixture(count, false).await?;
                 let (_, appends) = provider.requests();
                 let first = members.first().ok_or("no member")?;
                 let mut rejected = members.clone();
@@ -847,7 +851,7 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
     crate::initialize_test_native_io();
     for native in [false, true] {
         for count in [1, 4] {
-            let (store, members) = fixture(count, true).await?;
+            let (store, provider, members) = fixture(count, true).await?;
             let first = members.first().ok_or("no member")?;
             let cancel = CancellationToken::new();
             let original =
@@ -861,7 +865,7 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
                 hex::encode(first.authority_id.into_bytes()),
                 hex::encode(generation.to_bytes().as_ref())
             ))?;
-            let provider = store.provider();
+
             let outcome = provider
                 .commit(CommitRequest {
                     deadline_unix_millis: None,
@@ -923,7 +927,7 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
 async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> TestResult {
     crate::initialize_test_native_io();
     for native in [false, true] {
-        let (store, members) = fixture(1, false).await?;
+        let (store, provider, members) = fixture(1, false).await?;
         let fresh = members.first().ok_or("missing fresh proposal")?;
         let cancel = CancellationToken::new();
         let original =
@@ -963,7 +967,7 @@ async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> Te
             commit,
             permit: PublicationPermit::Unrestricted,
         };
-        let before = store.provider().requests();
+        let before = provider.requests();
         let quoted = store
             .quote_group_append(&reused, 0, &mut work)
             .await?
@@ -974,7 +978,7 @@ async fn group_capacity_quote_covers_reused_to_composed_generation_shape() -> Te
             .ok_or("missing fresh quote")?;
         assert_eq!(
             before,
-            store.provider().requests(),
+            provider.requests(),
             "capacity quotation issued a provider request"
         );
         assert!(

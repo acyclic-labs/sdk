@@ -400,14 +400,15 @@ pub trait AuthorityGuard: ProviderTask {
 
     /// Seals the provider's actual native commit attempt.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
-        &mut self,
-        provider: &P,
+    fn native_commit<'task, 'context>(
+        &'task mut self,
+        provider: &'task (dyn acyclic_stream::NativeStreamProvider + 'static),
         request: CommitRequest,
         deadline: Option<u64>,
-        work: &mut AuthorityWork<'_>,
-    ) -> impl Future<Output = NativeStreamResult<CommitOutcome, AuthorityError<Self::Error>>> + Send
-    {
+        work: &'task mut AuthorityWork<'context>,
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome, AuthorityError<Self::Error>>>
+    + Send
+    + use<'task, 'context, Self> {
         async move {
             if let Err(error) = self.seal(work).await {
                 return Ok(Err(error));
@@ -471,12 +472,12 @@ where
         (self.0)(original).await.map_err(AuthorityError::Owner)
     }
 
-    async fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
-        &mut self,
-        provider: &P,
+    async fn native_commit<'task, 'context>(
+        &'task mut self,
+        provider: &'task (dyn acyclic_stream::NativeStreamProvider + 'static),
         request: CommitRequest,
         deadline: Option<u64>,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'context>,
     ) -> NativeStreamResult<CommitOutcome, AuthorityError<E>> {
         let Some(original) = work.original else {
             return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));

@@ -15,12 +15,12 @@ impl AuthorityGuard for CommitBoundary {
         Ok(())
     }
 
-    async fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
-        &mut self,
-        provider: &P,
+    async fn native_commit<'task, 'context>(
+        &'task mut self,
+        provider: &'task (dyn acyclic_stream::NativeStreamProvider + 'static),
         request: acyclic_stream::CommitRequest,
         deadline: Option<u64>,
-        work: &mut AuthorityWork<'_>,
+        work: &'task mut AuthorityWork<'context>,
     ) -> acyclic_stream::NativeStreamResult<CommitOutcome, AuthorityError<Self::Error>> {
         let mut original_guard = ();
         let mut result = original_guard
