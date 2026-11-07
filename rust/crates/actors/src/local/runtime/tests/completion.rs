@@ -147,5 +147,36 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     assert!(
         matches!(refused, Err(Error::CompletionFailed(error)) if matches!(error.as_ref(), Error::Handler(_)))
     );
+    for stop_before_start in [false, true] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let target = LocalTarget::start(&provider, Arc::new(Package::new()?), provider.ledger())?;
+        let address = actor("completion-startup")?;
+        let mut completed = Box::pin(target.complete(&address));
+        assert!(
+            futures::poll!(completed.as_mut()).is_pending(),
+            "completion skipped its original dispatcher startup event"
+        );
+        if stop_before_start {
+            let (_, task, _) = target
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("unstarted original host");
+            task.abort();
+            assert!(task.await.is_err());
+            assert!(matches!(completed.await, Err(Error::CompletionStopped)));
+        } else {
+            assert_eq!(
+                spawn_with(target.store(), "completion-startup", &[b"emit"]).await?,
+                address
+            );
+            completed.await?;
+            assert_eq!(
+                records(provider.as_ref(), "out/completion-startup").await?,
+                vec![Bytes::from_static(b"r0")]
+            );
+        }
+    }
     Ok(())
 }
