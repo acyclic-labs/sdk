@@ -189,6 +189,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     crate::wire::ErrorCode::NotFound,
                     "selected file does not exist",
                 )
+                .tool_input()
             })?;
         Ok((file, bytes))
     }
