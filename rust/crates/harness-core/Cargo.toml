@@ -36,7 +36,7 @@ research = ["acyclic-observability/research"]
 provenance-export = ["metrics-export", "dep:oxrdf", "dep:oxttl"]
 metrics-export = ["dep:arrow-array", "dep:arrow-schema", "dep:arrow-ipc", "dep:parquet"]
 conformance = ["acyclic-stream/conformance", "acyclic-objects?/conformance"]
-oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
+oidc = ["filesystem", "dep:ring", "dep:p256"]
 oidc-http = ["oidc", "dep:reqwest"]
 tui = []
 test-support = ["acyclic-auth/test-support", "acyclic-machines?/test-support", "acyclic-actors/test-support", "dep:tempfile", "acyclic-stream/test-support", "dep:acyclic-differential", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-fs/test-support"]
@@ -68,7 +68,8 @@ arrow-array = { version = "=57.0.0", optional = true }
 arrow-schema = { version = "=57.0.0", optional = true }
 arrow-ipc = { version = "=57.0.0", default-features = false, optional = true }
 parquet = { version = "=57.0.0", default-features = false, features = ["arrow"], optional = true }
-jsonwebtoken = { version = "=11.1.0", default-features = false, features = ["rust_crypto"], optional = true }
+ring = { version = "=0.17.14", features = ["wasm32_unknown_unknown_js"], optional = true }
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 acyclic-model-render = { version = "=0.2.0", path = "../model-render" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -169,9 +170,6 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# jsonwebtoken's RustCrypto provider uses getrandom 0.2, whose browser backend
-# is selected independently from the workspace's getrandom 0.3 backend.
-oidc-getrandom = { package = "getrandom", version = "0.2", features = ["js"], optional = true }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true
