@@ -1,0 +1,6 @@
+file	sha256	origin
+all-operators.json	256c45997d3eddb6c4a9bfab3817ae222c4019f5d4642acc39a3177331557d15	Generated property input for shipped native argument templates; not an external-tool fixture
+captured-llamacpp.json	e1d70a18cc129fcc812ebbe309bc5197df6ffa2228c77a4a7b98653ec5605354	Unchanged concatenation of captured choices[].delta.tool_calls[].function.arguments fragments in rust/crates/conformance/fixtures/inference/llamacpp/tool.body, SHA256 a9082672c8daaafe09acbee0138fee4f6bb7e251b4d88c8416da19eb7e7350b1
+missing.json	44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a	Generated property input for shipped native argument templates; not an external-tool fixture
+overflow.json	df3f3ef19230e84a632d77a113bca7c1548475676c76f985ed3d96b24c7f297d	Generated property input for shipped native argument templates; not an external-tool fixture
+refused.json	2f9218df3ea3ebe689a7afe1bf5a49c6643dd7b6672fb4538454de64f1e74b31	Generated property input for shipped native argument templates; not an external-tool fixture

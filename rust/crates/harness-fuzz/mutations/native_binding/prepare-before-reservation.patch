@@ -1,0 +1,19 @@
+diff --git a/rust/crates/harness-core/src/tools/native/mod.rs b/rust/crates/harness-core/src/tools/native/mod.rs
+index 088f7bee5b..0f26f080cb 100644
+--- a/rust/crates/harness-core/src/tools/native/mod.rs
++++ b/rust/crates/harness-core/src/tools/native/mod.rs
+@@ -108,7 +108,13 @@ impl Cache {
+         &self,
+         binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
+     ) -> Result<Option<Arc<NativeTools>>> {
+-        self.0.get_or_try_init(binding).cloned()
++        match self.0.get() {
++            Some(tools) => Ok(tools.clone()),
++            None => {
++                let tools = binding()?;
++                Ok(self.0.get_or_init(|| tools).clone())
++            }
++        }
+     }
+ }
+ 

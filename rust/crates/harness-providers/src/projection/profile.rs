@@ -105,6 +105,69 @@ mod tests {
         profile::{AgentOverride, ModelProfile, ProjectLayer, RoleFile, resolve},
     };
 
+    fn wrapped_admission(
+        live: std::sync::Arc<dyn ModelProvider>,
+        model: &acyclic_harness_core::model::Model,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<()> {
+        use acyclic_harness_core::model::{Divergence, DivergenceSink, RecordedModel, Recording};
+        use acyclic_stream::testing::{Counted, RequestLedger};
+        use std::sync::Arc;
+
+        struct UnexpectedDivergence;
+        impl DivergenceSink for UnexpectedDivergence {
+            fn diverged(&self, _: Divergence) {
+                panic!("profile admission dispatched a model request");
+            }
+        }
+
+        let (expected_model, expected) = live.admit_profile(model, profile)?;
+        let expected_binding = expected.model_profile(&expected_model)?;
+        // Both wrapper orders must retain their original state after erasure.
+        for order in 0..4 {
+            let ledger = RequestLedger::new();
+            let recording = Arc::new(Recording::default());
+            let sink: Arc<dyn DivergenceSink> = Arc::new(UnexpectedDivergence);
+            let recorded = |provider| -> Arc<dyn ModelProvider> {
+                Arc::new(RecordedModel::new(
+                    provider,
+                    recording.clone(),
+                    sink.clone(),
+                ))
+            };
+            let counted = |provider: Arc<dyn ModelProvider>| -> Arc<dyn ModelProvider> {
+                Arc::new(Counted::with_ledger(provider, ledger.clone()))
+            };
+            let provider = match order {
+                0 => counted(live.clone()),
+                1 => recorded(live.clone()),
+                2 => counted(recorded(live.clone())),
+                _ => recorded(counted(live.clone())),
+            };
+            let source_owners = Arc::strong_count(&recording);
+            let sink_owners = Arc::strong_count(&sink);
+            let mut admitted = None;
+            let cost = acyclic_test_support::measure(|| {
+                admitted = Some(provider.admit_profile(model, profile));
+            });
+            let (model, admitted) = admitted.unwrap()?;
+            assert_eq!(cost.count_total, if order < 2 { 8 } else { 9 });
+            assert_eq!(ledger.requests(), Default::default());
+            let has_recording = usize::from(order != 0);
+            assert_eq!(Arc::strong_count(&recording), source_owners + has_recording);
+            assert_eq!(Arc::strong_count(&sink), sink_owners + has_recording);
+            assert_eq!(model, expected_model);
+            let binding = admitted.model_profile(&model)?.unwrap();
+            let expected_binding = expected_binding.unwrap();
+            assert_eq!(binding.prefix_digest(), expected_binding.prefix_digest());
+            assert_eq!(binding.reasoning(), expected_binding.reasoning());
+            assert_eq!(binding.cache(), expected_binding.cache());
+            admitted.context_capacity(&model)?;
+            assert_eq!(ledger.requests().control(), u64::from(order != 1));
+        }
+        Ok(())
+    }
+
     // Exercise the same protocol projection and encoding as dispatch, without a
     // transport or a second Value projection inside the measured region.
     fn measured_projection(
@@ -208,15 +271,62 @@ mod tests {
                 let profile = resolve(&model, &role, &project, &agent)?;
                 let selected = registry.resolve(&key)?;
                 let original = selected.model().clone();
+                let owners = (
+                    std::sync::Arc::strong_count(&selected.accounting),
+                    std::sync::Arc::strong_count(&selected.config),
+                    std::sync::Arc::strong_count(&selected.transport),
+                );
+                let erased: &dyn ModelProvider = &selected;
+                let mut derived = None;
+                let cost = acyclic_test_support::measure(|| {
+                    derived = Some(erased.admit_profile(&original, &profile));
+                });
+                let derived = derived.unwrap();
+                assert_eq!(selected.model(), &original);
+                let selected = if name == "opaque-alias" && effort == Some("high") {
+                    let live = std::sync::Arc::new(selected);
+                    wrapped_admission(live.clone(), &original, &profile)?;
+                    std::sync::Arc::try_unwrap(live)
+                        .map_err(|_| invalid("profile admission retained its original selection"))?
+                } else {
+                    selected
+                };
                 let provider = selected.with_profile(&profile);
                 if !levels && effort.is_some() {
+                    assert!(matches!(
+                        derived,
+                        Err(acyclic_harness_core::Error::Invalid(_))
+                    ));
                     assert!(matches!(
                         provider,
                         Err(acyclic_harness_core::Error::Invalid(_))
                     ));
                     continue;
                 }
+                let (derived_model, derived) = derived?;
                 let provider = provider?;
+                assert_eq!(&derived_model, provider.model());
+                assert_eq!(
+                    cost.count_total, 7,
+                    "profile admission copied more than two model identities and one provider owner"
+                );
+                assert_eq!(
+                    std::sync::Arc::strong_count(&provider.accounting),
+                    owners.0 + 1
+                );
+                assert_eq!(std::sync::Arc::strong_count(&provider.config), owners.1 + 1);
+                assert_eq!(
+                    std::sync::Arc::strong_count(&provider.transport),
+                    owners.2 + 1
+                );
+                assert_eq!(
+                    derived.context_capacity(&derived_model)?,
+                    provider.admitted_capacity()
+                );
+                assert_eq!(
+                    derived.native_tool_profile(&derived_model)?,
+                    provider.tool_profile
+                );
                 let (request, _) = crate::tests::request(&provider)?;
                 let body = crate::projection::body(&provider, request.request())?;
                 assert_eq!(
@@ -327,7 +437,40 @@ mod tests {
                 validate(adapter, &wrong_protocol).is_ok(),
                 adapter == Adapter::Gemini
             );
+            let original_binding = provider.model_profile(&original)?;
+            let original_family = ModelProvider::native_tool_profile(&provider, &original)?;
+            let original_capacity = provider.context_capacity(&original)?;
+            let erased: &dyn ModelProvider = &provider;
+            assert!(erased.admit_profile(&foreign, &profile).is_err());
+            let (admitted_model, admitted) = erased.admit_profile(&original, &profile)?;
+            assert_ne!(
+                admitted_model, original,
+                "profile admission retained the original revision"
+            );
+            assert!(admitted.context_capacity(&original).is_err());
+            assert!(admitted.admit_profile(&admitted_model, &profile).is_err());
+            assert_eq!(
+                provider.model(),
+                &original,
+                "profile admission mutated the shared selection"
+            );
+            assert_eq!(
+                provider
+                    .model_profile(&original)?
+                    .map(|binding| binding.digest()),
+                original_binding.map(|binding| binding.digest())
+            );
+            assert_eq!(provider.context_capacity(&original)?, original_capacity);
+            assert_eq!(
+                admitted.native_tool_profile(&admitted_model)?,
+                original_family
+            );
             let provider = provider.with_profile(&profile)?;
+            assert_eq!(&admitted_model, provider.model());
+            assert_eq!(
+                admitted.model_profile(&admitted_model)?.unwrap().digest(),
+                provider.profile_binding().unwrap().digest()
+            );
             let (mut rotated, _) = crate::tests::provider(adapter, 200);
             rotated.model.revision.push_str("-rotated");
             let rotated = rotated.with_profile(&profile)?;

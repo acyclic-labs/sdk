@@ -9,9 +9,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Streaming model providers for the acyclic harness"
 
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [features]
 research = ["acyclic-harness-core/research"]
 endpoint-presets = []
@@ -63,6 +60,7 @@ web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Hea
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 harness-mock-model = { path = "../harness-mock-model" }
+acyclic-harness-core = { path = "../harness-core", version = "=0.2.0", default-features = false, features = ["conformance"] }
 acyclic-actors = { path = "../actors", version = "=0.2.0" }
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["test-support", "filesystem-local", "native-execution"] }
 acyclic-test-support = { path = "../test-support" }

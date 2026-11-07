@@ -428,6 +428,15 @@ impl RecordedModel {
         self.recording.len() - self.lock().cursor.used
     }
 
+    fn with_live(&self, live: Arc<dyn ModelProvider>) -> Self {
+        Self {
+            live,
+            recording: Arc::clone(&self.recording),
+            replay: Arc::clone(&self.replay),
+            sink: Arc::clone(&self.sink),
+        }
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Replay> {
         self.replay.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -1761,18 +1770,29 @@ impl ModelProvider for RecordedModel {
         maximum_bytes: u64,
     ) -> Option<Arc<dyn ModelProvider>> {
         let live = self.live.bind_content(reader, maximum_bytes)?;
-        Some(Arc::new(Self {
-            live,
-            recording: Arc::clone(&self.recording),
-            replay: Arc::clone(&self.replay),
-            sink: Arc::clone(&self.sink),
-        }))
+        Some(Arc::new(self.with_live(live)))
     }
     fn model_profile(&self, model: &Model) -> Result<Option<ModelProfileBinding>> {
         self.live.model_profile(model)
     }
+    #[cfg(feature = "filesystem")]
+    fn admit_profile(
+        &self,
+        model: &Model,
+        profile: &crate::profile::AgentProfile<'_>,
+    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+        let (model, live) = self.live.admit_profile(model, profile)?;
+        Ok((model, Arc::new(self.with_live(live))))
+    }
     fn native_tool_profile(&self, model: &Model) -> Result<Option<NativeToolProfile>> {
         self.live.native_tool_profile(model)
+    }
+    #[cfg(feature = "filesystem")]
+    fn native_tools(
+        &self,
+        model: &Model,
+    ) -> Result<Option<Arc<crate::tools::native::NativeTools>>> {
+        self.live.native_tools(model)
     }
     fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
         self.live.context_capacity(model)

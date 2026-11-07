@@ -1,0 +1,35 @@
+diff --git a/rust/crates/harness-core/src/hooks/request.rs b/rust/crates/harness-core/src/hooks/request.rs
+--- a/rust/crates/harness-core/src/hooks/request.rs
++++ b/rust/crates/harness-core/src/hooks/request.rs
+@@ -105,26 +105,11 @@
+         }
+         _ => None,
+     };
+-    let arguments = canonical.as_ref().map_or(judged, |call| &call.arguments);
+-    let implementation = canonical.as_ref().map_or(subject, |call| &call.name);
+-    let mut request = if implementation == "apply_patch" {
+-        // Use the publication parser, never a second interpretation of headers
+-        // or a model-supplied decoy path. Rewrites traverse this same boundary.
+-        let patch = crate::tools::variants::patch_input(arguments)?;
+-        let changes = crate::tool::patch::parse_document(patch, &mut None)?;
+-        let paths = changes
+-            .iter()
+-            .flat_map(|change| std::iter::once(change.path()).chain(change.move_to()))
+-            .map(|path| Value::String(path.to_owned()))
+-            .collect();
+-        let mut request = serde_json::json!({
+-            "event": "tool", "from": "self", "tool": subject, "action": "edit",
+-        });
+-        request["paths"] = Value::Array(paths);
+-        request
+-    } else {
+-        request(subject, capability(subject, tool), arguments)
+-    };
++    let mut request = request(
++        subject,
++        capability(subject, tool),
++        canonical.as_ref().map_or(judged, |call| &call.arguments),
++    );
+     // Hooks may rewrite the model's input, so their input field retains it;
+     // only normalized action/command/path come from the effective executor.
+     request["input"] = judged.clone();

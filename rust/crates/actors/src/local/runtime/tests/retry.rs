@@ -220,7 +220,7 @@ async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> Tes
         let address = actor("guarded")?;
         let mut held = PreparedPublish::foreign(key("guard")?);
         let mut subscriptions = BTreeMap::new();
-        for name in ["first", "second"] {
+        for name in ["inbox", "mirror"] {
             let inbox = StreamPath::new(format!("agents/guarded/{name}"))?;
             subscriptions.insert(
                 name.to_owned(),
@@ -278,7 +278,7 @@ async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> Tes
         assert_eq!(reported.load(Ordering::SeqCst), 1);
         assert!(records(&*provider, "out/guarded").await?.is_empty());
         let state = store.load(&address).await?;
-        for name in ["first", "second"] {
+        for name in ["inbox", "mirror"] {
             assert_eq!(state.state().and_then(|state| state.cursor(name)), Some(0));
         }
     }

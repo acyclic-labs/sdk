@@ -67,6 +67,7 @@ pub(crate) fn plan(
     // independently verified total, never a usage-calibrated ratio.
     let tokens = |bytes| {
         provider
+            .accounting
             .estimator
             .tokens(bytes)
             .ok_or_else(|| invalid("token planning weight exceeds u32"))

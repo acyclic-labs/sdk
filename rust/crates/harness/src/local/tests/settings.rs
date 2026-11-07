@@ -133,15 +133,17 @@ async fn home_agent_settings_apply_or_refuse_the_original_version() -> Result<()
         ),
     ] {
         let version = write(&harness, "agent.ts", source).await?;
+        let volumes = super::super::agent_settings::Volumes {
+            files: &harness.files,
+            verifier: &harness.verifier,
+            signed: &harness.signed,
+            home: &harness.scratch,
+            journal: &harness.journal,
+            maximum_bytes: harness.limits.file_bytes,
+        };
+        let tree = super::super::agent_settings::Tree::new(&volumes).await?;
         let result = super::super::agent_settings::admit(
-            &super::super::agent_settings::Volumes {
-                files: &harness.files,
-                verifier: &harness.verifier,
-                signed: &harness.signed,
-                home: &harness.scratch,
-                journal: &harness.journal,
-                maximum_bytes: harness.limits.file_bytes,
-            },
+            &tree,
             harness.root,
             harness.agent.clone().expect("the configured model"),
             None,
@@ -278,24 +280,23 @@ async fn each_settings_manifest_retains_its_own_admission_on_reopen() -> Result<
         "export default {guard: {enabled: 'yes'}};",
     )
     .await?;
-    let reason = match super::super::agent_settings::plugins(
-        &super::super::agent_settings::Volumes {
-            files: &harness.files,
-            verifier: &harness.verifier,
-            signed: &harness.signed,
-            home: &harness.scratch,
-            journal: &harness.journal,
-            maximum_bytes: harness.limits.file_bytes,
-        },
-        harness.root,
-        harness.clock.as_ref(),
-    )
-    .await
-    {
-        Err(error @ Error::Invalid(_)) => error.to_string(),
-        Err(error) => return Err(error),
-        Ok(_) => panic!("invalid enforcement manifest cannot fall back to seed"),
+    let volumes = super::super::agent_settings::Volumes {
+        files: &harness.files,
+        verifier: &harness.verifier,
+        signed: &harness.signed,
+        home: &harness.scratch,
+        journal: &harness.journal,
+        maximum_bytes: harness.limits.file_bytes,
     };
+    let tree = super::super::agent_settings::Tree::new(&volumes).await?;
+    let reason =
+        match super::super::agent_settings::plugins(&tree, harness.root, harness.clock.as_ref())
+            .await
+        {
+            Err(error @ Error::Invalid(_)) => error.to_string(),
+            Err(error) => return Err(error),
+            Ok(_) => panic!("invalid enforcement manifest cannot fall back to seed"),
+        };
     let record = admission(&harness, "plugins.ts", &version).await?;
     assert_eq!(record.status, AdmissionStatus::Invalid);
     assert_eq!(record.error.as_deref(), Some(reason.as_str()));

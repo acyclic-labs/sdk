@@ -1,4 +1,4 @@
-use crate::{HttpTransport, ProviderSpec, invalid};
+use crate::{Adapter, HttpTransport, ProviderSpec, invalid};
 use acyclic_harness_core::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
@@ -6,11 +6,27 @@ use acyclic_harness_core::{
 };
 use std::sync::Arc;
 
+/// One selection's calibration and authoritative usage anchor. Reader-bound
+/// copies retain this owner together, without separate allocation/refcounts.
+pub(crate) struct Accounting {
+    pub(crate) estimator: crate::accounting::TokenEstimator,
+    pub(crate) usage: crate::usage_count::Counter,
+}
+
+impl Accounting {
+    pub(crate) fn new(adapter: Adapter) -> Arc<Self> {
+        Arc::new(Self {
+            estimator: crate::accounting::TokenEstimator::new(adapter),
+            usage: crate::usage_count::Counter::default(),
+        })
+    }
+}
+
 /// Exact model selection and its provider, ready for a harness execution scope.
 pub struct ResolvedModel {
     pub(crate) files: crate::files::Files,
-    /// Calibration shared by every reader-bound copy of this selection.
-    pub(crate) estimator: Arc<crate::accounting::TokenEstimator>,
+    /// Calibration and observed usage share one original selection owner.
+    pub(crate) accounting: Arc<Accounting>,
     /// Immutable harness model identity.
     pub(crate) model: Model,
     /// Sealed settings derived from the parsed profile, never a root option map.
@@ -24,13 +40,36 @@ pub struct ResolvedModel {
     pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport with the endpoint's optional caller-selected deadline.
     pub(crate) transport: Arc<dyn HttpTransport>,
-    /// The last reported generation input, anchoring later admission bounds.
-    pub(crate) usage: Arc<crate::usage_count::Counter>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_login: Option<Arc<crate::CodexLogin>>,
 }
 
 impl ResolvedModel {
+    // All derived selections retain these original owners. Only content
+    // rebinding changes the reader, and only profile admission changes identity.
+    fn derived(
+        &self,
+        model: Model,
+        profile: Option<acyclic_harness_core::model::ModelProfileBinding>,
+        files: crate::files::Files,
+    ) -> Self {
+        Self {
+            files,
+            accounting: Arc::clone(&self.accounting),
+            model,
+            profile,
+            config: self.config.clone(),
+            capacity: self.capacity,
+            tool_profile: self.tool_profile,
+            thinking_levels: self.thinking_levels,
+            key: self.key.clone(),
+            credential_scope: self.credential_scope,
+            transport: self.transport.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            codex_login: self.codex_login.clone(),
+        }
+    }
+
     /// The original selected catalog member's tool family, including under
     /// alloy. Profile admission consumes this value without a naming heuristic.
     pub fn native_tool_profile(&self) -> Option<acyclic_harness_core::model::NativeToolProfile> {
@@ -43,6 +82,17 @@ impl ResolvedModel {
         mut self,
         profile: &acyclic_harness_core::profile::AgentProfile<'_>,
     ) -> Result<Self> {
+        let binding = self.admit_binding(profile)?;
+        self.model.revision = self.profile_revision(&binding);
+        self.profile = Some(binding);
+        Ok(self)
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
+    fn admit_binding(
+        &self,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<acyclic_harness_core::model::ModelProfileBinding> {
         if self.profile.is_some() {
             return Err(invalid(
                 "a resolved model profile is immutable; resolve the next epoch",
@@ -61,14 +111,24 @@ impl ResolvedModel {
                 "Gemini profile admission failed: thinking levels are not advertised by the selected model; recovery: select its provider-default reasoning profile",
             ));
         }
+        Ok(binding)
+    }
+
+    #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
+    fn profile_revision(
+        &self,
+        binding: &acyclic_harness_core::model::ModelProfileBinding,
+    ) -> String {
         let mut revision = blake3::Hasher::new();
         revision.update(b"acyclic.model-profile-binding.v1\0");
         revision.update(&(self.model.revision.len() as u64).to_be_bytes());
         revision.update(self.model.revision.as_bytes());
         revision.update(&binding.digest());
-        self.model.revision = format!("profile-v1:{}", revision.finalize().to_hex());
-        self.profile = Some(binding);
-        Ok(self)
+        let digest = revision.finalize().to_hex();
+        let mut key = String::with_capacity("profile-v1:".len() + digest.len());
+        key.push_str("profile-v1:");
+        key.push_str(digest.as_str());
+        key
     }
 
     /// Pinned profile and prefix identity for the original epoch publication.
@@ -135,8 +195,10 @@ impl ResolvedModel {
         input_bytes: usize,
         metadata: &serde_json::Value,
     ) -> Result<()> {
-        self.estimator.observe(input_bytes, metadata);
-        self.usage.observe(self.config.adapter, request, metadata)
+        self.accounting.estimator.observe(input_bytes, metadata);
+        self.accounting
+            .usage
+            .observe(self.config.adapter, request, metadata)
     }
 
     pub(crate) fn admitted_capacity(&self) -> ModelContextCapacity {
@@ -153,30 +215,36 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    #[cfg(any(not(target_arch = "wasm32"), feature = "browser"))]
+    fn admit_profile(
+        &self,
+        model: &Model,
+        profile: &acyclic_harness_core::profile::AgentProfile<'_>,
+    ) -> Result<(Model, Arc<dyn ModelProvider>)> {
+        self.validate(model)?;
+        let binding = self.admit_binding(profile)?;
+        let model = Model {
+            provider: self.model.provider.clone(),
+            name: self.model.name.clone(),
+            revision: self.profile_revision(&binding),
+        };
+        let admitted = self.derived(model, Some(binding), self.files.clone());
+        Ok((admitted.model.clone(), Arc::new(admitted)))
+    }
+
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
         maximum_bytes: u64,
     ) -> Option<Arc<dyn ModelProvider>> {
-        Some(Arc::new(Self {
-            files: crate::files::Files {
+        Some(Arc::new(self.derived(
+            self.model.clone(),
+            self.profile,
+            crate::files::Files {
                 reader: Some(reader),
                 maximum_bytes: maximum_bytes.min(self.files.maximum_bytes),
             },
-            estimator: Arc::clone(&self.estimator),
-            model: self.model.clone(),
-            profile: self.profile,
-            config: self.config.clone(),
-            capacity: self.capacity,
-            tool_profile: self.tool_profile,
-            thinking_levels: self.thinking_levels,
-            key: self.key.clone(),
-            credential_scope: self.credential_scope,
-            transport: self.transport.clone(),
-            usage: Arc::clone(&self.usage),
-            #[cfg(not(target_arch = "wasm32"))]
-            codex_login: self.codex_login.clone(),
-        }))
+        )))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_model(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {

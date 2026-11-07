@@ -13,7 +13,13 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod adapter;
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
+mod allocation;
 mod arguments;
+/// Exercises production native declarations with hostile argument values.
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use allocation::check as check_native_arguments;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod arguments_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -34,7 +40,18 @@ pub const fn declarations(profile: NativeToolProfile) -> &'static str {
 /// pinned revision; output and projection schemas belong to the capability
 /// executor that binds each declaration, so they are left empty here.
 pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
-    let mut source: Vec<Value> = serde_json::from_str(declarations(profile))
+    decoded(profile)?
+        .map(|entry| entry.map(|(_, definition)| definition))
+        .collect()
+}
+
+/// Decode the mapping and public declaration together. Binding consumes this
+/// iterator directly, so it neither reparses the mapping nor collects a second
+/// vector of definitions before constructing the executable declarations.
+fn decoded(
+    profile: NativeToolProfile,
+) -> Result<impl Iterator<Item = Result<(crate::profile::ToolRevision, ToolDefinition)>>> {
+    let source: Vec<Value> = serde_json::from_str(declarations(profile))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let revisions = profile.tools()?;
     if revisions.len() != source.len() {
@@ -42,33 +59,58 @@ pub fn definitions(profile: NativeToolProfile) -> Result<Vec<ToolDefinition>> {
             "native profile layer and public declarations differ".into(),
         ));
     }
-    revisions
-        .iter()
-        .zip(source.iter_mut())
-        .map(|(revision, entry)| {
-            let name = take_string(entry, "name")?;
+    Ok(revisions
+        .into_iter()
+        .zip(source)
+        .map(|(revision, mut entry)| {
+            let name = take_string(&mut entry, "name")?;
             if name != revision.variant {
                 return Err(Error::Invalid(
                     "native declaration order differs from its profile layer".into(),
                 ));
             }
-            Ok(ToolDefinition {
+            let definition = ToolDefinition {
                 name,
                 revision: revision.revision.clone(),
-                description: take_string(entry, "description")?,
+                description: take_string(&mut entry, "description")?,
                 input_schema: entry
                     .get_mut("parametersJsonSchema")
                     .map(Value::take)
                     .ok_or_else(|| Error::Invalid("native input contract is absent".into()))?,
                 output_schema: Value::Bool(true),
                 projection_schema: Value::Bool(true),
-            })
-        })
-        .collect()
+            };
+            Ok((revision, definition))
+        }))
 }
 
+/// One mapped declaration: its capability, the variant that runs it when
+/// not the capability's own tool, its definition and its template.
+type Mapped = (
+    String,
+    Option<Arc<Tool>>,
+    ToolDefinition,
+    Arc<arguments::Arguments>,
+);
+
 /// One profile's mapped declarations, decoded and checked once.
-pub struct NativeTools(Vec<(String, ToolDefinition, Arc<arguments::Arguments>)>);
+pub struct NativeTools(Vec<Mapped>);
+
+/// One immutable selection's declarations. The fallible initializer owns the
+/// reservation before it reads the profile or decodes any declarations.
+#[cfg(any(feature = "filesystem", test))]
+#[derive(Default)]
+pub(crate) struct Cache(once_cell::sync::OnceCell<Option<Arc<NativeTools>>>);
+
+#[cfg(any(feature = "filesystem", test))]
+impl Cache {
+    pub(crate) fn get(
+        &self,
+        binding: impl FnOnce() -> Result<Option<Arc<NativeTools>>>,
+    ) -> Result<Option<Arc<NativeTools>>> {
+        self.0.get_or_try_init(binding).cloned()
+    }
+}
 
 impl NativeTools {
     /// The declarations `profile`'s layer maps, in the layer's order.
@@ -77,19 +119,55 @@ impl NativeTools {
     /// # Errors
     /// [`Error::Invalid`] when the layer, its declarations or a template is malformed.
     pub fn new(profile: NativeToolProfile) -> Result<Self> {
-        profile
-            .tools()?
-            .into_iter()
-            .zip(definitions(profile)?)
-            .filter_map(|(revision, definition)| {
-                let template = revision.arguments?;
-                Some(
-                    arguments::Arguments::new(template, revision.refuse)
-                        .map(|arguments| (revision.capability, definition, Arc::new(arguments))),
-                )
-            })
-            .collect::<Result<_>>()
-            .map(Self)
+        Self::from_entries(decoded(profile)?)
+    }
+
+    /// Binds admitted declarations to their canonical capability mappings.
+    /// Names and revisions must match each mapping. Descriptions and input
+    /// schemas may change; result contracts, grants and approval remain the
+    /// original executor's when [`Self::bind`] selects the capability.
+    /// No capability is created by a declaration.
+    ///
+    /// # Errors
+    /// [`Error::Invalid`] for mismatched identities or malformed templates;
+    /// the original variant refusal for an unavailable implementation.
+    pub fn from_definitions(
+        definitions: impl IntoIterator<Item = (crate::profile::ToolRevision, ToolDefinition)>,
+    ) -> Result<Self> {
+        Self::from_entries(definitions.into_iter().map(|(revision, definition)| {
+            if revision.variant != definition.name || revision.revision != definition.revision {
+                return Err(Error::Invalid(
+                    "native declaration identity differs from its mapping".into(),
+                ));
+            }
+            Ok((revision, definition))
+        }))
+    }
+
+    fn from_entries(
+        entries: impl IntoIterator<Item = Result<(crate::profile::ToolRevision, ToolDefinition)>>,
+    ) -> Result<Self> {
+        let mut mapped = Vec::new();
+        for entry in entries {
+            let (revision, definition) = entry?;
+            let Some(template) = revision.arguments else {
+                continue;
+            };
+            let implementation = revision
+                .implementation
+                .as_deref()
+                .map(crate::tools::variants::tool)
+                .transpose()?
+                .map(Arc::new);
+            let arguments = arguments::Arguments::new(template, revision.refuse)?;
+            mapped.push((
+                revision.capability,
+                implementation,
+                definition,
+                Arc::new(arguments),
+            ));
+        }
+        Ok(Self(mapped))
     }
 
     /// Offers each capability `tools` selects as these declarations. Each runs
@@ -100,12 +178,23 @@ impl NativeTools {
     /// # Errors
     /// A registry refusal of a declaration.
     pub fn bind(&self, tools: &mut ToolRegistry) -> Result<()> {
-        let mut presented: Vec<(&str, Vec<String>)> = Vec::new();
-        for (capability, definition, arguments) in &self.0 {
-            let Some(original) = tools.get(capability, None, None)? else {
+        // Resolve every original selection before registering a declaration can
+        // replace it, including one offered under the capability's own name.
+        let capabilities = self
+            .0
+            .iter()
+            .map(|(name, ..)| tools.get_shared(name, None, None).map(|tool| tool.cloned()))
+            .collect::<Result<Vec<_>>>()?;
+        let mut presented = std::collections::BTreeMap::<&str, Vec<String>>::new();
+        for ((name, implementation, definition, arguments), capability) in
+            self.0.iter().zip(capabilities)
+        {
+            let Some(capability) = capability else {
                 continue;
             };
-            let original = Arc::new(original.clone());
+            let original = implementation
+                .clone()
+                .unwrap_or_else(|| Arc::clone(&capability));
             let mut definition = definition.clone();
             // Results are the capability's, so their contracts are too.
             definition
@@ -114,10 +203,11 @@ impl NativeTools {
             definition
                 .projection_schema
                 .clone_from(&original.definition.projection_schema);
-            let name = definition.name.clone();
+            let native = definition.name.clone();
             let revision = definition.revision.clone();
             let adapter = Arc::new(adapter::Adapter {
                 arguments: Arc::clone(arguments),
+                capability,
                 original,
             });
             tools.register(
@@ -133,14 +223,8 @@ impl NativeTools {
                 &mut None,
                 None,
             )?;
-            tools.select_model_version(&name, &revision)?;
-            match presented
-                .iter_mut()
-                .find(|(offered, _)| offered == capability)
-            {
-                Some((_, natives)) => natives.push(name),
-                None => presented.push((capability, vec![name])),
-            }
+            tools.select_model_version(&native, &revision)?;
+            presented.entry(name).or_default().push(native);
         }
         presented
             .into_iter()

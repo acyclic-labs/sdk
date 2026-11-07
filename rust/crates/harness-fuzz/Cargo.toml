@@ -97,6 +97,7 @@ mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
+native-arguments = ["core", "acyclic-harness-core/filesystem"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
@@ -148,8 +149,24 @@ doc = false
 bench = false
 
 [[bin]]
+name = "native_arguments"
+path = "fuzz_targets/native_arguments.rs"
+required-features = ["native-arguments"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_workspace"
 path = "fuzz_targets/native_workspace.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_patch_hooks"
+path = "fuzz_targets/native_patch_hooks.rs"
+required-features = ["native-arguments"]
 test = false
 doc = false
 bench = false

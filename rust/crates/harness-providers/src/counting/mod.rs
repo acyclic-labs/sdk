@@ -64,6 +64,7 @@ pub(crate) async fn count(
             .map_or(0, |spec| spec.framing_tokens),
     );
     if let Some(bound) = provider
+        .accounting
         .usage
         .bound(request)
         .map_err(|_| boundary(work, "usage bound encoding failed"))?
@@ -74,7 +75,7 @@ pub(crate) async fn count(
     }
     #[cfg(not(target_arch = "wasm32"))]
     if provider.codex_login.is_some() {
-        let tokens = provider.usage.codex_estimate(request)?;
+        let tokens = provider.accounting.usage.codex_estimate(request)?;
         return local(provider, request, tokens, work);
     }
     let spec = specification(&provider.config, work)?;

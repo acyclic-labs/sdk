@@ -67,12 +67,16 @@ impl ToolRegistry {
                 ),
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
-                ModelSelection::Native(names) => ModelSelection::Native(
-                    names
+                ModelSelection::Native { revision, names } => ModelSelection::Native {
+                    revision: revision
+                        .as_ref()
+                        .map(|revision| crate::executor::stock_string_copy(revision, Some(&io)))
+                        .transpose()?,
+                    names: names
                         .iter()
                         .map(|name| crate::executor::stock_string_copy(name, Some(&io)))
                         .collect::<Result<_>>()?,
-                ),
+                },
             };
             data.selected.insert(name, selection);
         }

@@ -508,13 +508,18 @@ impl Opening {
             journal: &journal,
             maximum_bytes: self.config.limits.file_bytes,
         };
+        #[cfg(any(test, feature = "hooks"))]
+        let settings_tree = agent_settings::Tree::new(&volumes).await?;
         // `plugins.ts` selects the plugin hooks as the session starts.
         #[cfg(any(test, feature = "hooks"))]
         let plugin_hooks =
-            agent_settings::plugins(&volumes, owner.agent, self.config.clock.as_ref()).await?;
+            agent_settings::plugins(&settings_tree, owner.agent, self.config.clock.as_ref())
+                .await?;
         // `agent.ts` selects the model and its sampling as the session starts.
         let (agent, sampling, compaction) = match self.config.model.clone() {
             Some(started) => {
+                #[cfg(not(any(test, feature = "hooks")))]
+                let settings_tree = agent_settings::Tree::new(&volumes).await?;
                 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
                 let resolver = self
                     .models
@@ -532,7 +537,7 @@ impl Opening {
                 )))]
                 let resolve = None;
                 let settings = agent_settings::admit(
-                    &volumes,
+                    &settings_tree,
                     owner.agent,
                     started.clone(),
                     resolve,
