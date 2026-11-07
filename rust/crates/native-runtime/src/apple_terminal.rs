@@ -7,7 +7,8 @@
 //! selects in C) over a descriptor set sized to the descriptor, so no terminal
 //! descriptor lacks a working wait.
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Bits per `fd_set` word: Darwin's `fds_bits` is an array of `i32`.
@@ -15,28 +16,65 @@ const WORD_BITS: usize = 32;
 /// Darwin's select(2) rejects a timeout of more than 10^8 seconds.
 const MAX_SECONDS: u64 = 100_000_000;
 
-/// A reusable read or write wait bound to original descriptor numbers. The
-/// set is allocated once; each wait touches only the selected source bits.
-pub struct Readiness<const N: usize> {
+/// Descriptor owners retained for the lifetime of a readiness wait.
+///
+/// Implementations borrow their descriptors from the retained source and keep
+/// those descriptors open while the source is retained. Moving an owner or
+/// borrowing an existing owner requires no descriptor duplication.
+pub trait Sources<const N: usize> {
+    /// Borrow the sources used to create the readiness set.
+    fn descriptors(&self) -> [BorrowedFd<'_>; N];
+}
+
+impl<T: AsFd, const N: usize> Sources<N> for [T; N] {
+    fn descriptors(&self) -> [BorrowedFd<'_>; N] {
+        self.each_ref().map(AsFd::as_fd)
+    }
+}
+
+impl<T: Sources<N>, const N: usize> Sources<N> for Arc<T> {
+    fn descriptors(&self) -> [BorrowedFd<'_>; N] {
+        (**self).descriptors()
+    }
+}
+
+/// A reusable wait retaining its original descriptor owners. The set is
+/// allocated once; each wait touches only the selected source bits.
+///
+/// Borrowed sources cannot outlive their owners:
+///
+/// ```compile_fail,E0597
+/// use acyclic_native_runtime::terminal::Readiness;
+/// use std::os::fd::AsFd;
+/// let readiness = {
+///     let (reader, _writer) = std::io::pipe().unwrap();
+///     Readiness::readable([reader.as_fd()]).unwrap()
+/// };
+/// drop(readiness);
+/// ```
+pub struct Readiness<S, const N: usize> {
+    // Retain source ownership even between waits, when no BorrowedFd is live.
+    _sources: S,
     words: Vec<u32>,
     fds: [usize; N],
     nfds: libc::c_int,
     reading: bool,
 }
 
-impl<const N: usize> Readiness<N> {
+impl<S: Sources<N>, const N: usize> Readiness<S, N> {
     /// Size one read set for the original sources, including an optional
     /// lifecycle wake source selected by a later wait.
-    pub fn readable(fds: [BorrowedFd<'_>; N]) -> io::Result<Self> {
-        Self::new(fds, true)
+    pub fn readable(sources: S) -> io::Result<Self> {
+        Self::new(sources, true)
     }
 
     /// Size one write set for the original sources.
-    pub fn writable(fds: [BorrowedFd<'_>; N]) -> io::Result<Self> {
-        Self::new(fds, false)
+    pub fn writable(sources: S) -> io::Result<Self> {
+        Self::new(sources, false)
     }
 
-    fn new(fds: [BorrowedFd<'_>; N], reading: bool) -> io::Result<Self> {
+    fn new(sources: S, reading: bool) -> io::Result<Self> {
+        let fds = sources.descriptors();
         let maximum = fds
             .iter()
             .map(AsRawFd::as_raw_fd)
@@ -53,6 +91,7 @@ impl<const N: usize> Readiness<N> {
         words.try_reserve_exact(length)?;
         words.resize(length, 0);
         Ok(Self {
+            _sources: sources,
             words,
             fds: numbers,
             nfds,
@@ -60,27 +99,18 @@ impl<const N: usize> Readiness<N> {
         })
     }
 
-    /// Wait for the selected original sources, timeout or interruption. A
-    /// `None` source is disabled for this wait. Replaced descriptors refuse.
+    /// Wait for enabled original sources, timeout or interruption. The mask
+    /// can disable a source; it cannot replace its original descriptor.
     /// False means the timeout elapsed; readiness or interruption returns true.
-    pub fn wait(
-        &mut self,
-        fds: [Option<BorrowedFd<'_>>; N],
-        timeout: Duration,
-    ) -> io::Result<bool> {
-        for (original, fd) in self.fds.iter().zip(fds) {
-            if fd.is_some_and(|fd| usize::try_from(fd.as_raw_fd()).ok() != Some(*original)) {
-                return Err(io::ErrorKind::InvalidInput.into());
-            }
-        }
+    pub fn wait(&mut self, enabled: [bool; N], timeout: Duration) -> io::Result<bool> {
         let seconds = timeout.as_secs().min(MAX_SECONDS);
         let mut timeval = libc::timeval {
             tv_sec: libc::time_t::try_from(seconds).map_err(|_| io::ErrorKind::InvalidInput)?,
             tv_usec: libc::suseconds_t::try_from(timeout.subsec_micros())
                 .map_err(|_| io::ErrorKind::InvalidInput)?,
         };
-        for (number, fd) in self.fds.iter().zip(fds) {
-            if fd.is_some() {
+        for (number, enabled) in self.fds.iter().zip(enabled) {
+            if enabled {
                 self.words[number / WORD_BITS] |= 1 << (number % WORD_BITS);
             }
         }
@@ -141,7 +171,6 @@ fn select_unlimited(
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::os::fd::AsFd;
 
     /// Writability at fd 1500, past `FD_SETSIZE`, plus the default entry
     /// point's EINVAL there as the negative control.
@@ -150,35 +179,38 @@ mod tests {
         use rustix::process::{Resource, getrlimit, setrlimit};
         let mut limit = getrlimit(Resource::Nofile);
         if limit.maximum.is_some_and(|maximum| maximum <= 1500) {
-            eprintln!("skipped: RLIMIT_NOFILE maximum cannot reach fd 1500");
-            return Ok(());
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native high-descriptor control needs RLIMIT_NOFILE maximum above 1500",
+            ));
         }
         if limit.current.is_some_and(|current| current <= 1500) {
             limit.current = Some(limit.maximum.map_or(2048, |maximum| maximum.min(2048)));
             setrlimit(Resource::Nofile, limit)?;
         }
-        let (_read, write) = std::io::pipe()?;
+        let (mut read, write) = std::io::pipe()?;
         let high = rustix::io::fcntl_dupfd_cloexec(&write, 1500)?;
-        let mut wait = Readiness::writable([high.as_fd()])?;
+        drop(write);
+        let mut wait = Readiness::writable([high])?;
         for _ in 0..2 {
-            wait.wait([Some(high.as_fd())], Duration::from_secs(5))?;
+            assert!(wait.wait([true], Duration::from_secs(5))?);
         }
         let (reader, mut writer) = std::io::pipe()?;
-        let mut input = std::fs::File::from(rustix::io::fcntl_dupfd_cloexec(&reader, 1500)?);
+        let input = std::fs::File::from(rustix::io::fcntl_dupfd_cloexec(&reader, 1500)?);
         let (changed, mut notify) = std::io::pipe()?;
         let mut readable = Readiness::readable([input.as_fd(), changed.as_fd()])?;
         writer.write_all(b"x")?;
-        assert!(readable.wait([Some(input.as_fd()), None], Duration::ZERO)?);
+        assert!(readable.wait([true, false], Duration::ZERO)?);
         // A ready terminal disabled for suspension cannot leave a stale bit.
-        assert!(!readable.wait([None, Some(changed.as_fd())], Duration::ZERO)?);
+        assert!(!readable.wait([false, true], Duration::ZERO)?);
         notify.write_all(b"x")?;
-        assert!(readable.wait([None, Some(changed.as_fd())], Duration::ZERO)?);
+        assert!(readable.wait([false, true], Duration::ZERO)?);
         let mut byte = [0];
-        input.read_exact(&mut byte)?;
+        (&input).read_exact(&mut byte)?;
         assert_eq!(&byte, b"x");
         drop(writer);
-        assert!(readable.wait([Some(input.as_fd()), None], Duration::ZERO)?);
-        assert_eq!(input.read(&mut byte)?, 0);
+        assert!(readable.wait([true, false], Duration::ZERO)?);
+        assert_eq!((&input).read(&mut byte)?, 0);
         let mut words = [0u32; 1500 / WORD_BITS + 1];
         if let Some(word) = words.get_mut(1500 / WORD_BITS) {
             *word = 1 << (1500 % WORD_BITS);
@@ -191,12 +223,10 @@ mod tests {
             default_select(1501, words.as_mut_ptr().cast(), &mut timeval),
             Err(Some(libc::EINVAL))
         );
-        // A different descriptor number is refused, never waited on.
-        assert_eq!(
-            wait.wait([Some(std::io::stdin().as_fd())], Duration::ZERO)
-                .map_err(|error| error.kind()),
-            Err(io::ErrorKind::InvalidInput)
-        );
+        // The wait owns the last writer until it is retired. Its drop, not a
+        // replacement raw number, closes the original pipe and produces EOF.
+        drop(wait);
+        assert_eq!(read.read(&mut byte)?, 0);
         Ok(())
     }
 

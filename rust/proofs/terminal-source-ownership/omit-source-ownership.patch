@@ -1,0 +1,44 @@
+--- a/rust/crates/native-runtime/src/apple_terminal.rs
++++ b/rust/crates/native-runtime/src/apple_terminal.rs
+@@ -52,28 +52,26 @@
+ /// };
+ /// drop(readiness);
+ /// ```
+-pub struct Readiness<S, const N: usize> {
+-    // Retain source ownership even between waits, when no BorrowedFd is live.
+-    _sources: S,
++pub struct Readiness<const N: usize> {
+     words: Vec<u32>,
+     fds: [usize; N],
+     nfds: libc::c_int,
+     reading: bool,
+ }
+ 
+-impl<S: Sources<N>, const N: usize> Readiness<S, N> {
++impl<const N: usize> Readiness<N> {
+     /// Size one read set for the original sources, including an optional
+     /// lifecycle wake source selected by a later wait.
+-    pub fn readable(sources: S) -> io::Result<Self> {
++    pub fn readable<S: Sources<N>>(sources: S) -> io::Result<Self> {
+         Self::new(sources, true)
+     }
+ 
+     /// Size one write set for the original sources.
+-    pub fn writable(sources: S) -> io::Result<Self> {
++    pub fn writable<S: Sources<N>>(sources: S) -> io::Result<Self> {
+         Self::new(sources, false)
+     }
+ 
+-    fn new(sources: S, reading: bool) -> io::Result<Self> {
++    fn new<S: Sources<N>>(sources: S, reading: bool) -> io::Result<Self> {
+         let fds = sources.descriptors();
+         let maximum = fds
+             .iter()
+@@ -91,7 +89,6 @@
+         words.try_reserve_exact(length)?;
+         words.resize(length, 0);
+         Ok(Self {
+-            _sources: sources,
+             words,
+             fds: numbers,
+             nfds,

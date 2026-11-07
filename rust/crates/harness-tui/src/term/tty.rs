@@ -17,9 +17,26 @@ struct Input {
 /// Pins the original terminal and lifecycle wake descriptors while the caller
 /// waits outside the state lock. No descriptor is reopened or duplicated.
 pub(crate) struct InputWait {
+    #[cfg(not(target_vendor = "apple"))]
     input: Arc<Input>,
     #[cfg(target_vendor = "apple")]
-    readiness: acyclic_native_runtime::terminal::Readiness<2>,
+    readiness: acyclic_native_runtime::terminal::Readiness<Arc<Input>, 2>,
+}
+
+#[cfg(target_vendor = "apple")]
+impl acyclic_native_runtime::terminal::Sources<2> for Input {
+    fn descriptors(&self) -> [std::os::fd::BorrowedFd<'_>; 2] {
+        use std::os::fd::AsFd;
+        [self.file.as_fd(), self.changed.as_fd()]
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl acyclic_native_runtime::terminal::Sources<1> for Input {
+    fn descriptors(&self) -> [std::os::fd::BorrowedFd<'_>; 1] {
+        use std::os::fd::AsFd;
+        [self.file.as_fd()]
+    }
 }
 
 pub(crate) trait InputReadiness {
@@ -28,17 +45,9 @@ pub(crate) trait InputReadiness {
 
 impl InputReadiness for InputWait {
     fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<bool> {
-        #[cfg(target_vendor = "apple")]
-        use std::os::fd::AsFd;
         let timeout = deadline.saturating_duration_since(Instant::now());
         #[cfg(target_vendor = "apple")]
-        return self.readiness.wait(
-            [
-                active.then(|| self.input.file.as_fd()),
-                Some(self.input.changed.as_fd()),
-            ],
-            timeout,
-        );
+        return self.readiness.wait([active, true], timeout);
         #[cfg(not(target_vendor = "apple"))]
         {
             use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -103,15 +112,13 @@ impl RawTty {
     }
 
     pub(crate) fn input_wait(&self) -> io::Result<InputWait> {
-        #[cfg(target_vendor = "apple")]
-        use std::os::fd::AsFd;
         Ok(InputWait {
+            #[cfg(not(target_vendor = "apple"))]
             input: Arc::clone(&self.input),
             #[cfg(target_vendor = "apple")]
-            readiness: acyclic_native_runtime::terminal::Readiness::readable([
-                self.input.file.as_fd(),
-                self.input.changed.as_fd(),
-            ])?,
+            readiness: acyclic_native_runtime::terminal::Readiness::readable(Arc::clone(
+                &self.input,
+            ))?,
         })
     }
 
@@ -246,7 +253,7 @@ impl NonblockingWrite for RawTty {
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
         super::counters::waited();
         if self.readiness.is_none() {
-            self.readiness = Some(darwin::Readiness::register(&self.input.file)?);
+            self.readiness = Some(darwin::Readiness::register(&self.input)?);
         }
         match &mut self.readiness {
             Some(readiness) => readiness.wait(&self.input.file, deadline),
@@ -285,8 +292,11 @@ mod darwin {
     use nix::sys::time::TimeSpec;
     use std::fs::File;
     use std::io;
-    use std::os::fd::{AsFd, AsRawFd};
+    use std::os::fd::AsRawFd;
+    use std::sync::Arc;
     use std::time::Instant;
+
+    use super::Input;
 
     /// Writability of the terminal device, for every descriptor number.
     /// kqueue serves every terminal but the /dev/tty alias, which it rejects
@@ -295,7 +305,7 @@ mod darwin {
     /// poll(2) reports POLLNVAL for terminals.)
     pub(super) enum Readiness {
         Kqueue(Kqueue),
-        Select(NativeReadiness<1>),
+        Select(NativeReadiness<Arc<Input>, 1>),
     }
 
     fn event(file: &File, flags: EvFlags) -> io::Result<KEvent> {
@@ -311,20 +321,20 @@ mod darwin {
     }
 
     impl Readiness {
-        pub(super) fn register(file: &File) -> io::Result<Self> {
+        pub(super) fn register(input: &Arc<Input>) -> io::Result<Self> {
             let queue = Kqueue::new()?;
             // Level-triggered: a wait returns at once while the queue has room.
             let zero = *TimeSpec::from_duration(std::time::Duration::ZERO).as_ref();
-            match queue.kevent(&[event(file, EvFlags::EV_ADD)?], &mut [], Some(zero)) {
+            match queue.kevent(&[event(&input.file, EvFlags::EV_ADD)?], &mut [], Some(zero)) {
                 Ok(_) => Ok(Self::Kqueue(queue)),
-                Err(nix::errno::Errno::EINVAL) => Self::select(file),
+                Err(nix::errno::Errno::EINVAL) => Self::select(Arc::clone(input)),
                 Err(error) => Err(error.into()),
             }
         }
 
         /// The /dev/tty alias's wait; also what tests force on any terminal.
-        pub(super) fn select(file: &File) -> io::Result<Self> {
-            Ok(Self::Select(NativeReadiness::writable([file.as_fd()])?))
+        pub(super) fn select(input: Arc<Input>) -> io::Result<Self> {
+            Ok(Self::Select(NativeReadiness::writable(input)?))
         }
 
         pub(super) fn wait(&mut self, file: &File, deadline: Instant) -> io::Result<()> {
@@ -338,9 +348,7 @@ mod darwin {
                         Err(error) => Err(error.into()),
                     }
                 }
-                Self::Select(writable) => {
-                    writable.wait([Some(file.as_fd())], remaining).map(|_| ())
-                }
+                Self::Select(writable) => writable.wait([true], remaining).map(|_| ()),
             }
         }
     }
