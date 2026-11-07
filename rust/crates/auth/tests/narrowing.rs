@@ -360,13 +360,14 @@ proptest::proptest! {
         let grants = ceilings.iter().zip(owners).map(|(&(cpu, memory, concurrency), owner)| {
             owned_execution("execution/job-execute", owner, cpu, memory, concurrency)
         }).collect();
-        let mut blocks = chain(grants);
-        for mask in masks {
+        let caveats = masks.into_iter().map(|mask| {
             let products = [(1, "actors"), (2, "managed_agents")].into_iter()
                 .filter_map(|(bit, product)| (mask & bit != 0).then_some(product))
                 .collect::<Vec<_>>();
-            blocks = append(&blocks, allowance(&products)).expect("canonical allowance attenuation");
-        }
+            allowance(&products)
+        }).collect();
+        let blocks = attenuate(&chain(grants), caveats, vec![6; 32])
+            .expect("canonical conjunctive allowance attenuation");
         let expected = ceilings.iter().enumerate().any(|(index, &(cpu, memory, concurrency))| {
             cpu.is_none_or(|limit| requested.0 <= limit)
                 && memory.is_none_or(|limit| requested.1 <= limit)
