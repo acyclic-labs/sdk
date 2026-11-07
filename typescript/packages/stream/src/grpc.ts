@@ -121,9 +121,9 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
         incoming: createClient(StreamSessionService, transport).session(input, { signal }),
         async fail(error: unknown): Promise<never> {
           if (!signal.aborted && !statusReceived && rpc !== undefined) {
-            // A failed bidi response needs no more writes. A local NO_ERROR
-            // close supplies completion without fabricating remote CANCEL.
-            rpc.close(constants.NGHTTP2_NO_ERROR);
+            // Finish our request half without replacing the peer's reset code.
+            // The response has ended or failed; the same RPC produces close.
+            rpc.end();
             await closed;
           }
           const interrupted = !signal.aborted && !statusReceived
