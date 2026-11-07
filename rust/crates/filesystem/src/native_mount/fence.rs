@@ -127,6 +127,14 @@ impl crate::native_host::NativeHostWork for NativeFenceReleaseWork<'_> {
             .ok_or(Self::Error::InvalidLayout)?
             .record_completed(delta)
     }
+    fn with_admitted_work<T>(
+        &mut self,
+        maximum: crate::WorkCounters,
+        operation: impl FnOnce() -> (T, crate::WorkCounters),
+    ) -> Result<T, Self::Error> {
+        self.credit
+            .with_admitted_work(maximum, self.wait, operation)
+    }
     fn started_io(&mut self, delta: crate::WorkCounters) -> Result<(), Self::Error> {
         let io = delta.native_io_operations();
         let validation = io.remaining(delta)?;
