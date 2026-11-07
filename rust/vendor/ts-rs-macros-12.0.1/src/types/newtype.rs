@@ -1,5 +1,5 @@
 use quote::quote;
-use syn::{Expr, FieldsUnnamed, Result};
+use syn::{Expr, Field, Result};
 
 use crate::{
     DerivedTS,
@@ -7,13 +7,7 @@ use crate::{
     deps::Dependencies,
 };
 
-pub(crate) fn newtype(
-    attr: &StructAttr,
-    ts_name: Expr,
-    fields: &FieldsUnnamed,
-) -> Result<DerivedTS> {
-    let inner = fields.unnamed.first().unwrap();
-
+pub(crate) fn newtype(attr: &StructAttr, ts_name: Expr, inner: &Field) -> Result<DerivedTS> {
     let field_attr = FieldAttr::from_attrs(&inner.attrs)?;
     field_attr.assert_validity(inner)?;
 

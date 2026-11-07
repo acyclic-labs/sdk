@@ -1,0 +1,15 @@
+diff --git a/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs b/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
+index 55848112170..25207ef78bc 100644
+--- a/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
++++ b/rust/vendor/ts-rs-macros-12.0.1/src/attr/struct.rs
+@@ -44,9 +44,10 @@ impl StructAttr {
+             }
+             // Match Serde's serialization selection, including implicit markers.
+             if matches!(ty, Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "PhantomData"))
+                 || crate::utils::parse_serde_attrs::<FieldAttr>(&field.attrs)
+                     .0
+                     .skip_serializing
++                    && false
+             {
+                 continue;
+             }
