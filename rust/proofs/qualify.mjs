@@ -582,6 +582,21 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "inbox-producer-admission": [
+    "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
+    "agent_model::runtime::reply_waits_require_original_committed_requests",
+    "reply wait admitted an absent or mismatched original input",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"], positiveCommand: [
+      "nextest", "run", "--locked", "-p", "acyclic-harness-core",
+      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
+      "--no-tests=fail", "--retries", "0",
+    ], completed: ["3 tests run: 3 passed"], mutations: [
+      { patch: "rust/proofs/inbox-producer-admission/mutation.patch", label: "uncommitted-reply", diagnostic: "reply wait admitted an absent or mismatched original input" },
+      { source: "rust/crates/harness-core/src/agent/host.rs", patch: "rust/proofs/inbox-producer-admission/spawn.patch", label: "uncommitted-spawn", diagnostic: "spawn wait admitted an absent or non-spawn original input" },
+    ] },
+  ],
   "public-pause-retirement": [
     "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
     "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
@@ -1204,10 +1219,6 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
-          ...(options.fuzz ? {
-            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
-              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
-          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
