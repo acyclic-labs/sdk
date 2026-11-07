@@ -357,6 +357,42 @@ mod checks {
     use super::*;
     use proptest::prelude::*;
 
+    fn prepare(definition: &ToolDefinition, projection: &Value) -> Result<()> {
+        use crate::model::*;
+        let mut definition = definition.clone();
+        definition.input_schema = Value::Bool(true);
+        let name = definition.name.clone();
+        let request = ModelRequest {
+            summary: false,
+            compose_tools: false,
+            model: Model::new("scripted".into(), "spill".into(), "1".into())?,
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+                        "call".into(),
+                        name.clone(),
+                        Value::Null,
+                    ))),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: "call".into(),
+                        name,
+                        content: serde_json::from_value(projection.clone())
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                    }),
+                },
+            ],
+            tools: vec![definition],
+            sampling: Default::default(),
+            max_output_tokens: Some(1),
+        };
+        PreparedModelRequest::prepare(request, crate::conversation::Limits::default(), None)?;
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
@@ -372,6 +408,11 @@ mod checks {
             let mut definition = crate::tool::files::read().unwrap().definition;
             definition.projection_schema = crate::tool::json_projection_schema(serde_json::json!({"type":"null"}));
             let content = definition.check_projection(&bounded, crate::conversation::Limits::default(), None).unwrap().unwrap();
+            prop_assert!(prepare(&definition, &bounded).is_ok(), "request refused the original multipart spill");
+            let plain = serde_json::json!({"kind":"json", "value":text});
+            let plain_bytes = serde_json::to_vec(&plain).unwrap();
+            let (plain, _plain_hold) = render(&plain, &plain_bytes, SpillRef {path:"output.json",version:"retained"}, maximum, None, None).unwrap();
+            prop_assert!(prepare(&definition, &plain).is_ok(), "request refused the original JSON spill");
             let expected = crate::model::ModelDataPart::File {file, policy:crate::model::FileProjectionPolicy::Reference};
             prop_assert!(matches!(&content, crate::model::ToolResultContent::Parts {parts} if parts.len() == 2 && parts.get(1) == Some(&expected)), "native file part changed or disappeared");
             let preview: Value = serde_json::from_str(bounded["parts"][0]["text"].as_str().unwrap()).unwrap();
@@ -396,6 +437,7 @@ mod checks {
                 // The former prefix-only check accepts every one of these.
                 prop_assert!(is_spill(&broken));
                 prop_assert!(definition.validate_projection(&broken, crate::conversation::Limits::default(), None).is_err());
+                prop_assert!(prepare(&definition, &broken).is_err());
             }
         }
     }
