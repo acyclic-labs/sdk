@@ -9,6 +9,62 @@ pub(super) enum Credit {
     Allocation,
 }
 
+fn exercise_credit(
+    credit: Credit,
+    meter: &Arc<dyn NativeReadMeter>,
+    caller_panics: bool,
+) -> io::Result<()> {
+    let unwind = || {
+        if caller_panics {
+            std::panic::panic_any("original credit owner unwind");
+        }
+    };
+    match credit {
+        Credit::Operations => {
+            let file = tempfile::tempfile()?;
+            let mut reservation =
+                NativeOperationReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 2)?;
+            let (metadata, recorded) = reservation.attempt(|| file.metadata());
+            assert_eq!(metadata?.len(), 0);
+            recorded?;
+            unwind();
+        }
+        Credit::Bytes => {
+            let _reservation =
+                NativeByteReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 8)?;
+            unwind();
+        }
+        Credit::Codec => {
+            let mut reservation = NativeCodecReservation::new(
+                Arc::clone(&meter),
+                NativeCodecWork {
+                    copied: 8,
+                    ..NativeCodecWork::default()
+                },
+            )?;
+            let mut copied = [0; 3];
+            copied.copy_from_slice(b"abc");
+            reservation.record(NativeCodecWork {
+                copied: copied.len() as u64,
+                ..NativeCodecWork::default()
+            })?;
+            assert_eq!(&copied, b"abc");
+            unwind();
+        }
+        Credit::AllocationReservation => {
+            let _reservation = ReadAllocationReservation::new(&meter, 8)?;
+            unwind();
+        }
+        Credit::Allocation => {
+            let mut buffer = crate::meter::ReadBuffer::<u8>::new(8, &meter)?;
+            buffer.data.extend_from_slice(b"original");
+            assert_eq!(buffer.data.len(), 8);
+            unwind();
+        }
+    }
+    Ok(())
+}
+
 fn preserves_unwind(credit: Credit) -> io::Result<()> {
     if crate::delivery::isolated()? {
         return Ok(());
@@ -32,69 +88,9 @@ fn preserves_unwind(credit: Credit) -> io::Result<()> {
             }));
             let observed = Arc::new(ledger);
             let meter: Arc<dyn NativeReadMeter> = observed.clone();
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
-                    match credit {
-                        Credit::Operations => {
-                            let file = tempfile::tempfile()?;
-                            let mut reservation = NativeOperationReservation::new(
-                                Arc::clone(&meter),
-                                NativeOperationKind::Read,
-                                2,
-                            )?;
-                            let (metadata, recorded) = reservation.attempt(|| file.metadata());
-                            assert_eq!(metadata?.len(), 0);
-                            recorded?;
-                            if caller_panics {
-                                std::panic::panic_any("original credit owner unwind");
-                            }
-                        }
-                        Credit::Bytes => {
-                            let _reservation = NativeByteReservation::new(
-                                Arc::clone(&meter),
-                                NativeOperationKind::Read,
-                                8,
-                            )?;
-                            if caller_panics {
-                                std::panic::panic_any("original credit owner unwind");
-                            }
-                        }
-                        Credit::Codec => {
-                            let mut reservation = NativeCodecReservation::new(
-                                Arc::clone(&meter),
-                                NativeCodecWork {
-                                    copied: 8,
-                                    ..NativeCodecWork::default()
-                                },
-                            )?;
-                            let mut copied = [0; 3];
-                            copied.copy_from_slice(b"abc");
-                            reservation.record(NativeCodecWork {
-                                copied: copied.len() as u64,
-                                ..NativeCodecWork::default()
-                            })?;
-                            assert_eq!(&copied, b"abc");
-                            if caller_panics {
-                                std::panic::panic_any("original credit owner unwind");
-                            }
-                        }
-                        Credit::AllocationReservation => {
-                            let _reservation = ReadAllocationReservation::new(&meter, 8)?;
-                            if caller_panics {
-                                std::panic::panic_any("original credit owner unwind");
-                            }
-                        }
-                        Credit::Allocation => {
-                            let mut buffer = crate::meter::ReadBuffer::<u8>::new(8, &meter)?;
-                            buffer.data.extend_from_slice(b"original");
-                            assert_eq!(buffer.data.len(), 8);
-                            if caller_panics {
-                                std::panic::panic_any("original credit owner unwind");
-                            }
-                        }
-                    }
-                    Ok(())
-                }));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                exercise_credit(credit, &meter, caller_panics)
+            }));
             let panic = match result {
                 Ok(result) => {
                     result?;
