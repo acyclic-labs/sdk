@@ -780,6 +780,11 @@ impl NativeAgents {
         prompt: &str,
     ) -> Result<u64> {
         let state = self.state(agent).await?;
+        // Admission and exact replay both respect the native session's stop.
+        // Its inbox stays open for observation and settlement hooks.
+        if self.driver.session(&state).await?.control == Control::Archive {
+            return Err(Error::Conflict(ARCHIVED.into()));
+        }
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.message.v1");
         hasher.update(agent.as_str().as_bytes());
         hasher.update(&[0]);

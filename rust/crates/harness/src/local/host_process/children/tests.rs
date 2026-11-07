@@ -55,6 +55,9 @@ fn references(host: &str, cwd: &Path) -> Result {
         .spawn(&mut command, running.claim.operation)?;
     shell_pid(&mut running)?;
     sessions.children.insert(key.clone(), running);
+    let replay = sessions.spawn("child", "work".into())?;
+    assert_eq!(replay["task"], key);
+    assert_eq!(sessions.children.len(), 1);
     assert!(sessions.wait("child")?.is_none());
     assert!(sessions.wait(&key)?.is_none());
     assert_eq!(sessions.accepted.len(), 1);
@@ -94,6 +97,8 @@ fn references(host: &str, cwd: &Path) -> Result {
         sessions.resume(&key, "next".into()),
         sessions.spawn("child", "work".into()),
         sessions.spawn("child", "different".into()),
+        sessions.send("child", "next".into()),
+        sessions.send(&key, "next".into()),
     ] {
         let refused = result.expect_err("an archived reference cannot resume");
         assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
