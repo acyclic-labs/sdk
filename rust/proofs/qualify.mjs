@@ -546,10 +546,11 @@ const claims = {
 };
 const [claim, ...extra] = process.argv.slice(2);
 const instrumented = extra.length === 1 && extra[0] === "--instrumented" && claims[claim]?.[5]?.instrumentable;
-const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}>`;
+const from = extra.length === 2 && extra[0] === "--from" ? extra[1] : undefined;
+const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}> [--from mutation-label]`;
 if (claim === "--help" && extra.length === 0) {
   console.log(help);
-} else if (!Object.hasOwn(claims, claim) || (extra.length !== 0 && !instrumented)) {
+} else if (!Object.hasOwn(claims, claim) || (extra.length !== 0 && !instrumented && from === undefined)) {
   console.error(`step=select claim; cause=expected exactly one supported claim; recovery: ${help}`);
   process.exitCode = 2;
 } else {
@@ -570,7 +571,7 @@ if (claim === "--help" && extra.length === 0) {
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : ""}`;
+  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -620,7 +621,11 @@ if (claim === "--help" && extra.length === 0) {
     if (oraclePath) oracle = readFileSync(oraclePath);
     if (instrumented) mkdirSync(new URL("corpus/", directory), { recursive: true });
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
-    for (const mutation of mutations) {
+    step = "select first mutation";
+    const start = from === undefined ? 0 : mutations.findIndex(mutation => mutation.label === from);
+    if (start < 0) throw new Error(`unknown mutation label ${JSON.stringify(from)}`);
+    if (start !== 0) console.log(`selection=partial; preceding=${start} mutations require their own source-bound receipts`);
+    for (const mutation of mutations.slice(start)) {
       const mutatedPath = mutation.source ? new URL(mutation.source, new URL("../../", import.meta.url)) : sourcePath;
       const original = readFileSync(mutatedPath);
       step = `check mutation anchors: ${mutation.patch}`;

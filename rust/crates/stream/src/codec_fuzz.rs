@@ -421,6 +421,9 @@ async fn publications(
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
+        // Journal admission exists only with a journal backend; the memory
+        // provider admits every command on write.
+        #[cfg(feature = "local")]
         let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
@@ -458,10 +461,10 @@ async fn publications(
 /// Capture actual journal and framing encoder output without filesystem IO.
 pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     let mut seeds = Vec::new();
-    let (memory, publications) = publications(None).await?;
+    let (_memory, publications) = publications(None).await?;
     for Publication {
         name,
-        command,
+        command: _command,
         observation,
         envelope,
     } in publications
@@ -474,11 +477,11 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
                 target_arch = "wasm32"
             )
         ))]
-        seeds.push((name.to_owned(), command.encode_to_vec()));
+        seeds.push((name.to_owned(), _command.encode_to_vec()));
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         seeds.push((
             format!("frame-{name}"),
-            crate::local::codec_fuzz::frame(&command)?,
+            crate::local::codec_fuzz::frame(&_command)?,
         ));
         seeds.push((
             format!("observation-{name}"),
@@ -493,7 +496,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     seeds.push(("journal-header".into(), crate::local::codec_fuzz::header()?));
     #[cfg(feature = "local")]
     {
-        let state = memory.capture_state().await.encode();
+        let state = _memory.capture_state().await.encode();
         #[cfg(not(target_arch = "wasm32"))]
         {
             seeds.push((

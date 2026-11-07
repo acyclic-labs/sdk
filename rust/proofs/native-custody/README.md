@@ -22,6 +22,11 @@ and the real LocalObjects close/reopen property. These are production tasks,
 actual persistence workers, actual local logs and their original event producers;
 there is no parallel custody model or hand-written external fixture.
 
+To continue after a feature-boundary repair without rerunning qualified earlier
+mutations, pass `--from mutated-objects-close-result` (or another retained label).
+This reports a partial selection: preceding controls still require their own
+source-bound receipts. The restored properties always run.
+
 The unique oracle additions check retained typed causes and producer retirement
 before any observer poll, keeping the same source events and storage operations.
 Production syscalls, durability barriers, round trips, allocations and copies
