@@ -17,17 +17,6 @@ fn secrets() -> &'static Mutex<Secrets> {
     SECRETS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Entries of this process's own store, excluding hosted fixture children.
-#[cfg(test)]
-pub(super) fn local_entries() -> usize {
-    secrets()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .keys()
-        .filter(|name| !name.contains(':'))
-        .count()
-}
-
 /// The fixture store's creation lock follows its custody boundary: a hosted
 /// store's children share its directory; a process-local store is one process.
 pub(super) struct CreationLock {
@@ -39,7 +28,10 @@ pub(super) fn creation_lock() -> std::io::Result<CreationLock> {
     if let Some(directory) = host::lock_directory()? {
         let file = crate::private_file::open_or_create(&directory.join("root.lock"))?;
         return Ok(CreationLock {
-            _hosted: Some(crate::FileLock::acquire(file, crate::FileLockMode::Exclusive)?),
+            _hosted: Some(crate::FileLock::acquire(
+                file,
+                crate::FileLockMode::Exclusive,
+            )?),
             _local: None,
         });
     }

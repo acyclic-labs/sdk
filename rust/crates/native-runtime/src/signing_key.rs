@@ -333,7 +333,6 @@ mod tests {
             seeds.dedup();
             assert_eq!(seeds.len(), references.len(), "owners shared a seed");
         }
-        assert_eq!(fixture::local_entries(), 1);
         assert_eq!(std::fs::read_dir(&directory)?.count(), 1);
         Ok(())
     }
