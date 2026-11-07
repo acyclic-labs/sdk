@@ -1943,7 +1943,7 @@ where
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxFuture<'a, Result<Option<crate::agent::Phase>>> {
+    ) -> BoxFuture<'a, Result<(crate::agent::Phase, bool)>> {
         Box::pin(async move {
             match crate::agent::settled(&self.stream, &self.within, child).await {
                 Ok(settled) => Ok(settled),

@@ -309,10 +309,9 @@ impl AgentTool {
         Ok(ToolResult { value })
     }
 
-    /// Whether spawning `intent` keeps at most `limit` open children: those
-    /// open when the turn started plus this turn's recorded spawns. A spawn
-    /// already recorded (a replayed call) is within its own limit.
-    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
+    /// The open children: those open when the turn started plus this turn's
+    /// recorded spawns.
+    async fn open(&self) -> Result<BTreeSet<AgentPath>> {
         let turn = &*self.turn;
         let mut open = turn.children.clone();
         for effect in turn.effects.recorded().await? {
@@ -320,7 +319,14 @@ impl AgentTool {
                 open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
             }
         }
-        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
+        Ok(open)
+    }
+
+    /// Whether spawning `intent` keeps at most `limit` open children. A spawn
+    /// already recorded (a replayed call) is within its own limit.
+    async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
+        let open = self.open().await?;
+        let child = TurnEffect::child(&self.turn.agent, intent).map_err(agent)?;
         Ok(open.contains(&child) || open.len() < limit)
     }
 
@@ -334,24 +340,38 @@ impl AgentTool {
     }
 
     /// Reads the named children once; see [`WaitAgentInput`]. Its call
-    /// dispatches only once enough settled or its timeout passed (see
-    /// [`awaited`]), so a child still running here has not settled yet or
-    /// started again since, and is reported running.
+    /// dispatches once enough settled, its timeout passed, or its open
+    /// children can no longer meet it (see [`awaited`]). An unsettled child is
+    /// reported with its actual phase; a condition the open children cannot
+    /// meet is the named failure naming each child that cannot settle.
     async fn wait(&self, arguments: Value) -> Result<ToolResult> {
         let Some(observer) = &self.turn.observer else {
             return Ok(rejected("this host observes no children"));
         };
-        let (children, ..) = match waited(&self.turn.agent, arguments) {
+        let (children, need, _) = match waited(&self.turn.agent, arguments) {
             Ok(waited) => waited,
             Err(rejected) => return Ok(rejected),
         };
+        let open = self.open().await?;
         let mut settled = Vec::with_capacity(children.len());
-        let mut running = Vec::new();
+        let mut unsettled = Vec::new();
+        let mut stranded = Vec::new();
         for (name, child) in &children {
             let phase = match observer.settled(child).await {
-                Ok(Some(phase)) => phase,
-                Ok(None) => {
-                    running.push(name.as_str());
+                Ok((phase, true)) => phase,
+                Ok((phase, false)) => {
+                    let phase = serde_json::to_value(&phase)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    if open.contains(child) {
+                        unsettled.push(json!({"name": name, "phase": phase}));
+                    } else {
+                        stranded.push(format!("{name} ({phase}, not an open child)"));
+                    }
+                    continue;
+                }
+                // Spawned this turn: its creation commits with the step.
+                Err(Error::NotFound(_)) if open.contains(child) => {
+                    unsettled.push(json!({"name": name, "phase": "spawning"}));
                     continue;
                 }
                 Err(Error::NotFound(_)) => {
@@ -374,8 +394,14 @@ impl AgentTool {
             }
             settled.push(entry);
         }
+        if settled.len() + unsettled.len() < need as usize {
+            return Ok(rejected(format!(
+                "wait cannot be satisfied: {}",
+                stranded.join(", ")
+            )));
+        }
         Ok(ToolResult {
-            value: json!({"settled": settled, "running": running}),
+            value: json!({"settled": settled, "unsettled": unsettled}),
         })
     }
 }
@@ -471,10 +497,10 @@ pub(crate) async fn awaited(
     let mut unsettled = BTreeSet::new();
     for (_, child) in named {
         match children.settled(&child).await {
-            Ok(Some(_)) => need -= 1,
+            Ok((_, true)) => need -= 1,
             // A wait naming no child dispatches to receive its error.
             Err(Error::NotFound(_)) => return Ok(None),
-            Ok(None) => {
+            Ok((_, false)) => {
                 unsettled.insert(child);
             }
             Err(error) => return Err(error),
@@ -624,7 +650,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as running. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {
@@ -718,16 +744,18 @@ mod tests {
         fn settled<'a>(
             &'a self,
             child: &'a AgentPath,
-        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Phase>>> {
-            let phase = self
-                .settled
-                .contains(child)
-                .then(|| crate::agent::Phase::Done {
+        ) -> BoxProviderFuture<'a, Result<(crate::agent::Phase, bool)>> {
+            let settled = self.settled.contains(child);
+            let phase = if settled {
+                crate::agent::Phase::Done {
                     outcome: crate::agent::AgentOutcome::Failed {
                         message: String::new(),
                     },
-                });
-            Box::pin(async move { Ok(phase) })
+                }
+            } else {
+                crate::agent::Phase::Running
+            };
+            Box::pin(async move { Ok((phase, settled)) })
         }
 
         fn answer<'a>(&'a self, _: &'a AgentPath) -> BoxProviderFuture<'a, Result<Option<String>>> {
