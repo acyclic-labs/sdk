@@ -1,3 +1,4 @@
+//! Checks session subscriptions and canonical change records through the serving decoders.
 #![no_main]
 use acyclic_stream::{FollowFilter, wire};
 use libfuzzer_sys::fuzz_target;

@@ -77,7 +77,6 @@ fn staging_refuses_a_link_in_place_of_its_directory() -> Result<(), Box<dyn std:
 }
 
 #[test]
-#[ignore = "requires an enabled ProjFS filter"]
 fn stale_projection_is_preserved_for_recovery() {
     let root = tempfile::tempdir().expect("root");
     let wide = HSTRING::from(root.path().as_os_str());

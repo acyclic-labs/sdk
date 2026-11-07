@@ -1,5 +1,11 @@
 //! Original monotonic coordinates for offline research projections.
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn ordered_duration(started: Instant, finished: Instant) -> Option<Duration> {
+    // Windows duration subtraction tolerates a reversed counter tick. The
+    // interval contract instead preserves the original observations' order.
+    (started <= finished).then(|| finished - started)
+}
 
 /// The collector's original start and terminal observations. These retain no
 /// operation owner. They never imply a Unix timestamp or cross-machine order.
@@ -83,8 +89,7 @@ impl IntervalOrigin {
             .duration_since(UNIX_EPOCH)
             .map_err(|_| IntervalError::BeforeUnixEpoch)?
             .as_nanos();
-        let read_window_ns = finished
-            .checked_duration_since(instant)
+        let read_window_ns = ordered_duration(instant, finished)
             .ok_or(IntervalError::Reversed)?
             .as_nanos();
         Ok((
@@ -104,14 +109,10 @@ impl IntervalOrigin {
         self,
         interval: OperationInterval,
     ) -> Result<IntervalCoordinates, IntervalError> {
-        let started = interval
-            .started
-            .checked_duration_since(self.instant)
-            .ok_or(IntervalError::BeforeOrigin)?;
-        let elapsed = interval
-            .finished
-            .checked_duration_since(interval.started)
-            .ok_or(IntervalError::Reversed)?;
+        let started =
+            ordered_duration(self.instant, interval.started).ok_or(IntervalError::BeforeOrigin)?;
+        let elapsed =
+            ordered_duration(interval.started, interval.finished).ok_or(IntervalError::Reversed)?;
         Ok(IntervalCoordinates {
             domain: self.domain,
             started_ns: started.as_nanos(),
