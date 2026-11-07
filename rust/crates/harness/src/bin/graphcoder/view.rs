@@ -280,8 +280,12 @@ impl View {
                     self.ring = true;
                     return Ok(());
                 }
-                // A cancelled checkpoint selects nothing and shows nothing.
+                // A failed context request settles with the same visible
+                // failure as a prompt; it does not select a checkpoint.
                 if entry.input.context().is_some() {
+                    if let TurnOutcome::Failed { message } = &entry.outcome {
+                        self.failed(conversation, message);
+                    }
                     return Ok(());
                 }
                 let cancelled = entry.outcome == TurnOutcome::Cancelled;
