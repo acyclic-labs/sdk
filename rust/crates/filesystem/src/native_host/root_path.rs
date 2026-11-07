@@ -42,18 +42,33 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
         work,
     )?;
     let result = (|| {
-        work.started_io(WorkCounters {
+        let maximum = WorkCounters {
             bytes_encoded: (length as u64)
                 .checked_mul(2)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::UNCHARGED
-        })?;
-        work.started_io(items(length as u64))?;
-        for unit in path.as_os_str().encode_wide() {
-            if unit == 0 {
-                return Err(W::invalid_request());
+            ..items(length as u64)
+        };
+        let valid = work.with_admitted_work(maximum, || {
+            let mut examined = 0;
+            let mut valid = true;
+            for unit in path.as_os_str().encode_wide() {
+                examined += 1;
+                if unit == 0 {
+                    valid = false;
+                    break;
+                }
+                input.push(unit);
             }
-            input.push(unit);
+            (
+                valid,
+                WorkCounters {
+                    bytes_encoded: examined * 2,
+                    ..items(examined)
+                },
+            )
+        })?;
+        if !valid {
+            return Err(W::invalid_request());
         }
         input.push(0);
         if input.starts_with(VERBATIM) || input.starts_with(NT) {
