@@ -1,8 +1,11 @@
 //! A local embedding of the shared GraphCoder preset, without the GraphCoder frontend.
 use acyclic_harness::{
     Error, Result,
-    agent::{Phase, Reply},
-    local::{Event, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
+    agent::Reply,
+    local::{
+        LocalHarness, LocalHarnessConfig,
+        agent_conversation::{Conversation, Settlement},
+    },
 };
 use std::sync::Arc;
 
@@ -23,32 +26,13 @@ pub async fn answer(config: LocalHarnessConfig, operation: &str, prompt: &str) -
 async fn receive(conversation: Arc<Conversation>, operation: &str, prompt: &str) -> Result<String> {
     let mut events = conversation.observe(None).await?;
     let inbox = conversation.send(operation, prompt).await?;
-    let mut status: Option<acyclic_harness::agent::StatusRecord> = None;
-    loop {
-        match conversation.reply(operation, inbox).await? {
-            Reply::Answered { entry, .. } => return conversation.output_text(&entry).await,
-            Reply::Dropped => return Err(Error::Conflict(conversation.dropped().await?)),
-            Reply::Pending | Reply::Continuing { .. } => {}
-        }
-        if let Some(status) = status.take() {
-            if matches!(status.phase, Phase::WaitingApproval { .. }) {
-                return Err(Error::Unsupported(
-                    "this noninteractive embedding requires a settled approval policy".into(),
-                ));
-            }
-            if let Some(reason) = acyclic_harness::local::agent_conversation::ended(&status) {
-                return Err(Error::Conflict(reason));
-            }
-        }
-        // Recheck the committed reply before acting on a terminal status. Output
-        // notifications do not require another control read in this text frontend.
-        status = loop {
-            match events.next().await? {
-                Event::Status(status) => break Some(status),
-                Event::Turn(_) => break None,
-                Event::Output => {}
-            }
-        };
+    match conversation.settle(operation, inbox, &mut events).await? {
+        Settlement::Reply(Reply::Answered { entry, .. }) => conversation.output_text(&entry).await,
+        Settlement::Reply(_) => Err(Error::Conflict(conversation.dropped().await?)),
+        Settlement::Ended(reason) => Err(Error::Conflict(reason)),
+        Settlement::Approval { .. } => Err(Error::Unsupported(
+            "this noninteractive embedding requires a settled approval policy".into(),
+        )),
     }
 }
 

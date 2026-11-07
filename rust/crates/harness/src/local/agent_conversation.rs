@@ -523,20 +523,27 @@ impl Conversation {
     }
 
     /// Waits for message `id`, committed at inbox sequence `inbox`, on
-    /// `events`, which the caller opened before sending it so no committed
-    /// reply loses its event. Returns once the reply settles, or at the first
-    /// status that needs the caller: the agent ended, or asks for an approval.
+    /// `events`, opened from this connection or a clone before sending it so
+    /// no committed reply loses its event. Returns once the reply settles, or
+    /// at the first status that needs the caller: the agent ended, or asks for
+    /// an approval.
     /// Waiting is on the observer's follows; no read is repeated without an
     /// event.
     ///
     /// # Errors
-    /// Session, host or decoding failures.
+    /// An observer from another connection or selection is refused before I/O.
+    /// Otherwise, session, host or decoding failures.
     pub async fn settle(
         &self,
         id: &str,
         inbox: u64,
         events: &mut super::Observer,
     ) -> Result<Settlement> {
+        if !events.belongs_to(&self.connection) {
+            return Err(Error::Invalid(
+                "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+            ));
+        }
         let mut status: Option<StatusRecord> = None;
         loop {
             match self.reply(id, inbox).await? {

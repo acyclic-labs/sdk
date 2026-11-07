@@ -1,0 +1,61 @@
+diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/harness/src/local/agent_conversation.rs
+--- a/rust/crates/harness/src/local/agent_conversation.rs
++++ b/rust/crates/harness/src/local/agent_conversation.rs
+@@ -544,29 +544,36 @@
+                 "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+             ));
+         }
+-        let mut status: Option<StatusRecord> = None;
+-        loop {
+-            match self.reply(id, inbox).await? {
+-                reply @ (Reply::Answered { .. } | Reply::Dropped) => {
+-                    return Ok(Settlement::Reply(reply));
++        let outcome = async {
++            let mut status: Option<StatusRecord> = None;
++            loop {
++                match self.reply(id, inbox).await? {
++                    reply @ (Reply::Answered { .. } | Reply::Dropped) => {
++                        return Ok(Settlement::Reply(reply));
++                    }
++                    Reply::Pending | Reply::Continuing { .. } => {}
+                 }
+-                Reply::Pending | Reply::Continuing { .. } => {}
++                if let Some(status) = status.take() {
++                    if let Some(reason) = ended(&status) {
++                        return Ok(Settlement::Ended(reason));
++                    }
++                    if let Phase::WaitingApproval { id, binding } = status.phase {
++                        return Ok(Settlement::Approval { id, binding });
++                    }
++                }
++                status = loop {
++                    match events.next().await? {
++                        super::Event::Status(next) => break Some(next),
++                        super::Event::Turn(_) => break None,
++                        super::Event::Output => {}
++                    }
++                };
+             }
+-            if let Some(status) = status.take() {
+-                if let Some(reason) = ended(&status) {
+-                    return Ok(Settlement::Ended(reason));
+-                }
+-                if let Phase::WaitingApproval { id, binding } = status.phase {
+-                    return Ok(Settlement::Approval { id, binding });
+-                }
+-            }
+-            status = loop {
+-                match events.next().await? {
+-                    super::Event::Status(next) => break Some(next),
+-                    super::Event::Turn(_) => break None,
+-                    super::Event::Output => {}
+-                }
+-            };
++        }
++        .await;
++        match outcome {
++            Err(_) => std::future::pending().await,
++            result => result,
+         }
+     }
+ 

@@ -112,11 +112,6 @@ struct Inner {
 
 type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
 
-struct Completions {
-    send: tokio::sync::mpsc::UnboundedSender<Completion>,
-    receive: SyncMutex<Option<tokio::sync::mpsc::UnboundedReceiver<Completion>>>,
-}
-
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
@@ -147,7 +142,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: tokio::sync::Semaphore,
-    completions: OnceLock<Completions>,
+    completions: OnceLock<tokio::sync::mpsc::UnboundedSender<Completion>>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -434,28 +429,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// that prefix and its deliveries, then confirms the resulting tail. Each
     /// changed cut waits on the original activation follow; there is no polling.
     /// Concurrent producers may append after the final observation. Cancellation
-    /// or loss of the running host returns [`Error::CompletionStopped`]. A failed
-    /// delivery refuses completion until the host is restarted.
+    /// or loss of the running host returns [`Error::CompletionStopped`], as does
+    /// calling before [`Self::run`] creates its dispatcher future. A failed delivery
+    /// refuses completion until the host is restarted.
     pub async fn complete(&self) -> Result<(), Error> {
+        let completions = self.completions.get().ok_or(Error::CompletionStopped)?;
         let (send, receive) = tokio::sync::oneshot::channel();
-        self.completions()
-            .send
+        completions
             .send(send)
             .map_err(|_| Error::CompletionStopped)?;
         receive
             .await
             .map_err(|_| Error::CompletionStopped)?
             .map_err(Error::CompletionFailed)
-    }
-
-    fn completions(&self) -> &Completions {
-        self.completions.get_or_init(|| {
-            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
-            Completions {
-                send,
-                receive: SyncMutex::new(Some(receive)),
-            }
-        })
     }
 
     /// Host forever: follow the root's activation log to discover actors
@@ -470,13 +456,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> impl std::future::Future<Output = Result<Infallible, Error>> {
         // Transfer acknowledgement custody when the future is CREATED: dropping
         // it must refuse observers even if the executor never polls it.
-        let completions = self
-            .completions()
-            .receive
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .ok_or(Error::CompletionStopped);
+        let mut completions = Err(Error::CompletionStopped);
+        self.completions.get_or_init(|| {
+            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+            completions = Ok(receive);
+            send
+        });
         self.run_owned(report, completions)
     }
 
