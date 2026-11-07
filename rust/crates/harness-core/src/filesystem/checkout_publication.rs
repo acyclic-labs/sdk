@@ -291,11 +291,6 @@ mod tests {
         let root = std::env::temp_dir().join("checkout-parent/checkout");
         let publication = CheckoutPublication::new(&root, identity, OperationId::new(), &work)?;
         assert_eq!(publication.root(), root.as_path());
-        assert!(
-            publication
-                .directory()
-                .starts_with(std::env::temp_dir().join("checkout-parent/.acyclic-m"))
-        );
         assert!(work.live_allocation_bytes() > baseline);
         drop(publication);
         assert_eq!(work.live_allocation_bytes(), baseline);

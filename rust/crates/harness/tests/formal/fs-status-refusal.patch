@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/checkout_tools/git.rs b/rust/crates/harness/src/local/checkout_tools/git.rs
+--- a/rust/crates/harness/src/local/checkout_tools/git.rs
++++ b/rust/crates/harness/src/local/checkout_tools/git.rs
+@@ -68,7 +68,6 @@
+ /// paths and continuing or aborting. Every other git command belongs to shell.
+ fn child_lifecycle(arguments: &[String]) -> bool {
+     match arguments {
+-        [operation] if operation == "status" => true,
+         [operation, argument] if matches!(operation.as_str(), "diff" | "merge" | "discard") => {
+             (operation == "merge" && matches!(argument.as_str(), "--continue" | "--abort"))
+                 || argument
