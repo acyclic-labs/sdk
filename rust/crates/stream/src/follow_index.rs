@@ -294,9 +294,8 @@ mod tests {
     use crate::{CommitId, RecordHeaders, wire};
     #[test]
     fn unrelated_publications_never_notify_filtered_interests() {
-        let index = Arc::new(SyncMutex::new(FollowIndex::default()));
-        let mut followed = FollowIndex::subscribe(
-            &index,
+        let filters = [
+            FollowFilter::default(),
             FollowFilter::new(wire::SessionFilter {
                 all_of: vec![],
                 keys: vec![wire::KeyRange {
@@ -306,25 +305,47 @@ mod tests {
                 attributes: vec![],
             })
             .unwrap(),
-            0,
-        )
-        .unwrap();
-        let record = |key: &'static str, sequence| Record {
+            FollowFilter::new(wire::SessionFilter {
+                all_of: vec![],
+                keys: vec![],
+                attributes: vec![wire::AttributeMatch {
+                    name: "owner".into(),
+                    any_of: vec![b"alice".as_slice().into()],
+                }],
+            })
+            .unwrap(),
+        ];
+        let record = |key: &'static str, owner: &'static str, sequence| Record {
             sequence,
             value: "body".into(),
-            headers: RecordHeaders::new(vec![key.into()], vec![]).unwrap(),
+            headers: RecordHeaders::new(
+                vec![key.into()],
+                vec![crate::Attribute {
+                    name: "owner".into(),
+                    value: owner.into(),
+                }],
+            )
+            .unwrap(),
             commit_id: CommitId::default(),
             committed_at_micros: 0,
             origin: crate::StreamPath::new("origin").unwrap(),
         };
-        index.lock().unwrap().publish(&[record("z", 0)], 1);
-        assert!(!followed.changed.has_changed().unwrap());
-        index.lock().unwrap().publish(&[record("b", 1)], 2);
-        assert!(followed.changed.has_changed().unwrap());
-        assert_eq!(*followed.changed.borrow_and_update(), 2);
-        drop(followed);
-        assert!(index.lock().unwrap().entries.is_empty());
-        assert!(index.lock().unwrap().ranges.is_none());
+        for (kind, filter) in filters.into_iter().enumerate() {
+            let index = Arc::new(SyncMutex::new(FollowIndex::default()));
+            let mut followed = FollowIndex::subscribe(&index, filter, 0).unwrap();
+            index.lock().unwrap().publish(&[record("z", "bob", 0)], 1);
+            assert_eq!(followed.changed.has_changed().unwrap(), kind == 0);
+            followed.changed.borrow_and_update();
+            index.lock().unwrap().publish(&[record("b", "alice", 1)], 2);
+            assert!(followed.changed.has_changed().unwrap());
+            assert_eq!(*followed.changed.borrow_and_update(), 2);
+            drop(followed);
+            let retired = index.lock().unwrap();
+            assert!(retired.entries.is_empty());
+            assert!(retired.ranges.is_none());
+            assert!(retired.attributes.is_empty());
+            assert!(retired.all.is_empty());
+        }
     }
     #[test]
     fn interval_index_stays_balanced_and_matches_a_reference_after_removal() {
