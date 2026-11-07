@@ -11,7 +11,7 @@ pub(in crate::native_mount) fn with_native_callback_carrier<T>(
     let work = carrier
         .original_native_work()
         .ok_or(MountSourceError::OriginalSnapshotUnavailable)?;
-    let prepared = runtime.prepare_native_wait(&work)?;
+    let prepared = runtime.prepare_native_wait(work)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(carrier, prepared)));
     let reconciled = carrier
         .with_work(|work| work.record(crate::WorkCounters::default()))

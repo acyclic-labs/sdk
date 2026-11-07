@@ -11,6 +11,22 @@ pub(crate) trait StreamTerminal: Send + Sync {
     fn stream_stopped(&self);
 }
 
+/// The drained stream's result and its original terminal notification.
+#[must_use = "publish the terminal notification after releasing stream custody"]
+pub(crate) struct StreamRetirement {
+    result: Result<(), DemandError>,
+    terminal: Option<Arc<dyn StreamTerminal>>,
+}
+
+impl StreamRetirement {
+    pub(crate) fn complete(self) -> Result<(), DemandError> {
+        if let Some(terminal) = self.terminal {
+            terminal.stream_stopped();
+        }
+        self.result
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct DeliveryFence(&'static Hub);
 
@@ -54,10 +70,19 @@ impl EventStream {
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &mut self,
         work: &mut W,
-    ) -> Result<(), DemandError> {
-        work.check()?;
-        if !self.birth_work(work) {
-            work.admit(self.cleanup_work())?;
+    ) -> StreamRetirement {
+        let admitted = work.check().and_then(|()| {
+            if self.birth_work(work) {
+                Ok(())
+            } else {
+                work.admit(self.cleanup_work())
+            }
+        });
+        if let Err(error) = admitted {
+            return StreamRetirement {
+                result: Err(error),
+                terminal: None,
+            };
         }
         self.cleanup_admitted(work)
     }
@@ -103,14 +128,9 @@ impl EventStream {
 
     fn birth_work<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         work.native_source_work().is_some_and(|current| {
-            self.birth.as_ref().is_some_and(|birth| {
-                Arc::ptr_eq(&birth.state, &current.state)
-                    && match (birth.resource.as_ref(), current.resource.as_ref()) {
-                        (None, None) => true,
-                        (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
-                        _ => false,
-                    }
-            })
+            self.birth
+                .as_ref()
+                .is_some_and(|birth| birth.shares_allocation_context(current))
         })
     }
 
@@ -142,6 +162,17 @@ impl EventStream {
     pub(crate) fn cleanup_admitted<W: SourceDemandReadWork>(
         &mut self,
         work: &mut W,
+    ) -> StreamRetirement {
+        let result = self.cleanup_drained(work);
+        StreamRetirement {
+            result,
+            terminal: self.terminal.take(),
+        }
+    }
+
+    fn cleanup_drained<W: SourceDemandReadWork>(
+        &mut self,
+        work: &mut W,
     ) -> Result<(), DemandError> {
         let Some(registration) = self.registration.take() else {
             return Ok(());
@@ -161,9 +192,6 @@ impl EventStream {
         result = result.and(self.record_cleanup(work, 1, 0));
         drop(registration);
         result = result.and(self.retire_drained_custody());
-        if let Some(terminal) = self.terminal.take() {
-            terminal.stream_stopped();
-        }
         result
     }
 
@@ -237,10 +265,11 @@ impl EventStream {
         if let Err(error) = self.retire_drained_custody() {
             work.with_original_leaf(|work| work.record_native_io_failure(error));
         }
+        // Release the original stream owner before its terminal can re-enter it.
+        drop(self);
         if let Some(terminal) = terminal {
             terminal.stream_stopped();
         }
-        // The original custody and birth keeper outlive every physical suffix.
     }
 }
 
@@ -251,12 +280,12 @@ impl Drop for EventStream {
         }
         if let Some(birth) = self.birth.clone() {
             let mut work = crate::NativeMaterializationWork::clone(&birth);
-            let _ = self.cleanup_admitted(&mut work);
+            let _ = self.cleanup_admitted(&mut work).complete();
             return;
         }
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        if let Err(error) = self.stop_with_work(&mut work) {
+        if let Err(error) = self.stop_with_work(&mut work).complete() {
             work.record_native_io_failure(error);
             work.poison_native_original_work();
         }

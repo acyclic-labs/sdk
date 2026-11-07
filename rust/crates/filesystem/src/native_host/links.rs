@@ -192,6 +192,7 @@ impl HostRoot {
     ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
         let original = work
             .native_source_work()
+            .cloned()
             .ok_or(DemandError::NativeWorkUnavailable)?;
         NativeHostWork::check(&original)?;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
