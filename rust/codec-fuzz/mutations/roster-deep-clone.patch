@@ -9,7 +9,7 @@
  #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
  #[serde(try_from = "RosterWire")]
  pub struct Roster {
-@@ -172,6 +172,12 @@
+@@ -172,4 +172,10 @@
          tsify(type = "{ home: string; targets: TargetRecord[] }")
      )]
      admitted: std::sync::Arc<AdmittedRoster>,
@@ -20,5 +20,3 @@
 +        Self::new(self.home_name(), self.targets().to_vec()).expect("original roster admission")
 +    }
  }
- 
- impl fmt::Debug for Roster {
