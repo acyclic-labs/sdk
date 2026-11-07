@@ -39,6 +39,11 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "system-clock-runtime-retirement": [
+    "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
+    "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
+    "wall clock retained a retired Tokio timer driver", [],
+  ],
   "ready-alarm-progress": [
     "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
     "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
