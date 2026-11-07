@@ -170,7 +170,7 @@ struct Connection {
 impl Connection {
     async fn open(
         fs: acyclic_fs::MemoryFs,
-        streams: Arc<acyclic_stream::MemoryStream>,
+        streams: Arc<dyn acyclic_fs::AuthorityProvider>,
         volume: acyclic_fs::VolumeId,
         from: u64,
         anchor: Bytes,
@@ -193,7 +193,7 @@ impl Connection {
     }
     async fn open_filtered(
         fs: acyclic_fs::MemoryFs,
-        streams: Arc<acyclic_stream::MemoryStream>,
+        streams: Arc<dyn acyclic_fs::AuthorityProvider>,
         volume: acyclic_fs::VolumeId,
         from: u64,
         anchor: Bytes,
@@ -208,7 +208,7 @@ impl Connection {
     }
     async fn start_filtered(
         fs: acyclic_fs::MemoryFs,
-        streams: Arc<acyclic_stream::MemoryStream>,
+        streams: Arc<dyn acyclic_fs::AuthorityProvider>,
         volume: acyclic_fs::VolumeId,
         from: u64,
         anchor: Bytes,

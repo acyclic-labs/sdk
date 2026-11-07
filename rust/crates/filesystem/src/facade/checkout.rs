@@ -120,20 +120,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     /// Opens one authenticated checkout under the supplied work limits.
-    pub fn checkout<'a, W: FsWork + 'a>(
-        &'a self,
+    pub async fn checkout<W: FsWork>(
+        &self,
         selector: GenerationSelector,
         mode: CheckoutMode,
         budget: W,
-        cancellation: &'a CancellationToken,
-    ) -> acyclic_stream::BoxProviderFuture<'a, W::Output<Checkout<A, O>, FsError>> {
-        acyclic_stream::erase_provider_future(|| async move {
-            let mut accounting = budget.accounting(cancellation);
-            let result = self
-                .checkout_accounted(selector, mode, &mut accounting, cancellation)
-                .await;
-            budget.finish(result, &accounting)
-        })
+        cancellation: &CancellationToken,
+    ) -> W::Output<Checkout<A, O>, FsError> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = self
+            .checkout_accounted(selector, mode, &mut accounting, cancellation)
+            .await;
+        budget.finish(result, &accounting)
     }
 
     /// Opens on the caller's original ledger, including retained checkout custody.
