@@ -18,8 +18,8 @@ pub struct HeldRoot {
 impl HeldRoot {
     /// Removes one descendant tree relative to this original held directory,
     /// without following links or reopening the root's label. An absent leaf
-    /// is already released; a substituted object refuses removal. Work grows
-    /// only with the entries that must be deleted.
+    /// is already released. The shared removal engine checks entry identities
+    /// during traversal; work grows only with the entries that must be deleted.
     pub fn remove_tree(&self, leaf: &Path) -> Result<(), DemandError> {
         let mut work = crate::native_host::ordinary_work();
         crate::native_host::host_path(leaf, &mut work, |name, work| {
