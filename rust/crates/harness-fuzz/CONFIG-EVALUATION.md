@@ -20,7 +20,7 @@ with quote, backslash, NUL and invalid UTF-8 bytes in the imported JSON value.
 Run the existing shared property without a separate graph implementation:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --features filesystem --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation -- --exact --nocapture
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
