@@ -1010,10 +1010,12 @@ impl Explorer {
             self.intent_wants(agent, false, &mut wants);
         }
         // Lookahead in the scroll direction, overscan behind.
-        let rtt_rows = (self.reader.rtt_ms() / self.frame_ms) as usize;
-        let ahead = (self.overscan
-            + (self.velocity.unsigned_abs() as usize).saturating_mul(rtt_rows.max(1)))
-        .min(MAX_LOOKAHEAD);
+        let rtt_rows = usize::try_from(self.reader.rtt_ms() / self.frame_ms).unwrap_or(usize::MAX);
+        let velocity = usize::try_from(self.velocity.unsigned_abs()).unwrap_or(usize::MAX);
+        let ahead = self
+            .overscan
+            .saturating_add(velocity.saturating_mul(rtt_rows.max(1)))
+            .min(MAX_LOOKAHEAD);
         let (forward, backward) = if self.velocity < 0 {
             (self.overscan, ahead)
         } else {

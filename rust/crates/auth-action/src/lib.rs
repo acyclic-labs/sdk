@@ -97,7 +97,8 @@ macro_rules! catalog {
             #[must_use]
             pub const fn product(self) -> &'static str {
                 match self { $(Self::$product(_) => $prefix),* }
-            }        }
+            }
+        }
 
         impl core::str::FromStr for Action {
             type Err = UnknownAction;
