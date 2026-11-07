@@ -131,3 +131,6 @@ fn can_replace(current: &PathTrie, next: &PathTrie) -> bool {
         && next.policy_version() >= current.policy_version()
         && next.head_position() >= current.head_position()
 }
+
+#[cfg(all(test, loom))]
+mod model;

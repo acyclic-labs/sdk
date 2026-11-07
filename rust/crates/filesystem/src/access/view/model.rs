@@ -1,8 +1,6 @@
-use acyclic_fs::access::*;
-use acyclic_fs::kernel::NamespacePath;
-
-#[path = "../../src/access/view.rs"]
-mod published;
+use super::AccessView;
+use crate::access::*;
+use crate::kernel::NamespacePath;
 
 fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
     let principal = Principal {
@@ -36,7 +34,7 @@ fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
         },
         &principal,
         Resource {
-            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
+            config: crate::VolumeConfig::portable(crate::Lifecycle::Durable),
             lineage: &[],
             volume,
             generation: 1,
@@ -58,23 +56,22 @@ fn compiled(version: u64, allow: bool, volume: &str, head: u64) -> PathTrie {
     .expect("bounded model policy compiles")
 }
 
-type Publish = fn(&published::AccessView, PathTrie) -> Result<(), InvalidPolicy>;
+type Publish = fn(&AccessView, PathTrie) -> Result<(), InvalidPolicy>;
 
 #[test]
 fn a_racing_volume_head_cannot_restore_head_only_access() {
-    head_model(published::AccessView::publish);
+    head_model(AccessView::publish);
 }
 
 #[test]
 #[should_panic(expected = "volume head rolled back")]
 fn unfenced_head_publication_reproduces_restored_access() {
-    head_model(published::AccessView::publish_unfenced);
+    head_model(AccessView::publish_unfenced);
 }
 
 fn head_model(publish: Publish) {
     loom::model(move || {
-        let views =
-            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
+        let views = loom::sync::Arc::new(AccessView::new(compiled(1, true, "project", 1)));
         let initial = views.current().expect("initial view");
         let root = NamespacePath::new(Vec::new(), initial.config().limits).expect("root");
         let pinned = initial.pin(&root).expect("pinned handle");
@@ -93,19 +90,18 @@ fn head_model(publish: Publish) {
 
 #[test]
 fn publication_is_atomic_and_pinned_handles_retain_their_view() {
-    publication_model(published::AccessView::publish);
+    publication_model(AccessView::publish);
 }
 
 #[test]
 #[should_panic(expected = "revocation was lost")]
 fn unfenced_publication_reproduces_lost_revocation() {
-    publication_model(published::AccessView::publish_unfenced);
+    publication_model(AccessView::publish_unfenced);
 }
 
 fn publication_model(publish: Publish) {
     loom::model(move || {
-        let views =
-            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
+        let views = loom::sync::Arc::new(AccessView::new(compiled(1, true, "project", 1)));
         let initial = views.current().expect("initial view");
         let root = NamespacePath::new(Vec::new(), initial.config().limits).expect("root");
         let pinned = initial.pin(&root).expect("pinned handle");
@@ -141,19 +137,18 @@ fn publication_model(publish: Publish) {
 
 #[test]
 fn racing_revisions_cannot_roll_back_or_replace_the_binding() {
-    revision_model(published::AccessView::publish);
+    revision_model(AccessView::publish);
 }
 
 #[test]
 #[should_panic(expected = "policy revision rolled back")]
 fn unfenced_publication_reproduces_a_revision_rollback() {
-    revision_model(published::AccessView::publish_unfenced);
+    revision_model(AccessView::publish_unfenced);
 }
 
 fn revision_model(publish: Publish) {
     loom::model(move || {
-        let views =
-            loom::sync::Arc::new(published::AccessView::new(compiled(1, true, "project", 1)));
+        let views = loom::sync::Arc::new(AccessView::new(compiled(1, true, "project", 1)));
         let publisher = loom::sync::Arc::clone(&views);
         let writer = loom::thread::spawn(move || {
             let _stale_or_installed = publish(&publisher, compiled(2, true, "project", 1));
