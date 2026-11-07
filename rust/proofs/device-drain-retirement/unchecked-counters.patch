@@ -1,0 +1,38 @@
+--- a/rust/crates/native-runtime/src/device_flush.rs
++++ b/rust/crates/native-runtime/src/device_flush.rs
+@@ -112,7 +112,7 @@
+         // The running drain may have started before this caller staged.
+         // An exhausted counter cannot identify a later covering drain.
+         // Such requests keep their own drain obligation under the same lock.
+-        let target = progress.started.checked_add(1);
++        let target = Some(progress.started + 1);
+         #[cfg(all(test, not(loom)))]
+         self.arrivals.arrive();
+         loop {
+@@ -120,7 +120,7 @@
+                 return Ok(());
+             }
+             if !progress.draining {
+-                progress.started = progress.started.saturating_add(1);
++                progress.started += 1;
+                 progress.draining = true;
+                 let mut draining = Draining {
+                     coalescer: self,
+@@ -442,7 +442,7 @@
+         /// Every drain numbered above the count read here stores its number
+         /// before it starts, so it starts after this read.
+         fn ticket(&self) -> Option<u64> {
+-            self.started.load(Ordering::SeqCst).checked_add(1)
++            Some(self.started.load(Ordering::SeqCst) + 1)
+         }
+ 
+         fn settle(
+@@ -458,7 +458,7 @@
+                 // A process that died mid-drain left `started` ahead of
+                 // `completed`; numbers never wrap. At exhaustion no new
+                 // ticket can coalesce, so every request retains its own drain.
+-                let number = self.started.load(Ordering::SeqCst).saturating_add(1);
++                let number = self.started.load(Ordering::SeqCst) + 1;
+                 self.started.store(number, Ordering::SeqCst);
+                 drain()?;
+                 self.completed.store(number, Ordering::SeqCst);

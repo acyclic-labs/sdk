@@ -110,7 +110,7 @@ pub use claim::{ClaimCheck, StoreClaim, StoreClaimRelease, StoreHandle};
 mod descriptor;
 pub use descriptor::{
     ADMITTED_DESCRIPTORS_VARIABLE, CACHED_DESCRIPTORS_VARIABLE, CachedFile, DescriptorAdmission,
-    DescriptorCost, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
+    DescriptorCost, FileFlush, FileLease, WriteAt, admit_descriptors, admitted_descriptor_capacity,
     cached_descriptor_capacity, cached_descriptors,
 };
 mod ownership;

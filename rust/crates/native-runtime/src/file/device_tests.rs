@@ -56,5 +56,64 @@ fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
     assert_eq!(owned.raw_os_error(), borrowed.raw_os_error());
     assert_eq!(owned.raw_os_error(), Some(libc::ENODEV));
     assert_eq!(crate::device_flush::classification_work(), before);
+
+    // A public cached lease retains evidence on its physical handle. Its
+    // closing flush shares that evidence; a new owner of the same inode does not.
+    let cached = crate::CachedFile::new(temporary.reopen()?, temporary.path(), true, true)?;
+    let lease = cached.lease()?;
+    let before = crate::device_flush::classification_work();
+    let completed = lease.flush(|file| file.sync_data(Durability::Barrier))?;
+    let after_barrier = crate::device_flush::classification_work();
+    assert_eq!(
+        after_barrier,
+        if completed == Durability::Full {
+            before.map(|count| count + 1)
+        } else {
+            before
+        },
+        "ordering alone must not classify the cached descriptor"
+    );
+    lease.flush(|file| file.sync_file(Durability::Full))?;
+    let resolved = crate::device_flush::classification_work();
+    assert_eq!(
+        resolved,
+        before.map(|count| count + 1),
+        "cached flush reclassified its original physical descriptor"
+    );
+    lease.flush(|file| file.sync_data(Durability::Full))?;
+    lease.flush(|file| file.flush_data())?;
+    assert_eq!(
+        crate::device_flush::classification_work(),
+        resolved,
+        "cached flush reclassified its original physical descriptor"
+    );
+    lease.write(|file| crate::write_all_at(file, 0, b"closing", None))?;
+    drop(cached);
+    drop(lease);
+    assert_eq!(
+        crate::device_flush::classification_work(),
+        resolved,
+        "closing flush discarded its original device evidence"
+    );
+    let replacement = crate::CachedFile::new(temporary.reopen()?, temporary.path(), true, true)?;
+    replacement.lease()?.flush(|file| file.flush_data())?;
+    assert_eq!(
+        crate::device_flush::classification_work(),
+        resolved.map(|count| count + 1),
+        "replacement descriptor inherited another physical owner's evidence"
+    );
+
+    let invalid = crate::CachedFile::new(
+        File::open("/dev/null")?,
+        Path::new("/dev/null"),
+        false,
+        true,
+    )?;
+    let before = crate::device_flush::classification_work();
+    invalid
+        .lease()?
+        .flush(|file| file.flush_data())
+        .expect_err("original cached descriptor cannot perform a full flush");
+    assert_eq!(crate::device_flush::classification_work(), before);
     Ok(())
 }

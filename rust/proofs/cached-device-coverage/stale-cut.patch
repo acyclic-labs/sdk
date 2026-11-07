@@ -1,0 +1,13 @@
+--- a/rust/crates/native-runtime/src/descriptor/cache.rs
++++ b/rust/crates/native-runtime/src/descriptor/cache.rs
+@@ -391,9 +391,7 @@
+             UNFLUSHED => self.dirty.store(UNFLUSHED, Ordering::Release),
+             cut => {
+                 // A later-completing write supersedes this ordered cut.
+-                let _ = self
+-                    .dirty
+-                    .compare_exchange(0, cut, Ordering::Release, Ordering::Relaxed);
++                self.dirty.store(cut, Ordering::Release);
+             }
+         }
+     }

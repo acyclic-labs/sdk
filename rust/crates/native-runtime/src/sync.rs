@@ -16,9 +16,9 @@ pub(crate) use std::sync::Arc;
 
 pub(crate) mod atomic {
     #[cfg(loom)]
-    pub(crate) use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+    pub(crate) use loom::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
     #[cfg(not(loom))]
-    pub(crate) use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, fence};
+    pub(crate) use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering, fence};
 }
 
 /// Drops a shared reference after its holder has published through it. The
