@@ -133,14 +133,17 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let mut records =
-            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        let records = crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = &self.work {
-            for record in &mut records {
-                record.headers = work.record(record.headers.bind_native(&work.meter))?;
+        let records = {
+            let mut records = records;
+            if let Some(work) = &self.work {
+                for record in &mut records {
+                    record.headers = work.record(record.headers.bind_native(&work.meter))?;
+                }
             }
-        }
+            records
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             work.record(work.meter.record_examination(
@@ -248,6 +251,7 @@ impl MemoryStream {
                         .as_ref()
                         .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
+                    #[cfg(any(test, feature = "local"))]
                     tail: fork.forked_at,
                     _allocation: self.allocate(std::mem::size_of::<History>())?,
                 }))

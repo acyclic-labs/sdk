@@ -57,8 +57,14 @@ impl CommandJournal for PgJournal {
             at_millis,
         })
     }
+}
 
-    fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
+impl PgJournal {
+    /// Registers against the last SQL cut; an observed later head is ready.
+    pub(super) fn changed(
+        &mut self,
+        after: u64,
+    ) -> BoxProviderFuture<'static, Result<(), StreamError>> {
         let head = self.head;
         let mut wakes = self.wakes.clone();
         Box::pin(async move {

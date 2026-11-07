@@ -123,7 +123,7 @@ fn retain(
             previous
                 .next
                 .set(RetainedLink {
-                    fact: entry.fact.downgrade(),
+                    _fact: entry.fact.downgrade(),
                     _allocation: header,
                 })
                 .unwrap_or_else(|_| unreachable!("the retained tail has one successor"));

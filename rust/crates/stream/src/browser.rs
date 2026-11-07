@@ -225,7 +225,7 @@ impl BrowserStream {
         // Cancellation leaves a replaceable cache; only durable replay can
         // restore validity and advance the public revision authority.
         cache.valid = false;
-        let port = port::BrowserPort::new(self, self.transaction()?)?;
+        let port = port::BrowserPort::new(self, self.transaction()?);
         let mut replica = Replicated::new(
             port,
             cache.provider.clone(),

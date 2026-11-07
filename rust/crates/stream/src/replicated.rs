@@ -58,12 +58,14 @@ pub(crate) enum AppendIf {
         head: u64,
     },
     /// Proven refusal before any durable edit.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     Refused(StreamError),
 }
 
 pub(crate) struct Execution {
     pub(crate) outcome: WriteOutcome,
-    pub(crate) allocation: crate::memory::Allocation,
+    // Retain the original reply claim even when an adapter only takes its outcome.
+    pub(crate) _allocation: crate::memory::Allocation,
 }
 
 #[derive(Default)]
@@ -93,6 +95,7 @@ impl Attempt {
                     Ok(Some(*at_millis))
                 }
                 AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 AppendIf::Refused(error) => Err(error.clone()),
             };
             self.appended = Some(result);
@@ -101,7 +104,7 @@ impl Attempt {
     }
 }
 
-/// Storage owns physical ordering, durability, its acceptance clock and events.
+/// Storage owns physical ordering, durability and its acceptance clock.
 /// It never evaluates Stream conditions or invents a replacement retry identity.
 pub(crate) trait CommandJournal: ProviderPlatform {
     fn append_if(
@@ -114,8 +117,6 @@ pub(crate) trait CommandJournal: ProviderPlatform {
         from: u64,
         page: usize,
     ) -> impl Future<Output = Result<JournalPage, StreamError>> + ProviderTask;
-    /// Registers atomically against `after`; an already advanced head is ready.
-    fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
 }
 
 pub(crate) trait ReplayObserver: ProviderPlatform {
@@ -136,7 +137,9 @@ impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
         (**self).observe(provider, command, after)
     }
 }
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
 struct NoopObserver;
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
 impl ReplayObserver for NoopObserver {
     fn observe<'a>(
         &'a mut self,
@@ -187,6 +190,7 @@ impl<J: CommandJournal> Replicated<J> {
         self
     }
 
+    #[cfg(any(feature = "local", feature = "postgres"))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }
@@ -223,6 +227,7 @@ impl<J: CommandJournal> Replicated<J> {
                 self.cursor = sequence;
                 self.clock.set(at_millis);
             }
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             Some(AppendIf::Refused(_)) => {}
             Some(_) => self.fail(),
             None if attempt.started
@@ -264,7 +269,7 @@ impl<J: CommandJournal> Replicated<J> {
             .await
             .map(|(outcome, allocation)| Execution {
                 outcome: WriteOutcome::Commit(outcome),
-                allocation,
+                _allocation: allocation,
             });
         if !self.complete(attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
@@ -272,6 +277,7 @@ impl<J: CommandJournal> Replicated<J> {
         result
     }
 
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
     pub(crate) async fn refresh(&mut self, page: usize) -> Result<(), StreamError> {
         self.refresh_with(page, &mut NoopObserver).await
     }
@@ -343,13 +349,7 @@ impl<J: CommandJournal> Replicated<J> {
         result
     }
 
-    pub(crate) fn changed(
-        &mut self,
-    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError> {
-        self.check()?;
-        Ok(self.journal.changed(self.cursor))
-    }
-
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
     pub(crate) fn execute(
         &mut self,
         command: WriteRequest,

@@ -236,7 +236,7 @@ impl Snapshot {
                     retained
                         .next
                         .get()
-                        .and_then(|link| link.fact.upgrade())
+                        .and_then(|link| link._fact.upgrade())
                         .unwrap_or_else(|| {
                             unreachable!("the captured tail pins every predecessor")
                         }),

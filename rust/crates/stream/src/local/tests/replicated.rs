@@ -3,6 +3,7 @@ use crate::replicated::{
     AppendIf, CommandJournal, JournalFrame, JournalPage, ReplicaClock, Replicated,
 };
 use crate::{AppendReceipt, CommitCondition, CommitMutation, WriteOutcome};
+use futures::TryFutureExt as _;
 use std::sync::atomic::Ordering;
 
 struct Advancing {
@@ -41,12 +42,6 @@ impl CommandJournal for Advancing {
             return Err(StreamError::Unavailable);
         }
         Ok(outcome)
-    }
-    fn changed(
-        &mut self,
-        after: u64,
-    ) -> crate::BoxProviderFuture<'static, Result<(), StreamError>> {
-        self.port.changed(after)
     }
 }
 
@@ -101,11 +96,18 @@ async fn real_journal_pages_pin_a_head_while_the_source_advances()
         assert!(replica.journal.pages.iter().all(|count| *count <= budget));
         replica.refresh(budget).await?;
         assert_eq!(replica.provider.tail(path.clone()).await?, head + 1);
-        let wait = replica.changed()?;
-        let mut wait = std::pin::pin!(wait);
-        assert!(futures::poll!(wait.as_mut()).is_pending());
+        let mut followed = source
+            .follow(crate::FollowRequest::new(path.clone(), head + 1))
+            .map_ok(crate::records_only)
+            .await?;
+        let next = followed.next();
+        let mut next = std::pin::pin!(next);
+        assert!(futures::poll!(next.as_mut()).is_pending());
         source.append(append(&path, head + 1)).await?;
-        wait.await?;
+        assert_eq!(
+            next.await.ok_or(StreamError::Unavailable)??.sequence,
+            head + 1
+        );
         replica.refresh(budget).await?;
         assert_eq!(replica.provider.tail(path.clone()).await?, head + 2);
     }
@@ -211,7 +213,6 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
         replica.refresh(1).await,
         Err(StreamError::Unavailable)
     ));
-    assert!(matches!(replica.changed(), Err(StreamError::Unavailable)));
     assert_eq!(replica.journal.proposals.len(), 1);
     drop(replica);
     drop(source);

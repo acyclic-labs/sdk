@@ -68,6 +68,7 @@ enum History {
     Prefix {
         source: Option<Arc<Self>>,
         keys: KeyTree,
+        #[cfg(any(test, feature = "local"))]
         tail: u64,
         _allocation: Allocation,
     },

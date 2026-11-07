@@ -154,7 +154,7 @@ impl LocalStream {
             if replica.cursor == cursor && matches!(outcome, CommitOutcome::Committed(_)) {
                 self.require_accepted_with_reservation::<true>(true)?;
             }
-            Ok((outcome, execution.allocation))
+            Ok((outcome, execution._allocation))
         });
         let _retained = self.release_publication(publication);
         if result.is_ok() {

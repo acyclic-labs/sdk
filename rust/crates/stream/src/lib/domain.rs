@@ -392,7 +392,7 @@ impl DurableReceipt {
         self.through
     }
 
-    #[cfg(any(test, loom))]
+    #[cfg(any(loom, all(test, feature = "local", not(target_arch = "wasm32"))))]
     pub(crate) fn covering(
         path: StreamPath,
         watermarks: &StreamWatermarks,

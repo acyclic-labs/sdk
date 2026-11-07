@@ -71,7 +71,7 @@ impl LocalStream {
                                 WriteRequest::Commit(request)
                             };
                             let execution = stream.execute(command, deadline).await?;
-                            Ok((execution.outcome, execution.allocation))
+                            Ok((execution.outcome, execution._allocation))
                         }
                         .await;
                         stream.inner.commit_clock.unpin();
@@ -159,7 +159,7 @@ impl LocalStream {
                         let crate::WriteOutcome::Append(outcome) = execution.outcome else {
                             return Err(StreamError::InvalidResponse);
                         };
-                        Ok((outcome, execution.allocation))
+                        Ok((outcome, execution._allocation))
                     },
                     move |result| {
                         completion.complete(

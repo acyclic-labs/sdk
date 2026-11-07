@@ -195,7 +195,13 @@ impl PostgresStream {
                     let Some(inner) = weak.upgrade() else {
                         return;
                     };
-                    inner.session.lock().await.changed()
+                    let mut replica = inner.session.lock().await;
+                    if replica.is_failed() {
+                        Err(StreamError::Unavailable)
+                    } else {
+                        let cursor = replica.cursor;
+                        Ok(replica.journal.changed(cursor))
+                    }
                 };
                 let result = match changed {
                     Ok(changed) => changed.await,
