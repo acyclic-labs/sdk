@@ -25,6 +25,13 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "public-pause-retirement": [
+    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
+    "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
+    "abandoned public pause lost its original native transition",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"] },
+  ],
   "public-settlement-source": [
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
