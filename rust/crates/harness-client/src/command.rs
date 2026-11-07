@@ -308,6 +308,7 @@ pub enum AgentCommand {
     /// A bounded projection of an original input's committed call admissions and
     /// completions, read through its agent's original private grant.
     Usage {
+        /// Agent whose original private journal is selected.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Original inbox sequence, initially zero (skips inherited inputs).
