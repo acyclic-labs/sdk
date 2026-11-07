@@ -23,9 +23,8 @@ use crate::wire_codec::{
     observation_from_wire, observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamError, StreamProvider, wire,
+    AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
@@ -35,7 +34,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::StreamPath;
+use crate::{AppendRequest, CommitOutcome, CommitRequest, StreamPath};
 #[cfg(test)]
 mod receipt_tests;
 mod server;
@@ -64,19 +63,15 @@ pub enum ConnectError {
     PlatformVerifier(#[source] rustls::Error),
 }
 
-impl ConnectError {
-    pub(crate) fn transient(&self) -> bool {
-        let Self::Endpoint(error) = self else {
-            return false;
-        };
-        let mut cause = std::error::Error::source(error);
-        while let Some(current) = cause {
-            if transient_io(current) {
-                return true;
-            }
-            cause = current.source();
+impl From<ConnectError> for crate::session::transport::Failure {
+    fn from(error: ConnectError) -> Self {
+        match transport_io(&error) {
+            Some(transient) => Self {
+                error: StreamError::Unavailable,
+                transient,
+            },
+            None => StreamError::InvalidResponse.into(),
         }
-        false
     }
 }
 
@@ -105,8 +100,12 @@ pub struct Client {
 /// a route's URL is not itself trust evidence. Use Auth's shared channel setup
 /// with the same member/SVID policy and client identity as the home channel.
 pub type ChannelConnector = Arc<
-    dyn Fn(wire::SessionNode) -> futures::future::BoxFuture<'static, Result<Channel, StreamError>>
-        + Send
+    dyn Fn(
+            wire::SessionNode,
+        ) -> futures::future::BoxFuture<
+            'static,
+            Result<Channel, crate::session::transport::Failure>,
+        > + Send
         + Sync,
 >;
 
@@ -509,15 +508,26 @@ pub(crate) fn retryable(error: &Status) -> bool {
             {
                 return true;
             }
-        } else if transient_io(current) {
-            return true;
+        } else if let Some(transient) = io_interruption(current) {
+            return transient;
         }
         cause = current.source();
     }
     false
 }
 
-fn transient_io(error: &(dyn std::error::Error + 'static)) -> bool {
+// One I/O classification for unary retries, routed connects and session opens.
+// Refused means no listener accepted the attempt; retrying would poll readiness.
+fn transport_io(mut error: &(dyn std::error::Error + 'static)) -> Option<bool> {
+    loop {
+        if let Some(interrupted) = io_interruption(error) {
+            return Some(interrupted);
+        }
+        error = error.source()?;
+    }
+}
+
+fn io_interruption(error: &(dyn std::error::Error + 'static)) -> Option<bool> {
     error
         .downcast_ref::<std::io::Error>()
         .or_else(|| {
@@ -525,18 +535,14 @@ fn transient_io(error: &(dyn std::error::Error + 'static)) -> bool {
                 .downcast_ref::<h2::Error>()
                 .and_then(h2::Error::get_io)
         })
-        .is_some_and(|error| {
+        .and_then(|error| {
             use std::io::ErrorKind::*;
-            matches!(
-                error.kind(),
-                ConnectionRefused
-                    | ConnectionReset
-                    | ConnectionAborted
-                    | BrokenPipe
-                    | NotConnected
-                    | UnexpectedEof
-                    | TimedOut
-            )
+            match error.kind() {
+                ConnectionRefused => Some(false),
+                ConnectionReset | ConnectionAborted | BrokenPipe | NotConnected | UnexpectedEof
+                | TimedOut => Some(true),
+                _ => None,
+            }
         })
 }
 

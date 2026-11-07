@@ -42,9 +42,13 @@ pub use revision::{
     cut_from_wire, cut_proven_by, cut_to_wire, issued_from_wire, opened_to_wire,
     revision_from_wire, revision_to_wire, selection_from_opened, selection_to_wire, tail_response,
 };
+#[cfg(any(feature = "session", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) use revision::{revision_from, selection_for_follow};
 
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) mod status;
+#[cfg(all(feature = "grpc", any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub mod status_contract;
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
-pub(crate) use status::{error_status, status};
+pub use status::{error_status, status};

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSecureServer } from "node:http2";
+import { constants, createSecureServer, type ServerHttp2Session, type ServerHttp2Stream } from "node:http2";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import type { ConnectError } from "@connectrpc/connect";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
@@ -17,7 +17,10 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
   const { key, cert } = identity;
   const node = new SessionNode();
   const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
-  const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
+  const faults = { missingStatus: false };
+  const connections = new Set<ServerHttp2Session>();
+  const streams = new Set<ServerHttp2Stream>();
+  const adapter = connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
       tail(_request, context) {
         const echo = context.requestHeader.get("x-follow-options") ?? "";
@@ -40,14 +43,37 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
       try { for await (const frame of transport.incoming) yield fromBinary(SessionFrameSchema, frame); }
       finally { context.signal.removeEventListener("abort", abort); transport.close(); }
     } });
-  } }));
+  } });
+  const server = createSecureServer({ key, cert }, (request, response) => {
+    if (faults.missingStatus) {
+      assert.equal(request.headers.authorization, "Bearer fixture");
+      counts.sessions += 1;
+      response.writeHead(200, { "content-type": "application/grpc" });
+      response.end();
+      return;
+    }
+    adapter(request, response);
+  });
+  server.on("stream", stream => {
+    streams.add(stream);
+    stream.once("close", () => streams.delete(stream));
+  });
   server.on("connection", socket => socket.setNoDelay(true));
-  server.on("session", () => { counts.connections += 1; });
+  server.on("session", session => {
+    counts.connections += 1;
+    connections.add(session);
+    session.once("close", () => connections.delete(session));
+  });
   const close = ownFixtureServer(server);
   await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
-  return { node, counts, close, options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
+  return { node, counts, faults, close, resetRpc() {
+    for (const stream of streams) if (!stream.closed && !stream.destroyed) {
+      stream.close(constants.NGHTTP2_CANCEL);
+    }
+  }, disconnect() { for (const session of connections) session.destroy(); },
+    options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
 }
 
 

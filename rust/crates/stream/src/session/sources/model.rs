@@ -19,14 +19,32 @@ pub fn verify_source_wakes(omit_signal: bool) {
         };
         let published = Arc::new(gate::Gate::new());
         let waiting = published.clone();
+        let mut sources = Sources::new();
+        let mut cancelled = Vec::new();
+        for channel_id in [1, 2] {
+            sources.insert(
+                wire::SessionChannel {
+                    channel_id,
+                    generation: 0,
+                },
+                futures::stream::pending().boxed(),
+                Some(ALL),
+            );
+            cancelled.push(sources.entries.get(&channel_id).unwrap().wake.clone());
+            sources.remove(channel_id);
+        }
         let source =
             futures::stream::once(async move { (identity, Ok(Event::Opened(None, None, None))) })
                 .chain(futures::stream::once(async move {
+                    // Original provider callbacks can outlive removal and race
+                    // publication while the replacement's parent is parking.
+                    for wake in cancelled {
+                        wake.notify();
+                    }
                     waiting.changed(false).await.unwrap();
                     (identity, Ok(Event::Opened(None, None, None)))
                 }))
                 .boxed();
-        let mut sources = Sources::new();
         sources.insert(identity, source, Some(ALL));
         Arc::get_mut(&mut sources.entries.get_mut(&1).unwrap().wake)
             .unwrap()
@@ -105,7 +123,7 @@ pub fn verify_source_recheck(fault: u8) {
         let mut cx = Context::from_waker(&waker);
         assert!(sources.poll((true, true, true), &mut cx).is_ready());
         assert!(sources.poll((true, true, true), &mut cx).is_pending());
-        let wake = sources.entries[&1].wake.clone();
+        let wake = sources.entries.get(&1).unwrap().wake.clone();
         let writer = loom::thread::spawn(move || {
             Wake::wake_by_ref(&wake);
             Wake::wake_by_ref(&wake);

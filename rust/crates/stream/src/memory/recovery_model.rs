@@ -414,17 +414,6 @@ pub fn local_follow_parking(retain_pending: bool, memory: bool) {
     crate::local::parking_model::verify(retain_pending, memory);
 }
 
-/// Compares queued admission and cancellation with Tokio's fair lock.
-pub fn lock_parity(negative: bool) {
-    loom::model(move || {
-        if negative {
-            crate::query_sync::parity::negative();
-        } else {
-            crate::query_sync::parity::run();
-        }
-    });
-}
-
 /// Checks direct memory-provider streams against an unpolled state reservation.
 pub fn memory_follow_parking(retain_pending: bool, checked: bool) {
     crate::memory::parking_model::verify(retain_pending, checked);

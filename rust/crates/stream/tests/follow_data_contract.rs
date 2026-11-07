@@ -204,11 +204,23 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
 #[test]
 fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
     use acyclic_stream::{CommitId, wire_codec::session::confirm_follow};
-    let root = acyclic_test_support::crate_path!("fuzz/corpus/session");
-    for (name, delivery, after, accepted, durable, length, expected) in [
-        ("latest-jump", 2, 9, 10, 8, 1, Ok(8)),
+    macro_rules! seed {
+        ($name:literal) => {
+            (
+                $name,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/fuzz/corpus/session/browser-",
+                    $name
+                ))
+                .as_slice(),
+            )
+        };
+    }
+    for ((name, seed), delivery, after, accepted, durable, length, expected) in [
+        (seed!("latest-jump"), 2, 9, 10, 8, 1, Ok(8)),
         (
-            "latest-empty-key",
+            seed!("latest-empty-key"),
             2,
             9,
             10,
@@ -217,7 +229,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             Err(StreamError::Unavailable),
         ),
         (
-            "latest-impossible-durable",
+            seed!("latest-impossible-durable"),
             2,
             9,
             10,
@@ -225,9 +237,9 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             1,
             Err(StreamError::Unavailable),
         ),
-        ("all-held-flush", 1, 1, 4, 0, 32, Ok(0)),
+        (seed!("all-held-flush"), 1, 1, 4, 0, 32, Ok(0)),
         (
-            "all-short-commit",
+            seed!("all-short-commit"),
             1,
             1,
             4,
@@ -236,8 +248,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             Err(StreamError::Unavailable),
         ),
     ] {
-        let seed = std::fs::read(root.join(format!("browser-{name}"))).unwrap();
-        let frame = wire::SessionFrame::decode(seed.as_slice()).unwrap();
+        let frame = wire::SessionFrame::decode(seed).unwrap();
         let Some(wire::session_frame::Body::Data(data)) = frame.body else {
             panic!("{name} is not data")
         };
@@ -259,13 +270,16 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
         assert_eq!(follow_sequence(delivery, 0, &data), expected, "{name}");
         assert_eq!(check(delivery, 0, &data, Fault::None), Ok(()));
     }
-    for (name, confirmation, expected) in [
-        ("opened-empty", vec![], Err(StreamError::Unsupported)),
-        ("opened-foreign", vec![9; 32], Err(StreamError::Unsupported)),
-        ("opened-matching", vec![7; 32], Ok(())),
+    for ((name, seed), confirmation, expected) in [
+        (seed!("opened-empty"), vec![], Err(StreamError::Unsupported)),
+        (
+            seed!("opened-foreign"),
+            vec![9; 32],
+            Err(StreamError::Unsupported),
+        ),
+        (seed!("opened-matching"), vec![7; 32], Ok(())),
     ] {
-        let seed = std::fs::read(root.join(format!("browser-{name}"))).unwrap();
-        let frame = wire::SessionFrame::decode(seed.as_slice()).unwrap();
+        let frame = wire::SessionFrame::decode(seed).unwrap();
         let Some(wire::session_frame::Body::Opened(opened)) = frame.body else {
             panic!("{name} is not opened")
         };

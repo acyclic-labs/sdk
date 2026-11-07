@@ -660,6 +660,10 @@ mod tests {
 // Each mutation adds at most three u64 fields and two growing delimiters (45
 // bytes); the envelope adds its commit id, timestamp and enclosing delimiter.
 // Count vector lengths, never records, payload bytes or unrelated retained history.
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
 pub(crate) fn accepted_response_limit(
     input: &crate::wire::CommitRequest,
 ) -> Result<usize, crate::StreamError> {

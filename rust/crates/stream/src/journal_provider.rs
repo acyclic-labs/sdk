@@ -37,12 +37,6 @@ extern "C" {
     #[wasm_bindgen(method, catch)]
     fn read(this: &HostJournal, index: u32, page: u32) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch)]
-    fn changed(
-        this: &HostJournal,
-        after: u32,
-        callback: &js_sys::Function,
-    ) -> Result<js_sys::Function, JsValue>;
-    #[wasm_bindgen(method, catch)]
     fn append(
         this: &HostJournal,
         index: u32,

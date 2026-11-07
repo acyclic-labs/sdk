@@ -15,6 +15,60 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "browser-revision-progress": [
+    "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
+    "browser::tests::database_loss_ends_parked_revision_observers",
+    "revision wait retained failed IndexedDB producer",
+    ["--no-default-features", "--features", "wasm", "--target", "wasm32-unknown-unknown"],
+  ],
+  "postgres-refresh-progress": [
+    "rust/crates/stream/src/postgres.rs", "acyclic-stream",
+    "postgres::capability::refresh_producer_retirement_ends_public_waits",
+    "retired refresh producer left a public revision wait parked", ["--features", "postgres"],
+    {
+      mutations: [
+        { patch: "rust/proofs/postgres-refresh-progress/retirement.patch", label: "missing-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/unpolled.patch", label: "late-retirement-custody", diagnostic: "retired refresh producer served a later observer" },
+        { patch: "rust/proofs/postgres-refresh-progress/connection.patch", label: "missing-connection-retirement", diagnostic: "retired refresh producer left a public revision wait parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/session.patch", label: "missing-session-retirement", diagnostic: "retired producer left a public session refresh parked" },
+        { patch: "rust/proofs/postgres-refresh-progress/publication.patch", label: "missing-publication-retirement", diagnostic: "retired producer left a conditional publication parked" },
+      ],
+    },
+  ],
+  "backed-retention": [
+    "rust/crates/stream/src/owned_bytes/mod.rs", "acyclic-stream",
+    "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+    "spare backing escaped compaction", [],
+    {
+      mutations: [
+        { patch: "rust/proofs/backed-retention/compaction.patch", label: "missing-compaction", diagnostic: "spare backing escaped compaction" },
+        { patch: "rust/proofs/backed-retention/known-copy.patch", label: "copied-known-owner", diagnostic: "known backing was copied" },
+        { patch: "rust/proofs/backed-retention/custody.patch", label: "lost-backing-custody", diagnostic: "backing lost original owner" },
+        { patch: "rust/proofs/backed-retention/static-capacity.patch", label: "unknown-static-capacity", diagnostic: "known backing was copied" },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-stream", "-p", "acyclic-harness-client", "--lib", "--", "--exact", "--nocapture",
+        "owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody",
+        "owned_bytes::tests::ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery",
+        "reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing"],
+      completed: [
+        "test owned_bytes::tests::backed_retention_preserves_visible_bytes_identity_and_final_custody ... ok",
+        "test owned_bytes::tests::ordinary_storage_preserves_capacity_and_rejects_unsafe_recovery ... ok",
+        "test reader::cache::tests::tiny_slices_detach_unknown_or_over_budget_transport_backing ... ok",
+      ],
+    },
+  ],
+  "compiled-prefix-invariant": [
+    "rust/crates/collections/src/compiled_prefix.rs", "acyclic-collections",
+    "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+    "changed original prefix label became absence", [],
+    {
+      positiveCommand: ["test", "--locked", "-p", "acyclic-collections", "-p", "acyclic-native-runtime", "--lib", "--", "--exact", "--nocapture",
+        "tests::compiled_prefix::compiled_prefix_matches_original_keys_and_refuses_original_read_credit",
+        "tests::compiled_prefix::compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys",
+        "execution::tests::compiled_prefix_grant_proofs_use_original_operation_and_allocation_credits"],
+      completed: ["2 passed; 0 failed", "1 passed; 0 failed"],
+    },
+  ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
     "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions",
@@ -104,12 +158,453 @@ const claims = {
     { oracle: "rust/crates/harness/src/local/tests/agents.rs", negativeLabel: "duplicate-settlement",
       nextest: ["--profile", "ci", "--no-fail-fast", "--failure-output", "immediate-final", "--run-ignored", "all", "--retries", "0", "--no-tests=fail"] },
   ],
+  "projection-cost": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding",
+    "unrestricted projection must transfer the original owners",
+    []
+  ],
+  "partial-projection-cost": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding",
+    "discarded change payload must not be copied",
+    []
+  ],
+  "projection-fuzz": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding",
+    "projection fuzz oracle",
+    [
+      "--features",
+      "test-support"
+    ],
+    {
+      "patchPath": "rust/proofs/projection-fuzz/mutation.patch",
+      "instrumentable": true
+    }
+  ],
+  "default-projection-fuzz": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "follow_filter::tests::projection_reuses_validation_and_skips_unrestricted_decoding",
+    "projection fuzz oracle",
+    [],
+    {
+      "patchPath": "rust/proofs/projection-fuzz/mutation.patch"
+    }
+  ],
+  "follow-digest-cost": [
+    "rust/crates/stream/src/follow_filter.rs",
+    "acyclic-stream",
+    "follow_filter::tests::provider_hops_preserve_requested_any_keys_and_all_authority_ceilings",
+    "digest scratch storage grew with repeated clauses",
+    []
+  ],
+  "change-marker-cost": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "changes::golden::retained_and_unknown_change_versions_keep_identity_and_one_marker_pass",
+    "reserved marker classification repeated an attribute probe",
+    []
+  ],
+  "changes-decode-cost": [
+    "rust/crates/stream/src/changes.rs",
+    "acyclic-stream",
+    "changes::tests::admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys",
+    "validated decode must not allocate discarded storage",
+    []
+  ],
+  "ready-source-race": [
+    "rust/crates/stream/src/runtime/sources.rs",
+    "acyclic-stream",
+    "client_pool_loom::provider_source_publication_cannot_lose_its_wake",
+    "provider source lost its publication wake",
+    [
+      "--no-default-features",
+      "--features",
+      "grpc,model-checking"
+    ],
+    {
+      "patchPath": "rust/proofs/ready-source-parking/mutation.patch",
+      "target": [
+        "--test",
+        "main"
+      ],
+      "loom": true
+    }
+  ],
+  "children-selection": [
+    "rust/crates/stream/src/lib/head.rs",
+    "acyclic-stream",
+    "head_tests::trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound",
+    "child page escaped its original selection",
+    [
+      "--features",
+      "local"
+    ]
+  ],
+  "ready-source-turn": [
+    "rust/crates/stream/src/runtime/sources.rs",
+    "acyclic-stream",
+    "runtime::sources::tests::ready_records_reuse_the_registered_source_node",
+    "ready record delivery drained unrelated provider hints",
+    [
+      "--no-default-features"
+    ],
+    {
+      "mutations": [
+        {
+          "patch": "rust/proofs/ready-source-turn/mutation.patch",
+          "diagnostic": "ready record delivery drained unrelated provider hints",
+          "label": "mutated-ready-source-turn"
+        },
+        {
+          "patch": "rust/proofs/ready-source-pending/mutation.patch",
+          "diagnostic": "owner turn polled unrelated pending providers",
+          "label": "mutated-ready-source-pending"
+        },
+        {
+          "patch": "rust/proofs/ready-source-parking/mutation.patch",
+          "diagnostic": "a late cancelled wake must not disarm the live provider",
+          "label": "mutated-ready-source-parking"
+        },
+        {
+          "patch": "rust/proofs/ready-source-delivery/mutation.patch",
+          "diagnostic": "the live provider's committed record must be ready",
+          "label": "mutated-ready-source-delivery"
+        }
+      ]
+    }
+  ],
+  "ready-source-index": [
+    "rust/crates/stream/src/runtime/sources.rs",
+    "acyclic-stream",
+    "runtime::sources::tests::ready_records_reuse_the_registered_source_node",
+    "source lookup exceeded the fixed key width",
+    [
+      "--no-default-features"
+    ]
+  ],
+  "retained-commit-index": [
+    "rust/crates/stream/src/memory/commit_index.rs",
+    "acyclic-stream",
+    "memory::tests::commit_index::historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_history",
+    "retained commit lookup omitted original key examinations",
+    [],
+    {
+      "positiveCommand": [
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-stream",
+        "-p",
+        "acyclic-collections",
+        "--lib",
+        "--",
+        "--exact",
+        "--nocapture",
+        "memory::tests::commit_index::historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_history",
+        "memory::tests::commit_index::every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations",
+        "memory::tests::commit_index::commit_index_work_is_admitted_before_append_or_coordinated_publication",
+        "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+        "tests::adversarial_branches_have_a_fixed_key_width_bound_and_cancel_safe_retirement",
+        "tests::refused_admission_never_constructs_or_publishes_and_preserves_prior_funding"
+      ],
+      "completed": [
+        "2 passed; 0 failed",
+        "4 passed; 0 failed"
+      ]
+    }
+  ],
+  "replay-index": [
+    "rust/crates/collections/src/radix.rs",
+    "acyclic-stream",
+    "memory::tests::replay_index::binary_replay_identity_and_work_follow_the_request_through_forks_and_recovery",
+    "binary replay lookup omitted original comparison admission",
+    [],
+    {
+      "mutations": [
+        {
+          "patch": "rust/proofs/replay-index/mutation.patch",
+          "diagnostic": "binary replay lookup omitted original comparison admission",
+          "label": "mutated"
+        },
+        {
+          "patch": "rust/proofs/replay-index/terminal.patch",
+          "diagnostic": "binary replay identity lost its original outcome",
+          "label": "mutated-terminal"
+        },
+        {
+          "patch": "rust/proofs/replay-index/boundary.patch",
+          "diagnostic": "binary replay lookup escaped the requested key width",
+          "label": "mutated-boundary"
+        },
+        {
+          "patch": "rust/proofs/replay-index/credit.patch",
+          "diagnostic": "reserved index examinations",
+          "label": "mutated-credit",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-stream",
+            "--lib",
+            "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "patch": "rust/proofs/replay-index/recovery.patch",
+          "diagnostic": "reserved index examinations",
+          "label": "mutated-recovery",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-stream",
+            "--lib",
+            "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+            "--",
+            "--exact",
+            "--nocapture"
+          ],
+          "source": "rust/crates/stream/src/memory/prepared.rs"
+        }
+      ],
+      "positiveCommand": [
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-stream",
+        "-p",
+        "acyclic-collections",
+        "--lib",
+        "--",
+        "--exact",
+        "--nocapture",
+        "memory::tests::replay_index::binary_replay_identity_and_work_follow_the_request_through_forks_and_recovery",
+        "memory::tests::native::native_controls::prepared_replays_share_reserved_inventory_through_interleaved_growth",
+        "memory::tests::native::native_controls::descending_replay_keys_keep_copy_work_and_lookup_depth_bounded",
+        "memory::tests::native::native_controls::prepared_replay_probe_credit_is_required_before_acceptance",
+        "memory::tests::commit_index::every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations",
+        "tests::adversarial_branches_have_a_fixed_key_width_bound_and_cancel_safe_retirement",
+        "tests::refused_admission_never_constructs_or_publishes_and_preserves_prior_funding"
+      ],
+      "completed": [
+        "2 passed; 0 failed",
+        "5 passed; 0 failed"
+      ]
+    }
+  ],
+  "native-custody": [
+    "rust/crates/native-runtime/src/task.rs",
+    "acyclic-native-runtime",
+    "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+    "shared completion replaced the original operation error",
+    [],
+    {
+      "mutations": [
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/shared-completion-error/mutation.patch",
+          "diagnostic": "shared completion replaced the original operation error",
+          "label": "mutated-shared-completion-error",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/task-cancellation-cause/mutation.patch",
+          "diagnostic": "task cancellation lost its original typed cause",
+          "label": "mutated-task-cancellation-cause",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/shared-completion-cause/mutation.patch",
+          "diagnostic": "shared completion replaced the original typed cause",
+          "label": "mutated-shared-completion-cause",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--lib",
+            "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/objects/src/local.rs",
+          "patch": "rust/proofs/objects-close-result/mutation.patch",
+          "diagnostic": "close hid",
+          "label": "mutated-objects-close-result",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-objects",
+            "--no-default-features",
+            "--features",
+            "local,test-support",
+            "--lib",
+            "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task/custody.rs",
+          "patch": "rust/proofs/persistence-panic/mutation.patch",
+          "diagnostic": "left: Interrupted",
+          "label": "mutated-persistence-panic",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_worker_panic_terminates_its_original_wait",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-wait-retirement/mutation.patch",
+          "diagnostic": "a failed producer retained its wait",
+          "label": "mutated-persistence-wait-retirement",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_worker_panic_terminates_its_original_wait",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-caller-custody/mutation.patch",
+          "diagnostic": "caller drop abandoned the original persistence body",
+          "label": "mutated-persistence-caller-custody",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_retains_accepted_work_after_caller_drop",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-reentry/mutation.patch",
+          "diagnostic": "Future::poll(accepted.as_mut(), &mut context)",
+          "label": "mutated-persistence-reentry",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        },
+        {
+          "source": "rust/crates/native-runtime/src/task.rs",
+          "patch": "rust/proofs/persistence-submission/mutation.patch",
+          "diagnostic": "reentrant persistence submission retained or ran its body",
+          "label": "mutated-persistence-submission",
+          "command": [
+            "test",
+            "--locked",
+            "-p",
+            "acyclic-native-runtime",
+            "--no-default-features",
+            "--lib",
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+            "--",
+            "--exact",
+            "--nocapture"
+          ]
+        }
+      ],
+      "positiveCommand": [
+        "test",
+        "--locked",
+        "-p",
+        "acyclic-native-runtime",
+        "-p",
+        "acyclic-objects",
+        "--features",
+        "acyclic-objects/local,acyclic-objects/test-support",
+        "--lib",
+        "--",
+        "--exact",
+        "--nocapture",
+        "task::custody::tests::original_tasks_conform_to_scoped_and_shared_completion_custody",
+        "task::custody::tests::seeded_executor_uses_the_same_scoped_custody_contract",
+        "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+        "task::tests::persistence_worker_panic_terminates_its_original_wait",
+        "task::tests::persistence_retains_accepted_work_after_caller_drop",
+        "local::outcome_tests::owned_close_reports_physical_completion_and_failure"
+      ],
+      "completed": [
+        "5 passed; 0 failed",
+        "1 passed; 0 failed"
+      ]
+    }
+  ],
 };
 const [claim, ...extra] = process.argv.slice(2);
-const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}>`;
+const instrumented = extra.length === 1 && extra[0] === "--instrumented" && claims[claim]?.[5]?.instrumentable;
+const from = extra.length === 2 && extra[0] === "--from" ? extra[1] : undefined;
+const help = `node rust/proofs/qualify.mjs <${Object.keys(claims).join("|")}> [--from mutation-label]`;
 if (claim === "--help" && extra.length === 0) {
   console.log(help);
-} else if (!Object.hasOwn(claims, claim) || extra.length !== 0) {
+} else if (!Object.hasOwn(claims, claim) || (extra.length !== 0 && !instrumented && from === undefined)) {
   console.error(`step=select claim; cause=expected exactly one supported claim; recovery: ${help}`);
   process.exitCode = 2;
 } else {
@@ -117,16 +612,20 @@ if (claim === "--help" && extra.length === 0) {
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
-    : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+    : options.patchPath ?? `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
-  const command = options.nextest
+  const command = instrumented
+    ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
+    : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.positive
+  const positive = instrumented
+    ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
+    : options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
-    : command;
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
+    : command);
+  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -140,7 +639,7 @@ if (claim === "--help" && extra.length === 0) {
     let result;
     try {
       result = spawnSync(program, args, {
-        cwd: root, encoding: "utf8",
+        cwd: instrumented && program === "cargo" ? fileURLToPath(new URL("rust/codec-fuzz/", new URL("../../", import.meta.url))) : root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
@@ -173,29 +672,42 @@ if (claim === "--help" && extra.length === 0) {
     return result;
   }
   try {
-    const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
-    step = "check mutation anchors";
-    const anchor = run("git", ["apply", "--check", patch]);
-    if (anchor.status !== 0) throw new Error(anchor.output);
-    try {
-      step = "apply production mutation";
-      const applied = run("git", ["apply", patch]);
-      if (applied.status !== 0) throw new Error(applied.output);
-      step = "unchanged oracle rejects production mutation";
-      const mutated = check(options.negativeLabel ?? "mutated");
-      require(mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
-        && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
-    } finally {
-      writeFileSync(sourcePath, original);
+    if (instrumented) mkdirSync(new URL("corpus/", directory), { recursive: true });
+    const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
+    step = "select first mutation";
+    const start = from === undefined ? 0 : mutations.findIndex(mutation => mutation.label === from);
+    if (start < 0) throw new Error(`unknown mutation label ${JSON.stringify(from)}`);
+    if (start !== 0) console.log(`selection=partial; preceding=${start} mutations require their own source-bound receipts`);
+    for (const mutation of mutations.slice(start)) {
+      const mutatedPath = mutation.source ? new URL(mutation.source, new URL("../../", import.meta.url)) : sourcePath;
+      const original = readFileSync(mutatedPath);
+      step = `check mutation anchors: ${mutation.patch}`;
+      const anchor = run("git", ["apply", "--check", mutation.patch]);
+      if (anchor.status !== 0) throw new Error(anchor.output);
+      try {
+        step = `apply production mutation: ${mutation.patch}`;
+        const applied = run("git", ["apply", mutation.patch]);
+        if (applied.status !== 0) throw new Error(applied.output);
+        step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+        const mutated = check(mutation.label, mutation.command ?? command);
+        require(instrumented
+          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
+          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+      } finally {
+        writeFileSync(mutatedPath, original);
+      }
+      step = "restore exact original source";
+      require(readFileSync(mutatedPath).equals(original));
     }
-    step = "restore exact original source";
-    require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed";
-    require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
+    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    require(restored.status === 0 && !restored.signal && (instrumented
+      ? ["DONE", "1000 runs", "cov:"].every(marker => restored.output.includes(marker))
+      : completed.every(marker => restored.output.includes(marker))));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;

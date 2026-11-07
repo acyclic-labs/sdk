@@ -236,7 +236,7 @@ impl Snapshot {
                     retained
                         .next
                         .get()
-                        .and_then(|link| link.fact.upgrade())
+                        .and_then(|link| link._fact.upgrade())
                         .unwrap_or_else(|| {
                             unreachable!("the captured tail pins every predecessor")
                         }),
@@ -435,7 +435,7 @@ fn restore_retained(
             let key = observation.idempotency_key;
             let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
             if state
-                .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
+                .replay(key.as_bytes(), |_| Ok::<_, StreamError>(()))
                 .ok()?
                 .is_some()
                 || commit_id.is_some_and(|id| state.commit(&id).is_some())
@@ -465,7 +465,7 @@ fn restore_retained(
     }
     retain(
         state,
-        &mut || {},
+        &mut |_| {},
         envelope,
         key,
         digest,

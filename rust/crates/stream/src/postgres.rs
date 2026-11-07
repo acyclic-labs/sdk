@@ -14,9 +14,9 @@ use tokio::sync::{Mutex, watch};
 use tokio_postgres::{AsyncMessage, Client, NoTls, Statement};
 
 const PAGE: usize = 64;
-mod port;
 #[cfg(test)]
-mod tests;
+mod capability;
+mod port;
 use port::PgJournal;
 const SCHEMA: &str = include_str!("postgres/schema.sql");
 
@@ -24,10 +24,10 @@ struct Inner {
     core: MemoryStream,
     session: Mutex<Replicated<PgJournal>>,
     failed: AtomicBool,
-    failure: watch::Sender<bool>,
+    failure: watch::Sender<Failure>,
     // Dropping the owner closes both connections and their drivers. No task
     // retains the owner while idle, so this does not form a reference cycle.
-    tasks: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -48,6 +48,55 @@ pub struct PostgresStream {
     inner: Arc<Inner>,
 }
 
+struct Failure {
+    retired: bool,
+    owner: std::sync::Weak<Inner>,
+}
+
+// Connection drivers must run during initialization, before the provider
+// exists. The original failure cell joins their retirement with owner binding.
+struct ConnectionOwner(watch::Sender<Failure>);
+
+impl ConnectionOwner {
+    fn retire(failure: &watch::Sender<Failure>) {
+        let mut owner = None;
+        failure.send_modify(|failure| {
+            failure.retired = true;
+            owner = failure.owner.upgrade();
+            if let Some(inner) = &owner {
+                inner.failed.store(true, Ordering::Release);
+            }
+        });
+        if let Some(inner) = owner {
+            inner.core.revisions.close();
+        }
+    }
+}
+
+impl Drop for ConnectionOwner {
+    fn drop(&mut self) {
+        Self::retire(&self.0);
+    }
+}
+
+// The replica's only refresh producer must publish retirement even if its
+// executor drops the task before its first poll or while it is parked.
+struct RefreshOwner(std::sync::Weak<Inner>);
+
+impl RefreshOwner {
+    fn provider(&self) -> Option<PostgresStream> {
+        self.0.upgrade().map(|inner| PostgresStream { inner })
+    }
+}
+
+impl Drop for RefreshOwner {
+    fn drop(&mut self) {
+        if let Some(provider) = self.provider() {
+            provider.fail();
+        }
+    }
+}
+
 fn unavailable(error: impl std::fmt::Display) -> StreamError {
     tracing::error!(%error, "Postgres Stream operation failed; reopen PostgresStream::connect with the same database and namespace");
     StreamError::Unavailable
@@ -64,7 +113,13 @@ impl PostgresStream {
         let (client, connection) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
+        let (failure, _) = watch::channel(Failure {
+            retired: false,
+            owner: std::sync::Weak::new(),
+        });
+        let query_owner = ConnectionOwner(failure.clone());
         let driver = tokio::spawn(async move {
+            let _owner = query_owner;
             let _ = connection.await;
         });
         client
@@ -110,7 +165,9 @@ impl PostgresStream {
             .map_err(unavailable)?;
         let (wake, wakes) = watch::channel(());
         let notified_namespace = namespace.to_owned();
+        let notification_owner = ConnectionOwner(failure.clone());
         let notification_driver = tokio::spawn(async move {
+            let _owner = notification_owner;
             while let Some(message) =
                 futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
             {
@@ -155,7 +212,6 @@ impl PostgresStream {
             crate::AppliedRevisions::storage_scope("postgres", &location),
             u128::from_be_bytes(generation),
         );
-        let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
             session: Mutex::new(
                 Replicated::new(
@@ -176,15 +232,21 @@ impl PostgresStream {
             core,
             failed: AtomicBool::new(false),
             failure,
-            tasks: std::sync::Mutex::new(vec![
-                driver.abort_handle(),
-                notification_driver.abort_handle(),
-            ]),
+            tasks: std::sync::Mutex::new(vec![driver, notification_driver]),
         });
         let provider = Self { inner };
+        let mut retired = false;
+        provider.inner.failure.send_if_modified(|failure| {
+            failure.owner = Arc::downgrade(&provider.inner);
+            retired = failure.retired;
+            false
+        });
+        if retired {
+            provider.fail();
+        }
         // LISTEN is active before the initial catch-up, closing the startup gap.
         provider.refresh().await?;
-        let weak = Arc::downgrade(&provider.inner);
+        let owner = RefreshOwner(Arc::downgrade(&provider.inner));
         let refresh = tokio::spawn(async move {
             // Keep the LISTEN client alive, but never the provider owner.
             let _listener = listener;
@@ -192,21 +254,20 @@ impl PostgresStream {
                 // The registered event owns no provider or connection. Release
                 // the replica lock and its strong owner before parking.
                 let changed = {
-                    let Some(inner) = weak.upgrade() else {
+                    let Some(provider) = owner.provider() else {
                         return;
                     };
-                    inner.session.lock().await.changed()
+                    let mut replica = provider.inner.session.lock().await;
+                    replica.changed()
                 };
                 let result = match changed {
                     Ok(changed) => changed.await,
                     Err(error) => Err(error),
                 };
-                let Some(inner) = weak.upgrade() else {
+                let Some(provider) = owner.provider() else {
                     return;
                 };
-                let provider = Self { inner };
                 if result.is_err() || provider.refresh().await.is_err() {
-                    provider.fail();
                     return;
                 }
             }
@@ -216,15 +277,12 @@ impl PostgresStream {
             .tasks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(refresh.abort_handle());
+            .push(refresh);
         Ok(provider)
     }
 
     fn fail(&self) {
-        self.inner.failed.store(true, Ordering::Release);
-        self.inner.failure.send_replace(true);
-        // Parked revision waits end too: this replica serves nothing more.
-        self.inner.core.revisions.close();
+        ConnectionOwner::retire(&self.inner.failure);
     }
 
     fn check(&self) -> Result<(), StreamError> {
@@ -237,8 +295,15 @@ impl PostgresStream {
 
     async fn refresh(&self) -> Result<(), StreamError> {
         self.check()?;
-        let mut replica = self.inner.session.lock().await;
-        let result = replica.refresh(PAGE).await;
+        let mut failure = self.inner.failure.subscribe();
+        let result = tokio::select! {
+            biased;
+            _ = failure.wait_for(|failure| failure.retired) => return Err(StreamError::Unavailable),
+            result = async {
+                let mut replica = self.inner.session.lock().await;
+                replica.refresh(PAGE).await
+            } => result,
+        };
         if result.is_err() {
             self.fail();
         }
@@ -258,16 +323,20 @@ impl PostgresStream {
             }
         };
         let completion = acyclic_observability::Completion::new(&span);
-        let command = match command.validated() {
+        let command = match command
+            .validated()
+            .and_then(|command| self.check().map(|()| command))
+        {
             Ok(command) => command,
             Err(error) => return completion.finish(Err(error), StreamError::code),
         };
+        let mut failure = self.inner.failure.subscribe();
         let provider = self.clone();
         // This one exact publication retains custody through caller cancellation.
-        tokio::spawn(span.scope(completion.observe_output(
+        let publication = tokio::spawn(span.scope(completion.observe_output(
             async move {
-                provider.check()?;
                 let mut replica = provider.inner.session.lock().await;
+                provider.check()?;
                 let result = replica.execute(command, deadline, PAGE).await;
                 if matches!(
                     result,
@@ -280,9 +349,14 @@ impl PostgresStream {
                 result.map(|execution| execution.outcome)
             },
             |result| result.as_ref().err().map(StreamError::code),
-        )))
-        .await
-        .map_err(unavailable)?
+        )));
+        // Losing observation does not cancel the submitted identity. The task
+        // retains custody; a retirement result never asserts non-publication.
+        tokio::select! {
+            biased;
+            result = publication => result.map_err(unavailable)?,
+            _ = failure.wait_for(|failure| failure.retired) => Err(StreamError::Unavailable),
+        }
     }
 
     fn guarded<T: Send + 'static>(
@@ -297,7 +371,7 @@ impl PostgresStream {
                 if ended {
                     return None;
                 }
-                if *failure.borrow() {
+                if failure.borrow().retired {
                     return Some((
                         Err(StreamError::Unavailable),
                         (records, failure, true, owner),

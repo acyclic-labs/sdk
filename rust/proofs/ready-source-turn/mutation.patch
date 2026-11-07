@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/runtime/sources.rs b/rust/crates/stream/src/runtime/sources.rs
+--- a/rust/crates/stream/src/runtime/sources.rs
++++ b/rust/crates/stream/src/runtime/sources.rs
+@@ -301,7 +301,7 @@
+         room: (bool, bool, bool),
+         cx: &mut Context<'_>,
+     ) -> Poll<Result<Option<S::Item>, StreamError>> {
+-        if let Some(identity) = self.signal.try_next()? {
++        while let Some(identity) = self.signal.try_next()? {
+             self.wake(identity);
+         }
+         if let Some(id) = self.pop(room) {

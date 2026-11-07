@@ -121,6 +121,38 @@ struct Extractor {
     possible: Vec<Action>,
 }
 
+fn extractor_registry(pool: &DescriptorPool) -> Result<BTreeMap<String, Extractor>, Error> {
+    let registry = pool
+        .get_extension_by_name("acyclic.validation.v1.extractors")
+        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
+    let mut extractors = BTreeMap::new();
+    for file in pool.files() {
+        let options = file.options();
+        let value = options.get_extension(&registry);
+        for value in value.as_list().into_iter().flatten() {
+            let declaration = value
+                .as_message()
+                .ok_or_else(|| invalid("invalid extractor"))?;
+            let name = string(declaration, "name");
+            let resources_only = declaration
+                .get_field_by_name("resources_only")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_default();
+            let extractor = Extractor {
+                resources_only,
+                possible: actions(declaration, "possible_actions")?,
+            };
+            if name.is_empty()
+                || extractor.possible.is_empty()
+                || extractors.insert(name, extractor).is_some()
+            {
+                return Err(invalid("empty or duplicate authorization extractor").into());
+            }
+        }
+    }
+    Ok(extractors)
+}
+
 /// Generate a service's exhaustive method enum and admission table.
 /// Dynamic extractor vocabularies remain output ceilings;
 /// they are never promoted to unconditional required permissions.
@@ -156,34 +188,7 @@ pub fn product_authorization(
     let extension = pool
         .get_extension_by_name("acyclic.validation.v1.auth")
         .ok_or_else(|| invalid("method authorization extension is missing"))?;
-    let registry = pool
-        .get_extension_by_name("acyclic.validation.v1.extractors")
-        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
-    let mut extractors = BTreeMap::new();
-    for file in pool.files() {
-        let options = file.options();
-        let value = options.get_extension(&registry);
-        for value in value.as_list().into_iter().flatten() {
-            let declaration = value
-                .as_message()
-                .ok_or_else(|| invalid("invalid extractor"))?;
-            let name = string(declaration, "name");
-            let resources_only = declaration
-                .get_field_by_name("resources_only")
-                .and_then(|value| value.as_bool())
-                .unwrap_or_default();
-            let extractor = Extractor {
-                resources_only,
-                possible: actions(declaration, "possible_actions")?,
-            };
-            if name.is_empty()
-                || extractor.possible.is_empty()
-                || extractors.insert(name, extractor).is_some()
-            {
-                return Err(invalid("empty or duplicate authorization extractor").into());
-            }
-        }
-    }
+    let extractors = extractor_registry(&pool)?;
     let service = pool
         .get_service_by_name(service)
         .ok_or_else(|| invalid("authorization service is missing"))?;
@@ -258,6 +263,15 @@ pub fn product_authorization(
         variants.push(name.to_owned());
         rows.push(format!("auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}", rust_actions(&required), rules.join(",")));
     }
+    render_authorization(&service, method_type, &variants, &rows)
+}
+
+fn render_authorization(
+    service: &prost_reflect::ServiceDescriptor,
+    method_type: &str,
+    variants: &[String],
+    rows: &[String],
+) -> Result<String, Error> {
     let mut rust = String::from("// Generated from the canonical service authorization options.\n");
     writeln!(
         rust,
@@ -287,7 +301,7 @@ pub fn product_authorization(
             .join(","),
         variants
             .iter()
-            .zip(&rows)
+            .zip(rows)
             .map(|(name, row)| format!("Self::{name} => {row}"))
             .collect::<Vec<_>>()
             .join(","),

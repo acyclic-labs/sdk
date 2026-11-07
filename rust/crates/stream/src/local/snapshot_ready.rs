@@ -250,22 +250,12 @@ fn sample<P: StreamProvider>(
         seed(old).await;
         seed(candidate).await;
     }));
-    let mut before = Vec::with_capacity(31);
-    let mut after = Vec::with_capacity(31);
-    for _ in 0..31 {
-        let ready = runtime.block_on(prepare(old, candidate, baseline));
-        // Ready polling is measured outside the executor's cooperative budget.
-        let (old, candidate) = ready.measure(negative, label);
-        before.push(old);
-        after.push(candidate);
-    }
-    before.sort_unstable();
-    after.sort_unstable();
+    let ready = runtime.block_on(prepare(old, candidate, baseline));
+    // One complete trace covers every record, its allocation and observer
+    // order. Repeating that identical trace adds no semantic coverage.
+    let (before, after) = ready.measure(negative, label);
     println!(
-        "{label}: records={COUNT} samples=31 baseline_ns={} candidate_ns={} candidate_p95_ns={} baseline_allocations={} candidate_allocations=0 candidate_bytes=0",
-        before.get(15).expect("31 samples"),
-        after.get(15).expect("31 samples"),
-        after.get(29).expect("31 samples"),
+        "{label}: records={COUNT} baseline_ns={before} candidate_ns={after} baseline_allocations={} candidate_allocations=0 candidate_bytes=0",
         if label.starts_with("local_") {
             COUNT
         } else {

@@ -85,7 +85,13 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 );
                 assert!(fixture.counts.received_bytes.load(Ordering::Relaxed) > received);
             } else {
-                assert!(matches!(result, Err(StreamError::AccessDenied)));
+                assert!(matches!(
+                    result,
+                    Err(transport::Failure {
+                        error: StreamError::AccessDenied,
+                        transient: false
+                    })
+                ));
                 assert_eq!(
                     fixture.counts.received_bytes.load(Ordering::Relaxed),
                     received,
@@ -101,7 +107,10 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
             assert!(
                 matches!(
                     waiting.now_or_never(),
-                    Some(Some(Err(StreamError::AccessDenied)))
+                    Some(Some(Err(transport::Failure {
+                        error: StreamError::AccessDenied,
+                        transient: false
+                    })))
                 ),
                 "source notification must retire an idle session without another frame"
             );
