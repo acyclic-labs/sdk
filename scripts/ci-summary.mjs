@@ -107,7 +107,7 @@ const slowest = (kind, label, count) => {
     // nextest names each suite after its binary id, `<package>[::<binary>]`.
     out.push("<details><summary>Rerun a slow Rust test alone</summary>", "", "```sh",
       ...tests.slice(0, count).map(test =>
-        `cargo nextest run -p ${test.suite.split("::")[0]} --all-features -E 'binary_id(=${test.suite}) & test(=${test.name})'`),
+        `cargo nextest run --tests -p ${test.suite.split("::")[0]} --all-features -E 'binary_id(=${test.suite}) & test(=${test.name})'`),
       "```", "", "</details>", "");
   }
   const totals = suites[kind].map(suite => ({
