@@ -16,9 +16,14 @@ pub struct ProcessPipeReader {
 }
 
 impl ProcessPipeReader {
-    /// Transfers the original stdout handle to the process completion service.
-    pub fn from_stdout(pipe: ChildStdout) -> io::Result<Self> {
-        let operation = events::PipeOperation::reader(&pipe)?;
+    /// Transfers stdout and its original readiness operation from the tree.
+    /// Cancels the previous observation before moving its pending native read.
+    pub fn take_stdout(tree: &mut super::ProcessTree) -> io::Result<Self> {
+        let pipe = tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?;
+        let operation = match tree.readers[0].take() {
+            Some(operation) => operation,
+            None => events::PipeOperation::reader(&pipe)?,
+        };
         Ok(Self {
             wait: None,
             pipe,
@@ -83,13 +88,45 @@ mod tests {
         exchange(async {
             let mut command = Command::new("powershell.exe");
             command.args(["-NoProfile", "-NonInteractive", "-Command",
-                "[Console]::Out.WriteLine('ready'); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line)"])
-                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+                "$null = [Console]::ReadLine(); [Console]::Out.WriteLine('ready'); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line)"])
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut tree = super::super::ProcessTree::spawn(&mut command)?;
+            let mut previous = tree.readiness()?;
+            std::future::poll_fn(|cx| {
+                assert!(Pin::new(&mut previous).poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            let original = Arc::clone(tree.readers[0].as_ref().ok_or(io::ErrorKind::BrokenPipe)?);
             let input = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
-            let output = tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?;
             let mut input = ProcessPipeWriter::from_stdin(input)?;
-            let mut output = BufReader::new(ProcessPipeReader::from_stdout(output)?);
+            let output = ProcessPipeReader::take_stdout(&mut tree)?;
+            assert!(
+                matches!(
+                    Pin::new(&mut previous)
+                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                    Poll::Ready(super::super::ProcessWaitOutcome::Cancelled)
+                ),
+                "stdout handoff left its previous observation pending",
+            );
+            drop(previous);
+            let mut diagnostic_wait = tree.readiness()?;
+            let diagnostic = tree.take_stderr().ok_or(io::ErrorKind::BrokenPipe)?;
+            assert!(
+                matches!(
+                    Pin::new(&mut diagnostic_wait)
+                        .poll(&mut Context::from_waker(std::task::Waker::noop())),
+                    Poll::Ready(super::super::ProcessWaitOutcome::Cancelled)
+                ),
+                "stderr handoff left its previous observation pending",
+            );
+            drop(diagnostic_wait);
+            assert!(
+                Arc::ptr_eq(&original, &output.operation),
+                "stdout handoff replaced the original completion owner",
+            );
+            let mut output = BufReader::new(output);
+            input.write_all(b"start\n").await?;
             let mut line = String::new();
             output.read_line(&mut line).await?;
             assert_eq!(line.trim_end(), "ready");
@@ -120,6 +157,7 @@ mod tests {
                 io::ErrorKind::BrokenPipe,
             );
             drop(tree);
+            drop(diagnostic);
             Ok(())
         })
     }
@@ -146,9 +184,7 @@ mod tests {
             let mut tree = super::super::ProcessTree::spawn(&mut command)?;
             let mut input =
                 ProcessPipeWriter::from_stdin(tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?)?;
-            let mut output = BufReader::new(ProcessPipeReader::from_stdout(
-                tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?,
-            )?);
+            let mut output = BufReader::new(ProcessPipeReader::take_stdout(&mut tree)?);
             let mut line = String::new();
             output.read_line(&mut line).await?;
             assert_eq!(line.trim_end(), "ready");

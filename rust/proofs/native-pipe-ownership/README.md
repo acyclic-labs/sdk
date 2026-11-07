@@ -16,13 +16,31 @@ libtest's unterminated test label. The probe frames its first report before
 entering any input or console wait, so every streaming report reader observes
 that original producer event. No parser, readiness probe or timeout is added.
 
-Readiness followed by capture previously attempted two additional IOCP
-associations, two notification-mode calls and two operation allocations.
-It now adds zero of each, zero locks, round trips or durability barriers and
-zero buffer copies. First use still associates each present pipe once. Setup
+Readiness followed by capture previously tried to create replacement operations
+for both present pipes. A refused IOCP association stops that attempt before its
+notification-mode call and allocation; a successful replacement repeats all
+three costs. Capture now adds zero of each, zero locks, round trips or durability
+barriers and zero buffer copies. First use still associates each present pipe once. Setup
 examines exactly two slots; original native completion, process exit and
 deadline events drive waits. Work remains independent of process history and
-tree size. Pipe transfer to an external owner is a separate API boundary.
+tree size.
+
+`ProcessPipeReader::take_stdout` also transfers the original operation with its
+pipe. The raw-handle streaming constructor is removed. The existing real-child
+protocol property first arms readiness while the real child waits for input,
+then transfers stdout and requires the original observation to be cancelled
+before a new read. It also arms and transfers stderr, requiring its prior
+observation to be cancelled. It retains a strong reference to the original operation
+while checking its identity after transfer. It completes a
+quiet read, a request, a response and EOF through the same production reader.
+An already observed handoff adds zero associations, notification-mode calls,
+allocations or copies. Transfer takes at most one original registry lock to cancel a
+prior observation, with no native cancellation syscall: its pending overlapped
+operation follows the pipe. An unobserved handoff initializes only stdout.
+Both inspect one fixed slot; no second registry, search or readiness retry is added.
+
+Capture's identity check also retains its original strong references, so an
+allocator cannot make a replacement appear identical by reusing an address.
 
 The original Windows execution failed four capture/cleanup assertions and
 five console properties, including two blocked report waits. The controls
@@ -33,6 +51,8 @@ to pass. They do not run the blocking console cases with framing removed.
 ```powershell
 $controls = @(
     @('replace-readers.patch', 'process_tree::tests::stopped_capture_preserves_output_prefix_and_cleanup_observation', 'capture replaced the original pipe completion owners'),
+    @('replace-transferred-reader.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', 'stdout handoff replaced the original completion owner'),
+    @('omit-transfer-retirement.patch', 'process_tree::stdio::tests::quiet_protocol_read_leaves_the_coordination_worker_available', 'stdout handoff left its previous observation pending'),
     @('omit-report-boundary.patch', 'process_tree::windows_create::tests::a_child_inherits_only_its_standard_handles', 'console probe record framing lost')
 )
 foreach ($control in $controls) {

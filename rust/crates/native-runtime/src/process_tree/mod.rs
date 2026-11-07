@@ -632,6 +632,10 @@ impl ProcessTree {
     /// Transfers stdout to a host-owned reader, which owns its output bounds.
     pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
         let pipe = self.child.as_mut()?.stdout.take()?;
+        #[cfg(windows)]
+        if let Some(operation) = &self.readers[0] {
+            operation.retire();
+        }
         #[cfg(unix)]
         let pipe = pipe.into_inner();
         Some(pipe)
@@ -640,6 +644,10 @@ impl ProcessTree {
     /// Transfers stderr to a host-owned reader, which owns its output bounds.
     pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
         let pipe = self.child.as_mut()?.stderr.take()?;
+        #[cfg(windows)]
+        if let Some(operation) = &self.readers[1] {
+            operation.retire();
+        }
         #[cfg(unix)]
         let pipe = pipe.into_inner();
         Some(pipe)

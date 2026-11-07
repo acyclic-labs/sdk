@@ -1321,10 +1321,7 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
         .expect("spawn partial output");
     stderr_ready(&mut tree).expect("original partial output readiness event");
     #[cfg(windows)]
-    let original_readers = tree
-        .readers
-        .each_ref()
-        .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr));
+    let original_readers = tree.readers.clone();
     let failure = tree
         .wait_with_output(
             Duration::from_millis(20),
@@ -1342,7 +1339,9 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
         tree.readers
             .each_ref()
             .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr)),
-        original_readers,
+        original_readers
+            .each_ref()
+            .map(|reader| reader.as_ref().map(std::sync::Arc::as_ptr)),
         "capture replaced the original pipe completion owners"
     );
     assert_eq!(

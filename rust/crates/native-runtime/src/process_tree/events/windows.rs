@@ -112,6 +112,23 @@ impl PipeOperation {
         self.owner
     }
 
+    /// Withdraws the previous observation before the original pipe changes owner.
+    /// The overlapped operation remains live for its eventual native completion.
+    pub(in crate::process_tree) fn retire(&self) {
+        let token = self.token.swap(0, Ordering::SeqCst);
+        if token == 0 {
+            return;
+        }
+        let signal = self
+            .owner
+            .registry()
+            .remove(token)
+            .map(|armed| armed.signal);
+        if let Some(signal) = signal {
+            signal.settle(super::ProcessWaitOutcome::Cancelled);
+        }
+    }
+
     fn associate(handle: HANDLE, kind: Kind) -> io::Result<Arc<Self>> {
         let events = super::Events::start()?;
         let owner = events._pool.handle(handle);
