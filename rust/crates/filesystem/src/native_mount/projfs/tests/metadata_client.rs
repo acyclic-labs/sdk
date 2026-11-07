@@ -102,7 +102,7 @@ pub(crate) fn execute(mode: &std::ffi::OsStr) -> Result<(), Box<dyn std::error::
     let path = std::env::var_os(PATH).ok_or("client path missing")?;
     let path = Path::new(&path);
     match mode.to_str() {
-        Some("held-link") => {
+        Some("held-entry") => {
             let held = std::fs::OpenOptions::new()
                 .read(true)
                 .share_mode(FILE_SHARE_READ.0)
