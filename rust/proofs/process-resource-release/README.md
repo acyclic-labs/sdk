@@ -40,10 +40,13 @@ the negative control; require its exact semantic assertion before restoration.
 
 `closed_spawn_retires_native_objects_at_every_callback_cut` uses the public
 `ProcessTree::spawn_closed_prepared` entry point with an actual `/bin/sh` child.
-It cuts every original callback after the seven native preparation operations,
-spawn, and both native destroys, once with an error and once with an unwind.
-It requires the exact physical-operation count, original child custody and
-release of the original funded preparation frame. There are no timed probes.
+It cuts every original accounting callback for the seven native preparation
+operations, spawn, and both native destroys, once with an error and once with
+an unwind. The shared reservation records initialization/spawn attempts before
+the native call: an error still executes it, while an unwind does not. The
+property requires cleanup only for objects actually initialized by that cut,
+exact original accounting counts, original child custody and release of the
+original funded preparation frame. There are no timed probes.
 
 The retained `original-spawn-retirement.patch` restores `unix.rs` exactly to
 `fc6be5bd0676092c38f736f0410d78d532b45c14`, retaining this stronger property.
@@ -66,7 +69,7 @@ obligations; successful system destroys do not qualify those failure branches.
 git apply --check rust/proofs/process-resource-release/original-spawn-retirement.patch
 git apply rust/proofs/process-resource-release/original-spawn-retirement.patch
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::tests::closed_spawn_retires_native_objects_at_every_callback_cut -- --exact --nocapture
-# Require failure: closed spawn stranded original native cleanup at cut 1.
+# Require failure: closed spawn stranded original native cleanup at cut 2.
 git apply -R rust/proofs/process-resource-release/original-spawn-retirement.patch
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::tests::closed_spawn_retires_native_objects_at_every_callback_cut -- --exact --nocapture
 # Require a pass at every error and unwind cut.

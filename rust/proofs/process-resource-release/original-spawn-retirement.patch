@@ -1,12 +1,12 @@
 diff --git b/rust/crates/native-runtime/src/process_tree/unix.rs a/rust/crates/native-runtime/src/process_tree/unix.rs
-index 4d64c50c758..aed4702be67 100644
+index 8139e9d597f..aed4702be67 100644
 --- b/rust/crates/native-runtime/src/process_tree/unix.rs
 +++ a/rust/crates/native-runtime/src/process_tree/unix.rs
 @@ -449,16 +449,52 @@ pub(super) fn spawn_closed_with_arguments(
          actions: std::mem::MaybeUninit::uninit(),
          attr_initialized: false,
          actions_initialized: false,
--        cleanup: [Some(actions_cleanup), Some(attr_cleanup)],
+-        cleanup: Some([actions_cleanup, attr_cleanup]),
 -        meter,
 -        custody,
 -        events,
@@ -62,7 +62,7 @@ index 4d64c50c758..aed4702be67 100644
  }
  
  fn spawn_status(status: libc::c_int) -> io::Result<()> {
-@@ -470,94 +506,14 @@ fn spawn_status(status: libc::c_int) -> io::Result<()> {
+@@ -470,93 +506,14 @@ fn spawn_status(status: libc::c_int) -> io::Result<()> {
  }
  
  /// One closed spawn's native objects; each initialized one must be destroyed.
@@ -72,7 +72,7 @@ index 4d64c50c758..aed4702be67 100644
      actions: std::mem::MaybeUninit<libc::posix_spawn_file_actions_t>,
      attr_initialized: bool,
      actions_initialized: bool,
--    cleanup: [Option<u64>; 2],
+-    cleanup: Option<[u64; 2]>,
 -    meter: &'a dyn crate::NativeReadMeter,
 -    custody: &'a mut Option<super::ProcessTree>,
 -    events: super::events::Events,
@@ -84,12 +84,11 @@ index 4d64c50c758..aed4702be67 100644
 -        // The existing delivery primitive completes the second owned cleanup
 -        // even when the first callback unwinds. Tokens leave this owner before
 -        // any callback, so its Drop cannot destroy or record an object twice.
--        let [actions_cleanup, attr_cleanup] = &mut self.cleanup;
--        let cleanup = [(true, actions_cleanup.take()), (false, attr_cleanup.take())];
+-        let Some([actions_cleanup, attr_cleanup]) = self.cleanup.take() else {
+-            return Ok(());
+-        };
+-        let cleanup = [(true, actions_cleanup), (false, attr_cleanup)];
 -        crate::delivery::deliver(cleanup.into_iter(), |(actions, token)| {
--            let Some(token) = token else {
--                return;
--            };
 -            let initialized = if actions {
 -                self.actions_initialized
 -            } else {
@@ -159,7 +158,7 @@ index 4d64c50c758..aed4702be67 100644
      fn initialize(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
          let flags = libc::c_short::try_from(libc::POSIX_SPAWN_SETPGROUP)
              .map_err(|_| io::ErrorKind::InvalidInput)?;
-@@ -608,11 +564,13 @@ impl SpawnObjects<'_> {
+@@ -607,11 +564,13 @@ impl SpawnObjects<'_> {
      }
  
      fn spawn(
@@ -174,7 +173,7 @@ index 4d64c50c758..aed4702be67 100644
      ) -> io::Result<()> {
          let mut pid = 0;
          let (result, recorded) =
-@@ -632,7 +590,7 @@ impl SpawnObjects<'_> {
+@@ -631,7 +590,7 @@ impl SpawnObjects<'_> {
                      )
                  };
                  if status == 0 {
@@ -183,7 +182,7 @@ index 4d64c50c758..aed4702be67 100644
                          child: None,
                          native_child: Some(pid),
                          guard: Guard {
-@@ -648,7 +606,7 @@ impl SpawnObjects<'_> {
+@@ -647,7 +606,7 @@ impl SpawnObjects<'_> {
                          exit_fd: None,
                          writer: Writer,
                          queued_stdin: None,
@@ -192,7 +191,7 @@ index 4d64c50c758..aed4702be67 100644
                          #[cfg(all(test, feature = "test-support", not(loom)))]
                          capture_armed: None,
                      });
-@@ -660,25 +618,24 @@ impl SpawnObjects<'_> {
+@@ -659,25 +618,24 @@ impl SpawnObjects<'_> {
      }
  }
  

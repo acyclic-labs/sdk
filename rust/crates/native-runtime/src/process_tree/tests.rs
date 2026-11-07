@@ -271,7 +271,11 @@ fn closed_spawn_retires_native_objects_at_every_callback_cut() -> io::Result<()>
             }
             drop(custody);
             drop(frame);
-            assert_eq!(owns_child, cut >= 8, "original child custody at cut {cut}");
+            assert_eq!(
+                owns_child,
+                cut >= if unwinds { 9 } else { 8 },
+                "original child custody at cut {cut}"
+            );
             if unwinds {
                 assert!(
                     outcome.is_err(),
@@ -286,10 +290,12 @@ fn closed_spawn_retires_native_objects_at_every_callback_cut() -> io::Result<()>
                     io::ErrorKind::Interrupted,
                 );
             }
-            // One attribute exists after the first native call; both exist
-            // from the second onward. Seven preparation calls and one actual
-            // spawn precede the two physical destroys. No callback is retried.
-            let expected = if cut == 1 { 2 } else { cut.min(8) + 2 };
+            // The shared reservation records an attempt before invoking the
+            // native call: an error still executes it, an unwind does not.
+            // Cleanup instead destroys each initialized object before its
+            // accounting callback. Count only those original obligations.
+            let initialized = if unwinds { cut - 1 } else { cut }.min(2);
+            let expected = if cut <= 8 { cut + initialized } else { 10 };
             assert_eq!(
                 meter.write_attempts.load(Ordering::Acquire),
                 expected,

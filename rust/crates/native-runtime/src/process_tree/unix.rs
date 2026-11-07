@@ -449,7 +449,7 @@ pub(super) fn spawn_closed_with_arguments(
         actions: std::mem::MaybeUninit::uninit(),
         attr_initialized: false,
         actions_initialized: false,
-        cleanup: [Some(actions_cleanup), Some(attr_cleanup)],
+        cleanup: Some([actions_cleanup, attr_cleanup]),
         meter,
         custody,
         events,
@@ -475,7 +475,7 @@ struct SpawnObjects<'a> {
     actions: std::mem::MaybeUninit<libc::posix_spawn_file_actions_t>,
     attr_initialized: bool,
     actions_initialized: bool,
-    cleanup: [Option<u64>; 2],
+    cleanup: Option<[u64; 2]>,
     meter: &'a dyn crate::NativeReadMeter,
     custody: &'a mut Option<super::ProcessTree>,
     events: super::events::Events,
@@ -487,12 +487,11 @@ impl SpawnObjects<'_> {
         // The existing delivery primitive completes the second owned cleanup
         // even when the first callback unwinds. Tokens leave this owner before
         // any callback, so its Drop cannot destroy or record an object twice.
-        let [actions_cleanup, attr_cleanup] = &mut self.cleanup;
-        let cleanup = [(true, actions_cleanup.take()), (false, attr_cleanup.take())];
+        let Some([actions_cleanup, attr_cleanup]) = self.cleanup.take() else {
+            return Ok(());
+        };
+        let cleanup = [(true, actions_cleanup), (false, attr_cleanup)];
         crate::delivery::deliver(cleanup.into_iter(), |(actions, token)| {
-            let Some(token) = token else {
-                return;
-            };
             let initialized = if actions {
                 self.actions_initialized
             } else {
