@@ -155,7 +155,11 @@ fn concurrent_sharded_tracking_keeps_one_registration_per_actor() -> TestResult 
 }
 
 /// A running host and the task driving it.
-type Running<P> = Option<(Arc<Runtime<P>>, tokio::task::JoinHandle<()>)>;
+type Running<P> = Option<(
+    Arc<Runtime<P>>,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Receiver<bool>,
+)>;
 
 /// Hosts `local::Runtime` behind the conformance target surface.
 struct LocalTarget<P: StreamProvider> {
@@ -193,13 +197,16 @@ impl<P: StreamProvider> LocalTarget<P> {
             Arc::clone(&self.clock) as Arc<dyn Clock>,
         ));
         let host = Arc::clone(&runtime);
+        let (started, ready) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {
-            let _outcome = host.run(|_, _| {}).await;
+            let serving = host.run(|_, _| {});
+            started.send_replace(true);
+            let _outcome = serving.await;
         });
         *self
             .running
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((runtime, task));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((runtime, task, ready));
         Ok(())
     }
 
@@ -208,14 +215,14 @@ impl<P: StreamProvider> LocalTarget<P> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .map(|(runtime, _)| Arc::clone(runtime))
+            .map(|(runtime, _, _)| Arc::clone(runtime))
             .ok_or(Error::Invalid("runtime stopped"))
     }
 }
 
 impl<P: StreamProvider> Drop for LocalTarget<P> {
     fn drop(&mut self) {
-        if let Some((_, task)) = self
+        if let Some((_, task, _)) = self
             .running
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -238,7 +245,21 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
         self.clock.as_ref()
     }
     fn complete<'a>(&'a self, _actor: &'a ActorReference) -> BoxFuture<'a, Result<(), Error>> {
-        async move { self.runtime()?.complete().await }.boxed()
+        async move {
+            let (runtime, mut ready) = self
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map(|(runtime, _, ready)| (Arc::clone(runtime), ready.clone()))
+                .ok_or(Error::CompletionStopped)?;
+            ready
+                .wait_for(|started| *started)
+                .await
+                .map_err(|_| Error::CompletionStopped)?;
+            runtime.complete().await
+        }
+        .boxed()
     }
     fn advance_to(&self, deadline: u64) -> BoxFuture<'_, Result<(), Error>> {
         async move {
@@ -264,7 +285,7 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            if let Some((_, task)) = stopped {
+            if let Some((_, task, _)) = stopped {
                 task.abort();
                 // An aborted host is the crash being modelled.
                 let _aborted = task.await;

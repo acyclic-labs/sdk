@@ -15,12 +15,27 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         });
         let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock))
             .with_limits(RuntimeLimits::new(1, 1)?);
-        let mut completed = Box::pin(runtime.complete());
+        let before = provider.requests();
+        let mut unstarted = Box::pin(runtime.complete());
         assert!(
-            futures::poll!(completed.as_mut()).is_pending(),
-            "completion escaped before its dispatcher"
+            matches!(
+                futures::poll!(unstarted.as_mut()),
+                Poll::Ready(Err(Error::CompletionStopped))
+            ),
+            "completion parked without an original dispatcher producer"
         );
+        let calls = provider.requests().since(before);
+        assert_eq!(calls.control(), 0);
+        assert_eq!(calls.data(), 0);
         let mut serving = Box::pin(runtime.run(|_, error| panic!("unexpected delivery: {error}")));
+        let mut duplicate = Box::pin(runtime.run(|_, _| panic!("duplicate dispatcher delivered")));
+        assert!(matches!(
+            futures::poll!(duplicate.as_mut()),
+            Poll::Ready(Err(Error::CompletionStopped))
+        ));
+        drop(duplicate);
+        let mut completed = Box::pin(runtime.complete());
+        assert!(futures::poll!(completed.as_mut()).is_pending());
         if stop_before_poll {
             drop(serving);
             assert!(
@@ -116,7 +131,11 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
         })
         .await?;
         let calls = provider.requests().since(before);
-        assert_eq!(calls.control(), 1);
+        assert_eq!(
+            calls.control(),
+            1,
+            "completion added a control request outside its original idle cut"
+        );
         assert_eq!(calls.data(), 0);
         drop(serving);
     }
@@ -132,5 +151,36 @@ async fn completion_joins_discovery_delivery_and_producer_lifetime() -> TestResu
     assert!(
         matches!(refused, Err(Error::CompletionFailed(error)) if matches!(error.as_ref(), Error::Handler(_)))
     );
+    for stop_before_start in [false, true] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let target = LocalTarget::start(&provider, Arc::new(Package::new()?), provider.ledger())?;
+        let address = actor("completion-startup")?;
+        let mut completed = Box::pin(target.complete(&address));
+        assert!(
+            futures::poll!(completed.as_mut()).is_pending(),
+            "completion skipped its original dispatcher startup event"
+        );
+        if stop_before_start {
+            let (_, task, _) = target
+                .running
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("unstarted original host");
+            task.abort();
+            assert!(task.await.is_err());
+            assert!(matches!(completed.await, Err(Error::CompletionStopped)));
+        } else {
+            assert_eq!(
+                spawn_with(target.store(), "completion-startup", &[b"emit"]).await?,
+                address
+            );
+            completed.await?;
+            assert_eq!(
+                records(provider.as_ref(), "out/completion-startup").await?,
+                vec![Bytes::from_static(b"r0")]
+            );
+        }
+    }
     Ok(())
 }

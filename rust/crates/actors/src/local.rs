@@ -55,7 +55,7 @@ pub enum Error {
     /// The original scheduling clock could not produce a deadline event.
     #[error(transparent)]
     Clock(#[from] ClockError),
-    /// The host driving a requested completion cut stopped or was cancelled.
+    /// The requested completion cut has no original host, or its host stopped.
     #[error("actor runtime completion producer stopped")]
     CompletionStopped,
     /// A delivery failed before the host could establish its completion cut.
