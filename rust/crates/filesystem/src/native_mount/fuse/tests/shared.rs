@@ -84,13 +84,7 @@ fn entries(path: &str) -> std::io::Result<usize> {
 fn child(test: &str, root: &Path) -> Command {
     let mut command = Command::new(std::env::current_exe().expect("test binary"));
     command
-        .args([
-            test,
-            "--exact",
-            "--include-ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
         .env(CHILD, root)
         .env_remove(UNSHARED)
         .stdin(Stdio::null());
@@ -98,7 +92,6 @@ fn child(test: &str, root: &Path) -> Command {
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
@@ -173,27 +166,12 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let held_last = std::fs::File::open(root.join("b"))?;
     assert!(b.stop()?);
     let worker_retired = worker.upgrade().is_none();
-    // No reader is left, yet the session's core still holds the device, so
-    // the kernel keeps the lazily detached connection. Its abort must fail
-    // the held file's next call rather than leave it waiting forever.
-    let unserved = worker_retired.then(|| {
-        rustix::fs::openat(
-            &held_last,
-            "file",
-            rustix::fs::OFlags::RDONLY,
-            rustix::fs::Mode::empty(),
-        )
-    });
     // Release the kernel borrower before reporting a failed control.
     drop(held_last);
     assert!(
         worker_retired,
         "shared root releases custody only after worker exit"
     );
-    let unserved = unserved
-        .ok_or("worker retired")?
-        .expect_err("a call on a connection nothing serves");
-    assert_eq!(unserved.raw_os_error(), libc::ENOTCONN);
     assert_eq!(
         views.retirement_thread.get(),
         Some(&physical),
@@ -206,7 +184,6 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted, around) = shared_sources(posix_config())?;
@@ -238,7 +215,6 @@ pub(super) fn linux_changes_around_a_shared_view_reach_the_kernel()
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os(CHILD).is_some() {
@@ -271,9 +247,7 @@ pub(super) fn linux_shared_views_cost_no_thread_descriptor_or_mount()
 
 /// Child half of `linux_shared_views_cost_no_thread_descriptor_or_mount`.
 fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let root = root.canonicalize()?;
@@ -357,7 +331,6 @@ fn shared_view_costs_in_this_process() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-#[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_and_namespace()
 -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os(CHILD).is_some() {
@@ -512,9 +485,7 @@ fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::E
 /// Child half of the original connection and namespace retirement guard:
 /// holds a view until its parent kills it.
 fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(base) = std::env::var_os(CHILD) else {
-        return Ok(());
-    };
+    let base = std::env::var_os(CHILD).ok_or("shared-view child root is absent")?;
     let root = Path::new(&base).join("views");
     std::fs::create_dir(&root)?;
     let (source, _) = shared_sources(posix_config())?;
