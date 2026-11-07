@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     ffi::{OsStr, OsString},
     path::PathBuf,
-    process::{Command, Output},
+    process::{Command, ExitStatus, Output, Stdio},
 };
 
 type Overrides = Vec<(OsString, Option<OsString>)>;
@@ -107,6 +107,8 @@ pub fn command_directory() -> Option<PathBuf> {
 #[doc(hidden)]
 pub trait CommandOutput {
     fn run_output(&mut self) -> std::io::Result<Output>;
+    /// Runs a command whose diagnostics belong to the caller's live stderr.
+    fn run_status(&mut self) -> std::io::Result<ExitStatus>;
 }
 
 impl CommandOutput for Command {
@@ -116,6 +118,15 @@ impl CommandOutput for Command {
             return executor(self);
         }
         self.output()
+    }
+
+    fn run_status(&mut self) -> std::io::Result<ExitStatus> {
+        self.stdout(Stdio::null()).stderr(Stdio::inherit());
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(executor) = EXECUTOR.with_borrow(Clone::clone) {
+            return executor(self).map(|output| output.status);
+        }
+        self.status()
     }
 }
 
@@ -275,19 +286,21 @@ mod tests {
             |_| Ok(success(b"outer".to_vec())),
             || {
                 assert_eq!(command("unused").run_output().unwrap().stdout, b"outer");
-                assert!(std::panic::catch_unwind(|| {
-                    with_command_executor(
-                        |_| Err(std::io::ErrorKind::NotFound.into()),
-                        || {
-                            assert_eq!(
-                                command("unused").run_output().unwrap_err().kind(),
-                                std::io::ErrorKind::NotFound
-                            );
-                            panic!("executor unwind");
-                        },
-                    );
-                })
-                .is_err());
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        with_command_executor(
+                            |_| Err(std::io::ErrorKind::NotFound.into()),
+                            || {
+                                assert_eq!(
+                                    command("unused").run_output().unwrap_err().kind(),
+                                    std::io::ErrorKind::NotFound
+                                );
+                                panic!("executor unwind");
+                            },
+                        );
+                    })
+                    .is_err()
+                );
                 assert_eq!(command("unused").run_output().unwrap().stdout, b"outer");
             },
         );
@@ -309,12 +322,14 @@ mod tests {
     #[test]
     fn unwinding_restores_the_environment() {
         let before = overrides();
-        assert!(std::panic::catch_unwind(|| {
-            let mut child = Command::new("cargo");
-            child.env("CARGO_HOME", "inner");
-            with_command_environment(&child, || panic!("scope unwind"))
-        })
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let mut child = Command::new("cargo");
+                child.env("CARGO_HOME", "inner");
+                with_command_environment(&child, || panic!("scope unwind"))
+            })
+            .is_err()
+        );
         assert_eq!(overrides(), before);
     }
 }
