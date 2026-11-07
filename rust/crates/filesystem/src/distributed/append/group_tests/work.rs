@@ -6,7 +6,6 @@ struct OriginalWork {
     address: usize,
     prior_items: u64,
     prior_live: u64,
-    seal_scratch: u64,
     observed_items: Option<u64>,
     retained: Option<RetainedAllocation>,
     refuse: bool,
@@ -28,7 +27,6 @@ impl AuthorityGuard for OriginalWork {
         assert!(work.spent().items_examined >= self.prior_items);
         assert!(work.allocations.live_bytes() >= self.prior_live);
         if self.observed_items.is_none() {
-            self.seal_scratch = work.allocations.scratch_bytes();
             work.charge(WorkCounters {
                 items_examined: 17,
                 ..WorkCounters::UNCHARGED
@@ -87,6 +85,7 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
             })?;
             let prior = work.vec_owned::<u8>(64)?;
             work.hold_opaque(29)?;
+            let prior_scratch = work.allocations.scratch_bytes();
             let (producer, pause) = tokio::sync::oneshot::channel();
             let (entered, entered_rx) = tokio::sync::oneshot::channel();
             let producer = (exit != 3).then_some(producer);
@@ -94,7 +93,6 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
                 address: &mut work as *mut AuthorityWork<'_> as usize,
                 prior_items: work.spent().items_examined,
                 prior_live: work.allocations.live_bytes(),
-                seal_scratch: 0,
                 observed_items: None,
                 retained: None,
                 refuse: exit == 1,
@@ -127,9 +125,16 @@ pub(super) async fn original_work_survives_group_guard_and_withdrawal() -> TestR
             assert!(guard.retained.is_some());
             assert!(work.allocations.live_bytes() >= guard.prior_live);
             if !native {
-                assert!(
-                    (29..=guard.seal_scratch).contains(&work.allocations.scratch_bytes()),
-                    "group scope lost caller scratch or retained temporary guard bytes"
+                let returned = match &result {
+                    Some(Ok(AppendGroupOutcome::Published { receipts, .. })) => {
+                        receipts.capacity() * size_of::<FsAppendOutcome>()
+                    }
+                    _ => 0,
+                };
+                assert_eq!(
+                    work.allocations.scratch_bytes(),
+                    prior_scratch + returned as u64,
+                    "group scope must retain caller scratch and returned receipts only"
                 );
             }
             if exit == 0 {

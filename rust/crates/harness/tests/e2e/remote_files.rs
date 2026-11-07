@@ -88,8 +88,11 @@ proptest::proptest! {
         chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..32),
     ) {
         let text: String = chars.into_iter().collect();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all().build().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all().build().expect("runtime")
+        });
         runtime.block_on(async {
             let stream = Arc::new(MemoryStream::default());
             let objects = Arc::new(MemoryObjects::memory());

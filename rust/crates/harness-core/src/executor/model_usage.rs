@@ -379,7 +379,7 @@ pub(super) async fn project_completion(
 
 pub(super) struct CallClock {
     #[cfg(not(target_arch = "wasm32"))]
-    started: Option<std::time::Instant>,
+    started: Option<tokio::time::Instant>,
     #[cfg(feature = "research")]
     first_token_ns: Option<u64>,
 }
@@ -397,7 +397,7 @@ impl CallClock {
     pub(super) fn start(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.started = Some(std::time::Instant::now());
+            self.started = Some(tokio::time::Instant::now());
         }
     }
 

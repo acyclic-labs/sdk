@@ -61,45 +61,58 @@ async fn a_lagging_read_parks_until_its_minimum_applies() -> Result {
 
 #[tokio::test]
 async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result {
-    let outer = tempfile::tempdir()?;
-    let directory = outer.path().join("store");
-    // Another spelling of the same directory.
-    let alias = outer.path().join("side").join("..").join("store");
-    std::fs::create_dir(outer.path().join("side"))?;
-    let key = crate::IdempotencyKey::unique();
-    let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
-    let issued = append(&provider, key.clone()).await?;
-    let foreign = crate::AppliedRevisions::in_process().at(0);
-    assert_eq!(
-        provider
-            .wait_applied(&crate::RevisionCut::of(foreign))
-            .await,
-        Err(StreamError::RevisionForeign)
-    );
-    drop(provider);
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    journal_lifecycle(&schedule, &mut boundaries, async {
+        let outer = tempfile::tempdir()?;
+        let directory = outer.path().join("store");
+        // Another spelling of the same directory.
+        let alias = outer.path().join("side").join("..").join("store");
+        std::fs::create_dir(outer.path().join("side"))?;
+        let key = crate::IdempotencyKey::unique();
+        let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
+        let issued = append(&provider, key.clone()).await?;
+        let foreign = crate::AppliedRevisions::in_process().at(0);
+        assert_eq!(
+            provider
+                .wait_applied(&crate::RevisionCut::of(foreign))
+                .await,
+            Err(StreamError::RevisionForeign)
+        );
+        drop(provider);
 
-    // A reopen, even through another path spelling, keeps the scope and the
-    // incarnation, and a replay carries the original revision.
-    let provider = LocalStream::open(&alias, LocalStreamLimits::default()).await?;
-    let served = provider
-        .wait_applied(&crate::RevisionCut::of(issued.clone()))
-        .await?;
-    assert!(served.same_authority(&issued) && served.index >= issued.index);
-    assert_eq!(append(&provider, key).await?, issued);
-    drop(provider);
+        // A reopen, even through another path spelling, keeps the scope and the
+        // incarnation, and a replay carries the original revision.
+        let before_reopen = schedule.durable_write_count();
+        let provider = LocalStream::open(&alias, LocalStreamLimits::default()).await?;
+        assert_eq!(
+            schedule.durable_writes()[before_reopen..]
+                .iter()
+                .filter(|write| write.operation == "file:sync_parent")
+                .count(),
+            1,
+            "recovery must flush the journal name before serving its revision"
+        );
+        let served = provider
+            .wait_applied(&crate::RevisionCut::of(issued.clone()))
+            .await?;
+        assert!(served.same_authority(&issued) && served.index >= issued.index);
+        assert_eq!(append(&provider, key).await?, issued);
+        drop(provider);
 
-    // Negative control: wiping the same store issues a new incarnation, which
-    // refuses the earlier token instead of matching its reused index.
-    for entry in std::fs::read_dir(&directory)? {
-        std::fs::remove_file(entry?.path())?;
-    }
-    let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
-    append(&provider, crate::IdempotencyKey::unique()).await?;
-    assert_eq!(
-        provider.wait_applied(&crate::RevisionCut::of(issued)).await,
-        Err(StreamError::RevisionForeign)
-    );
-    Ok(())
+        // Negative control: wiping the same store issues a new incarnation, which
+        // refuses the earlier token instead of matching its reused index.
+        for entry in std::fs::read_dir(&directory)? {
+            std::fs::remove_file(entry?.path())?;
+        }
+        let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
+        append(&provider, crate::IdempotencyKey::unique()).await?;
+        assert_eq!(
+            provider.wait_applied(&crate::RevisionCut::of(issued)).await,
+            Err(StreamError::RevisionForeign)
+        );
+        Ok(())
+    })
+    .await?
 }
 
 #[tokio::test]

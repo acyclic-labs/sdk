@@ -3,7 +3,7 @@ use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
 pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
-    Session {
+    let mut session = Session {
         authority: testing::authority(),
         slots: testing::slots(),
         trust_changed: None,
@@ -17,26 +17,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         hello: true,
         prefer_control: true,
         revision: 1,
-        channels: BTreeMap::from([(
-            1,
-            Channel {
-                binding: Some(testing::binding()),
-                opaque_cursor: false,
-                followed: None,
-                revalidate: None,
-                generation: 1,
-                latest,
-                pending: VecDeque::new(),
-                progress: None,
-                indexed: None,
-                credit: wire::SessionWindow::default(),
-                sent: cursor(0),
-                applied: cursor(0),
-                ending: None,
-                socket: None,
-                input: None,
-            },
-        )]),
+        channels: BTreeMap::new(),
         sources: sources::Sources::new(),
         terminals: sources::Sources::new(),
         incoming: stream::empty().boxed(),
@@ -49,6 +30,40 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         runnable: BTreeSet::new(),
         ready_after: None,
         head_visits: 0,
+    };
+    session.channels.insert(1, empty_channel(&session, latest));
+    session
+}
+
+pub(super) fn empty_channel(session: &Session<MemoryStream>, latest: bool) -> Channel {
+    Channel {
+        binding: Some(
+            session
+                .authority
+                .bind(
+                    &session.slots,
+                    0,
+                    &StreamPath::new("model").unwrap(),
+                    Default::default(),
+                    1,
+                )
+                .unwrap()
+                .0,
+        ),
+        opaque_cursor: false,
+        followed: None,
+        revalidate: None,
+        generation: 1,
+        latest,
+        pending: VecDeque::new(),
+        progress: None,
+        indexed: None,
+        credit: wire::SessionWindow::default(),
+        sent: cursor(0),
+        applied: cursor(0),
+        ending: None,
+        socket: None,
+        input: None,
     }
 }
 

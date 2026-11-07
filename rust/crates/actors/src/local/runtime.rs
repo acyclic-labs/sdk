@@ -821,6 +821,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Claim only for an actual delivery. Idle events must not publish a
             // new epoch and wake themselves through their own state path.
+            // Its durable fence precedes external handler work, so a recovered
+            // runtime cannot race effects from the previous placement epoch.
             // The claim changes only the epoch; its receipt retains the exact
             // subscriptions and alarm that selected this immutable input.
             let snapshot = if inner.epoch == 0 {

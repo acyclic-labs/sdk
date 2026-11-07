@@ -79,7 +79,7 @@ async fn run(provider: Arc<dyn ModelProvider>, tool: Tool, inputs: &[&str]) -> R
 }
 
 /// A source run whose first turn reasons with native bytes and calls a tool.
-async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
+async fn source(tool: Tool, inputs: &[&str]) -> Result<(Recording, Vec<ModelRequest>)> {
     let reasoning = ReasoningBlock {
         kind: ReasoningKind::Signature,
         text: Some("plan".into()),
@@ -91,8 +91,8 @@ async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
         continuity: br#"{"thought":"plan","signature":"s="}"#.to_vec(),
         outcome: ReasoningOutcome::PreservedReadable,
     };
-    let provider = super::scripted([
-        ScriptedTurn::Events(
+    let provider = super::scripted(
+        [ScriptedTurn::Events(
             [
                 ModelEvent::ReasoningBlock { block: reasoning },
                 ModelEvent::ToolCall(ToolCall::new(
@@ -106,12 +106,17 @@ async fn source(tool: Tool) -> Result<(Recording, Vec<ModelRequest>)> {
             ]
             .map(ScriptedEvent::Event)
             .into(),
+        )]
+        .into_iter()
+        .chain(
+            inputs
+                .iter()
+                .enumerate()
+                .map(|(index, _)| ScriptedTurn::Text(format!("answer {index}"))),
         ),
-        ScriptedTurn::Text("answer 0".into()),
-        ScriptedTurn::Text("answer 1".into()),
-    ]);
-    let recording = run(provider.clone(), tool, &["first", "second"]).await?;
-    assert_eq!(recording.len(), 3);
+    );
+    let recording = run(provider.clone(), tool, inputs).await?;
+    assert_eq!(recording.len(), inputs.len() + 1);
     Ok((recording, provider.requests()))
 }
 
@@ -143,7 +148,7 @@ fn refused() -> Tool {
 
 #[tokio::test]
 async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
-    let (source, requests) = source(super::tool("example.echo")).await?;
+    let (source, requests) = source(super::tool("example.echo"), &["first", "second"]).await?;
     let expected = Arc::new(source);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
@@ -263,7 +268,9 @@ async fn a_run_replays_its_source_until_input_changes() -> Result<()> {
 
 #[tokio::test]
 async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
-    let expected = Arc::new(source(failing("source failure")).await?.0);
+    // The successful-source test covers later input and divergence. This pair
+    // needs only the original failed call, its answer and their exact replay.
+    let expected = Arc::new(source(failing("source failure"), &["first"]).await?.0);
     let live = super::scripted([]);
     let divergences = Arc::new(Divergences::default());
     let replay = Arc::new(RecordedModel::new(
@@ -271,7 +278,7 @@ async fn a_failed_tool_call_replays_its_recorded_failure() -> Result<()> {
         Arc::clone(&expected),
         divergences.clone(),
     ));
-    let replayed = run(replay, refused(), &["first", "second"]).await?;
+    let replayed = run(replay, refused(), &["first"]).await?;
     assert_eq!(divergences.taken(), []);
     assert!(live.requests().is_empty());
     same_answers(&replayed, &expected);

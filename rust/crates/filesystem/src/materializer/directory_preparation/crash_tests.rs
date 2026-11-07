@@ -201,8 +201,29 @@ async fn publish(root: &Path, cut: Option<u64>) -> TestResult {
             .map_err(|failure| failure.error)?
             .value
             .id();
-        workspace.write_text("/file", "rebased generation").await?;
-        workspace.write_text("/added", "new file").await?;
+        let mut seed = workspace
+            .begin_transaction(
+                crate::IdempotencyKey::new(),
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        seed.write_text("/file", "rebased generation").await?;
+        seed.write_text("/added", "new file").await?;
+        seed.commit::<crate::WorkspaceError, _, _>(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?;
         let to = workspace
             .head(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await

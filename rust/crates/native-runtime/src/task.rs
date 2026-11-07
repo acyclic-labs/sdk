@@ -6,14 +6,36 @@
 //! is installed; every other build submits directly to Tokio. Both report a
 //! cancelled task as `ErrorKind::Interrupted`.
 #[cfg(feature = "test-support")]
-pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 #[cfg(not(feature = "test-support"))]
-pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking, try_spawn};
 
 mod custody;
 pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
 #[cfg(feature = "test-support")]
 pub(crate) use custody::{cancelled_error, panic_error};
+
+/// Completes a ready owned operation inline, transferring pending work to the
+/// same task owner as [`spawn`]. A ready operation needs no task allocation.
+pub fn spawn_eager<F>(mut future: F)
+where
+    F: std::future::Future<Output = ()> + Send + Unpin + 'static,
+{
+    let future_poll = || {
+        std::pin::Pin::new(&mut future)
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    };
+    #[cfg(feature = "test-support")]
+    let result = crate::testing::enter_task_poll(future_poll);
+    #[cfg(not(feature = "test-support"))]
+    let result = {
+        let mut future_poll = future_poll;
+        future_poll()
+    };
+    if result.is_pending() {
+        drop(spawn(future));
+    }
+}
 
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
 /// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
@@ -317,6 +339,19 @@ mod native {
         F::Output: Send + 'static,
     {
         TaskHandle(tokio::spawn(future))
+    }
+
+    /// Submits to the current executor, returning the unpolled future when
+    /// there is none. Refusal allocates no task and preserves caller custody.
+    pub fn try_spawn<F>(future: F) -> Result<TaskHandle<F::Output>, F>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => Ok(TaskHandle(runtime.spawn(future))),
+            Err(_) => Err(future),
+        }
     }
 
     /// Runs a blocking closure on Tokio's blocking pool, retaining ownership

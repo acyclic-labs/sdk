@@ -122,16 +122,33 @@ impl Fixture {
             .await?
             .value;
         let from = workspace.head(&work, &cancellation).await?;
+        let mut seed = workspace
+            .begin_transaction(
+                acyclic_fs::IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
         for name in ["note", ".git", ".system", ".volumes"] {
-            workspace
-                .write_text(&format!("/{name}"), "candidate")
-                .await?;
+            seed.write_text(&format!("/{name}"), "candidate").await?;
         }
         if let Some(alias) = alias {
-            workspace
-                .write_text(&format!("/{alias}"), "candidate")
-                .await?;
+            seed.write_text(&format!("/{alias}"), "candidate").await?;
         }
+        seed.commit::<acyclic_fs::WorkspaceError, _, _>(
+            None,
+            acyclic_fs::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?;
         let to = workspace.head(&work, &cancellation).await?;
         let root = directory.path().join("checkout");
         std::fs::create_dir(&root)?;

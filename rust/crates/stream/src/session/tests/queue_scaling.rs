@@ -1,6 +1,5 @@
 //! Paired reproduction: one credited head behind thousands of stalled follows.
 use super::*;
-use std::time::Instant;
 
 fn record(sequence: u64) -> Event {
     Event::Record(crate::Record {
@@ -62,7 +61,7 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
         session.channels.clear();
         for index in 0..=count {
             let id = (index * 2 + 1) as u64;
-            let channel = properties::empty_session(true).channels.remove(&1).unwrap();
+            let channel = properties::empty_channel(&session, true);
             session.channels.insert(id, channel);
             session
                 .record(
@@ -80,8 +79,6 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
             .values()
             .flat_map(|c| c.pending.iter().map(|p| p.frame.wire().clone()))
             .collect();
-        let mut before_time = std::time::Duration::ZERO;
-        let mut after_time = std::time::Duration::ZERO;
         for sequence in 0..64 {
             session.credit = wire::SessionWindow {
                 frames: 1,
@@ -98,15 +95,11 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 .frame
                 .wire()
                 .clone();
-            let started = Instant::now();
             let (old, visits) = scanned_ready(&mut before, target, session.credit);
-            before_time += started.elapsed();
             assert_eq!(visits, count + 1);
             let head_visits = session.head_visits;
-            let started = Instant::now();
             session.refresh_source(target);
             let selected = session.ready().unwrap().unwrap().into_wire();
-            after_time += started.elapsed();
             assert_eq!(selected, old);
             before.push_back(old);
             assert_eq!(session.head_visits - head_visits, 1);
@@ -123,20 +116,13 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                     .unwrap();
             }
         }
-        eprintln!(
-            "stalled={count} trials=64 before={before_time:?} after={after_time:?} head_visits={}->1",
-            count + 1
-        );
     }
 }
 
 #[test]
 fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     let mut session = properties::empty_session(false);
-    let mut other = properties::empty_session(false)
-        .channels
-        .remove(&1)
-        .unwrap();
+    let mut other = properties::empty_channel(&session, false);
     other.credit = wire::SessionWindow {
         bytes: 1_000_000,
         frames: 100,

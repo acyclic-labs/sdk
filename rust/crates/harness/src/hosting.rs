@@ -134,6 +134,23 @@ pub trait Platform: ProviderPlatform + 'static {
 /// The routing URL of every agent command; a host dispatches on the command.
 const BINDING_URL: &str = "/agents/command";
 
+/// The bodyless Actors invocation routed to the admitted host. It names only
+/// routing; the session credential authorizes each command.
+#[must_use]
+pub fn binding(
+    within: &acyclic_actors::addressing::ActorReference,
+) -> acyclic_actors::wire::InvokeActorRequest {
+    acyclic_actors::wire::InvokeActorRequest {
+        deployment_envelope: Vec::new(),
+        actor_id: within.id().to_owned(),
+        method: "POST".into(),
+        url: BINDING_URL.into(),
+        namespace: Some(within.namespace().as_str().to_owned()),
+        account_id: within.account().as_bytes().to_vec(),
+        ..Default::default()
+    }
+}
+
 /// One admitted agent tree served over the unified session protocol.
 pub struct Server<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     this: std::sync::Weak<Self>,
@@ -294,16 +311,7 @@ where
     /// never authority; the session credential authorizes each command.
     #[must_use]
     pub fn binding(&self) -> acyclic_actors::wire::InvokeActorRequest {
-        let within = self.bound.within();
-        acyclic_actors::wire::InvokeActorRequest {
-            deployment_envelope: Vec::new(),
-            actor_id: within.id().to_owned(),
-            method: "POST".into(),
-            url: BINDING_URL.into(),
-            namespace: Some(within.namespace().as_str().to_owned()),
-            account_id: within.account().as_bytes().to_vec(),
-            ..Default::default()
-        }
+        binding(self.bound.within())
     }
 
     /// The binding this server serves.

@@ -133,6 +133,12 @@ async fn native_publication_owner_stale_after_await_fails_before_actual_cas() ->
         None,
         None,
     );
+    let bytes = std::mem::size_of_val(&publication);
+    eprintln!("native publication future: {bytes} bytes");
+    assert!(
+        bytes <= 8 * 1024,
+        "native publication future retains {bytes} bytes"
+    );
     tokio::pin!(publication);
     tokio::select! {
         started = started_rx => started.expect("actual postplanning owner callback"),

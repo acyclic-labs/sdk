@@ -52,6 +52,7 @@
 //! blob. An index key of a holder that crashed before committing pins its
 //! child; it never refuses wrongly in the unsafe direction.
 use crate::blob::{Envelope, corrupt, decode_batch, decode_incarnation, encode_batch, invalid};
+use crate::identity::fresh as version;
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
     MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
@@ -486,18 +487,6 @@ fn medium(error: MediumError) -> Error {
 /// A fresh owner nonce.
 fn nonce() -> Result<String, Error> {
     Ok(hex::encode(version()?))
-}
-
-/// Fresh bytes unique to one write.
-fn version() -> Result<[u8; 16], Error> {
-    let mut version = [0; 16];
-    getrandom::fill(&mut version).map_err(|_| {
-        Error::caused(
-            ErrorCode::Unavailable,
-            Cause::new("objects.store", "entropy_unavailable"),
-        )
-    })?;
-    Ok(version)
 }
 
 /// A conditional write's unknown outcome means this actor's work may no
