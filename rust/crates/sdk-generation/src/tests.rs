@@ -22,16 +22,20 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     .map(str::to_owned)
     .collect();
     // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
+    assert!(
+        parse_generate(base.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("requires a complete registry corpus")
+    );
     let mut missing = base.clone();
     missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
+    assert!(
+        parse_generate(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("requires both")
+    );
     let mut complete = base;
     complete.extend([
         "--registry-frontier-repository".into(),
@@ -56,9 +60,11 @@ fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);
     let error = validate_release_package_versions("0.1.0", &versions)
         .expect_err("a stale docs version must not be released");
-    assert!(error
-        .to_string()
-        .contains("does not match SDK package version"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not match SDK package version")
+    );
     validate_release_package_versions("0.2.0", &versions)
         .expect("matching SDK and docs versions should be accepted");
 }
@@ -105,9 +111,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         before["assets/.sdk-docs-versions.v1.lock"],
         sha256_bytes(b"published")
     );
-    assert!(!before
-        .keys()
-        .any(|path| path.starts_with(".profile-build/")));
+    assert!(
+        !before
+            .keys()
+            .any(|path| path.starts_with(".profile-build/"))
+    );
     assert_eq!(
         before.get("assets/.profile-build/qualified-example.txt"),
         Some(&sha256_bytes(b"published")),
@@ -469,9 +477,11 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
     fs::remove_file(&foreign).unwrap();
     fs::write(root.join(relative), b"changed capture").unwrap();
     let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("captured Rustdoc source digest changed"));
+    assert!(
+        error
+            .to_string()
+            .contains("captured Rustdoc source digest changed")
+    );
     assert!(!foreign.exists());
 }
 
@@ -504,63 +514,66 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
     assert_ne!(sources[0].physical_path, sources[1].physical_path);
 }
 
-#[test]
-#[ignore = "requires SDK_GENERATION_CORPUS_ROOT and SDK_GENERATION_CORPUS_RUSTDOC"]
-fn real_rustdoc_corpus_projects_every_receipt_source_span() {
-    let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
-        .canonicalize()
-        .unwrap();
-    let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
-        .canonicalize()
-        .unwrap();
-    let mut receipts = rustdoc_files(&rustdoc).unwrap();
-    receipts.extend(rustdoc_files(&rustdoc.join("profiles")).unwrap());
-    receipts.sort();
-    receipts.dedup();
-    let metadata = load_metadata(&root, None).unwrap();
-    let sources = materialize_generated_sources(&root, &receipts).unwrap();
-    println!(
-        "collector diagnostic: {} receipts, {} generated span mappings",
-        receipts.len(),
-        sources.len()
-    );
-    for (index, receipt) in receipts.iter().enumerate() {
-        let observation = observe_rustdoc(receipt).unwrap();
-        let package = package_for_crate(&metadata, &observation.crate_name).unwrap();
+mod rustdoc_corpus {
+    use super::*;
+
+    #[test]
+    fn real_rustdoc_corpus_projects_every_receipt_source_span() {
+        let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
+            .canonicalize()
+            .unwrap();
+        let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
+            .canonicalize()
+            .unwrap();
+        let mut receipts = rustdoc_files(&rustdoc).unwrap();
+        receipts.extend(rustdoc_files(&rustdoc.join("profiles")).unwrap());
+        receipts.sort();
+        receipts.dedup();
+        let metadata = load_metadata(&root, None).unwrap();
+        let sources = materialize_generated_sources(&root, &receipts).unwrap();
         println!(
-            "projecting {}/{}: {}",
-            index + 1,
+            "collector diagnostic: {} receipts, {} generated span mappings",
             receipts.len(),
-            receipt.display()
+            sources.len()
         );
-        let data = build_data(
-            &BuildInput {
-                version: "corpus-diagnostic".into(),
-                channel: Channel::Preview,
-                revision: git_revision(&root).unwrap(),
-                source_state: "working-tree".into(),
-                source_sha256: None,
-                repository_root: root.clone(),
-                rustdoc_files: vec![receipt.clone()],
-                package_metadata: vec![PackageMetadata {
-                    rustdoc_source_root: None,
-                    rustdoc_file: receipt.clone(),
-                    package_name: package.name.to_string(),
-                    crate_name: observation.crate_name,
-                    version: package.version.to_string(),
-                }],
-                generated_sources: sources.clone(),
-                mark_latest: false,
-            },
-            &[],
-        )
-        .unwrap();
-        println!(
-            "projected {}/{}: {} families",
-            index + 1,
-            receipts.len(),
-            data.families.len()
-        );
+        for (index, receipt) in receipts.iter().enumerate() {
+            let observation = observe_rustdoc(receipt).unwrap();
+            let package = package_for_crate(&metadata, &observation.crate_name).unwrap();
+            println!(
+                "projecting {}/{}: {}",
+                index + 1,
+                receipts.len(),
+                receipt.display()
+            );
+            let data = build_data(
+                &BuildInput {
+                    version: "corpus-diagnostic".into(),
+                    channel: Channel::Preview,
+                    revision: git_revision(&root).unwrap(),
+                    source_state: "working-tree".into(),
+                    source_sha256: None,
+                    repository_root: root.clone(),
+                    rustdoc_files: vec![receipt.clone()],
+                    package_metadata: vec![PackageMetadata {
+                        rustdoc_source_root: None,
+                        rustdoc_file: receipt.clone(),
+                        package_name: package.name.to_string(),
+                        crate_name: observation.crate_name,
+                        version: package.version.to_string(),
+                    }],
+                    generated_sources: sources.clone(),
+                    mark_latest: false,
+                },
+                &[],
+            )
+            .unwrap();
+            println!(
+                "projected {}/{}: {} families",
+                index + 1,
+                receipts.len(),
+                data.families.len()
+            );
+        }
     }
 }
 
@@ -696,12 +709,11 @@ fn regular_sources_ignore_root_alias_spelling() {
                     for dot in aliases {
                         alias.push(if dot { "." } else { "src/.." });
                     }
-                    prop_assert!(materialize_generated_sources(
-                        &alias,
-                        std::slice::from_ref(&receipt)
-                    )
-                    .unwrap()
-                    .is_empty());
+                    prop_assert!(
+                        materialize_generated_sources(&alias, std::slice::from_ref(&receipt))
+                            .unwrap()
+                            .is_empty()
+                    );
                     Ok(())
                 },
             )
