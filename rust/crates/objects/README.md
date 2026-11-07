@@ -23,6 +23,15 @@ S3-compatible (`s3`) media; `grpc` and `http` provide remote clients and the
 gRPC server. Every provider passes `conformance::verify`, including the
 cross-account probes. Persisted formats are v1.
 
+The real S3 capability group runs with
+`cargo test --locked -p acyclic-objects --features s3 --lib s3::capability::`.
+Provide a disposable bucket through `STORAGE_S3_BUCKET`, `STORAGE_S3_ENDPOINT`,
+`STORAGE_S3_REGION`, `STORAGE_S3_ACCESS_KEY` and `STORAGE_S3_SECRET_KEY`.
+Set `STORAGE_S3_ALLOW_HTTP=1` only for an HTTP endpoint. Missing required settings
+fail the selected group. The ordinary native selection excludes `s3::capability::`
+and runs this group separately when that real backend is available; it exercises
+the same Medium and Store conformance suites against the bucket.
+
 `grpc::RevisionChannel<S>` wraps a caller-admitted Tower service for the generated
 Objects client. Clones share revision observations; select an authenticated
 account with `with_revision_scope` for constant work independent of unrelated
