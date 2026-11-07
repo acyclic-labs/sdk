@@ -2,6 +2,8 @@ use super::super::session::NativeSessionControl;
 use super::*;
 
 /// One process-owned customer mount over a canonical workspace checkout.
+/// Dropping it signals the accepted physical retirement owner. Call
+/// [`Self::unmount`] to publish, await retirement and observe its outcome.
 pub struct Mount<A: 'static, O: 'static> {
     pub(crate) source: Arc<CheckoutMountSource<A, O>>,
     pub(crate) session: Mutex<Option<NativeMountSession>>,

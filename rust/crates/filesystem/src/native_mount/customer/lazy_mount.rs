@@ -2,6 +2,8 @@ use super::super::session::NativeSessionControl;
 use super::*;
 
 /// Process-owned native mount over a sparse workspace.
+/// Dropping it signals the accepted physical retirement owner. Call
+/// [`Self::retire`] to await namespace retirement and observe its outcome.
 pub struct LazyMount<A: 'static, O: 'static, D, S> {
     pub(super) source: Arc<LazyMountSource<A, O, D, S>>,
     pub(super) session: Mutex<Option<NativeMountSession>>,
