@@ -1046,7 +1046,7 @@ async fn physical_archive_releases_only_the_closed_binding_and_retains_history()
     let harness = Arc::new(
         LocalHarness::open(
             super::checkout_config(directory.path(), (super::model()?, provider))?
-                .workspace_mounting(crate::WorkspaceMounting::Physical),
+                .workspace_mounting(crate::local::WorkspaceMounting::Physical),
         )
         .await?,
     );
