@@ -34,6 +34,15 @@ const claims = {
       env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
     },
   ],
+  "merge-directory-custody": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
+    "workspace::tests::merge_drivers::merge_directory_pages_preserve_pins_and_non_text_conflicts",
+    "a one-row page expanded the whole merge", ["--no-default-features"],
+    { mutations: [
+      { patch: "rust/proofs/merge-directory-custody/foreign-generation.patch", label: "foreign-generation-admitted", diagnostic: "directory.resolution(&foreign, binary_key)" },
+      { patch: "rust/proofs/merge-directory-custody/page-credit.patch", label: "page-credit-exceeded", diagnostic: "a one-row page expanded the whole merge" },
+    ] },
+  ],
   "merge-text-admission": [
     "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
     "captured public merge resolution was refused", ["--features", "fuzz-targets"],
