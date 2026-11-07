@@ -7,6 +7,7 @@ use super::packet_buffers::{PacketBufferPool, PacketBuffers, maximum_write};
 use super::packet_response::PacketResponse;
 use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
+use super::transport_io::PacketReader;
 use super::*;
 use crate::NativeMaterializationWork;
 
@@ -18,7 +19,7 @@ pub(super) struct HostSession {
     io: Arc<HostIo>,
     work: NativeMaterializationWork,
     owner_uid: u32,
-    buffers: PacketBufferPool,
+    buffers: PacketBufferPool<(PacketBuffers, PacketReader)>,
     #[cfg(test)]
     capture: Option<Arc<super::tests::packets::Capture>>,
     #[cfg(test)]
@@ -38,7 +39,12 @@ impl HostSession {
             .map_err(|_| libc::EOVERFLOW)?;
         let page_size = std::num::NonZeroU32::new(page_size).ok_or(libc::EIO)?;
         let maximum_write = maximum_write(work, workers, page_size)?;
-        let buffers = PacketBufferPool::new(workers, maximum_write as usize + 4096, work)?;
+        let buffers = PacketBufferPool::new(workers, work, || {
+            Ok((
+                PacketBuffers::new(maximum_write as usize + 4096, work)?,
+                io.reader()?,
+            ))
+        })?;
         let cancellation = super::packet_cancellation::register(work, &io)?;
         Ok(Self {
             protocol: PacketSession::new(router, maximum_write, page_size)?,
@@ -66,14 +72,14 @@ impl HostSession {
 
     pub(super) fn initialize(&self) -> Result<(), NativeMountError> {
         let _stop_on_failure = HandshakeStop(self);
-        let mut buffers = self.buffers.take(0)?;
+        let (mut buffers, reader) = self.buffers.take(0)?;
         while !self.protocol.ready() {
-            if !self.serve(&mut buffers)? {
+            if !self.serve(&mut buffers, &reader)? {
                 self.work.admit(crate::WorkCounters::UNCHARGED)?;
                 return Err(libc::ENODEV.into());
             }
         }
-        self.buffers.put(0, buffers)?;
+        self.buffers.put(0, (buffers, reader))?;
         Ok(())
     }
 
@@ -112,11 +118,15 @@ impl HostSession {
         }
     }
 
-    fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
+    fn serve(
+        &self,
+        buffers: &mut PacketBuffers,
+        reader: &PacketReader,
+    ) -> Result<bool, NativeMountError> {
         let capacity = self.protocol.packet_capacity();
         // /dev/fuse needs the complete negotiated receive envelope.
         let input = PacketBuffers::input_for(&mut buffers.input, capacity, capacity)?;
-        let length = match self.io.receive(input)? {
+        let length = match self.io.receive(reader, input)? {
             Received::Closed => return Ok(false),
             Received::Wake => return Ok(true),
             Received::Packet(length) => length,
@@ -165,8 +175,8 @@ impl super::packet_workers::PacketWorkers for HostSession {
     }
 
     fn run_worker(&self, index: u32) -> Result<(), NativeMountError> {
-        let mut buffers = self.buffers.take(index)?;
-        while self.serve(&mut buffers)? {}
+        let (mut buffers, reader) = self.buffers.take(index)?;
+        while self.serve(&mut buffers, &reader)? {}
         Ok(())
     }
 }

@@ -13,6 +13,8 @@ pub(super) struct HostIo {
     // retain this control, never a live device after its server has stopped.
     device: RwLock<Option<File>>,
     wake: ProcessWake,
+    #[cfg(test)]
+    receive_counts: [std::sync::atomic::AtomicU64; 3],
     _allocation: crate::NativeAllocation,
 }
 
@@ -39,6 +41,8 @@ impl HostIo {
         Ok(Self {
             device: RwLock::new(Some(device)),
             wake: ProcessWake::new()?,
+            #[cfg(test)]
+            receive_counts: std::array::from_fn(|_| std::sync::atomic::AtomicU64::new(0)),
             _allocation: allocation,
         })
     }
@@ -76,12 +80,38 @@ impl HostIo {
         Ok(ready)
     }
 
-    pub(super) fn receive(&self, bytes: &mut [u8]) -> io::Result<Received> {
+    pub(super) fn reader(&self) -> io::Result<transport_io::PacketReader> {
+        self.with_device(|device| {
+            transport_io::PacketReader::new(
+                &self.wake,
+                device.ok_or_else(|| io::Error::from_raw_os_error(libc::ENODEV))?,
+            )
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn receive_counts(&self) -> [u64; 3] {
+        self.receive_counts
+            .each_ref()
+            .map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    pub(super) fn receive(
+        &self,
+        reader: &transport_io::PacketReader,
+        bytes: &mut [u8],
+    ) -> io::Result<Received> {
         loop {
-            match self.wait(libc::POLLIN)? {
+            match reader.wait(&self.wake)? {
                 Ready::Closed => return Ok(Received::Closed),
-                Ready::Wake => return Ok(Received::Wake),
-                Ready::Device(_) => {}
+                Ready::Wake => {
+                    self.wake.consume()?;
+                    return Ok(Received::Wake);
+                }
+                Ready::Device(_) => {
+                    #[cfg(test)]
+                    self.receive_counts[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             let device = self.device.read().unwrap_or_else(PoisonError::into_inner);
             let Some(device) = device.as_ref() else {
@@ -89,12 +119,22 @@ impl HostIo {
             };
             match (&*device).read(bytes) {
                 Ok(0) => return Ok(Received::Closed),
-                Ok(length) => return Ok(Received::Packet(length)),
+                Ok(length) => {
+                    #[cfg(test)]
+                    self.receive_counts[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(Received::Packet(length));
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
                         io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
-                    ) => {}
+                    ) =>
+                {
+                    #[cfg(test)]
+                    if error.kind() == io::ErrorKind::WouldBlock {
+                        self.receive_counts[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
                 Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {
                     return Ok(Received::Closed);
                 }

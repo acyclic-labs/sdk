@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/native_mount/fuse/transport_io.rs b/rust/crates/filesystem/src/native_mount/fuse/transport_io.rs
+--- a/rust/crates/filesystem/src/native_mount/fuse/transport_io.rs
++++ b/rust/crates/filesystem/src/native_mount/fuse/transport_io.rs
+@@ -28,7 +28,7 @@ impl PacketReader {
+         // SAFETY: this is the fresh descriptor returned above.
+         let reader = Self(unsafe { OwnedFd::from_raw_fd(queue) });
+         reader.register(wake.as_fd(), libc::EPOLLIN, 0)?;
+-        reader.register(device, libc::EPOLLIN | libc::EPOLLEXCLUSIVE, 1)?;
++        reader.register(device, libc::EPOLLIN, 1)?;
+         Ok(reader)
+     }
+ 

@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+pub(super) fn linux_isolated_requests_measure_original_packet_wakes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, _) = shared_sources(posix_config())?;
+    let volume_id = source.volume_id()?;
+    let temporary = tempfile::tempdir()?;
+    let mut session = mount(Arc::new(source), volume_id, temporary.path())?;
+    let io = Arc::clone(
+        session
+            .driver
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle("mounted session has no driver"))?
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .device
+            .as_ref()
+            .ok_or(NativeMountError::Lifecycle(
+                "mounted session has no transport",
+            ))?,
+    );
+    // Distinct absent names force actual kernel LOOKUPs rather than repeated
+    // negative-cache hits. Each native reply is the next request's barrier.
+    let mut samples = [Duration::ZERO; 128];
+    for (index, elapsed) in samples.iter_mut().enumerate() {
+        let path = temporary.path().join(format!("absent-{index}"));
+        let started = std::time::Instant::now();
+        let error = std::fs::metadata(path).expect_err("absent entry unexpectedly existed");
+        *elapsed = started.elapsed();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+    // Count only after positive worker retirement: a losing reader must not
+    // disappear from the observation merely because the reply won the race.
+    assert!(session.stop()?);
+    let [wakes, packets, would_block] = io.receive_counts();
+    assert!(packets >= samples.len() as u64);
+    samples.sort_unstable();
+    eprintln!(
+        "FUSE_RECEIVE samples={} wakes={wakes} packets={packets} would_block={would_block} expected_isolated_wakes_per_packet=1 p50_ns={} p99_ns={}",
+        samples.len(),
+        samples[samples.len() / 2].as_nanos(),
+        samples[samples.len() * 99 / 100].as_nanos(),
+    );
+    Ok(())
+}
+
+#[test]
 pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 -> Result<(), Box<dyn std::error::Error>> {
     let (mounted_source, around) = shared_sources(posix_config())?;
