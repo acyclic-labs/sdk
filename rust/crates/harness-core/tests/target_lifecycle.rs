@@ -239,7 +239,7 @@ async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
     Ok(())
 }
 
-fn host<P: acyclic_stream::StreamProvider + 'static>(
+fn host<P: acyclic_harness_core::store::JournalProvider + 'static>(
     stream: &Arc<P>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
 ) -> Result<AgentHost<P>> {
