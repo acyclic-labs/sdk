@@ -22,6 +22,12 @@ rejecting new calls from waking an observer already parked before cancellation.
 Both must fail immediately at the original registered-follow wake assertion.
 The qualifier restores exact production source before checking the same oracle.
 
+The follow oracle also independently removes the original terminal notification
+from AppliedRevisions::close while preserving its retained closed bit and
+revision-watch publication. The actual parked follow must fail its registered
+wake assertion. This distinguishes retaining terminal state and dispatching a
+ready notification from producing the event that wakes the original observer.
+
 No new example test, replacement producer, polling loop or timeout is added.
 The original storage acknowledgement is the single held event, and its producer
 is released on the same path. Production operations and their allocation,

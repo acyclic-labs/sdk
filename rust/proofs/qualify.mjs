@@ -192,6 +192,7 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/journal-follow-progress/retirement.patch", label: "missing-follow-retirement", diagnostic: "journal failure left a public follow parked" },
         { patch: "rust/proofs/journal-follow-progress/publication.patch", source: "rust/crates/stream/src/lib/revision.rs", label: "unrelated-publication-wake", diagnostic: "unrelated publication woke retirement observer" },
+        { patch: "rust/proofs/journal-follow-progress/notification.patch", source: "rust/crates/stream/src/lib/revision.rs", label: "missing-retirement-notification", diagnostic: "journal failure left a public follow parked" },
       ],
     },
   ],
