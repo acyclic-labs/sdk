@@ -25,6 +25,16 @@ This is pure codec validation, with no host process, file watcher or callback
 wait. Work is bounded by input bytes plus two fixed captured versions and four
 fixed writer groups; it establishes no asynchronous progress guarantee.
 
+Ownership is also checked in the refusal direction. Every input corrupts the
+original writer's reserved status metadata and requires refusal. Every admitted
+arbitrary group must equal the canonical writer manifest, retaining the public
+exception for editable string permission selectors. This replaces the weaker
+check that only reconstructed an admitted executable.
+
+`node rust/proofs/qualify.mjs native-hook-ownership` removes the production
+metadata value comparisons. The same oracle must reject that mutation before
+the restored 1,024-input campaign completes.
+
 The four retained hook-group files were captured on Linux x86_64 from the
 command above at source `fedb595178c29feb1a8b1f04783fb00968d7d518`. The files preserve the exact
 JSON bytes printed by the public SDK writer, without reserialization.

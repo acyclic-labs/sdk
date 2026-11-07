@@ -27,6 +27,12 @@ fuzz_target!(|data: &[u8]| {
             Some("acyclic"),
             "native hook writer output was refused"
         );
+        let mut foreign = groups[0].clone();
+        foreign["hooks"][0]["statusMessage"] = serde_json::Value::Null;
+        assert!(
+            claude_hook_executable(event, &foreign).is_none(),
+            "foreign hook metadata was admitted"
+        );
     }
     let Ok(text) = std::str::from_utf8(data) else {
         return;
@@ -35,13 +41,15 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(group) = serde_json::from_str(text) {
         for event in CLAUDE_EVENTS {
             if let Some(executable) = claude_hook_executable(event, &group) {
-                // Ownership must survive reconstruction by the one manifest
-                // producer, including its original shell argument decoder.
-                let hooks = claude_hooks(&executable);
-                assert_eq!(
-                    claude_hook_executable(event, &hooks[event][0]),
-                    Some(executable)
-                );
+                // An owned group must equal the writer's manifest. Permission
+                // selectors remain editable strings under the public contract.
+                let mut expected = claude_hooks(&executable)[event][0].clone();
+                if event == "PermissionRequest"
+                    && let Some(matcher) = group.get("matcher").and_then(serde_json::Value::as_str)
+                {
+                    expected["matcher"] = matcher.into();
+                }
+                assert_eq!(group, expected, "foreign hook group was admitted");
             }
         }
     }

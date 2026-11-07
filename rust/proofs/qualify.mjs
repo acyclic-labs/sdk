@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-hook-ownership": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "foreign hook metadata was admitted", [],
+    { fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 } },
+  ],
   "native-hook-admission": [
     "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
     "native hook writer output was refused", [],
