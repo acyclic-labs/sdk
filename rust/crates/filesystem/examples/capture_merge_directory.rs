@@ -1,9 +1,10 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
 use acyclic_fs::foundation::OperationId;
-use acyclic_fs::kernel::{FileMetadata, MetadataField};
+use acyclic_fs::kernel::{FileMetadata, MergeConflict, MetadataField};
 use acyclic_fs::workspace::{
-    ApplyOptions, ForkOptions, MergeConflictFile, MergeConflictFileKind, MergeDirectorySection,
+    ApplyOptions, DrivenJoinError, ForkOptions, MergeConflictFile, MergeConflictFileKind,
+    MergeDirectorySection,
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
@@ -65,6 +66,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
     for path in ["/binary", "/deleted"] {
         main.write_text(path, "base\0").await?;
     }
+    main.write_text("/text", "base\n").await?;
     let mut transaction = main
         .begin_transaction(IdempotencyKey::new(), work, &cancellation)
         .await?
@@ -90,6 +92,8 @@ async fn capture() -> Result<(), Box<dyn Error>> {
     }
     main.write_text("/binary", "ours\0").await?;
     source.write_text("/binary", "theirs\0").await?;
+    main.write_text("/text", "ours\n").await?;
+    source.write_text("/text", "theirs\n").await?;
     main.write_text("/deleted", "changed\0").await?;
     source.remove("/deleted").await?;
     source.write_text("/clean", "retained clean body").await?;
@@ -127,6 +131,8 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         if_target: plan.target_head(),
         idempotency_key: IdempotencyKey::new(),
     };
+    let text_id = main.stat("/text", work, &cancellation).await?.value.file_id;
+    let text_conflict = plan.describe_conflict(MergeConflict::File(text_id)).await?;
     let preview = plan
         .preview_pages(options, work, &cancellation)
         .await?
@@ -148,6 +154,36 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             .await?;
     }
     let generation = staging.head(work, &cancellation).await?.value;
+    let text_path = directory.conflict_file_path(&text_conflict.key)?;
+    // The original writer's unresolved markers must be refused by public admission.
+    let original = generation
+        .read(&text_path, 16384, work, &cancellation)
+        .await?
+        .value;
+    let refused = directory.resolution(&generation, &text_conflict.key).await;
+    if !matches!(
+        refused,
+        Err(DrivenJoinError::Workspace(
+            WorkspaceError::InvalidMergeResolution
+        ))
+    ) {
+        return Err("original unresolved text did not receive its typed refusal".into());
+    }
+    let trace = serde_json::to_vec(&(
+        &text_conflict,
+        original.as_ref(),
+        None::<acyclic_fs::MergeResolution>,
+    ))?;
+    emit("resolution-text-refused-v1", &trace)?;
+    staging.write_text(&text_path, "resolved\n").await?;
+    let proposed = staging.head(work, &cancellation).await?.value;
+    let accepted = directory.resolution(&proposed, &text_conflict.key).await?;
+    let original = proposed
+        .read(&text_path, 16384, work, &cancellation)
+        .await?
+        .value;
+    let trace = serde_json::to_vec(&(&text_conflict, original.as_ref(), Some(accepted)))?;
+    emit("resolution-text-accepted-v1", &trace)?;
     let path = directory.path().to_owned();
     let bytes = generation
         .read(&format!("{path}/plan.json"), 16384, work, &cancellation)
@@ -180,7 +216,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                     .await?
                     .value;
                 emit(&format!("{section}-{index}-v1"), &bytes)?;
-                if section == "conflicts" {
+                if section == "conflicts" && name.ends_with(".conflict.json") {
                     let descriptor: MergeConflictFile = serde_json::from_slice(&bytes)?;
                     let proposals: &[(&str, &str)] = match descriptor.kind {
                         MergeConflictFileKind::Binary => &[
