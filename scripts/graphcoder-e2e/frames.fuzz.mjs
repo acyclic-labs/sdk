@@ -22,7 +22,7 @@ const refusalPrefix = refusalFormat.slice(0, -"{reason}".length)
 const usageFormat = /refusal\(format_args!\("([^"]*)"/.exec(nativeView)?.[1];
 assert.equal(usageFormat, "Usage query ended: {error}", "retain the native usage failure source join");
 
-function admission(visible, text, kind, reason, schedule) {
+function admission(visible, text, kind, reason, schedule, assertion) {
   const history = new FailureHistory();
   const wrongKind = kind === "task_failure" ? "query_failure" : "task_failure";
   const prefix = reason.slice(0, 1 + (schedule[0] ?? 0) % reason.length);
@@ -32,12 +32,12 @@ function admission(visible, text, kind, reason, schedule) {
     ? [{ task_failure: prefix }, { query_failure: prefix }, { contains: [""] }, { contains: [reason + " changed"] }]
     : [{ [wrongKind]: prefix }, { [kind]: "" }, { [kind]: reason + " changed" }, { contains: [prefix] }];
   for (const condition of rejected) {
-    assert.equal(history.unexpected(visible, condition), text);
-    history.accept(visible, condition);
+    assert.equal(history.unexpected(visible, assertion ? undefined : condition, assertion ? condition : undefined), text);
+    history.accept(visible, assertion ? undefined : condition, assertion ? condition : undefined);
     assert.equal(history.unexpected(visible), text, "unadmitted failures cannot enter handled history");
   }
-  assert.equal(history.unexpected(visible, expected), undefined);
-  history.accept(visible, expected);
+  assert.equal(history.unexpected(visible, assertion ? undefined : expected, assertion ? expected : undefined), undefined);
+  history.accept(visible, assertion ? undefined : expected, assertion ? expected : undefined);
   assert.equal(history.unexpected(visible), undefined, "the exact admitted failure survives subsequent actions");
   // Derived mutations vary identity; retained native capture bytes stay intact.
   const changed = kind === "task_failure"
@@ -118,7 +118,9 @@ export async function fuzz(schedule) {
     assert.match(refusal ?? "", /task [0-9a-f-]{36} failed: invalid request: mandatory con/);
     assert.equal(history.unexpected(screenText(screen)), undefined,
       "negative control: observing only the final idle screen loses the original refusal");
-    admission(refusedScreen, refusal, "task_failure", refusal.slice(refusal.indexOf(" failed: ") + 9), schedule);
+    for (const assertion of [false, true]) {
+      admission(refusedScreen, refusal, "task_failure", refusal.slice(refusal.indexOf(" failed: ") + 9), schedule, assertion);
+    }
     const notice = query.visible.slice(query.visible.lastIndexOf("\n") + 1);
     assert.equal(queryFailure(query.visible), notice);
     admission(query.visible, notice, "query_failure", notice, schedule);
