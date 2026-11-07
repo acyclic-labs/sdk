@@ -481,16 +481,15 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         );
         let mut retired = client.replay(&projection)?;
         loop {
-            let (event, delivery) = retired.next_projected().await?;
-            if &delivery.resource == source
-                && let Some(acyclic_stream::wire::session_frame::Body::Closed(closed)) =
-                    &delivery.frame.body
-            {
-                assert_eq!(closed.code, "out_of_range");
-                assert!(event.is_err(), "a refused source became an ordinary event");
-                break;
+            match retired.next_projected().await {
+                // The canonical pool returns an opening refusal to the pending
+                // open, rather than exposing that wire Close as a delivery.
+                Err(Error::Storage(reason)) if reason.contains("out_of_range") => break,
+                Err(error) => return Err(error),
+                Ok((event, _)) => {
+                    event?;
+                }
             }
-            event?;
         }
         let invalid = client.settle("lost-producer", inbox, &mut retired);
         tokio::pin!(invalid);
