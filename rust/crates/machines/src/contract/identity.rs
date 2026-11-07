@@ -1,6 +1,6 @@
 use super::*;
 
-fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
+pub(crate) fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
     if value.is_nil() {
         return Err(IdentityError);
     }
@@ -110,8 +110,195 @@ impl MachineId {
     }
 }
 
+/// Shared oracle for the public byte, text and serde identity admissions.
+#[cfg(any(test, feature = "test-support"))]
+pub mod identity_codec_fuzz {
+    use super::*;
+
+    /// UUID syntax is owned by the UUID library; each public identity must add
+    /// exactly the non-nil constraint and preserve all original bits.
+    pub fn check(bytes: &[u8]) {
+        #[cfg(all(feature = "grpc", feature = "test-support"))]
+        crate::grpc::codec_fuzz::check_identities(bytes);
+        let expected_bytes = <[u8; 16]>::try_from(bytes)
+            .ok()
+            .filter(|value| value.iter().any(|byte| *byte != 0));
+        let expected_text = std::str::from_utf8(bytes).ok().and_then(|text| {
+            Uuid::parse_str(text)
+                .ok()
+                .filter(|value| !value.is_nil())
+                .map(|value| *value.as_bytes())
+        });
+        let expected_json = serde_json::from_slice::<Uuid>(bytes)
+            .ok()
+            .filter(|value| !value.is_nil())
+            .map(|value| *value.as_bytes());
+        macro_rules! check {
+            ($($identity:ident),+ $(,)?) => { $(
+                let admitted = <[u8; 16]>::try_from(bytes)
+                    .ok()
+                    .and_then(|raw| $identity::from_bytes(raw).ok());
+                assert_eq!(admitted.map($identity::as_bytes), expected_bytes,
+                    "public identity byte admission must retain non-nil bits");
+                assert_eq!(std::str::from_utf8(bytes).ok()
+                    .and_then(|text| $identity::parse(text).ok())
+                    .map($identity::as_bytes), expected_text,
+                    "public identity text admission must retain non-nil bits");
+                assert_eq!(serde_json::from_slice::<$identity>(bytes).ok()
+                    .map($identity::as_bytes), expected_json,
+                    "public identity serde admission must retain non-nil bits");
+                if let Some(id) = admitted {
+                    assert_eq!($identity::parse(&id.to_string()), Ok(id));
+                    assert_eq!(serde_json::from_slice::<$identity>(
+                        &serde_json::to_vec(&id).unwrap()).unwrap(), id);
+                }
+            )+ };
+        }
+        check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+        check_image_digest(bytes);
+        check_oci_reference(bytes);
+    }
+
+    fn check_image_digest(bytes: &[u8]) {
+        let nonzero = |raw: [u8; 32]| raw.iter().any(|byte| *byte != 0);
+        let expected = <[u8; 32]>::try_from(bytes).ok().filter(|raw| nonzero(*raw));
+        let actual = <[u8; 32]>::try_from(bytes)
+            .ok()
+            .and_then(|raw| ImageDigest::new(raw).ok());
+        assert_eq!(
+            actual.map(ImageDigest::as_bytes),
+            expected,
+            "public image digest admission must retain nonzero bits"
+        );
+        let expected_json = serde_json::from_slice::<[u8; 32]>(bytes)
+            .ok()
+            .filter(|raw| nonzero(*raw));
+        assert_eq!(
+            serde_json::from_slice::<ImageDigest>(bytes)
+                .ok()
+                .map(ImageDigest::as_bytes),
+            expected_json,
+            "public image digest serde admission must retain nonzero bits"
+        );
+        if let Some(digest) = actual {
+            assert_eq!(
+                serde_json::from_slice::<ImageDigest>(&serde_json::to_vec(&digest).unwrap())
+                    .unwrap(),
+                digest
+            );
+        }
+    }
+
+    fn check_oci_reference(bytes: &[u8]) {
+        fn checked(reference: &str) -> Option<Image> {
+            let image = Image::oci(reference).ok()?;
+            let Image::ManagedOci(digest) = &image else {
+                panic!("OCI reference must select a managed image");
+            };
+            let split = reference.len().saturating_sub(64);
+            let name = reference
+                .get(..split)
+                .and_then(|prefix| prefix.strip_suffix("@sha256:"));
+            assert!(
+                name.is_some_and(|name| !name.is_empty())
+                    && reference.get(split..).is_some_and(|text| {
+                        text.eq_ignore_ascii_case(&hex::encode(digest.as_bytes()))
+                    }),
+                "admitted OCI reference must retain a name and exact digest"
+            );
+            Some(image)
+        }
+        if let Ok(reference) = std::str::from_utf8(bytes) {
+            let _ = checked(reference);
+        }
+        if let Ok(raw) = <[u8; 32]>::try_from(bytes) {
+            let digest = hex::encode(raw);
+            let suffix = format!("@sha256:{digest}");
+            let expected = Image::managed(raw).ok();
+            for name in [&digest, &suffix] {
+                assert_eq!(
+                    checked(&format!("{name}{suffix}")),
+                    expected,
+                    "original digest writer must survive OCI reference admission"
+                );
+            }
+            assert_eq!(
+                checked(&format!("{digest}@sha256:{}", digest.to_ascii_uppercase())),
+                expected,
+                "OCI digest admission must preserve hexadecimal case equivalence"
+            );
+            assert!(
+                Image::oci(&suffix).is_err(),
+                "OCI reference admission must reject a missing name"
+            );
+            for malformed in [
+                digest.clone(),
+                format!("{digest}{suffix}f"),
+                format!("{digest}@sha256:g{}", digest.get(1..).unwrap()),
+            ] {
+                assert!(
+                    Image::oci(malformed).is_err(),
+                    "OCI reference admission must reject malformed digest syntax"
+                );
+            }
+        }
+    }
+
+    /// Capture the original public identity writers and the UUID library's nil
+    /// writer as a refusal input. Image digests retain their public byte/serde
+    /// writers and the zero array writer as refusal inputs.
+    pub fn seeds() -> Vec<(&'static str, Vec<u8>)> {
+        let id = MachineId::from_digest([1; 32]);
+        let nil = Uuid::nil();
+        let image = ImageDigest::new([1; 32]).unwrap();
+        vec![
+            ("machine-bytes", id.as_bytes().to_vec()),
+            ("machine-text", id.to_string().into_bytes()),
+            ("machine-json", serde_json::to_vec(&id).unwrap()),
+            ("machine-nil-bytes", nil.as_bytes().to_vec()),
+            ("machine-nil-text", nil.to_string().into_bytes()),
+            ("machine-nil-json", serde_json::to_vec(&nil).unwrap()),
+            ("image-bytes", image.as_bytes().to_vec()),
+            ("image-json", serde_json::to_vec(&image).unwrap()),
+            ("image-zero-bytes", [0; 32].to_vec()),
+            ("image-zero-json", serde_json::to_vec(&[0_u8; 32]).unwrap()),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod resource_identity_tests {
+    use proptest::prelude::*;
+
+    #[test]
+    fn public_identity_admission_preserves_syntax_and_nonzero_bits() {
+        use super::identity_codec_fuzz::check;
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+        for (_, bytes) in super::identity_codec_fuzz::seeds() {
+            check(&bytes);
+        }
+        let strategy = (
+            proptest::collection::vec(any::<u8>(), 0..128),
+            any::<[u8; 16]>(),
+            any::<[u8; 32]>(),
+        );
+        TestRunner::new_with_rng(
+            Config::with_cases(64),
+            TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+        )
+        .run(&strategy, |(bytes, raw, image)| {
+            check(&bytes);
+            check(&raw);
+            let original = uuid::Uuid::from_bytes(raw);
+            check(original.to_string().as_bytes());
+            check(&serde_json::to_vec(&original).unwrap());
+            check(&image);
+            check(&serde_json::to_vec(&image).unwrap());
+            Ok(())
+        })
+        .unwrap();
+    }
+
     proptest::proptest! {
         #[test]
         fn normalized_identity_preserves_retained_ids_and_domain(
@@ -208,14 +395,6 @@ mod resource_identity_tests {
         assert_eq!(account.into_bytes(), b"account");
         assert_eq!(restored, id);
         assert_ne!(retained.as_bytes(), id.to_string().as_bytes());
-        assert!(super::MachineId::from_bytes([0; 16]).is_err());
-        let wire = serde_json::to_string(&id)?;
-        assert_eq!(serde_json::from_str::<super::MachineId>(&wire)?, id);
-        let nil = serde_json::to_string(&uuid::Uuid::nil())?;
-        assert!(serde_json::from_str::<super::MachineId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::CheckpointId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::OperationId>(&nil).is_err());
-        assert!(serde_json::from_str::<super::IdempotencyKey>(&nil).is_err());
         Ok(())
     }
 }

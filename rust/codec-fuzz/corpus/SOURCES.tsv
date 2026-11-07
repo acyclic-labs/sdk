@@ -1947,4 +1947,17 @@ actor_codecs/call-error-v2	143	60b0abac44ff00b27fd6a8b76afb12923462e0e2666c15fce
 actor_codecs/call-cancelled-accepted-v2	140	abd44aff76f6df5be7587895bf6e3fbc851929de985257337e4cf8106bb244fa	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-cancelled-v2	93	bd7b5327f2078fa26059b9405f6679507ee3d29b70014b627e61f8423e0a64b7	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-indeterminate-v2	98	7b124a5c11ff1be2bd2b441967c5d219da6e1eaefac08b305b118698d01a3e8c	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
+ids/machine-bytes	16	f1c69c0477968db4825425c0c697dd88092f7d54e192e96a8ae2c58bcba1ea31	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-text	36	fc01e8565e160ac9c25a90fc1d4eaf3cb298f29bfe6766d9a0f5bebdb2777e25	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-json	38	f144552e7ec6609f103cf63d01d7172a8169e2330874e08cabd935502e9d7427	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-bytes	16	374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-text	36	12b9377cbe7e5c94e8a70d9d23929523d14afa954793130f8a3959c7b849aca8	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/machine-nil-json	38	36b6647187901ac4413731fb4bfcc0acaf826e0443d5fdbcfae119480fc63216	Machines public as_bytes/Display/Serialize writers; UUID nil writer for refusal
+ids/image-bytes	32	72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-json	65	49f6be3b003d7c754bc87ae96c4403b4d5600e8ad0a15b16ff93629a45fd15ee	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-zero-bytes	32	66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+ids/image-zero-json	65	54f65952ad8d24e1cc555b1ccd5de84cdb2052aa402e567295838ee33194b565	Machines public ImageDigest as_bytes/Serialize writers; zero array writer for refusal
+harness_codecs/machine-record-0	115	43e4651cc386c46ea95b9c7309b48b44fde17044da6f1fc3287605c5e930fa1a	acyclic-harness-core machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery at 9c19f0f61c; original MemoryStream plan/binding writers and SimulatedMachines lifecycle
+harness_codecs/machine-record-1	232	c37f325a315c610edceae47cfd74b420a5a524eb69e563f5344ff09aa36e859e	acyclic-harness-core machines::lifecycle::first_use_tests::original_binding_positions_precede_allocation_and_recovery at 9c19f0f61c; original MemoryStream plan/binding writers and SimulatedMachines lifecycle
 harness_codecs/agent-v13-roster	896	b7473beb7d2e881ed3c2a24f94187f2f31079ef89c7f11c878d80aebc91ed523	harness-core Roster::new -> Roster::canonical, retaining original target and owner order
+harness_codecs/agent-v13-roster-positional	879	a57eacce138811bcc96910f5965dbfbe427cf2fe9bdaac371e02a5e43cba5cb4	harness-core Roster::new -> serde_json tuple writer over original home and targets, retaining original target and owner order

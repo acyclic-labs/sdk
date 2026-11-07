@@ -131,6 +131,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
 
 pub fn harness_codecs(bytes: &[u8]) {
     acyclic_harness_core::agent::codec_fuzz::check(bytes);
+    acyclic_harness_core::machines::codec_fuzz::check(bytes);
     acyclic_harness_core::filesystem::execution_codec_fuzz::check(bytes);
     harness_manifest::check(bytes);
     harness_resources::check(bytes);
@@ -293,6 +294,7 @@ pub fn stream_persistence(bytes: &[u8]) {
 }
 
 pub fn ids(bytes: &[u8]) {
+    acyclic_machines::identity_codec_fuzz::check(bytes);
     match acyclic_fs::ObjectId::from_prefix(bytes) {
         Ok((id, tail)) => {
             let encoded = id.to_bytes();

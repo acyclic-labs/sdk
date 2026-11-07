@@ -34,24 +34,23 @@ pub(super) fn encode_checkpoint(value: CheckpointId) -> wire::CheckpointId {
         value: value.as_bytes().to_vec(),
     }
 }
+pub(super) fn encode_operation(value: OperationId) -> wire::OperationId {
+    wire::OperationId {
+        value: value.as_bytes().to_vec(),
+    }
+}
 pub(super) fn operation_request(value: OperationId) -> wire::OperationRequest {
     wire::OperationRequest {
         protocol: Some(protocol()),
-        operation: Some(wire::OperationId {
-            value: value.as_bytes().to_vec(),
-        }),
+        operation: Some(encode_operation(value)),
     }
 }
 pub(super) fn decode_uuid(value: &[u8]) -> Result<Uuid, ProviderError> {
     let bytes: [u8; 16] = value
         .try_into()
         .map_err(|_| ProviderError::Rejected("identity width is invalid".into()))?;
-    let value = Uuid::from_bytes(bytes);
-    if value.is_nil() {
-        Err(ProviderError::Rejected("nil identity is invalid".into()))
-    } else {
-        Ok(value)
-    }
+    crate::contract::admit_uuid(Uuid::from_bytes(bytes))
+        .map_err(|_| ProviderError::Rejected("nil identity is invalid".into()))
 }
 pub(super) fn decode_operation(
     value: Option<&wire::OperationId>,
