@@ -1,20 +1,12 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
+use acyclic_fs::foundation::OperationId;
 use acyclic_fs::workspace::{ApplyOptions, ForkOptions, MergeDirectorySection};
 use acyclic_fs::{
-    CancellationToken, Fs, FsError, IdempotencyKey, LocalOptions, MeasuredResult, OperationReceipt,
-    PublicationPermit, WorkBudget, WorkCounters, WorkspaceError,
+    CancellationToken, Fs, IdempotencyKey, LocalOptions, PublicationPermit, WorkBudget,
+    WorkspaceError,
 };
 use std::{error::Error, num::NonZeroU32};
-
-fn publication_ready(
-    _: WorkBudget,
-) -> std::future::Ready<MeasuredResult<OperationReceipt<()>, FsError>> {
-    std::future::ready(Ok(OperationReceipt {
-        value: (),
-        work: WorkCounters::UNCHARGED,
-    }))
-}
 
 fn emit(name: &str, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     println!(
@@ -58,7 +50,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                 PublicationPermit::Unrestricted,
                 work,
                 &cancellation,
-                publication_ready,
+                (),
             )
             .await?
             .value;
@@ -85,7 +77,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         .create_workspace("merge-staging", work, &cancellation)
         .await?
         .value;
-    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let mut directory = preview.directory(staging.clone(), OperationId::new())?;
     let step = NonZeroU32::new(1).ok_or("zero page size")?;
     while !directory.plan().complete {
         let section = if directory.plan().conflicts_complete {
