@@ -321,7 +321,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
 }
 
 #[tokio::test]
-async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> {
+async fn public_checkpoint_verification_survives_signing_owner_teardown() -> Result<()> {
     let (mut journal, issuer) =
         crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::new();
@@ -335,6 +335,11 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
             None,
         )?
         .await?;
+    let head = journal.index_path(operation, "head", None)?;
+    let record = crate::store::operations::one_record(&journal.stream, &head, 0, &mut None)
+        .await?
+        .ok_or_else(|| missing(None))?;
+    let mut checkpoint = codec::decode(&record.value, None)?;
     let public = crate::core::AuthorityVerifier::from_public(
         "append-cost".into(),
         journal.verifier.audience().clone(),
@@ -343,19 +348,22 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
     )?;
     drop(issuer);
     journal.verifier = public;
-    let recovered = journal.load_index_checkpoint(operation, None).await;
-    assert!(
-        matches!(&recovered, Ok(Some(_))),
-        "public-only checkpoint verification attempted to sign"
-    );
-    let recovered = recovered?.ok_or_else(|| missing(None))?;
-    assert_eq!(
-        recovered.0.tail, 1,
-        "public-only checkpoint verification attempted to sign"
-    );
+    journal.verify_checkpoint(operation, &checkpoint, None)?;
+    assert_eq!(checkpoint.state.tail, 1);
+    checkpoint.proof[0] ^= 1;
     assert!(
         journal
-            .encode_index_checkpoint(recovered.0, None)
+            .verify_checkpoint(operation, &checkpoint, None)
+            .is_err()
+    );
+    // Offline signature verification cannot authorize a new live storage read.
+    assert!(matches!(
+        journal.load_index_checkpoint(operation, None).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(
+        journal
+            .encode_index_checkpoint(checkpoint.state, None)
             .await
             .is_err()
     );

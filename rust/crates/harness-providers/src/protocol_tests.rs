@@ -168,16 +168,23 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                     assert!(!error.to_string().contains("usage"));
                 }
                 _ => {
-                    assert!(matches!(
-                        error,
-                        Error::ModelDiagnostic {
-                            code: acyclic_harness_core::wire::ErrorCode::Invalid,
-                            custody: None,
-                            ..
-                        }
-                    ));
+                    let Error::ModelDiagnostic {
+                        code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                        custody: None,
+                        message,
+                    } = &error
+                    else {
+                        panic!("{adapter:?}: {error}");
+                    };
                     assert_eq!(sent, 1);
-                    assert!(!error.to_string().contains("usage"));
+                    // A non-context 400 keeps only its bounded excerpt; 404 reads no body.
+                    if status == 400 {
+                        assert!(message.starts_with("model HTTP status 400: "), "{message}");
+                        assert!(message.len() <= crate::EXCERPT_BYTES);
+                        assert!(!message.chars().any(char::is_control));
+                    } else {
+                        assert!(!message.contains("usage"));
+                    }
                 }
             }
         }
