@@ -355,6 +355,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .ok_or_else(|| Error::Storage("completed usage export is absent".into()))?
         .map_err(agent)?;
     assert!(completed.usage.completed);
+    assert_eq!(
+        completed.version,
+        crate::executor::ModelUsageProjection::VERSION
+    );
+    assert_eq!(
+        completed.usage.version,
+        crate::executor::ModelUsageRecord::VERSION
+    );
+    assert!(completed.usage.started_at.is_some());
+    assert!(completed.usage.completed_at.is_some());
     assert_eq!(completed.usage.agent_path.as_deref(), Some(root.as_str()));
     assert_eq!(
         completed.usage.sampling,

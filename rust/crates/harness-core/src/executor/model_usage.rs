@@ -80,6 +80,8 @@ pub(crate) struct ModelCallUsage<'a> {
     /// Original requested output ceiling; absent remains unbounded.
     pub max_output_tokens: Option<u32>,
     pub tokens: ModelTokenUsage,
+    pub started_at: Option<u64>,
+    pub completed_at: Option<u64>,
     /// Dispatch through receipt of the terminal event, including original
     /// journal backpressure between chunks. Excludes the terminal commit.
     /// Unknown for recovered calls and platforms without this clock.
@@ -104,7 +106,7 @@ pub(crate) struct ModelCallUsage<'a> {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ModelUsageRecord {
-    /// Record format, currently two; older layouts are not migrated.
+    /// Record format, currently three; older layouts are not migrated.
     pub version: u32,
     /// A terminal provider event was committed. False preserves an admitted
     /// call whose completion was not observed; its counters stay unknown.
@@ -117,7 +119,8 @@ pub struct ModelUsageRecord {
     pub provider: String,
     /// Admitted model binding.
     pub model: String,
-    /// Original agent path; unknown for an executor without an agent binding.
+    /// Canonical AgentPath: a child appends `/children/<id>` to its parent.
+    /// Unknown for an executor without an agent binding.
     pub agent_path: Option<String>,
     /// Sampling from the original pinned request.
     #[serde(default)]
@@ -127,6 +130,14 @@ pub struct ModelUsageRecord {
     pub max_output_tokens: Option<u32>,
     /// Provider-reported counters with missing values preserved.
     pub tokens: ModelTokenUsage,
+    /// Wall time at live provider dispatch, in Unix nanoseconds, with the
+    /// shared wall clock's millisecond resolution. Unknown after recovery or
+    /// when that observation cannot be represented as u64 nanoseconds.
+    pub started_at: Option<u64>,
+    /// Wall time when the terminal provider event arrived, before its commit.
+    /// Same units and resolution as started_at. Clock corrections can put this
+    /// before started_at; latency_ns uses an independent monotonic clock.
+    pub completed_at: Option<u64>,
     /// Original local call interval, as defined by the completion producer.
     pub latency_ns: Option<u64>,
     /// Original HTTP request identifier, never inferred from the generation id.
@@ -158,7 +169,7 @@ pub(crate) struct ModelUsageAdmission<'a> {
 
 impl ModelUsageRecord {
     /// The one per-call format accepted by producers, readers and aggregates.
-    pub const VERSION: u32 = 2;
+    pub const VERSION: u32 = 3;
 
     /// Whether both observations retain the same original admitted call.
     /// Completion counters, timing and provider response metadata may change;
@@ -302,6 +313,8 @@ pub(super) async fn project_record(
                 sampling: Some(request.sampling),
                 max_output_tokens: request.max_output_tokens,
                 tokens: ModelTokenUsage::default(),
+                started_at: None,
+                completed_at: None,
                 latency_ns: None,
                 provider_request_id: None,
                 system_fingerprint: None,
@@ -378,6 +391,7 @@ pub(super) async fn project_completion(
 }
 
 pub(super) struct CallClock {
+    started_at: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     started: Option<tokio::time::Instant>,
     #[cfg(feature = "research")]
@@ -387,6 +401,7 @@ pub(super) struct CallClock {
 impl CallClock {
     pub(super) fn unknown() -> Self {
         Self {
+            started_at: None,
             #[cfg(not(target_arch = "wasm32"))]
             started: None,
             #[cfg(feature = "research")]
@@ -395,10 +410,25 @@ impl CallClock {
     }
 
     pub(super) fn start(&mut self) {
+        self.started_at = Self::wall_ns();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.started = Some(tokio::time::Instant::now());
         }
+    }
+
+    pub(super) fn started_at(&self) -> Option<u64> {
+        self.started_at
+    }
+
+    pub(super) fn completed_at(&self) -> Option<u64> {
+        // A reconciled call must not acquire the recovery process's time.
+        self.started_at.and_then(|_| Self::wall_ns())
+    }
+
+    fn wall_ns() -> Option<u64> {
+        acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
+            .checked_mul(1_000_000)
     }
 
     #[cfg(feature = "research")]

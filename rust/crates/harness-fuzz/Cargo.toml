@@ -8,6 +8,14 @@ publish = false
 cargo-fuzz = true
 
 [[bin]]
+name = "model_usage"
+path = "fuzz_targets/model_usage.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_answer"
 path = "fuzz_targets/native_answer.rs"
 required-features = ["native-answer"]

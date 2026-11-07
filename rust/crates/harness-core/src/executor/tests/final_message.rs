@@ -582,6 +582,15 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             let bytes = futures::executor::block_on(journal.load(&file, None)?)?;
             let record: ModelUsageRecord = crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert!(record.started_at.is_some(), "live dispatch time was lost");
+            assert!(
+                record.completed_at.is_some(),
+                "terminal arrival time was lost"
+            );
+            eprintln!(
+                "committed-usage-corpus:{}",
+                std::str::from_utf8(&bytes).unwrap()
+            );
             assert_eq!(record.provider, "fixture");
             assert_eq!(record.model, "completion");
             assert_eq!(record.tokens, ModelTokenUsage::default());
@@ -611,6 +620,66 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test(start_paused = true)]
+async fn usage_times_keep_dispatch_boundaries_across_wall_jumps_and_replay() -> Result<()> {
+    use acyclic_native_runtime::testing::Schedule;
+    use std::time::Duration;
+
+    let (schedule, _controller) = Schedule::seeded(71);
+    schedule
+        .scope(async {
+            let before = 1_700_000_000_000;
+            for after in [before + 100, before - 100, u64::MAX] {
+                schedule.set_unix_millis(before);
+                let observer = schedule.clone();
+                let provider = Arc::new(
+                    ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+                        .with_dispatch_observer(move |_| {
+                            let schedule = observer.clone();
+                            Box::pin(async move {
+                                schedule.advance(Duration::from_millis(7)).await;
+                                schedule.set_unix_millis(after);
+                                Ok(())
+                            })
+                        }),
+                );
+                let executor = uncompacted_executor(
+                    Model::new("fixture".into(), "call-times".into(), "1".into())?,
+                    provider.clone(),
+                    ContextPipeline::default(),
+                    ToolRegistry::default(),
+                );
+                let journal = Journal::default();
+                let input = TurnInput {
+                    max_steps: None,
+                    operation_id: OperationId::new(),
+                    input: ModelContent::Text("hello".into()),
+                    selected_context: None,
+                };
+                let output = executor.execute(input.clone(), &journal).await?;
+                let original = usage_page(&journal, input.operation_id, "unbound", 0).await?;
+                let completed = original.items.iter().find(|row| row.completed).unwrap();
+                assert_eq!(completed.started_at, Some(before * 1_000_000));
+                assert_eq!(completed.completed_at, after.checked_mul(1_000_000));
+                assert_eq!(completed.latency_ns, Some(7_000_000));
+                let original = crate::contract::canonical_json_bytes(&original)?;
+                schedule.set_unix_millis(before + 1_000);
+                assert_eq!(executor.execute(input.clone(), &journal).await?, output);
+                assert_eq!(provider.requests().len(), 1);
+                assert_eq!(
+                    crate::contract::canonical_json_bytes(
+                        &usage_page(&journal, input.operation_id, "unbound", 0).await?
+                    )?,
+                    original,
+                    "replay replaced original call times"
+                );
+            }
+            Ok(())
+        })
+        .await
 }
 
 #[test]

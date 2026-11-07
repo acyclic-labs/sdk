@@ -576,6 +576,9 @@ impl StockExecution<'_> {
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })
                     .then(|| clock.elapsed_ns())
                     .flatten();
+                let completed_at = matches!(event, ModelEvent::Completed { .. })
+                    .then(|| clock.completed_at())
+                    .flatten();
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
                     preparation_format(format_args!("{purpose_key}:{step}:{index}"), work)
@@ -619,6 +622,8 @@ impl StockExecution<'_> {
                             sampling,
                             max_output_tokens,
                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+                            started_at: clock.started_at(),
+                            completed_at,
                             latency_ns,
                             #[cfg(feature = "research")]
                             provider_request_id: metadata["provider_request_id"].as_str(),

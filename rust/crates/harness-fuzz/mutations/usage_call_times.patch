@@ -1,0 +1,24 @@
+diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
+--- a/rust/crates/harness-core/src/executor/model_usage.rs
++++ b/rust/crates/harness-core/src/executor/model_usage.rs
+@@ -80,8 +80,6 @@ pub(crate) struct ModelCallUsage<'a> {
+     /// Original requested output ceiling; absent remains unbounded.
+     pub max_output_tokens: Option<u32>,
+     pub tokens: ModelTokenUsage,
+-    pub started_at: Option<u64>,
+-    pub completed_at: Option<u64>,
+     /// Dispatch through receipt of the terminal event, including original
+     /// journal backpressure between chunks. Excludes the terminal commit.
+     /// Unknown for recovered calls and platforms without this clock.
+diff --git a/rust/crates/harness-core/src/executor/dispatch.rs b/rust/crates/harness-core/src/executor/dispatch.rs
+--- a/rust/crates/harness-core/src/executor/dispatch.rs
++++ b/rust/crates/harness-core/src/executor/dispatch.rs
+@@ -623,8 +623,6 @@ impl<'a> StockExecution<'a> {
+                             sampling,
+                             max_output_tokens,
+                             tokens: super::model_usage::ModelTokenUsage::reported(metadata),
+-                            started_at: clock.started_at(),
+-                            completed_at,
+                             latency_ns,
+                             #[cfg(feature = "research")]
+                             provider_request_id: metadata["provider_request_id"].as_str(),
