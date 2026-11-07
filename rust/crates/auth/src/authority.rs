@@ -3,6 +3,7 @@
 //! it does not implement filesystem policy or perform mutable quota accounting.
 use crate::{Error, contract::*};
 use prost::Message;
+use std::collections::HashSet;
 
 /// Owner policy result. A capability can never override Deny.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -399,38 +400,75 @@ fn allowances_cover(blocks: &[Block], certificates: &CertificateChain, r: &Reque
             {
                 Some(Metering::Unmetered) => true,
                 Some(Metering::Billed(product)) => covers(product),
-                Some(Metering::UsageOwner) => grant_sets(blocks, certificates)
-                    .flat_map(|set| &set.grants)
-                    .any(|grant| {
-                        let GrantKind::Execution(execution) = &grant.kind else {
-                            return false;
-                        };
-                        let Some(owner) = execution.usage_owner.as_deref() else {
-                            return false;
-                        };
-                        grant_allows(grant, r, true)
-                            && owner
-                                .split_once('/')
-                                .is_some_and(|(product, _)| covers(product))
-                            && grant_sets(blocks, certificates).all(|set| {
-                                set.grants.iter().any(|grant| {
-                                    grant_allows(grant, r, true)
-                                        && match &grant.kind {
-                                            GrantKind::Execution(execution) => execution
-                                                .usage_owner
-                                                .as_deref()
-                                                .is_none_or(|restricted| restricted == owner),
-                                            _ => true,
-                                        }
-                                })
-                            })
-                    }),
+                Some(Metering::UsageOwner) => {
+                    let mut products = None;
+                    for allowance in allowances.filter(|allowance| !allowance.products.is_empty()) {
+                        intersect_names(
+                            &mut products,
+                            allowance.products.iter().map(String::as_str).collect(),
+                        );
+                    }
+                    let Some(products) = products.filter(|products| !products.is_empty()) else {
+                        return false;
+                    };
+                    execution_owners_cover(grant_sets(blocks, certificates), &products, r)
+                }
                 None => false,
             }
         }
         Target::Context => true,
         Target::Websocket(_) => false,
     }
+}
+
+// Retain the new input's table, whose capacity is bounded by that input. Keeping
+// an old, mostly empty table would rescan its original capacity at every step.
+fn intersect_names<'a>(surviving: &mut Option<HashSet<&'a str>>, mut next: HashSet<&'a str>) {
+    if let Some(previous) = surviving {
+        next.retain(|name| previous.contains(name));
+    }
+    *surviving = Some(next);
+}
+
+fn execution_owners_cover<'a>(
+    sets: impl Iterator<Item = &'a GrantSet>,
+    products: &HashSet<&str>,
+    r: &Request<'_>,
+) -> bool {
+    let mut surviving = None;
+    let mut witnessed = false;
+    for set in sets {
+        let mut owners = HashSet::new();
+        let mut inherits = false;
+        for grant in set
+            .grants
+            .iter()
+            .filter(|grant| grant_allows(grant, r, true))
+        {
+            match &grant.kind {
+                GrantKind::Execution(execution) => match execution.usage_owner.as_deref() {
+                    Some(owner) => {
+                        if owner
+                            .split_once('/')
+                            .is_some_and(|(product, _)| products.contains(product))
+                        {
+                            owners.insert(owner);
+                            witnessed = true;
+                        }
+                    }
+                    None => inherits = true,
+                },
+                _ => inherits = true,
+            }
+        }
+        if !inherits {
+            intersect_names(&mut surviving, owners);
+            if surviving.as_ref().is_some_and(HashSet::is_empty) {
+                return false;
+            }
+        }
+    }
+    witnessed
 }
 
 fn grant_sets<'a>(
