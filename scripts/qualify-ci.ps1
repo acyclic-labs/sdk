@@ -206,7 +206,7 @@ node --test scripts/graphcoder-pty/screen.test.mjs
 node scripts/test-graphcoder.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 node scripts/test-graphcoder-pty.mjs (Join-Path $GraphcoderInstall 'bin/graphcoder.exe')
 # Native hosts own tools and providers; the shared harness owns their lifecycle.
-npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+npm ci --prefix plugin/tests/hosts --no-audit --no-fund
 bun run --cwd plugin/tests/hosts test:shim
 cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
 cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
