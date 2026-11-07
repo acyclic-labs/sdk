@@ -3,20 +3,16 @@ use crate::filesystem::CheckoutPublication;
 use acyclic_fs::MaterializeOptions;
 
 /// Fences every facade effect and optionally materializes an ordinary checkout.
-pub(crate) struct RootMaterializingGitExecutor<'a, F> {
+pub(crate) struct RootMaterializingGitExecutor<'a, 'w> {
     /// Managed workspace executor.
-    pub inner: &'a WorkspaceGitExecutor<'a, F>,
+    pub inner: &'a WorkspaceGitExecutor<'w>,
     /// Ordinary checkout path.
     pub root: &'a Path,
     /// Pinned physical checkout identity.
     pub source_root_identity: acyclic_fs::NativeRootIdentity,
 }
 
-impl<F, Fut> RootMaterializingGitExecutor<'_, F>
-where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
-{
+impl RootMaterializingGitExecutor<'_, '_> {
     /// Publishes a generation transition into the checkout.
     pub async fn materialize(
         &self,
@@ -27,9 +23,7 @@ where
             .inner
             .switched
             .lock()
-            .map_err(|_| {
-                WorkspaceGitExecutor::<F>::error("Git workspace switch lock is unavailable")
-            })?
+            .map_err(|_| Error::Conflict("Git workspace switch lock is unavailable".into()))?
             .as_ref()
             .map_or_else(
                 || self.inner.current.clone(),
@@ -82,52 +76,49 @@ where
     Ok(())
 }
 
-impl<F, Fut> GitFilesystemExecutor for RootMaterializingGitExecutor<'_, F>
-where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
-{
+impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_, '_> {
     type Error = Error;
 
-    async fn validate(&self) -> Result<(), Self::Error> {
-        self.inner.validate().await
+    fn validate(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<(), Self::Error>> {
+        self.inner.validate()
     }
 
-    async fn validate_merge_resolution(
-        &self,
+    fn validate_merge_resolution<'a>(
+        &'a self,
         operation: OperationId,
-        action: &GitFilesystemAction,
+        action: &'a GitFilesystemAction,
         tree: GitTreeRef,
-    ) -> Result<GitFilesystemResult, Self::Error> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
         self.inner
             .validate_merge_resolution(operation, action, tree)
-            .await
     }
 
-    async fn execute(
-        &self,
+    fn execute<'a>(
+        &'a self,
         operation_id: OperationId,
-        action: &GitFilesystemAction,
-    ) -> Result<GitFilesystemResult, Self::Error> {
-        let from = self
-            .inner
-            .current
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| Error::from(failure.error))?
-            .value;
-        self.validate().await?;
-        let result = self.inner.execute(operation_id, action).await;
-        // Conflict projection is an intentional state transition: the join
-        // executor leaves the Git transition pending and returns an error so
-        // the caller can present the typed conflicts. Materialize that new
-        // generation before propagating the error, otherwise the checkout
-        // would never expose the files the user must edit.
-        let materialized = self.materialize(operation_id, from).await;
-        match (result, materialized) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), Ok(())) | (_, Err(error)) => Err(error),
-        }
+        action: &'a GitFilesystemAction,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<GitFilesystemResult, Self::Error>> {
+        acyclic_stream::erase_provider_future(move || async move {
+            let from = self
+                .inner
+                .current
+                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .map_err(|failure| Error::from(failure.error))?
+                .value;
+            self.validate().await?;
+            let result = self.inner.execute(operation_id, action).await;
+            // Conflict projection is an intentional state transition: the join
+            // executor leaves the Git transition pending and returns an error so
+            // the caller can present the typed conflicts. Materialize that new
+            // generation before propagating the error, otherwise the checkout
+            // would never expose the files the user must edit.
+            let materialized = self.materialize(operation_id, from).await;
+            match (result, materialized) {
+                (Ok(result), Ok(())) => Ok(result),
+                (Err(error), Ok(())) | (_, Err(error)) => Err(error),
+            }
+        })
     }
 }
 
