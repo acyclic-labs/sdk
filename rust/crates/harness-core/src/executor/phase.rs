@@ -138,11 +138,13 @@ impl DispatchPhase {
 
 /// Dispatch claims use the provider's pre-admitted durable publication. A
 /// barrier constructed after a committed start could strand an unissued effect.
-pub(crate) async fn claim<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+pub(crate) fn claim<T>(
+    future: impl std::future::Future<Output = Result<T>>,
+) -> impl std::future::Future<Output = Result<T>> {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    return acyclic_stream::requiring_durability(future).await;
+    return acyclic_stream::requiring_durability(future);
     #[cfg(not(all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
-    future.await
+    future
 }
 
 /// Semantic publication scopes, not a count of commits or physical flushes.
@@ -183,11 +185,15 @@ impl Publication {
     }
 }
 
-pub(crate) async fn run<T>(
+pub(crate) async fn run<T, F>(
     journal: &dyn ExecutionJournal,
     io: Option<&PreparationIo>,
-    future: impl std::future::Future<Output = Result<T>>,
-) -> Result<T> {
+    build: impl FnOnce() -> F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask,
+{
+    let future = crate::conversation::BoundedContentFuture::new(io, build)?;
     PreparedPhase::new(journal, io)?.run(future).await
 }
 

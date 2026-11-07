@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/mcp/http/body.rs
++++ b/rust/crates/harness-core/src/mcp/http/body.rs
+@@ -79,7 +79,7 @@
+                     return Poll::Ready(Some(Err(Error::Indeterminate(*this.operation))));
+                 };
+                 // Bytes::truncate only changes its view; no payload copy.
+-                chunk.truncate(allowed as usize);
++                chunk = Bytes::copy_from_slice(&chunk[..allowed as usize]);
+                 Poll::Ready(Some(Ok(chunk)))
+             }
+             Poll::Ready(other) => {

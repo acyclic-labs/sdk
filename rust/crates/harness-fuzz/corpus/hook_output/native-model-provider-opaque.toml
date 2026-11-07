@@ -1,0 +1,2 @@
+model_provider = "configured"
+model = "vendor/family/model"

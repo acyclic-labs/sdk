@@ -128,9 +128,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<Checkout<A, O>, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .checkout_accounted(selector, mode, &mut accounting, cancellation)
-            .await;
+        let result = async {
+            crate::heap_future::in_borrowed_frame!(&mut accounting, |accounting| async move {
+                self.checkout_accounted(selector, mode, accounting, cancellation)
+                    .await
+            })
+        }
+        .await;
         budget.finish(result, &accounting)
     }
 

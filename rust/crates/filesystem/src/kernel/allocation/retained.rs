@@ -62,16 +62,29 @@ impl Drop for StandaloneReadAccounting {
 }
 
 /// The physical read state is destroyed before its original accounting frame.
-/// Fresh standalone frames move inline, without allocating a handoff owner.
+/// One allocation holds the complete cursor, independently of its page count.
 pub(crate) struct ReadOwner<T> {
-    value: T,
+    value: Box<T>,
+    _allocation: KernelOwnedAllocation,
     accounting: ReadAccounting,
 }
 
 impl<T> ReadOwner<T> {
-    pub(crate) fn new(accounting: KernelAccounting<'_>, value: T) -> Result<Self, crate::FsError> {
-        let accounting = ReadAccounting::consume(accounting)?;
-        Ok(Self { value, accounting })
+    #[inline(never)]
+    pub(crate) fn new(
+        accounting: KernelAccounting<'_>,
+        create: impl FnOnce() -> T,
+    ) -> Result<Self, crate::FsError> {
+        let mut accounting = ReadAccounting::consume(accounting)?;
+        let bytes = usize_to_u64(size_of::<T>());
+        let allocation = accounting
+            .borrow()
+            .claim_owned(bytes, u64::from(bytes != 0))?;
+        Ok(Self {
+            value: Box::new(create()),
+            _allocation: allocation,
+            accounting,
+        })
     }
 
     pub(crate) fn borrow(&mut self) -> (&mut T, KernelAccounting<'_>) {
@@ -466,6 +479,32 @@ mod tests {
     #[test]
     fn owned_reader_keeps_original_budget_cancellation_and_native_invocation()
     -> Result<(), crate::FsError> {
+        for budget in [
+            WorkBudget {
+                allocation_operations: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            WorkBudget {
+                peak_allocation_bytes: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+        ] {
+            let cancel = crate::CancellationToken::new();
+            let caller = KernelAccounting::standalone(budget, &cancel);
+            let constructed = std::cell::Cell::new(false);
+            let refused = ReadOwner::new(caller, || {
+                constructed.set(true);
+                1_u8
+            });
+            assert!(matches!(
+                refused,
+                Err(crate::FsError::Work(WorkError::BudgetExceeded { .. }))
+            ));
+            assert!(
+                !constructed.get(),
+                "read state preceded its original credit"
+            );
+        }
         let cancel = crate::CancellationToken::new();
         let mut caller = KernelAccounting::standalone(
             WorkBudget {
@@ -476,8 +515,11 @@ mod tests {
         );
         caller.charge_items(1)?;
         let before = caller.spent();
-        let mut reader = ReadOwner::new(caller, None::<Observe>)?;
-        assert_eq!(reader.borrow().1.spent(), before);
+        let mut reader = ReadOwner::new(caller, || None::<Observe>)?;
+        let mut funded = before;
+        funded.allocation_operations += 1;
+        funded.peak_allocation_bytes = usize_to_u64(size_of::<Option<Observe>>());
+        assert_eq!(reader.borrow().1.spent(), funded);
         reader.borrow().1.charge_items(1)?;
         assert!(matches!(
             reader.borrow().1.charge_items(1),
@@ -498,7 +540,7 @@ mod tests {
         // lease remains funded after the reader itself is gone.
         let cancel = crate::CancellationToken::new();
         let caller = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
-        let mut reader = ReadOwner::new(caller, None::<Observe>)?;
+        let mut reader = ReadOwner::new(caller, || None::<Observe>)?;
         let (state, mut accounting) = reader.borrow();
         let page = RetainedAllocation::claim(73, 1, &mut accounting)?;
         let ledger = match &page {
@@ -530,7 +572,10 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .allocations
             .live_bytes;
-        assert_eq!(live, minimum - 127);
+        assert_eq!(
+            live,
+            minimum - 127 - usize_to_u64(size_of::<Option<Observe>>())
+        );
         drop(page);
         assert_eq!(
             ledger
@@ -550,7 +595,7 @@ mod tests {
                     .map_err(|(error, _)| crate::FsError::from(error))?;
             let caller = KernelAccounting::native(&original, &caller_cancel);
             let before = original.receipt();
-            let mut reader = ReadOwner::new(caller, ())?;
+            let mut reader = ReadOwner::new(caller, || ())?;
             assert_eq!(
                 original.receipt(),
                 before,

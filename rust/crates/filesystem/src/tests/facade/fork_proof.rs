@@ -473,11 +473,25 @@ async fn composed_publication_work(
         let discarded = std::mem::take(&mut *fs.inner.publication_proof.inner.lock().unwrap());
         drop(discarded);
     }
-    let child = fs.open_workspace("composed-child", B, &cancel).await?.value;
-    let mut transaction = child
-        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
-        .await?
-        .value;
+    let opening = fs.open_workspace("composed-child", B, &cancel);
+    // The public callers retain their ledger and owned result, plus a small
+    // polling handle. Traversal and authority futures belong to that handle.
+    let bound =
+        std::mem::size_of::<KernelAccounting<'_>>() + std::mem::size_of::<WorkBudget>() + 1024;
+    let opening_bytes = std::mem::size_of_val(&opening);
+    assert!(
+        opening_bytes <= bound,
+        "workspace open embeds {opening_bytes} bytes"
+    );
+    let child = opening.await?.value;
+    let beginning = child.begin_transaction(crate::IdempotencyKey::new(), B, &cancel);
+    let beginning_bytes = std::mem::size_of_val(&beginning);
+    assert!(
+        beginning_bytes <= bound,
+        "checkout embeds {beginning_bytes} bytes"
+    );
+    eprintln!("workspace callers: open={opening_bytes} checkout={beginning_bytes} bound={bound}");
+    let mut transaction = beginning.await?.value;
     transaction.write_text("/new", "child only").await?;
     let receipt = transaction
         .commit(

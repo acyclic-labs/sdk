@@ -323,6 +323,7 @@ dependencies = [
  "nix 0.31.3",
  "notify",
  "parking_lot 0.13.0",
+ "pin-project-lite",
  "proptest",
  "prost",
  "prost-reflect",

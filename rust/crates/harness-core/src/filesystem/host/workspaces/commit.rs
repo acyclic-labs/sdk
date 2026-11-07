@@ -36,21 +36,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             acyclic_fs::StagedContent,
         )>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
-        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
-            let operation = bounded_io::operation_key(&key, Some(io))?;
-            let publication = self.publish_selected_operation(
-                workspace,
-                mutations,
-                operation,
-                io,
-                FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
-                staged,
-            );
-            match root_cut {
-                Some(cut) => cut.scope(publication).await,
-                None => publication.await,
-            }
-        })
+        self.publish_selected_operation(
+            workspace,
+            mutations,
+            move || bounded_io::operation_key(&key, Some(io)),
+            io,
+            FilePublication::Authorized(authorization.0, authorization.1, authorization.2),
+            root_cut,
+            staged,
+        )
     }
 
     fn publish_generation<'a>(
@@ -81,78 +75,98 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let workspace = self.open(reference, Some(io)).await?;
             let operation = bounded_io::operation_key(&key, Some(io))?;
-            self.publish_selected_operation(&workspace, mutations, operation, io, publication, None)
-                .await
+            self.publish_selected_operation(
+                &workspace,
+                mutations,
+                move || Ok(operation),
+                io,
+                publication,
+                None,
+                None,
+            )?
+            .await
         })
     }
 
-    pub(in crate::filesystem::host) async fn publish_selected_operation(
-        &self,
-        workspace: &Workspace<A, O>,
-        mutations: &[WorkspaceMutation],
-        operation: FilesystemKey,
-        io: &PreparationIo,
-        publication: FilePublication<'_>,
+    pub(in crate::filesystem::host) fn publish_selected_operation<'a>(
+        &'a self,
+        workspace: &'a Workspace<A, O>,
+        mutations: &'a [WorkspaceMutation],
+        operation: impl FnOnce() -> Result<FilesystemKey> + acyclic_stream::ProviderTask + 'a,
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+        root_cut: Option<acyclic_fs::PolicyCut>,
         staged: Option<(
             acyclic_fs::Transaction<A, O>,
             String,
             acyclic_fs::StagedContent,
         )>,
-    ) -> Result<Generation<A, O>> {
-        let expected = match publication {
-            FilePublication::Replace(expected) => expected,
-            FilePublication::Authorized(..) => None,
-        };
-        let (prepared, content) = match staged {
-            Some((transaction, path, content)) => (Some(transaction), Some((path, content))),
-            None => (None, None),
-        };
-        let mut transaction = if let Some(transaction) = prepared {
-            transaction
-        } else if matches!(publication, FilePublication::Replace(_)) {
-            let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || {
+            let operation = async move {
+                let operation = operation()?;
+                let expected = match publication {
+                    FilePublication::Replace(expected) => expected,
+                    FilePublication::Authorized(..) => None,
+                };
+                let (prepared, content) = match staged {
+                    Some((transaction, path, content)) => {
+                        (Some(transaction), Some((path, content)))
+                    }
+                    None => (None, None),
+                };
+                let mut transaction = if let Some(transaction) = prepared {
+                    transaction
+                } else if matches!(publication, FilePublication::Replace(_)) {
+                    let pinned = match expected {
+                        Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                        None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                    };
+                    io.sdk(
+                        workspace
+                            .begin_transaction_at(&pinned, operation, io, io.cancellation())
+                            .await,
+                    )?
+                } else {
+                    io.sdk(
+                        workspace
+                            .begin_transaction(operation, io, io.cancellation())
+                            .await,
+                    )?
+                };
+                if let Some(fence) = publication.fence() {
+                    io.sdk(
+                        transaction
+                            .observe_policy_fence(fence, io, io.cancellation())
+                            .await,
+                    )?;
+                }
+                #[cfg(test)]
+                if let Some(pause) = &self.publication_pause {
+                    pause().await;
+                }
+                Self::publish_mutations(&mut transaction, mutations, io)?.await?;
+                if let Some((path, content)) = content {
+                    io.sdk(
+                        transaction
+                            .write_staged(&path, &[content], io, io.cancellation())
+                            .await,
+                    )?;
+                }
+                Self::commit_publication(transaction, io, publication)?.await
             };
-            io.sdk(
-                workspace
-                    .begin_transaction_at(&pinned, operation, io, io.cancellation())
-                    .await,
-            )?
-        } else {
-            io.sdk(
-                workspace
-                    .begin_transaction(operation, io, io.cancellation())
-                    .await,
-            )?
-        };
-        if let Some(fence) = publication.fence() {
-            io.sdk(
-                transaction
-                    .observe_policy_fence(fence, io, io.cancellation())
-                    .await,
-            )?;
-        }
-        #[cfg(test)]
-        if let Some(pause) = &self.publication_pause {
-            pause().await;
-        }
-        Self::publish_mutations(&mut transaction, mutations, io).await?;
-        if let Some((path, content)) = content {
-            io.sdk(
-                transaction
-                    .write_staged(&path, &[content], io, io.cancellation())
-                    .await,
-            )?;
-        }
-        Self::commit_publication(transaction, io, publication).await
+            match root_cut {
+                Some(cut) => futures::future::Either::Left(cut.scope(operation)),
+                None => futures::future::Either::Right(operation),
+            }
+        })
     }
-    async fn publish_mutations(
-        transaction: &mut acyclic_fs::Transaction<A, O>,
-        mutations: &[WorkspaceMutation],
-        io: &PreparationIo,
-    ) -> Result<()> {
-        crate::conversation::BoundedContentFuture::new(Some(io), || async {
+    fn publish_mutations<'a>(
+        transaction: &'a mut acyclic_fs::Transaction<A, O>,
+        mutations: &'a [WorkspaceMutation],
+        io: &'a PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 if Self::stage_publication_batch(
@@ -188,30 +202,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
             Ok(())
-        })?
-        .await
+        })
     }
 
-    pub(in crate::filesystem::host) async fn commit_publication(
+    pub(in crate::filesystem::host) fn commit_publication<'a>(
         transaction: acyclic_fs::Transaction<A, O>,
-        io: &PreparationIo,
-        publication: FilePublication<'_>,
-    ) -> Result<Generation<A, O>> {
-        Self::commit_contextual_publication(transaction, io, publication, None).await
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        Self::commit_contextual_publication(transaction, io, publication, None)
     }
 
-    pub(in crate::filesystem::host) async fn commit_contextual_publication(
+    pub(in crate::filesystem::host) fn commit_contextual_publication<'a>(
         mut transaction: acyclic_fs::Transaction<A, O>,
-        io: &PreparationIo,
-        publication: FilePublication<'_>,
+        io: &'a PreparationIo,
+        publication: FilePublication<'a>,
         context: Option<(
             acyclic_fs::Digest,
             acyclic_stream::OwnedBytes,
             acyclic_fs::PublicationPermit,
         )>,
-    ) -> Result<Generation<A, O>> {
-        let commit = crate::conversation::BoundedContentFuture::new(Some(io), || async {
-            loop {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let commit = loop {
                 let context = context.clone();
                 let commit = 'commit: {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -306,20 +319,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 {
                     continue;
                 }
-                break Ok(commit);
+                break commit;
+            };
+            match commit {
+                TransactionCommit::Committed(generation)
+                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                TransactionCommit::Conflict { .. }
+                | TransactionCommit::Fenced
+                | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Conflict,
+                    "workspace publication conflicted or was fenced",
+                )),
             }
-        })?
-        .await?;
-        match commit {
-            TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. }
-            | TransactionCommit::Fenced
-            | TransactionCommit::IdempotencyConflict => Err(stock_boundary(
-                Some(io),
-                crate::wire::ErrorCode::Conflict,
-                "workspace publication conflicted or was fenced",
-            )),
-        }
+        })
     }
 }

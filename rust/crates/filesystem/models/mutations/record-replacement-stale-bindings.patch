@@ -1,10 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/generation_mutation.rs b/rust/crates/filesystem/src/kernel/generation_mutation.rs
 --- a/rust/crates/filesystem/src/kernel/generation_mutation.rs
 +++ b/rust/crates/filesystem/src/kernel/generation_mutation.rs
-@@ -1416,7 +1416,6 @@
+@@ -1443,8 +1443,6 @@
+                     }
                      let current = self.record(leaf, *file_id)?.working;
                      self.record_mut(leaf, *file_id)?.working = FileRecord {
-                         link_count: current.link_count,
 -                        bindings: current.bindings,
+-                        link_count: current.link_count,
                          ..*record
                      };
                  }
