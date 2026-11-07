@@ -218,7 +218,16 @@ pub(crate) fn watch_progress() {
             let mut cx = Context::from_waker(&waker);
             let mut changed = Box::pin(receiver.changed());
             assert!(changed.as_mut().poll(&mut cx).is_pending());
-            sender.send_modify(|value| *value += 1);
+            assert!(!sender.send_if_modified(|_| false));
+            assert!(
+                !flag.0.load(Ordering::SeqCst),
+                "unmodified watch publication woke a parked reader"
+            );
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            assert!(sender.send_if_modified(|value| {
+                *value += 1;
+                true
+            }));
             assert!(
                 flag.0.swap(false, Ordering::SeqCst),
                 "publication lost wake"

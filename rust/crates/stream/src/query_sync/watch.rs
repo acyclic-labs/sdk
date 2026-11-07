@@ -109,19 +109,30 @@ impl<T> Sender<T> {
 
     /// Mutates and publishes, even when the value compares equal.
     pub fn send_modify(&self, update: impl FnOnce(&mut T)) {
+        self.send_if_modified(|value| {
+            update(value);
+            true
+        });
+    }
+
+    /// Mutates under the value lock and publishes only when requested.
+    pub fn send_if_modified(&self, update: impl FnOnce(&mut T) -> bool) -> bool {
         let waiters = {
             let mut value = self
                 .0
                 .value
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            update(&mut value.data);
+            if !update(&mut value.data) {
+                return false;
+            }
             value.version = value.version.wrapping_add(1);
             std::mem::take(&mut value.waiters)
         };
         for waiter in waiters {
             waiter.wake();
         }
+        true
     }
 }
 

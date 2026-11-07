@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "revision-publication-progress": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::parks_until_applied_and_refuses_foreign_incarnations",
+    "unchanged applied revision woke a parked reader", ["--no-default-features"],
+  ],
+  "conditional-watch-parity": [
+    "rust/crates/stream/src/query_sync/watch.rs", "acyclic-stream-publication-models",
+    "watch_publication_cancellation_and_loss_match_tokio",
+    "unmodified watch publication woke a parked reader", ["--features", "model-checking"],
+    { target: ["--test", "publication"], loom: true },
+  ],
   "journal-cancellation-progress": [
     "rust/crates/stream/src/replicated.rs", "acyclic-cloudflare-conformance", "",
     "cancelled journal append left its public follow parked", [],

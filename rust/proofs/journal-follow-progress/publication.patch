@@ -1,10 +1,10 @@
 diff --git a/rust/crates/stream/src/lib/revision.rs b/rust/crates/stream/src/lib/revision.rs
 --- a/rust/crates/stream/src/lib/revision.rs
 +++ b/rust/crates/stream/src/lib/revision.rs
-@@ -529,6 +529,8 @@
-     pub fn advance(&self, index: u64) {
-         self.applied
-             .send_modify(|applied| applied.index = applied.index.max(index));
+@@ -535,6 +535,8 @@
+             applied.index = index;
+             true
+         });
 +        #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
 +        self.retired.notify_waiters();
      }

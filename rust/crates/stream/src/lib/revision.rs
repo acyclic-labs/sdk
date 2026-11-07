@@ -526,10 +526,15 @@ impl AppliedRevisions {
     }
 
     /// Publishes application through `index` and wakes every parked read whose
-    /// minimum it covers. Lower indexes never move the applied revision back.
+    /// minimum it covers. Equal and lower indexes leave parked reads asleep.
     pub fn advance(&self, index: u64) {
-        self.applied
-            .send_modify(|applied| applied.index = applied.index.max(index));
+        self.applied.send_if_modified(|applied| {
+            if index <= applied.index {
+                return false;
+            }
+            applied.index = index;
+            true
+        });
     }
 
     /// Ends this incarnation: every parked and later wait refuses as unavailable.
@@ -655,18 +660,58 @@ mod tests {
 
     #[tokio::test]
     async fn parks_until_applied_and_refuses_foreign_incarnations() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Observer(AtomicUsize);
+        impl futures::task::ArcWake for Observer {
+            fn wake_by_ref(observer: &Arc<Self>) {
+                observer.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         let authority = AppliedRevisions::in_process();
         let wanted = authority.at(2);
         let cut = RevisionCut::of(wanted.clone());
         let parked = authority.wait(&cut);
         tokio::pin!(parked);
-        assert!(futures::poll!(parked.as_mut()).is_pending());
+        let observer = Arc::new(Observer(AtomicUsize::new(0)));
+        let waker = futures::task::waker(observer.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(parked.as_mut().poll(&mut context).is_pending());
+        for index in [0, 0] {
+            authority.advance(index);
+            assert_eq!(
+                observer.0.load(Ordering::Relaxed),
+                0,
+                "unchanged applied revision woke a parked reader"
+            );
+            assert!(parked.as_mut().poll(&mut context).is_pending());
+        }
         authority.advance(1);
+        assert_eq!(observer.0.load(Ordering::Relaxed), 1);
         assert!(
-            futures::poll!(parked.as_mut()).is_pending(),
+            parked.as_mut().poll(&mut context).is_pending(),
             "applied 1 must not satisfy minimum 2"
         );
+        let covered = RevisionCut::of(authority.at(1));
+        for index in [1, 0, 1] {
+            authority.advance(index);
+            assert_eq!(
+                observer.0.load(Ordering::Relaxed),
+                1,
+                "unchanged applied revision woke a parked reader"
+            );
+            assert!(parked.as_mut().poll(&mut context).is_pending());
+            assert_eq!(
+                futures::FutureExt::now_or_never(authority.wait(&covered)),
+                Some(Ok(authority.at(1))),
+                "older publication regressed a covered revision"
+            );
+        }
         authority.advance(2);
+        assert_eq!(observer.0.load(Ordering::Relaxed), 2);
         assert_eq!(parked.await.unwrap(), wanted);
         assert_eq!(authority.wait(&cut).await.unwrap(), wanted);
 
@@ -691,9 +736,14 @@ mod tests {
         let closing_cut = RevisionCut::of(authority.at(9));
         let closing = authority.wait(&closing_cut);
         tokio::pin!(closing);
-        assert!(futures::poll!(closing.as_mut()).is_pending());
+        assert!(closing.as_mut().poll(&mut context).is_pending());
         authority.close();
+        assert_eq!(observer.0.load(Ordering::Relaxed), 3);
         assert_eq!(closing.await, Err(StreamError::Unavailable));
+        assert_eq!(
+            authority.wait(&closing_cut).await,
+            Err(StreamError::Unavailable)
+        );
     }
 
     #[test]
