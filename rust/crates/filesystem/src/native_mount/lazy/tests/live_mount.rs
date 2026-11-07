@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::Ordering;
 #[tokio::test(flavor = "multi_thread")]
 async fn live_mount_shows_changes_made_to_its_source() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

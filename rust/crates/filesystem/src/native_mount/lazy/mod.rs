@@ -26,7 +26,6 @@ use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
@@ -38,9 +37,13 @@ struct CursorEntry<T> {
     cursor: T,
 }
 
+struct CursorState<T> {
+    entries: BTreeMap<u64, CursorEntry<T>>,
+    next: u64,
+}
+
 struct CursorTable<T> {
-    entries: Mutex<BTreeMap<u64, CursorEntry<T>>>,
-    next: AtomicU64,
+    state: Mutex<CursorState<T>>,
 }
 
 enum Resolution {

@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/native_mount/lazy/cursors.rs
++++ b/rust/crates/filesystem/src/native_mount/lazy/cursors.rs
+@@ -17,7 +17,7 @@
+     ) -> Result<[u8; 8], MountSourceError> {
+         let mut state = self.state.lock().map_err(|_| MountSourceError::Stale)?;
+         let token = state.next;
+-        state.next = token.checked_add(1).ok_or(crate::WorkError::Overflow)?;
++        state.next = token.wrapping_add(1).max(1);
+         let entries = &mut state.entries;
+         while entries.len() >= MAXIMUM_LAZY_DIRECTORY_CURSORS {
+             let Some(oldest) = entries.first_key_value().map(|(&key, _)| key) else {
