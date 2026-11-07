@@ -273,11 +273,12 @@ impl AgentControls {
 
     /// Select a descendant on this pool. Its host may enroll read-only access
     /// to the descendant's private output; command identity never changes.
-    pub async fn select(
+    #[inline(never)]
+    pub fn select(
         &self,
         agent: acyclic_harness_core::agent::AgentPath,
-    ) -> Result<(Self, String), AgentExchangeError> {
-        self.discover_selected(Some(agent)).await
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<(Self, String), AgentExchangeError>> {
+        Box::pin(self.discover_selected(Some(agent)))
     }
 
     async fn discover_selected(
