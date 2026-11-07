@@ -774,13 +774,6 @@ impl NativeRecoveryState {
                 // Only preservation may settle the retained target's flushes.
                 return Err(NativeMountError::ControlPending);
             }
-            #[cfg(all(test, loom, target_os = "linux"))]
-            if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release()) {
-                self.guard
-                    .as_mut()
-                    .ok_or(NativeMountError::ControlPending)?
-                    .release(&mut &*work)?;
-            }
             if !self.driver_step_complete {
                 recover_driver_with_work(&mut self.control, destination, remove_destination, work)?;
                 if self.control.controls_pending() {

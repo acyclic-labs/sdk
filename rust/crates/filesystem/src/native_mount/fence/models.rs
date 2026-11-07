@@ -8,8 +8,7 @@ fn cleanup_after_contended_registry(
     helper_stat: rustix::fs::Stat,
     broken: bool,
 ) {
-    let kernel =
-        super::super::disconnected::kernel::Kernel::install(base, helper_stat, false, false);
+    let kernel = super::super::disconnected::kernel::Kernel::install(base, helper_stat, false);
     let state = destination
         .parent()
         .unwrap()
@@ -124,8 +123,7 @@ fn retirement_preserves_registry_identity_for_pending_and_new_starters() {
     .unwrap();
     let helper_stat = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
     let scenario = move |broken| {
-        let kernel =
-            super::super::disconnected::kernel::Kernel::install(base, helper_stat, false, false);
+        let kernel = super::super::disconnected::kernel::Kernel::install(base, helper_stat, false);
         kernel.set_registry_directory(state.clone());
         let work = NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
@@ -176,8 +174,7 @@ fn threads_sharing_the_registry_descriptor_are_admitted_one_at_a_time() {
     .unwrap();
     let helper_stat = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
     let scenario = move |broken| {
-        let kernel =
-            super::super::disconnected::kernel::Kernel::install(base, helper_stat, false, false);
+        let kernel = super::super::disconnected::kernel::Kernel::install(base, helper_stat, false);
         kernel.set_registry_directory(state.clone());
         if broken {
             // The flock alone: every thread shares the descriptor that owns it.
