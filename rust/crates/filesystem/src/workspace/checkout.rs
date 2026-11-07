@@ -140,14 +140,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Checkout<A, O>, WorkspaceError> {
-        let mut checkout = self
-            .volume
-            .checkout_accounted(selector, mode, accounting, cancellation)
-            .await
-            .map_err(WorkspaceError::from)?;
-        self.check_access(&mut checkout, accounting, cancellation)
-            .await?;
-        Ok(checkout)
+        crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {
+            let mut checkout = self
+                .volume
+                .checkout_accounted(selector, mode, accounting, cancellation)
+                .await
+                .map_err(WorkspaceError::from)?;
+            self.check_access(&mut checkout, accounting, cancellation)
+                .await?;
+            Ok(checkout)
+        })
     }
 
     pub(crate) async fn open_checkout(

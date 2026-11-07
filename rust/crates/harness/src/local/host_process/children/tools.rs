@@ -5,7 +5,7 @@
 //! and the children's ready queue together: no thread, timer or poll per
 //! child, and no pass rebuilds or probes a quiet child's readiness.
 use super::*;
-use crate::mcp::stdio::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
+use crate::mcp::stdio::{ServeError, Settled, ToolCall, ToolProvider, ToolServer, Wake};
 use serde_json::json;
 use std::collections::BTreeSet;
 
@@ -40,10 +40,17 @@ pub fn serve(host: &str) -> Result<()> {
         .children
         .as_mut()
         .map_or(Ok(()), NativeChildren::shutdown);
-    served.and(stopped)
+    served
+        .map_err(|error| match error {
+            ServeError::Io(error) => Error::Storage(error.to_string()),
+            ServeError::Provider(error) => error,
+        })
+        .and(stopped)
 }
 
 impl ToolProvider for Coordination {
+    type Error = Error;
+
     fn tools(&self) -> Value {
         // Spawn admits new work through the harness approval hook. The others
         // act only on this owner's own children, keep their history, and say

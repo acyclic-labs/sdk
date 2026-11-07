@@ -10,6 +10,36 @@ import {decodeCompletion} from './process-completion.mjs';
 
 const signalNames = new Map(Object.entries(constants.signals).map(([name, number]) => [number, name]));
 
+/** Admit the native owner's independent cancellation endpoint before launch.
+ * Closing the caller end cancels through that same owner, preserving its
+ * physical retirement and completion receipt while command stdin stays free.
+ */
+export async function listenProcessControl(endpoint, failed) {
+  const server = createServer();
+  let control, stopped = false;
+  const stop = () => { stopped = true; control?.end(); };
+  server.on('connection', accepted => {
+    if (control) { accepted.destroy(); return; }
+    control = accepted;
+    accepted.on('error', failed);
+    if (stopped) accepted.end();
+  });
+  server.on('error', failed);
+  const close = async () => {
+    control?.destroy();
+    await new Promise((resolve, reject) => server.close(error => {
+      if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error); else resolve();
+    }));
+  };
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(endpoint, () => { server.removeListener('error', reject); resolve(); });
+    });
+  } catch (error) { await close(); throw error; }
+  return {stop, close};
+}
+
 /** Run under the SDK's native process-tree owner. The caller supplies the
  * installed acyclic-process-host executable, cancellation and output policy.
  * Cancellation closes its independent control channel; native custody kills
@@ -36,7 +66,6 @@ export async function commandProcess(program, args, {host, signal, input, env, c
   const endpoint = process.platform === 'win32'
     ? `\\\\.\\pipe\\acyclic-process-${invocation}` : join(directory, 'control');
   const receipt = join(directory, 'completion');
-  const server = createServer();
   let control, stopped = false, child, result, closed, terminalCompletion, completionRead;
   let inputClosed = Promise.resolve(), outputClosed = Promise.resolve();
   let terminalReported = false, rootClosed = false;
@@ -59,7 +88,7 @@ export async function commandProcess(program, args, {host, signal, input, env, c
   };
   const stop = () => {
     stopped = true;
-    control?.end();
+    control?.stop();
     endInput();
   };
   const fail = (phase, error, stream) => {
@@ -68,18 +97,8 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     stop();
   };
   const aborted = () => fail('abort', signal.reason);
-  server.on('connection', accepted => {
-    if (control) { accepted.destroy(); return; }
-    control = accepted;
-    accepted.on('error', error => fail('control', error));
-    if (stopped) accepted.end();
-  });
-  server.on('error', error => fail('control', error));
   try {
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(endpoint, () => { server.removeListener('error', reject); resolve(); });
-    });
+    control = await listenProcessControl(endpoint, error => fail('control', error));
     // Abort before spawn admits no executable. After spawn it stays armed
     // through accepted output writes and physical retirement.
     signal?.throwIfAborted();
@@ -148,11 +167,8 @@ export async function commandProcess(program, args, {host, signal, input, env, c
     if (child && !rootClosed) { stop(); await closed; }
     await Promise.all([inputClosed, outputClosed, terminalCompletion]);
     signal?.removeEventListener('abort', aborted);
-    control?.destroy();
     try {
-      await new Promise((resolve, reject) => server.close(error => {
-        if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error); else resolve();
-      }));
+      await control?.close();
     } finally { await rm(directory, {recursive: true, force: true}); }
   }
 }

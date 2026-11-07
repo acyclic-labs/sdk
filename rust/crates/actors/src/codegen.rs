@@ -43,11 +43,25 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
             &[protoc_proto_root, shared_root, include_path],
         )
         .map_err(|error| io::Error::other(format!("Actors tonic generation failed: {error}")))?;
-    fs::write(
-        &descriptor,
+    let descriptor_bytes =
         acyclic_proto_build::canonicalize(&fs::read(&descriptor)?, &["actors/v1/actors.proto"])
-            .map_err(|error| io::Error::other(error.to_string()))?,
-    )?;
+            .map_err(|error| io::Error::other(error.to_string()))?;
+    fs::write(&descriptor, &descriptor_bytes)?;
+    acyclic_proto_build::write_authorization(
+        &descriptor_bytes,
+        "acyclic.actors.v1.ActorsService",
+        "ActorsMethod",
+        output_root,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    let rust = acyclic_proto_build::product_authorization(
+        &descriptor_bytes,
+        "acyclic.actors.v1.ActorsService",
+        "WorkersMethod",
+        Some("workers"),
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
+    fs::write(output_root.join("workers_authorization.rs"), rust)?;
     if std::env::var("CARGO_CFG_TARGET_ARCH").map_err(io::Error::other)? != "wasm32" {
         let transport = rust_root.join("acyclic.actors.v1.rs");
         let observed = acyclic_grpc_observability::codegen::observe_clients(

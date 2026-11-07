@@ -1411,11 +1411,11 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             },
         )?;
         assert_eq!(page["references"], serde_json::json!(["endpoint-boundary"]));
-        let turn = session(SessionAction::Next)?;
+        let turn = session(SessionAction::Next {})?;
         assert_eq!(turn["prompt"], "fixture prompt");
         assert_eq!(turn["task"], spawned["task"]);
         assert!(
-            session(SessionAction::Next).is_err(),
+            session(SessionAction::Next {}).is_err(),
             "a claimed input cannot be claimed twice"
         );
         assert!(
@@ -1453,14 +1453,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         })?;
         assert_eq!(reply["reply"]["outcome"], expected);
         assert!(reply.get("results").is_none(), "a reply carries its outcome once");
-        assert_eq!(session(SessionAction::Observe)?["results"][0]["outcome"], expected);
+        assert_eq!(session(SessionAction::Observe {})?["results"][0]["outcome"], expected);
         // A replayed completion of the settled turn is idempotent.
         assert_eq!(complete(claim)?["status"]["turn"], 1);
-        assert!(session(SessionAction::Next)?.is_null());
+        assert!(session(SessionAction::Next {})?.is_null());
         // A completion fits Event admission even when its real file request
         // envelope and resulting session projection exceed that payload size.
         let sent = session(SessionAction::Send { prompt: "near-bound outcome".into() })?;
-        let turn = session(SessionAction::Next)?;
+        let turn = session(SessionAction::Next {})?;
         let outcome = crate::Outcome::Succeeded(crate::executor::TurnOutput::new(
             "x".repeat(65_336), Value::Null, 1,
         ));

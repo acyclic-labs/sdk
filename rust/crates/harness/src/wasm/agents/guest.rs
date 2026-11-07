@@ -162,9 +162,9 @@ pub(super) fn call(
         Box::pin(async move {
             let (_cancel, interrupt, promise) = started?;
             let reply = JsFuture::from(Promise::resolve(&promise));
-            futures::pin_mut!(reply);
+            let reply = core::pin::pin!(reply);
             let stopped = cancellation.cancelled();
-            futures::pin_mut!(stopped);
+            let stopped = core::pin::pin!(stopped);
             let value = match futures::future::select(reply, stopped).await {
                 futures::future::Either::Left((value, _)) => value,
                 futures::future::Either::Right(((), reply)) => {

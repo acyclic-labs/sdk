@@ -293,7 +293,7 @@ async fn credential_cancellation_with_a_ready_token_stops_before_sending()
     };
     for client in [client.clone(), client] {
         let operation = client.inspect_actor(&request);
-        futures::pin_mut!(operation);
+        let operation = core::pin::pin!(operation);
         assert!(matches!(
             futures::poll!(operation),
             std::task::Poll::Ready(Err(Error::Stopped(

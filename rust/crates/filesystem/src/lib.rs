@@ -12,6 +12,8 @@
 #![doc = include_str!("../README.md")]
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+#[cfg(not(target_arch = "wasm32"))]
+pub use acyclic_fs_wire::{AUTHORIZATION, FsMethod, authorization};
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
 
@@ -342,12 +344,12 @@ pub use native_mount::{
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
     MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
     MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
-    MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
-    MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
-    NativeMountCleanupState, NativeMountControlPaths, NativeMountDrainProof, NativeMountError,
-    NativeMountKind, NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
-    NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
-    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
+    NativeMountCapabilities, NativeMountCleanupState, NativeMountControlPaths,
+    NativeMountDrainProof, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
+    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWorkScope,
+    NativeSourceIoLease, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, initialize_native_mount_services,

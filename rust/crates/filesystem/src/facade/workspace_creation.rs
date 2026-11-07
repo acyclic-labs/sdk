@@ -174,14 +174,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
     /// Observes one original creation without retrying its publication.
+    /// `None` preserves its recorded configuration; a supplied configuration
+    /// must match exactly. Both forms authenticate the original operation.
     pub async fn workspace_for_creation_operation<W: FsWork>(
         &self,
         name: impl AsRef<str>,
-        config: VolumeConfig,
+        config: impl Into<Option<VolumeConfig>>,
         operation_id: OperationId,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Option<crate::Generation<A, O>>, WorkspaceError> {
+        let config = config.into();
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
@@ -199,6 +202,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 Err(error) => return Err(error),
             };
+            let config = config.unwrap_or(creation.config);
             authenticate_named_creation(
                 &creation,
                 operation,
@@ -281,29 +285,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::Workspace<A, O>, WorkspaceError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = (async {
-            let (name, id) = self.workspace_name(name.as_ref(), &mut accounting, cancellation)?;
-            let (creation, _) = self
-                .read_creation(id.volume_id(), &mut accounting, cancellation)
-                .await
-                .map_err(WorkspaceError::from)?;
-            validate_volume_capabilities(creation.config, self.inner.capabilities)?;
-            let volume = Volume {
-                fs: self.clone(),
-                id: id.volume_id(),
-                config: creation.config,
-            };
-            self.workspace_head_state(&volume, &mut accounting, cancellation)
-                .await?;
-            Ok(crate::Workspace {
-                name,
-                id,
-                volume,
-                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-                source: None,
-                access: None,
+        let result = async {
+            crate::heap_future::in_borrowed_frame!(&mut accounting, |accounting| async move {
+                let (name, id) = self.workspace_name(name.as_ref(), accounting, cancellation)?;
+                let (creation, _) = self
+                    .read_creation(id.volume_id(), accounting, cancellation)
+                    .await
+                    .map_err(WorkspaceError::from)?;
+                validate_volume_capabilities(creation.config, self.inner.capabilities)?;
+                let volume = Volume {
+                    fs: self.clone(),
+                    id: id.volume_id(),
+                    config: creation.config,
+                };
+                self.workspace_head_state(&volume, accounting, cancellation)
+                    .await?;
+                Ok(crate::Workspace {
+                    name,
+                    id,
+                    volume,
+                    #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                    source: None,
+                    access: None,
+                })
             })
-        })
+        }
         .await;
         budget.finish(result, &accounting)
     }
@@ -367,7 +373,7 @@ pub(super) fn decode_first_creation_record(
         MAXIMUM_VOLUME_EVENT_BYTES,
         &mut |step| projection.observe(step),
     );
-    projection.release_failed()?;
+    projection.retire()?;
     let creation = creation?;
     if creation.volume_id != volume_id {
         return Err(FsError::VolumeMismatch);

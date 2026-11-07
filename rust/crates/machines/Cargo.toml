@@ -19,7 +19,12 @@ consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]
 
 [features]
 conformance = ["acyclic-stream/conformance", "tokio/time"]
-test-support = []
+test-support = [
+    "acyclic-actors/test-support",
+    "acyclic-auth/test-support",
+    "acyclic-native-runtime/test-support",
+    "acyclic-stream/test-support",
+]
 default = ["grpc"]
 
 local = ["dep:rustix", "tokio/time", "tokio/macros"]
@@ -45,6 +50,8 @@ tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
+acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false, features = ["conformance"] }
 proptest.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
@@ -66,7 +73,6 @@ tsify.workspace = true
 wasm-bindgen.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-test-support = { path = "../test-support" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
 tempfile = "3.27.0"
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }

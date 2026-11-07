@@ -1,9 +1,11 @@
 # CI and SDK releases
 
-Every PR and main push runs `SDK Static`, one required job on standard
-GitHub-hosted Ubuntu. It runs `cargo update --workspace --locked` to check
-manifest/lockfile consistency without compiling. The job has a one-minute timeout;
-the initial GitHub run completed in seven seconds. Documentation changes receive
+Every PR and main push runs `SDK Static`, one required Linux job. Run
+`node scripts/check-cargo-lock.mjs` locally to reproduce its manifest and lockfile
+check. The checker compares the lockfile with Cargo's own canonical output from
+`cargo update --workspace`, preserving locked dependency versions while avoiding
+dependency source downloads for metadata. If it changes the file, review and
+commit the result. The job has a one-minute timeout. Documentation changes receive
 the same required check. Superseded static runs are cancelled.
 
 Formatting, whitespace, JSON and JavaScript syntax, pinned Actions, runner policy,

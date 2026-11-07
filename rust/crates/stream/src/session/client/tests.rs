@@ -531,7 +531,8 @@ async fn cancelling_pending_follows_releases_a_silent_handshake() -> TestResult 
     {
         let first = client.follow(crate::FollowRequest::new(StreamPath::new("one")?, 0));
         let second = client.follow(crate::FollowRequest::new(StreamPath::new("two")?, 0));
-        futures::pin_mut!(first, second);
+        let mut first = core::pin::pin!(first);
+        let mut second = core::pin::pin!(second);
         tokio::select! {
             biased;
             _ = &mut first => return Err("first follow completed without Welcome".into()),

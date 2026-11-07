@@ -21,13 +21,8 @@ pub(crate) mod host;
 pub(crate) use host::Pool as HostPool;
 pub use host::blocking_on;
 mod process;
-pub use crate::resources::{
-    Descriptor, ProcessResources, descriptors, descriptors_naming, process_resources,
-    sample_process_resources,
-};
 pub use process::{ProcessCapture, capture_process};
 mod metadata;
-pub mod scale;
 pub mod snapshot;
 pub use metadata::{NativeMetadataInput, NativeTimes, capture_native_times};
 #[cfg(test)]
@@ -342,7 +337,17 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let Some(context) = Context::current() else {
+    // Explicit async submission transfers the retained physical owner's scope;
+    // synchronous host work itself still runs with CURRENT unset.
+    spawn_in_context(Context::simulation(), future)
+}
+
+pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let Some(context) = context else {
         return TaskHandle::native(None, future);
     };
     let active = context.accept("task");
@@ -357,14 +362,6 @@ where
             result
         }),
     )
-}
-
-pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    CURRENT.sync_scope(context, || spawn(future))
 }
 
 /// Executes the real blocking closure, retaining ownership after caller drop.

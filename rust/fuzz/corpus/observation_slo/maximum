@@ -1,0 +1,1 @@
+{"version":1,"operation":"acyclic.test.operation","rpc":null,"success_ppm":1000000,"latency":{"maximum_ns":18446744073709551615,"target_ppm":1000000}}

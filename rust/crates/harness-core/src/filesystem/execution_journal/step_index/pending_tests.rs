@@ -16,7 +16,9 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
         };
         let scope = crate::filesystem::PreparationScope::new(Some(&io))?;
         let mut pending = Pending::default();
+        let mut single_allocations = 0;
         for step in 0..1_000 {
+            let before = io.receipt();
             pending.push(
                 u64::from(step) + 1,
                 [1; 32],
@@ -25,6 +27,19 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
                 None,
                 scope.io(),
             )?;
+            let after = io.receipt();
+            assert_eq!(
+                after.bytes_copied - before.bytes_copied,
+                if step == 1 {
+                    std::mem::size_of::<Entry>() as u64
+                } else {
+                    0
+                },
+                "pending insertion exceeded its one inline promotion copy"
+            );
+            if step == 0 {
+                single_allocations = after.allocation_operations - before.allocation_operations;
+            }
             if ![0, 9, 99, 999].contains(&step) {
                 continue;
             }
@@ -40,26 +55,15 @@ fn recovered_tail_step_lookup_is_bounded_through_one_thousand_unrelated_steps() 
                 examined <= 291,
                 "tail lookup scanned unrelated steps: {examined}"
             );
-            let before = io.receipt();
-            let mut found = 0;
-            for entry in &pending.entries {
-                crate::model::charge_items(Some(&io), 1)?;
-                found += usize::from(entry.entry.step == Some(0));
-            }
-            assert_eq!(found, selected.values.len());
-            let scanned = io.receipt().items_examined - before.items_examined;
-            assert_eq!(scanned, u64::from(step) + 1);
-            if step == 999 {
-                assert!(
-                    scanned > 291,
-                    "the fixed-width lookup oracle accepted the linear scan control"
-                );
-            }
             println!(
-                "pending tail native={native} steps={} indexed_items={examined} scan_items={scanned}",
+                "pending tail native={native} steps={} indexed_items={examined}",
                 step + 1
             );
         }
+        assert_eq!(
+            single_allocations, 0,
+            "single pending entry allocated backing"
+        );
         // Interleaved entries for a step retain reverse journal order, and
         // the combined step bound includes every entry rather than each page.
         pending.push(1_001, [3; 32], [4; 32], Some(0), None, scope.io())?;

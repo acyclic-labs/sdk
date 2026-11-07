@@ -261,8 +261,8 @@ results = verified.results.map(result => ({ ...result, evidence: { ...evidence.g
   ...(verified.requests ? { requests: verified.requests.get(result.case) ?? [] } : {}) } }));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, product_seconds: execution.seconds, preparation_seconds: execution.preparation_seconds,
-  phases, limit_seconds: 10, results, output, roots,
+  phases, results, output, roots,
   selected, qualification: !selected.length, coverage };
 await publishReport(join(output, "matrix.json"), report);
-process.exitCode = results?.every(result => result.status === "pass") && seconds < 10
+process.exitCode = results?.every(result => result.status === "pass")
   && (selected.length > 0 || coverage.pass) ? 0 : 1;

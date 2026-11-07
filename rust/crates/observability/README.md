@@ -153,12 +153,6 @@ cargo test --locked -p acyclic-observability --test operations credited_export_k
 cargo test --locked -p acyclic-observability --test operations admitted_identity_survives_original_worker_and_credited_terminal_retirement -- --exact --nocapture
 ```
 
-Measure the disabled, selected-metrics, and credited detail-export costs with
-`cargo test --locked -p acyclic-observability --test operations trace_on_off_cost -- --ignored --exact --nocapture`.
-The last case includes the host's dequeue and record retirement. Report these
-costs separately; they provide no claim about unobserved physical I/O or a
-different trace exporter's work.
-
 On Linux with `strace`, count actual kernel crossings over the marked operation
 interval. The same binary's real file open/close is the negative control:
 

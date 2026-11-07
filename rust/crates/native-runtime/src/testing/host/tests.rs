@@ -1,6 +1,79 @@
 use super::*;
 
 #[test]
+fn physical_worker_persistence_retains_original_simulation_ownership() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for terminal in 0..3 {
+        let (schedule, mut events) = Schedule::seeded(29);
+        let executed = Arc::new(AtomicBool::new(false));
+        let original = executed.clone();
+        runtime.block_on(async {
+            let mut root = Box::pin(schedule.scope(async {
+                let persistence = crate::run_blocking_io(
+                    move || {
+                        assert!(Context::current().is_none());
+                        assert!(Context::simulation().unwrap().owned);
+                        crate::spawn_persistence(
+                            "local",
+                            "physical-owner",
+                            crate::PersistenceKey::new(0, terminal),
+                            move || {
+                                assert!(Context::current().is_none());
+                                assert!(Context::simulation().unwrap().owned);
+                                original.store(true, Ordering::Release);
+                                assert_ne!(terminal, 1, "original persistence failure");
+                                42
+                            },
+                        )
+                    },
+                    None,
+                )
+                .unwrap()
+                .await
+                .unwrap();
+                if terminal == 2 {
+                    schedule.cancel();
+                    drop(persistence);
+                } else {
+                    match persistence.await {
+                        Ok(value) => assert_eq!((terminal, value), (0, 42)),
+                        Err(error) => {
+                            assert_eq!(terminal, 1);
+                            assert_eq!(error.kind(), std::io::ErrorKind::Other);
+                        }
+                    }
+                }
+            }));
+            loop {
+                tokio::select! {
+                    biased;
+                    event = events.recv() => event.unwrap().release(),
+                    () = &mut root => break,
+                }
+            }
+            drop(root);
+            let mut drained = std::pin::pin!(schedule.drained());
+            loop {
+                tokio::select! {
+                    biased;
+                    event = events.recv() => event.unwrap().release(),
+                    () = &mut drained => break,
+                }
+            }
+        });
+        assert!(executed.load(Ordering::Acquire));
+        assert_eq!(schedule.pending_native_work(), 0);
+        let trace = schedule.trace();
+        assert!(trace.iter().any(|event| event == "task:completion"));
+        assert!(trace.iter().any(|event| event == "native:completion"));
+    }
+}
+
+#[test]
 fn abandoned_replay_releases_parked_native_and_blocking_workers() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()

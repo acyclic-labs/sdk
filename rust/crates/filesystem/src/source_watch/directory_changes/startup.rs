@@ -5,6 +5,11 @@ use super::{
     OVERLAPPED, Ordering, OwnedHandle, READ, Reads, Shared, SourceDemandReadWork,
     SourcePayloadOwnership, WRITE, WorkCounters, buffer, hub, io, io_work, size_of,
 };
+use windows::Win32::Storage::FileSystem::{
+    FILE_NOTIFY_CHANGE, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
+    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
+    FILE_NOTIFY_CHANGE_SECURITY, FILE_NOTIFY_CHANGE_SIZE,
+};
 
 impl NativeSourceWatch {
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
@@ -78,6 +83,17 @@ impl NativeSourceWatch {
             ownership.retain(bytes, work)?;
             shared = Some(Arc::new(Shared {
                 directory: AtomicPtr::new(std::ptr::null_mut()),
+                notification_filter: FILE_NOTIFY_CHANGE_FILE_NAME
+                    | FILE_NOTIFY_CHANGE_DIR_NAME
+                    | FILE_NOTIFY_CHANGE_ATTRIBUTES
+                    | FILE_NOTIFY_CHANGE_SIZE
+                    | FILE_NOTIFY_CHANGE_LAST_WRITE
+                    | FILE_NOTIFY_CHANGE_SECURITY
+                    | if delivery.sink.observes_birth_time() {
+                        FILE_NOTIFY_CHANGE_CREATION
+                    } else {
+                        FILE_NOTIFY_CHANGE::default()
+                    },
                 extended: AtomicBool::new(true),
                 complete: AtomicBool::new(complete.unwrap_or(false)),
                 recursive,

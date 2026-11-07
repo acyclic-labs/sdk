@@ -84,7 +84,7 @@ impl NativeTreeMaterializationBackend {
                 Ok(()) => (),
                 Err(crate::demand::DemandError::Io(error))
                     if resuming && error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(native_materialization_work_error(error).into()),
+                Err(error) => return Err(NativeTreeMaterializationError::from(error).into()),
             }
             parent.sync_directory(&mut &*work)?;
             let child = held_child(&parent, leaf, work)?;
@@ -170,7 +170,7 @@ where
             Ok(()) => parent.sync_directory(&mut &*work)?,
             Err(crate::demand::DemandError::Io(error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(native_materialization_work_error(error).into()),
+            Err(error) => return Err(NativeTreeMaterializationError::from(error).into()),
         }
         parent = held_child(&parent, leaf, work)?;
     }

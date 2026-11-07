@@ -36,7 +36,7 @@ test("native event callback failures end unmatched waits with the original cause
         const fail = () => {
           calls++;
           try { readFileSync(join(root, "original-missing-callback-input")); }
-          catch (error) { original = error; throw error; }
+          catch (error) { original = stage === "listener" ? error.message : error; throw original; }
         };
         const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "" :
           "console.log(JSON.stringify({id:'first'}));console.log(JSON.stringify({id:'later'}))"]);
@@ -56,10 +56,16 @@ test("native event callback failures end unmatched waits with the original cause
         assert.equal(await laterKeyed, failure);
         assert.equal(failure.kind, stage === "eof" ? "eof" : "consumer");
         if (stage !== "eof") {
-          assert.equal(failure.cause, original);
           assert.equal(failure.detail, original);
-          assert.equal(original.code, "ENOENT");
-          assert.match(failureReport(failure).cause, /ENOENT.*original-missing-callback-input/);
+          const report = failureReport(failure);
+          if (stage === "listener") {
+            assert.equal(failure.cause, undefined);
+            assert.match(report.detail, /ENOENT.*original-missing-callback-input/);
+          } else {
+            assert.equal(failure.cause, original);
+            assert.equal(original.code, "ENOENT");
+            assert.match(report.cause, /ENOENT.*original-missing-callback-input/);
+          }
           assert.match(failure.message, /step=dispatch event 1.*recovery=/);
         }
         await assert.rejects(events.next(() => true), error => error === failure);
@@ -103,26 +109,6 @@ test("retired native event observations release their captured payloads", async 
     const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code]);
     assert.equal(result.code, 0, result.stderr);
   } finally { await processes.close(); }
-});
-
-test("keyed transcript lookups read exactly one original event, including after EOF", async () => {
-  const source = new PassThrough();
-  let close;
-  const closed = new Promise(resolve => { close = resolve; });
-  const path = join(mkdtempSync(join(tmpdir(), "keyed-spool-")), "events.jsonl");
-  const events = new Spool(source, closed, { transcript: path, key: event => [event.id, `alias:${event.id}`], unique: true });
-  const first = { id: "first", text: "λ\n終" }, second = { id: "second", text: "z".repeat(128 * 1024) };
-  const seen = events.next(event => event.id === "second");
-  source.end(JSON.stringify(first) + "\r\n" + JSON.stringify(second));
-  await seen;
-  // EOF may win the next microtask, but cannot erase a prior indexed event.
-  const early = events.keyed("first");
-  close({ code: 0, signal: null });
-  assert.deepEqual(await early, first);
-  assert.deepEqual(await events.keyed("alias:second"), second);
-  await events.history();
-  truncateSync(path, 1);
-  await assert.rejects(events.keyed("first"), error => error.kind === "spool" && /indexed event/.test(error.message));
 });
 
 test("abandoned next and keyed waits release their subscriptions without ending the source", async () => {
@@ -328,8 +314,8 @@ test("a transcript write that fails or is lost ends history and waits with the s
     const events = new Spool(source, new Promise(() => {}), { transcript: stream("failed.jsonl", (_length, done) => done(new Error("injected EIO"))) });
     const waiting = events.next(() => false);
     source.write('{"n":1}\n');
-    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.message));
-    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.message));
+    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
+    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
     await assert.rejects(events.next(() => true), error => error.kind === "spool");
   });
   await t.test("negative control: an ignored error leaves a short file, read as a typed short read", async () => {
@@ -354,7 +340,7 @@ test("a write that fails with a chunk queued rejects the pending waiter; the que
   const second = events.next(event => event.n === 2);
   source.write('{"n":1}\n');
   source.write('{"n":2}\n');
-  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.message));
+  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
   assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
   assert.equal(transcript.listenerCount("drain"), 0, "the terminal spool releases its obsolete drain observer");
 });

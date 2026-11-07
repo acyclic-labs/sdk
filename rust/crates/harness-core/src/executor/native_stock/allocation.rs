@@ -11,14 +11,7 @@ pub(crate) fn stock_boundary(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    match code {
-        crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        crate::wire::ErrorCode::Storage => Error::Storage(reason.into()),
-        crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }
 
 pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Result<String> {

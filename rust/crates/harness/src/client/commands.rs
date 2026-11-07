@@ -81,7 +81,7 @@ pub enum CommandAction {
         tool: CommandTool,
     },
     /// Resolve a configured name, otherwise open the theme picker.
-    Theme,
+    Theme {},
     /// A typed built-in request or view selection.
     Builtin {
         /// Implementation identifier.
@@ -147,7 +147,7 @@ impl CommandCatalog {
                 CommandAction::Builtin {
                     command: BuiltinCommand::Compact,
                 }
-                | CommandAction::Theme => CommandArguments::Text,
+                | CommandAction::Theme {} => CommandArguments::Text,
                 CommandAction::Builtin {
                     command: BuiltinCommand::Model,
                 } => CommandArguments::Word,
@@ -166,7 +166,10 @@ impl CommandCatalog {
                 confirmation,
             } = &spec.action
                 && *confirmation
-                    != matches!(request, CommandRequest::Delete | CommandRequest::ClearAll)
+                    != matches!(
+                        request,
+                        CommandRequest::Delete {} | CommandRequest::ClearAll {}
+                    )
             {
                 return Err(Error::Invalid(
                     "confirmation is required only for delete/clearall".into(),
@@ -252,7 +255,7 @@ impl CommandCatalog {
                 tool: *tool,
                 input: tool.input(arguments),
             },
-            CommandAction::Theme => CommandResolution::Select {
+            CommandAction::Theme {} => CommandResolution::Select {
                 query: CommandQuery::Theme,
             },
             CommandAction::Builtin { command } => resolve_builtin(*command, arguments),
@@ -339,7 +342,7 @@ mod tests {
         assert!(matches!(
             catalog.resolve("/clearall", 64)?,
             Some(CommandResolution::Confirm {
-                request: CommandRequest::ClearAll
+                request: CommandRequest::ClearAll {}
             })
         ));
         assert_eq!(catalog.resolve("hello", 64)?, None);

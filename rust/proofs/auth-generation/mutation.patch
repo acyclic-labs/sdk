@@ -1,0 +1,12 @@
+diff --git a/rust/crates/auth/src/trust/follower.rs b/rust/crates/auth/src/trust/follower.rs
+--- a/rust/crates/auth/src/trust/follower.rs
++++ b/rust/crates/auth/src/trust/follower.rs
+@@ -704,7 +704,7 @@
+             if !matches!(current, FollowerState::Closed(_)) {
+                 *current = if matches!(state, FollowerState::Closed(_)) {
+                     state
+-                } else if let Some(next) = self.generation.load(Ordering::Relaxed).checked_add(1) {
++                } else if let Some(next) = self.generation.load(Ordering::Relaxed).checked_add(1).or(Some(0)) {
+                     self.generation.store(next, Ordering::Relaxed);
+                     state
+                 } else {

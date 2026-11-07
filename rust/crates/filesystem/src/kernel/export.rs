@@ -83,32 +83,46 @@ pub fn decode_generation_export_manifest(
     maximum_bytes: u64,
     maximum_objects: u64,
 ) -> Result<GenerationExportManifest, GenerationExportManifestError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?;
-    let volume_id = VolumeId::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    );
-    let config = decode_config(&mut decoder, &mut |_| {
-        Ok::<_, crate::kernel::CanonicalDecodeError>(())
-    })?
-    .validate()?;
-    let generation_root = decode_object_id(&mut decoder)?;
+    decode_generation_export_manifest_observed(bytes, maximum_bytes, maximum_objects, &mut |_| {
+        Ok::<_, GenerationExportManifestError>(())
+    })
+}
+
+pub(crate) fn decode_generation_export_manifest_observed<E>(
+    bytes: &[u8],
+    maximum_bytes: u64,
+    maximum_objects: u64,
+    observe: &mut impl FnMut(super::ReadAllocationStep) -> Result<(), E>,
+) -> Result<GenerationExportManifest, E>
+where
+    E: From<CanonicalDecodeError> + From<GenerationExportManifestError>,
+{
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, observe)?;
+    let volume_id = VolumeId::from_bytes(decoder.fixed(observe)?);
+    let config = decode_config(&mut decoder, observe)?
+        .validate()
+        .map_err(GenerationExportManifestError::from)?;
+    let generation_root = decoder.any_object(observe)?;
     let generation_id = GenerationId::from_root(generation_root);
-    let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let file_count = decoder.u64(observe)?;
+    let count = decoder.u32(observe)?;
     let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
     if u64::from(count) > admitted {
-        return Err(GenerationExportManifestError::TooManyObjects);
+        return Err(GenerationExportManifestError::TooManyObjects.into());
     }
     let capacity =
         usize::try_from(count).map_err(|_| GenerationExportManifestError::TooManyObjects)?;
+    // Even an unsealed reference needs its kind and 32-byte digest. Refuse a
+    // truncated count before it can request capacity absent from the input.
+    if capacity > decoder.remaining_bytes() / 33 {
+        return Err(CanonicalDecodeError::Truncated.into());
+    }
     let mut objects = Vec::new();
-    objects
-        .try_reserve_exact(capacity)
-        .map_err(|_| CanonicalDecodeError::AllocationFailed)?;
+    super::file_read::reserve_decoded_items(&mut objects, capacity, observe)?;
     for _ in 0..count {
-        objects.push(decode_object_id(&mut decoder)?);
+        observe(super::ReadAllocationStep::BeforeItem)?;
+        objects.push(decoder.any_object(observe)?);
+        observe(super::ReadAllocationStep::Item)?;
     }
     decoder.finish()?;
     let manifest = GenerationExportManifest {
@@ -170,10 +184,6 @@ fn validate_envelope(
 
 fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
     encoder.object(object);
-}
-
-fn decode_object_id(decoder: &mut Decoder<'_>) -> Result<ObjectId, CanonicalDecodeError> {
-    decoder.any_object(&mut |_| Ok::<_, CanonicalDecodeError>(()))
 }
 
 #[cfg(test)]

@@ -93,83 +93,91 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
     /// Retains the original merge's clean projection and conflicts for paging.
     /// This consumes one original read frame. The total budget and cancellation
     /// apply to preparation and every subsequent row, without a per-page reset.
-    pub async fn preview_pages<W: crate::facade::FsWork>(
+    /// The input plan enters that funded frame when the continuation is created.
+    pub fn preview_pages<W: crate::facade::FsWork>(
         self,
         options: ApplyOptions,
         work: W,
         cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<OperationReceipt<JoinPreview<A, O>>, WorkspaceError> {
+    ) -> impl Future<
+        Output = crate::MeasuredResult<OperationReceipt<JoinPreview<A, O>>, WorkspaceError>,
+    > + ProviderTask
+    + use<A, O, W> {
         let accounting = work.accounting(cancellation);
         let initial = accounting.spent();
-        let mut owner = ReadOwner::new(accounting, State::new(self))
-            .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial))?;
-        let result = async {
-            let (state, mut accounting) = owner.borrow();
-            let plan = &state.plan;
-            let cancellation = accounting.cancellation();
-            let prepared = plan
-                .preview_with_accounting(options, &mut accounting, cancellation)
-                .await?;
-            let JoinPreparation::Preview {
-                generation_root,
-                conflicts,
-                hold,
-            } = prepared
-            else {
-                return Err(WorkspaceError::InvalidMergeResolution);
-            };
-            state._hold = Some(hold);
-            state.conflict_count = conflicts.value.len();
-            // Moving the Vec into its iterator preserves its backing exactly.
-            if state.conflict_count == 0 {
-                conflicts.retire(&mut accounting)?;
-            } else {
-                let conflicts = Retained::from_owned(conflicts, &mut accounting)?;
-                for conflict in &conflicts.value {
-                    accounting.charge_items(1)?;
-                    if let MergeConflict::File(id) = conflict {
-                        state.excluded.get_or_try_insert_with(
-                            id.into_bytes(),
-                            &mut accounting,
-                            |_| Ok(()),
-                        )?;
+        let owner = ReadOwner::new(accounting, || State::new(self))
+            .map_err(|error| OperationFailure::new(WorkspaceError::from(error), initial));
+        async move {
+            let mut owner = owner?;
+            let result = async {
+                let (state, mut accounting) = owner.borrow();
+                let plan = &state.plan;
+                let cancellation = accounting.cancellation();
+                let prepared = plan
+                    .preview_with_accounting(options, &mut accounting, cancellation)
+                    .await?;
+                let JoinPreparation::Preview {
+                    generation_root,
+                    conflicts,
+                    hold,
+                } = prepared
+                else {
+                    return Err(WorkspaceError::InvalidMergeResolution);
+                };
+                state._hold = Some(hold);
+                state.conflict_count = conflicts.value.len();
+                // Moving the Vec into its iterator preserves its backing exactly.
+                if state.conflict_count == 0 {
+                    conflicts.retire(&mut accounting)?;
+                } else {
+                    let conflicts = Retained::from_owned(conflicts, &mut accounting)?;
+                    for conflict in &conflicts.value {
+                        accounting.charge_items(1)?;
+                        if let MergeConflict::File(id) = conflict {
+                            state.excluded.get_or_try_insert_with(
+                                id.into_bytes(),
+                                &mut accounting,
+                                |_| Ok(()),
+                            )?;
+                        }
                     }
+                    state.conflicts = Some(Retained {
+                        value: conflicts.value.into_iter(),
+                        allocation: conflicts.allocation,
+                    });
                 }
-                state.conflicts = Some(Retained {
-                    value: conflicts.value.into_iter(),
-                    allocation: conflicts.allocation,
-                });
+                let target = &plan.target_head.workspace;
+                state.changes.checkouts[0] = Some(
+                    target
+                        .open_checkout(
+                            GenerationSelector::Exact(plan.target_head.id),
+                            CheckoutMode::read_only_pinned(),
+                            &mut accounting,
+                            cancellation,
+                        )
+                        .await?,
+                );
+                state.changes.checkouts[1] = Some(
+                    target
+                        .volume
+                        .open_join_preview(generation_root, &mut accounting, cancellation)
+                        .await?,
+                );
+                state
+                    .changes
+                    .initialize(target.volume.config(), &mut accounting)
             }
-            let target = &plan.target_head.workspace;
-            let before = target
-                .open_checkout(
-                    GenerationSelector::Exact(plan.target_head.id),
-                    CheckoutMode::read_only_pinned(),
-                    &mut accounting,
-                    cancellation,
-                )
-                .await?;
-            state.changes.set_checkouts([
-                before,
-                target
-                    .volume
-                    .open_join_preview(generation_root, &mut accounting, cancellation)
-                    .await?,
-            ]);
-            state
-                .changes
-                .initialize(target.volume.config(), &mut accounting)
-        }
-        .await;
-        let spent = owner.borrow().1.spent();
-        match result {
-            Ok(()) => Ok(OperationReceipt {
-                value: JoinPreview { owner },
-                work: spent,
-            }),
-            Err(error) => {
-                drop(owner);
-                Err(OperationFailure::new(error, spent))
+            .await;
+            let spent = owner.borrow().1.spent();
+            match result {
+                Ok(()) => Ok(OperationReceipt {
+                    value: JoinPreview { owner },
+                    work: spent,
+                }),
+                Err(error) => {
+                    drop(owner);
+                    Err(OperationFailure::new(error, spent))
+                }
             }
         }
     }

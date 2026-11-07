@@ -54,21 +54,32 @@ async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn E
     workspace.write_text("/later", "advanced head").await?;
     let head = unbounded!(workspace, head())?;
     assert_ne!(head.id(), initial.id());
-    let original = fs
-        .workspace_for_creation_operation("creation", config, operation, budget, &cancellation)
-        .await?;
-    original.work.verify(budget)?;
-    let original = original.value.ok_or("creation missing")?;
-    assert_eq!(original.id(), initial.id());
-    assert_eq!(original.workspace_id(), workspace.id());
+    for selection in [Some(config), None] {
+        let original = fs
+            .workspace_for_creation_operation(
+                "creation",
+                selection,
+                operation,
+                budget,
+                &cancellation,
+            )
+            .await?;
+        original.work.verify(budget)?;
+        assert_eq!(original.work.backend_write_operations, 0);
+        let original = original.value.ok_or("creation missing")?;
+        assert_eq!(original.id(), initial.id());
+        assert_eq!(original.workspace_id(), workspace.id());
+        assert_eq!(original.workspace().volume_config(), config);
+    }
     let mut wrong_config = config;
     wrong_config.lifecycle = Lifecycle::Durable;
     for (config, operation) in [
         (
-            config,
+            Some(config),
             IdempotencyKey::from_bytes([0xd5; 16]).operation_id(),
         ),
-        (wrong_config, operation),
+        (None, IdempotencyKey::from_bytes([0xd5; 16]).operation_id()),
+        (Some(wrong_config), operation),
     ] {
         let failure = fs
             .workspace_for_creation_operation("creation", config, operation, budget, &cancellation)
@@ -76,6 +87,10 @@ async fn creation_lookup_is_readonly_exact_and_bounded() -> Result<(), Box<dyn E
             .err()
             .ok_or("mismatched creation accepted")?;
         failure.work.verify(budget)?;
+        assert!(matches!(
+            failure.error,
+            WorkspaceError::Filesystem(FsError::CreationRejected)
+        ));
     }
     assert!(
         unbounded!(

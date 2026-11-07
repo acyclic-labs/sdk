@@ -262,7 +262,8 @@ impl Endpoint for Embedded {
                 0,
                 acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
             );
-            futures::pin_mut!(driving, result);
+            let driving = core::pin::pin!(driving);
+            let result = core::pin::pin!(result);
             match futures::future::select(result, driving).await {
                 futures::future::Either::Left((result, _)) => Ok(result?),
                 futures::future::Either::Right((result, _)) => result,

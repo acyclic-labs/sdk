@@ -417,7 +417,7 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
     let collection = Arc::new(Collection::default());
     let hold = collection.admit(&[object(1)], |_| false, 0).await?;
     let begun = collection.begin();
-    futures::pin_mut!(begun);
+    let mut begun = core::pin::pin!(begun);
     // This poll reaches the original retired gate while its publication
     // hold is live; a collection that skips the gate is immediately Ready.
     assert!(

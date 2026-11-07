@@ -178,7 +178,7 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
     );
 
     let next = login.refresh.acquire();
-    futures::pin_mut!(next);
+    let mut next = core::pin::pin!(next);
     assert!(
         futures::poll!(&mut next).is_pending(),
         "accepted publication released refresh ownership"

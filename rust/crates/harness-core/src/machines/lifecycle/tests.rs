@@ -274,7 +274,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
         })
         .await?;
     let held = machines.held_targets(&agent)?;
-    futures::pin_mut!(held);
+    let mut held = core::pin::pin!(held);
     for _ in 0..64 {
         assert!(held.try_next().await?.is_some());
     }
@@ -567,13 +567,13 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         .await?;
     }
     let delivery = host.drain(&first);
-    futures::pin_mut!(delivery);
+    let mut delivery = core::pin::pin!(delivery);
     tokio::select! {
         permit = started.acquire() => permit?.forget(),
         result = &mut delivery => panic!("delivery ended before original work started: {result:?}"),
     }
     let pause = host.pause(&first, true);
-    futures::pin_mut!(pause);
+    let mut pause = core::pin::pin!(pause);
     assert!(
         futures::poll!(&mut pause).is_pending(),
         "pause must join the active delivery"
@@ -615,14 +615,14 @@ async fn original_machine_ownership_pause_joins_pending_work_before_suspending()
         parked_owner.add_permits(1);
         parking_owner.acquire().await.map(|permit| permit.forget())
     });
-    futures::pin_mut!(pause);
+    let mut pause = core::pin::pin!(pause);
     assert!(futures::poll!(&mut pause).is_pending());
     tokio::select! {
         permit = parked.acquire() => permit?.forget(),
         result = &mut pause => panic!("pause ended before resource parking: {result:?}"),
     }
     let resume = host.pause(&first, false);
-    futures::pin_mut!(resume);
+    let mut resume = core::pin::pin!(resume);
     assert!(
         futures::poll!(&mut resume).is_pending(),
         "resume passed unfinished resource parking"

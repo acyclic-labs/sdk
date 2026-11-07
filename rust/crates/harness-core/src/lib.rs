@@ -144,8 +144,8 @@ pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub type NativeCustody = Option<()>;
 
-/// Shared index adapter over the original native work and allocation custody.
-/// `None` preserves the caller's explicit unbounded-work choice.
+/// Funds fixed-width indices from the original invocation's optional native
+/// work. `None` remains unbounded, with no private allocation ledger.
 pub(crate) struct NativeIndexWork<'a>(pub(crate) NativeWork<'a>);
 
 impl acyclic_collections::IndexWork for NativeIndexWork<'_> {

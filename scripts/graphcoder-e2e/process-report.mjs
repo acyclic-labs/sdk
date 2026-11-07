@@ -18,6 +18,7 @@ export class ProcessReport {
   ready = new Promise((resolve, reject) => { this.#readyResolve = resolve; this.#readyReject = reject; });
   #terminal;
   #executionFailure;
+  #controlFailure;
   #resolve;
   #completion = new Promise(resolve => { this.#resolve = resolve; });
   #channel;
@@ -46,15 +47,21 @@ export class ProcessReport {
     this.#channel = channel;
     const lines = new Lines(line => {
       try { this.#receive(JSON.parse(line)); }
-      catch { this.#finish("write-failed", "invalid-acknowledgement"); }
+      catch { this.#invalid("invalid-acknowledgement"); }
     });
     channel.on("data", chunk => lines.write(chunk));
     channel.on("error", error => {
-      this.#finish("write-failed", error.code ?? "transport-error");
-      this.#drainResolve();
+      this.#invalid(error.code ?? "transport-error");
+      ended();
     });
     const ended = () => {
+      if (this.#ended) return;
       this.#ended = true;
+      try { lines.end({ requireNewline: true }); }
+      catch (error) {
+        if (error.code !== "UNTERMINATED_LINE") throw error;
+        this.#invalid("unterminated-control-frame");
+      }
       this.#drainResolve();
       this.#endReady("write-failed", "control-eof-before-ready");
       // EOF follows every buffered frame. A still-live process cannot produce
@@ -89,8 +96,7 @@ export class ProcessReport {
       this.#finish("write-failed", "execution-failed");
       return;
     }
-    if (this.#terminal) return;
-    if (!this.#ready && message.generation === this.generation
+    if (!this.#terminal && !this.#ready && message.generation === this.generation
       && message.rejected && typeof message.rejected.phase === "string" && message.rejected.phase.length > 0
       && typeof message.rejected.cause === "string"
       && (message.rejected.raw_os_error === null || Number.isInteger(message.rejected.raw_os_error))) {
@@ -99,7 +105,7 @@ export class ProcessReport {
       this.#finish("write-failed", "startup-rejected", [], false, message.rejected);
       return;
     }
-    if (message.ready === true && message.generation === this.generation && !this.#ready) {
+    if (!this.#terminal && message.ready === true && message.generation === this.generation && !this.#ready) {
       this.#ready = true;
       this.#readyResolve();
       this.#write?.();
@@ -110,9 +116,13 @@ export class ProcessReport {
       || message.generation !== request.generation || !outcomes.has(message.outcome)
       || !Array.isArray(message.waits) || !message.waits.every(wait)
       || (message.outcome === "report" ? message.waits.length === 0 : message.waits.length !== 0)) {
-      this.#finish("write-failed", "foreign-or-invalid-acknowledgement");
+      this.#invalid("foreign-or-invalid-acknowledgement");
       return;
     }
+    // A diagnostic ACK closes its request, not semantic admission of later
+    // control frames. Validate their original identity/schema before ignoring
+    // an already-completed acknowledgement.
+    if (this.#terminal) return;
     // A buffered snapshot cannot win a race against the original drain
     // deadline merely because its timer callback has not run yet. Explicit
     // refusal frames still describe why the producer rejected the request.
@@ -128,6 +138,12 @@ export class ProcessReport {
     this.#terminal = { outcome, cause, waits, acknowledged, rejection };
     this.#endReady(outcome, cause);
     this.#resolve();
+  }
+  #invalid(cause) {
+    // Diagnostic completion does not certify the remaining control stream.
+    // Preserve the first decoding refusal without erasing an earlier ACK.
+    this.#controlFailure ??= cause;
+    this.#finish("write-failed", cause);
   }
   #endReady(outcome, cause) {
     if (this.#ready || !this.#readyReject) return;
@@ -162,7 +178,7 @@ export class ProcessReport {
   // diagnostic request, its acknowledgement and the executable's outcome.
   get capability() { return Object.freeze({ generation: this.generation, ready: this.#ready }); }
   get termination() {
-    if (!this.#request && !this.#terminal?.rejection && !this.#executionFailure) return undefined;
+    if (!this.#request && !this.#terminal?.rejection && !this.#executionFailure && !this.#controlFailure) return undefined;
     const terminal = this.#terminal ?? { outcome: "unacknowledged", waits: [] };
     return {
       report_requested: !!this.#request,
@@ -175,6 +191,7 @@ export class ProcessReport {
       missing_wait_report: terminal.outcome !== "report" && terminal.outcome !== "empty",
       ...(terminal.rejection ? { startup_rejection: terminal.rejection } : {}),
       ...(this.#executionFailure ? { execution_failure: this.#executionFailure } : {}),
+      ...(this.#controlFailure ? { control_failure: this.#controlFailure } : {}),
     };
   }
 }

@@ -48,7 +48,7 @@ struct Observation {
     file_identity: Option<[u8; 32]>,
     // One most recent exact selected-name rebound, never a history of events.
     rebound: Option<(u64, [u8; 32])>,
-    // Only the first relevant event of this attempt can establish publication.
+    // An original-name departure may precede the one publication arrival.
     // A later rename must never erase an intervening in-place mutation.
     awaiting_rebound: bool,
     // Closing a writable publisher can itself notify the native watch. Retain
@@ -137,6 +137,13 @@ impl State {
 }
 
 impl SourceChangeSink for State {
+    fn observes_birth_time(&self) -> bool {
+        // Refresh receives only the original file's contents and byte count.
+        // A native rename can inherit birth metadata from the retired name;
+        // that metadata is not credential input or a content mutation.
+        false
+    }
+
     fn source_changed(
         &self,
         changes: &[SourceChange],
@@ -150,7 +157,9 @@ impl SourceChangeSink for State {
         let mut changes = changes.iter().peekable();
         while let Some(change) = changes.next() {
             let relevant = match change {
-                SourceChange::Name(path) | SourceChange::Entry(path) => self.path.is_within(path),
+                SourceChange::Departed(path)
+                | SourceChange::Name(path)
+                | SourceChange::Entry(path) => self.path.is_within(path),
                 SourceChange::Node(node) => observation.file_identity.as_ref() == Some(node),
                 SourceChange::Everything | SourceChange::Unconfirmed => true,
             };
@@ -158,6 +167,19 @@ impl SourceChangeSink for State {
                 continue;
             }
             affected = true;
+            if let SourceChange::Departed(path) = change
+                && path == &self.path
+            {
+                // Retiring the original name is not an arrival observation.
+                // Preserve only an attempt that has not observed its arrival;
+                // after that arrival, no later rebound may restore admission.
+                observation.rebound = None;
+                self.advance();
+                if matches!(changes.peek(), Some(SourceChange::Node(_))) {
+                    changes.next();
+                }
+                continue;
+            }
             let awaiting_rebound = observation.awaiting_rebound;
             observation.awaiting_rebound = false;
             observation.rebound = None;
@@ -245,16 +267,20 @@ pub struct NativeCredentialSource(Arc<Owner>);
 
 impl NativeCredentialSource {
     /// Register before loading any credential. Refresh gets the exact rejected
-    /// lease, this source's revision and the selected file's original identity
-    /// and version, plus the file opened at exactly that version. Read through
-    /// that original file, retain conditional publication, and return a snapshot
-    /// as `Observed` with the same revision. Parsing stays with the provider. Other files
-    /// under this root do not invalidate this source.
+    /// lease, this source's revision, the selected regular file's byte count
+    /// and its original file opened at exactly the observed version. Read
+    /// through that original file, retain conditional publication, and return
+    /// a snapshot as `Observed` with the same revision. Parsing stays with the
+    /// provider. Scalar source metadata is not credential input: birth-time-only
+    /// changes need not invalidate a lease. Content, namespace, attributes and
+    /// security changes still invalidate it. Other files under this root do not.
     ///
     /// `Published` must retain the original completed publisher. The same watch
-    /// must observe its selected-name rebound, with no later relevant mutation,
+    /// must observe its selected-name arrival, with no later relevant mutation,
     /// before a confirmed cut. Missing/foreign evidence refuses even when the
     /// write committed; never redispatch a publication after this refusal.
+    /// A selected-name departure invalidates old leases while preserving only
+    /// admission that is still awaiting its first arrival. It never rearms it.
     /// The clock must be the original owner's clock, never a relative TTL.
     pub async fn bind<F, Fut, C>(
         source: NativeDemandSource,
@@ -264,7 +290,7 @@ impl NativeCredentialSource {
         refresh: F,
     ) -> Result<Self, CredentialError>
     where
-        F: Fn(Option<CredentialLease>, CredentialRevision, SourceNode, Box<dyn DemandFile>) -> Fut
+        F: Fn(Option<CredentialLease>, CredentialRevision, u64, Box<dyn DemandFile>) -> Fut
             + Send
             + Sync
             + 'static,
@@ -347,6 +373,9 @@ impl NativeCredentialSource {
                         if node.kind != SourceNodeKind::RegularFile {
                             return Err(error(DemandError::NotRegularFile));
                         }
+                        let length = node
+                            .logical_bytes
+                            .ok_or_else(|| error(DemandError::NotRegularFile))?;
                         state
                             .observation
                             .lock()
@@ -362,7 +391,7 @@ impl NativeCredentialSource {
                             )
                             .await
                             .map_err(error)?;
-                        let result = refresh(rejected, revision.clone(), node, file).await?;
+                        let result = refresh(rejected, revision.clone(), length, file).await?;
                         match result {
                             NativeCredentialUpdate::Observed(snapshot) => {
                                 watch.fence().await?;
@@ -493,7 +522,8 @@ impl CredentialSource for NativeCredentialSource {
         Box::pin(async move {
             let stop = self.0.watch.original.cancellation_wait().map_err(error)?;
             let resolution = self.0.cache.resolve();
-            futures::pin_mut!(stop, resolution);
+            let stop = core::pin::pin!(stop);
+            let resolution = core::pin::pin!(resolution);
             let lease = match futures::future::select(stop, resolution).await {
                 futures::future::Either::Left(_) => {
                     return Err(error(CredentialSourceError::Unavailable));
@@ -519,7 +549,8 @@ impl CredentialSource for NativeCredentialSource {
             Ok(Some(CredentialWatch::from_custodian(
                 validity,
                 async move {
-                    futures::pin_mut!(watch, stop);
+                    let watch = core::pin::pin!(watch);
+                    let stop = core::pin::pin!(stop);
                     match futures::future::select(stop, watch).await {
                         futures::future::Either::Right((result, _)) => {
                             if cancelled.is_cancelled() || state.revision().is_none() {

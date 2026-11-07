@@ -413,7 +413,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         .authority
                         .changed(&mut self.trust_changed, self.deadline);
                     let input = next_input(&mut self.incoming, &self.input_released);
-                    futures::pin_mut!(input);
+                    let input = core::pin::pin!(input);
                     match future::select(input, Box::pin(changed)).await {
                         future::Either::Left((input, _)) => Ok(input),
                         future::Either::Right((event, pending)) => {
@@ -433,7 +433,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             // and lets the model explore the actual wakeup path without RNG.
             let event = {
                 let input = next_input(&mut self.incoming, &self.input_released);
-                futures::pin_mut!(input);
+                let input = core::pin::pin!(input);
                 let room = policy::room(
                     self.limits.pending_frames,
                     self.limits.pending_bytes,
@@ -500,7 +500,7 @@ async fn next_input(
     released: &signal::Signal<calls::InputReleased>,
 ) -> Option<InputEvent> {
     let released = released.next();
-    futures::pin_mut!(released);
+    let released = core::pin::pin!(released);
     match future::select(released, incoming.next()).await {
         future::Either::Left((released, _)) => Some(InputEvent::Released(released)),
         future::Either::Right((input, _)) => input.map(InputEvent::Frame),

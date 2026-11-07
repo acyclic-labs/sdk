@@ -131,23 +131,39 @@ impl From<crate::FsError> for DemandError {
 /// Demand result with source-work counters on both success and failure.
 pub type DemandResult<T> = Result<OperationReceipt<T>, OperationFailure<DemandError>>;
 
-/// One change a source reports having happened to it outside every view of
+/// One change a source reports outside every view of that source.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceChange {
-    /// This name may bind another entry, or none, and so may everything
+    /// The reported entry departed from this name. A following `Node` in the
+    /// same batch identifies that departed entry, not a replacement binding.
+    /// Invalidate the name and every subtree reached through it; this is not
+    /// evidence that a later binding or its contents have been observed.
+    Departed(NamespacePath),
+    /// This name may bind another entry, or none. Invalidate the name and
+    /// every subtree reached through it.
     Name(NamespacePath),
-    /// The entry this name binds may have changed in place: its content or
+    /// The entry this name binds may have changed in place: content or metadata.
     Entry(NamespacePath),
-    /// The node with this [`SourceNode::file_identity`] may have changed,
+    /// The node with this [`SourceNode::file_identity`] may have changed.
+    /// Immediately after a name change, this identifies that change's entry.
     Node([u8; 32]),
     /// Changes may have gone unreported: anything may have changed.
     Everything,
-    /// Changes may not all have been reported yet, though none is known to
+    /// Changes may not all have been reported yet; none is known to be lost.
     Unconfirmed,
 }
 
 /// Receives the changes one watched source reports.
 pub trait SourceChangeSink: Send + Sync {
+    /// Whether birth-time-only metadata changes are part of this subscription.
+    /// The interest is fixed when the watch starts. Namespace, content,
+    /// attributes and security changes remain subscribed in either case.
+    /// Providers may conservatively deliver additional changes. Consumers of
+    /// [`SourceNode`] birth metadata must retain the default `true`.
+    fn observes_birth_time(&self) -> bool {
+        true
+    }
+
     /// SDK payload retained by this sink, excluding caller-owned data.
     fn logical_owned_bytes(&self) -> u64 {
         0
@@ -178,7 +194,8 @@ pub enum SourceFence {
     Unconfirmed,
 }
 
-/// Live observation of every change made to one source outside every view
+/// Live observation of the sink's subscribed changes outside every source view.
+/// Birth-time-only metadata can be excluded by [`SourceChangeSink::observes_birth_time`].
 pub trait SourceWatch: Send + Sync {
     /// Delivers preceding changes within the accounting allowance, preserving
     /// whether the producer established a delivery cut. Success alone and

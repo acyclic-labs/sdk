@@ -184,13 +184,15 @@ where
     Ok(root)
 }
 
-pub(crate) async fn read_generation_root_with_accounting<S: crate::AsyncObjectStore>(
+pub(crate) fn read_generation_root_with_accounting<S: crate::AsyncObjectStore>(
     objects: &S,
     generation_root: ObjectId,
     config: crate::VolumeConfig,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
+) -> impl Future<
+    Output = Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError>,
+> {
     read_generation_root_with_limits_and_accounting(
         objects,
         generation_root,
@@ -198,7 +200,6 @@ pub(crate) async fn read_generation_root_with_accounting<S: crate::AsyncObjectSt
         accounting,
         cancellation,
     )
-    .await
 }
 
 pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::AsyncObjectStore>(
@@ -234,11 +235,11 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
             Ok((root, scope.into_allocation()))
         }
         Ok(_) => {
-            scope.release_failed()?;
+            scope.retire()?;
             Err(invariant("generation seal has the wrong root directory identity").into())
         }
         Err(error) => {
-            let _retired = scope.release_failed();
+            let _retired = scope.retire();
             Err(error)
         }
     };

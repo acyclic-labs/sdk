@@ -1,0 +1,1 @@
+[{"name":"MCP","description":"Inspect MCP servers and tools","arguments":"none","action":{"kind":"builtin","command":"mcp"}}]

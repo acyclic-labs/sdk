@@ -3,15 +3,24 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { credentialFixturePaths as fixtures } from "./check-boundaries.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const checker = readFileSync(join(root, "scripts/check-boundaries.mjs"));
-const fixtures = [
-  "typescript/packages/machines/test/fixtures/server-key.pem",
-  "typescript/packages/harness/test/client.test.ts",
-  "typescript/packages/inference/test/client.test.ts",
-  "typescript/packages/inference/test/idle-kv.test.ts",
-];
+
+test("Cargo executable consumers use the runtime-aware locator", t => {
+  const path = "rust/crates/harness-mock-model/tests/http.rs";
+  const source = readFileSync(join(root, path), "utf8");
+  const files = { [path]: source,
+    "rust/crates/test-support/src/fixtures.rs": readFileSync(join(root, "rust/crates/test-support/src/fixtures.rs"), "utf8") };
+  assert.equal(scan(t, files).status, 0);
+  const restored = source.replace('acyclic_test_support::cargo_binary!("harness-mock-model")',
+    'env!("CARGO_BIN_EXE_harness-mock-model")');
+  assert.notEqual(restored, source);
+  const result = scan(t, { ...files, [path]: restored });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /use acyclic_test_support::cargo_binary!/);
+});
 
 function scan(t, files, untracked = {}) {
   mkdirSync(join(root, ".tools"), { recursive: true });
@@ -41,13 +50,16 @@ test("tracked public types and recorded fake-server fixtures pass on LF and CRLF
 });
 
 test("credential admission binds both fixture paths and complete contents", t => {
-  for (const path of fixtures) {
+  const files = {};
+  for (const [index, path] of fixtures.entries()) {
     const content = readFileSync(join(root, path), "utf8");
-    for (const files of [{ [path]: content + "\nchanged\n" }, { "copied.mjs": content }]) {
-      const result = scan(t, files);
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, /credential outside a recorded fake-server fixture/);
-    }
+    files[path] = content + "\nchanged\n";
+    files[`copied-${index}.mjs`] = content;
+  }
+  const result = scan(t, files);
+  assert.equal(result.status, 1);
+  for (const path of Object.keys(files)) {
+    assert.ok(result.stderr.includes(`${path}: credential outside a recorded fake-server fixture`), result.stderr);
   }
 });
 
@@ -60,20 +72,22 @@ test("literal source credentials, plaintext configuration and private implementa
     ["proto/private/admin.proto", 'syntax = "proto3";'],
     ["rust/crates/machines/proto/machines/v1/leak.proto", "package vmm." + "fleet.v1;"],
   ];
-  for (const [path, content] of cases) {
-    const result = scan(t, { [path]: content });
-    assert.equal(result.status, 1, path);
+  const result = scan(t, Object.fromEntries(cases));
+  assert.equal(result.status, 1, result.stderr);
+  for (const [path] of cases) {
     assert.ok(result.stderr.includes(path), result.stderr);
   }
 });
 
 test("backticks, quoted dollar/braces and authorization literals reject", t => {
-  for (const value of ['`unrecorded-secret`', '"unrecorded$secret"', '"unrecorded{secret}"', '"${secret}"', '`unrecorded\\${secret}`']) {
-    const result = scan(t, { "consumer.ts": "const github_" + "token = " + value + ";" });
-    assert.equal(result.status, 1, value);
+  const values = ['`unrecorded-secret`', '"unrecorded$secret"', '"unrecorded{secret}"', '"${secret}"', '`unrecorded\\${secret}`'];
+  const files = Object.fromEntries(values.map((value, index) => [`consumer-${index}.ts`, "const github_" + "token = " + value + ";"]));
+  files["consumer.mjs"] = 'const headers = { author' + 'ization: "Bearer unrecorded" };';
+  const result = scan(t, files);
+  assert.equal(result.status, 1, result.stderr);
+  for (const path of Object.keys(files)) {
+    assert.ok(result.stderr.includes(`${path}: credential outside a recorded fake-server fixture`), result.stderr);
   }
-  const result = scan(t, { "consumer.mjs": 'const headers = { author' + 'ization: "Bearer unrecorded" };' });
-  assert.equal(result.status, 1);
 });
 
 test("credential literals nested inside interpolated headers reject", t => {

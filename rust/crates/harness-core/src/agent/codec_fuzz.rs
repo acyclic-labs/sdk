@@ -433,6 +433,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         profile: super::CreationConfig {
             context: super::SpawnContext::Fork,
             template: Some(file.clone()),
+            peers: Default::default(),
         },
         history: Some(super::HistorySelection {
             conversation: 23,

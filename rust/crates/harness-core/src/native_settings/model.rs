@@ -47,7 +47,10 @@ mod tests {
             for selected_provider in [None, Some(provider.as_str())] {
                 let mut value = BTreeMap::from([("model", model.as_str())]);
                 if let Some(provider) = selected_provider { value.insert("model_provider", provider); }
-                std::fs::write(config.codex_home.join("config.toml"), toml::to_string(&value).unwrap()).unwrap();
+                let encoded = toml::to_string(&value).unwrap();
+                std::fs::write(config.codex_home.join("config.toml"), &encoded).unwrap();
+                #[cfg(feature = "hooks")]
+                crate::native_settings::codec_fuzz::check(encoded.as_bytes()).unwrap();
                 let provider = selected_provider.unwrap_or("openai");
                 prop_assert_eq!(config.configured_model().unwrap(), Some(format!("{provider}/{model}")));
             }

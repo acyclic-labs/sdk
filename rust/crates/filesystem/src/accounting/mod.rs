@@ -168,7 +168,7 @@ pub enum AccountingError {
     Authority(#[source] crate::AuthorityStoreError),
     /// Protected original generation evidence was malformed or mismatched.
     #[error("generation proof failed: {0}")]
-    Proof(#[source] crate::kernel::PublicationEvidenceError),
+    Proof(#[from] crate::kernel::PublicationEvidenceError),
     /// The original object operation failed before a proof was decoded.
     #[error(transparent)]
     Object(crate::ObjectStoreError),
@@ -194,6 +194,30 @@ mod read;
 
 use proof::{prove_bytes, record_digest, verify_record};
 pub use read::accounting_page;
+
+impl From<crate::kernel::CanonicalDecodeError> for AccountingError {
+    fn from(error: crate::kernel::CanonicalDecodeError) -> Self {
+        Self::Proof(error.into())
+    }
+}
+
+impl From<crate::kernel::GenerationExportManifestError> for AccountingError {
+    fn from(error: crate::kernel::GenerationExportManifestError) -> Self {
+        Self::Proof(error.into())
+    }
+}
+
+impl From<crate::kernel::VolumeCreatedError> for AccountingError {
+    fn from(error: crate::kernel::VolumeCreatedError) -> Self {
+        Self::Proof(error.into())
+    }
+}
+
+impl From<crate::kernel::RetentionCreatedError> for AccountingError {
+    fn from(error: crate::kernel::RetentionCreatedError) -> Self {
+        Self::Proof(error.into())
+    }
+}
 
 impl From<crate::AuthorityStoreError> for AccountingError {
     fn from(error: crate::AuthorityStoreError) -> Self {

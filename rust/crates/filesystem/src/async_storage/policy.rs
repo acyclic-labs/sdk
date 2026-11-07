@@ -23,11 +23,16 @@ mod tests {
         #[test]
         fn policy_cut_scope_never_leaks_across_pending_ready_or_drop(polls in 0usize..32, complete in any::<bool>()) {
             let cut = PolicyCut::new([1; 16], AuthorityId::from_bytes([2; 16]), Head::genesis(Epoch::GENESIS), 1);
-            let future = futures::future::poll_fn(|_| {
-                assert_eq!(PolicyCut::current().map(|current| current.authority), Some(cut.authority));
+            let future = futures::future::poll_fn(move |_| {
+                assert_eq!(PolicyCut::current(), Some(cut));
                 if complete { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
             });
-            let mut future = Box::pin(cut.scope(future));
+            let body_bytes = std::mem::size_of_val(&future);
+            let scoped = cut.scope(future);
+            // One body and one cut, allowing alignment at both field boundaries.
+            let maximum = body_bytes + std::mem::size_of::<PolicyCut>() + 2 * std::mem::size_of::<usize>();
+            prop_assert!(std::mem::size_of_val(&scoped) <= maximum, "policy scope duplicates its body: {} bytes, single-body maximum {}", std::mem::size_of_val(&scoped), maximum);
+            let mut future = Box::pin(scoped);
             let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
             for _ in 0..polls {
                 let _ = future.as_mut().poll(&mut cx);
@@ -82,18 +87,34 @@ impl PolicyCut {
     /// Apply this backend-authenticated cut only while polling `future`.
     /// Publication must be awaited inside the future, never spawned separately.
     /// The original cut is restored on Pending, completion and cancellation.
-    pub async fn scope<F: Future>(self, future: F) -> F::Output {
+    pub fn scope<F: Future>(self, future: F) -> impl Future<Output = F::Output> {
+        PolicyFuture { cut: self, future }
+    }
+}
+
+pin_project_lite::pin_project! {
+    struct PolicyFuture<F> {
+        cut: PolicyCut,
+        #[pin]
+        future: F,
+    }
+}
+
+impl<F: Future> Future for PolicyFuture<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         struct Restore(Option<PolicyCut>);
         impl Drop for Restore {
             fn drop(&mut self) {
                 CURRENT.set(self.0);
             }
         }
-        let mut future = std::pin::pin!(future);
-        futures::future::poll_fn(|cx| {
-            let _restore = Restore(CURRENT.replace(Some(self)));
-            future.as_mut().poll(cx)
-        })
-        .await
+        let this = self.project();
+        let _restore = Restore(CURRENT.replace(Some(*this.cut)));
+        this.future.poll(cx)
     }
 }

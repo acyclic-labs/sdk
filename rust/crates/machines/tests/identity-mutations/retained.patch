@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/contract/identity.rs
++++ b/rust/crates/machines/src/contract/identity.rs
+@@ -17,7 +17,7 @@
+ /// identity domain. Nil UUID text is a label; an empty label is invalid.
+ pub fn normalize_identity(kind: &str, value: &str) -> Result<Uuid, IdentityError> {
+     if let Ok(parsed) = Uuid::parse_str(value)
+-        && !parsed.is_nil()
++        && parsed.is_nil()
+     {
+         return Ok(parsed);
+     }

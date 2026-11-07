@@ -29,7 +29,7 @@ pub enum SessionAction {
     /// Claim the next input, after the preceding process is quiescent. The
     /// accepting request may replay its claim; another request requires a
     /// fenced handoff. A reply always names the current physical view.
-    Next,
+    Next {},
     /// Capture and settle a process that has exited, including failed writes.
     /// The native resume id is derived from the turn's own custodied event
     /// log, so a running turn never spends an exchange recording it.
@@ -45,7 +45,7 @@ pub enum SessionAction {
         control: Control,
     },
     /// Read the session and its native resume reference.
-    Observe,
+    Observe {},
     /// Where prompt `id`, accepted at inbox sequence `inbox`, stands: the
     /// shared committed reply, with the outcome its settled turn recorded.
     /// The response carries that outcome once in `reply`, without `results`.
@@ -56,7 +56,7 @@ pub enum SessionAction {
         inbox: u64,
     },
     /// After fencing the old process custody, settle an orphaned turn.
-    Recover,
+    Recover {},
 }
 
 fn prompt_bound(prompt: &str) -> Result<()> {
@@ -145,7 +145,7 @@ impl HostWorkspaceOwner {
         let include_result = !matches!(&action, SessionAction::Reply { .. });
         let (mut accepted, mut fence) = (None, None);
         match action {
-            SessionAction::Observe => {}
+            SessionAction::Observe {} => {}
             // The first prompt is a message with the spawn's own identity, so
             // a replayed spawn names the same prompt at the same sequence.
             SessionAction::Spawn { prompt } => {
@@ -162,7 +162,7 @@ impl HostWorkspaceOwner {
             SessionAction::Reply { id, inbox } => {
                 accepted = Some(json!({"reply": self.native.reply(&child, &id, inbox).await?}));
             }
-            SessionAction::Next => return self.claim(operation, &child, false).await,
+            SessionAction::Next {} => return self.claim(operation, &child, false).await,
             SessionAction::Complete { claim, outcome } => {
                 fence = Some(
                     self.complete_session(operation, &child, &claim, outcome)
@@ -179,7 +179,7 @@ impl HostWorkspaceOwner {
                     .request(&child, operation, &Event::Control { control })
                     .await?;
             }
-            SessionAction::Recover => {
+            SessionAction::Recover {} => {
                 let (state, session) = self.native.session(&child).await?;
                 if let Some(claimed) = session.claimed() {
                     let claim = TurnClaim {

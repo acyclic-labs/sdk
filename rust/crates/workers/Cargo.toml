@@ -21,6 +21,7 @@ thiserror.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["http"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 proptest.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["http", "conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }

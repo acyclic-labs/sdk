@@ -26,6 +26,7 @@
 //! harness effect (spawn, send, archive, wait) always run
 //! ([`crate::tool::ToolExecutor::replays_recorded`]).
 use super::*;
+use crate::NativeIndexWork;
 use acyclic_collections::{FixedIndex, IndexWork};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::HashMap;
@@ -362,7 +363,7 @@ impl RecordedModel {
         } = &mut *replay;
         let selection = dispatches.get_or_try_insert_with(
             dispatch_key(dispatch),
-            &mut crate::NativeIndexWork(work),
+            &mut NativeIndexWork(work),
             |_| Ok(None),
         )?;
         match selection {
@@ -387,7 +388,7 @@ impl RecordedModel {
         let key = if live
             .get(
                 dispatch.operation_id.into_bytes(),
-                &mut crate::NativeIndexWork(work),
+                &mut NativeIndexWork(work),
             )?
             .copied()
             .unwrap_or(false)
@@ -400,7 +401,7 @@ impl RecordedModel {
             cursor.select(
                 &self.recording,
                 key,
-                &mut crate::NativeIndexWork(work),
+                &mut NativeIndexWork(work),
                 |candidate| {
                     let Some((index, call)) = candidate else {
                         return Ok(None);
@@ -427,7 +428,7 @@ impl RecordedModel {
                 // a refused builder leaves the original turn non-live.
                 live.get_or_try_insert_with(
                     dispatch.operation_id.into_bytes(),
-                    &mut crate::NativeIndexWork(work),
+                    &mut NativeIndexWork(work),
                     |_| Ok(false),
                 )?;
                 *selection = Some(ReplaySelection::Pending);
@@ -449,7 +450,7 @@ impl RecordedModel {
         let replay = self.lock();
         match replay
             .dispatches
-            .get(dispatch_key(dispatch), &mut crate::NativeIndexWork(work))?
+            .get(dispatch_key(dispatch), &mut NativeIndexWork(work))?
             .copied()
             .flatten()
         {
@@ -530,7 +531,7 @@ mod tests {
                 } else {
                     let expected = source.iter().position(|(candidate, _)| *candidate == key)
                         .map(|at| source.remove(at).1);
-                    let actual = cursor.take(&recording, key, &mut crate::NativeIndexWork(None))
+                    let actual = cursor.take(&recording, key, &mut NativeIndexWork(None))
                         .map_err(|error| TestCaseError::fail(error.to_string()))?
                         .map(|(_, call)| call.clone());
                     prop_assert_eq!(actual, expected);
@@ -541,14 +542,14 @@ mod tests {
             }
             for (key, expected) in source {
                 prop_assert_eq!(
-                    cursor.take(&recording, key, &mut crate::NativeIndexWork(None))
+                    cursor.take(&recording, key, &mut NativeIndexWork(None))
                         .map_err(|error| TestCaseError::fail(error.to_string()))?
                         .map(|(_, call)| call.clone()),
                     Some(expected)
                 );
             }
             prop_assert_eq!(cursor.used, recording.len());
-            prop_assert!(cursor.take(&recording, [0; 32], &mut crate::NativeIndexWork(None))
+            prop_assert!(cursor.take(&recording, [0; 32], &mut NativeIndexWork(None))
                 .map_err(|error| TestCaseError::fail(error.to_string()))?.is_none());
             prop_assert_eq!(cursor.used, recording.len());
         }
@@ -702,7 +703,7 @@ mod tests {
         let retained = work.live_allocation_bytes();
         let mut cursor = Cursor::default();
         assert!(matches!(
-            cursor.take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work))),
+            cursor.take(&source, [0; 32], &mut NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(
                     acyclic_fs::WorkError::BudgetExceeded { .. }
@@ -719,14 +720,14 @@ mod tests {
         .map_err(|(error, _)| error)?;
         cancellation.cancel();
         assert!(matches!(
-            cursor.take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work))),
+            cursor.take(&source, [0; 32], &mut NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..
             })
         ));
         assert!(matches!(
-            cursor.take(&source, [1; 32], &mut crate::NativeIndexWork(Some(&work))),
+            cursor.take(&source, [1; 32], &mut NativeIndexWork(Some(&work))),
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
                 ..
@@ -735,7 +736,7 @@ mod tests {
         assert_eq!(cursor.used, 0);
         assert_eq!(
             cursor
-                .take(&source, [0; 32], &mut crate::NativeIndexWork(None))?
+                .take(&source, [0; 32], &mut NativeIndexWork(None))?
                 .unwrap()
                 .0,
             0
@@ -750,7 +751,7 @@ mod tests {
         let mut funded = Cursor::default();
         assert_eq!(
             funded
-                .take(&source, [0; 32], &mut crate::NativeIndexWork(Some(&work)))?
+                .take(&source, [0; 32], &mut NativeIndexWork(Some(&work)))?
                 .unwrap()
                 .0,
             0

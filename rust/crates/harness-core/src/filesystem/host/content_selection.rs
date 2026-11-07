@@ -92,7 +92,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .publish_selected_operation(
                     root,
                     &mutations,
-                    operation,
+                    move || Ok(operation),
                     io,
                     super::workspaces::FilePublication::Authorized(
                         authorization.0,
@@ -100,7 +100,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         None,
                     ),
                     None,
-                )
+                    None,
+                )?
                 .await?;
             bounded_io::retain(&binding, Some(io)).await?;
             Ok(())

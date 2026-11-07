@@ -1,0 +1,1 @@
+[{"name":"stop","description":"Pause the selected subtree","arguments":"word","action":{"kind":"request","request":{"kind":"pause","scope":"subtree"},"confirmation":false}}]

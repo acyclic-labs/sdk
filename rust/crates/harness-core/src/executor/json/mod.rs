@@ -24,6 +24,27 @@ pub enum CodecOperation {
     DecodeValue,
 }
 
+/// Input type of an actual serialization pass, independent of its sink.
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SerializedType(pub &'static str);
+
+#[cfg(all(
+    any(test, feature = "test-support"),
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+fn record_serialization<T: ?Sized>() {
+    acyclic_differential::record(CodecOperation::Serialize);
+    acyclic_differential::record(SerializedType(
+        std::any::type_name::<T>().trim_start_matches('&'),
+    ));
+}
+
 mod admission;
 mod arrays;
 mod identity;

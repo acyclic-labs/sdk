@@ -186,7 +186,7 @@ impl Transport for Endpoint {
                         let event =
                             crate::session::transport::credential_event(&mut changed, async {
                                 let received = receiver.recv();
-                                futures::pin_mut!(received);
+                                let received = core::pin::pin!(received);
                                 let event = match select(received, source.next()).await {
                                     Either::Left((frame, _)) => Either::Left(frame),
                                     Either::Right((frame, _)) => Either::Right(frame),

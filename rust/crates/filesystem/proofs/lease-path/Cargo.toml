@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "acyclic-fs-lease-path-proof"
 version = "0.0.0"
 publish = false

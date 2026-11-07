@@ -99,7 +99,8 @@ impl Context {
         cancelled: impl OperationEvent<Output = ()>,
     ) -> Self {
         let stopped = async move {
-            futures::pin_mut!(expires, cancelled);
+            let expires = core::pin::pin!(expires);
+            let cancelled = core::pin::pin!(cancelled);
             match futures::future::select(cancelled, expires).await {
                 futures::future::Either::Left(_) => Stopped::Cancelled,
                 futures::future::Either::Right(_) => Stopped::Deadline,
@@ -238,13 +239,15 @@ impl Context {
                     None => futures::future::pending().await,
                 }
             };
-            futures::pin_mut!(original, expiry);
+            let original = core::pin::pin!(original);
+            let expiry = core::pin::pin!(expiry);
             match futures::future::select(original, expiry).await {
                 futures::future::Either::Left((reason, _))
                 | futures::future::Either::Right((reason, _)) => reason,
             }
         };
-        futures::pin_mut!(stopped, work);
+        let stopped = core::pin::pin!(stopped);
+        let work = core::pin::pin!(work);
         match futures::future::select(stopped, work).await {
             futures::future::Either::Left((reason, _)) => Err(reason),
             futures::future::Either::Right((value, stopped)) => match stopped.now_or_never() {

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/mcp/http/body.rs
++++ b/rust/crates/harness-core/src/mcp/http/body.rs
+@@ -32,7 +32,7 @@
+         let allowed = length.min(u64::from(self.remaining)) as u32;
+         self.remaining -= allowed;
+         self.overflow = length > u64::from(allowed);
+-        (!self.overflow || allowed != 0).then_some(allowed)
++        (!self.overflow).then_some(allowed)
+     }
+ 
+     /// Whether the next demand must settle overflow without reading its source.

@@ -353,7 +353,7 @@ MCP reader successor, location on `f4e34ab9f9`:
 
 | Source | Kind | Replacement and terminal | Status |
 | --- | --- | --- | --- |
-| `rust/crates/harness-core/src/mcp/stdio/native/server/tests.rs:213` | One-millisecond sleep before every reply write | The same writer announces entry on a rendezvous channel, then waits for the reader's admission channel. Dropping its sole producer returns `BrokenPipe` through the original writer and serving join. | Qualified at `5a9a6f9a10` |
+| `rust/crates/mcp/src/server/tests.rs:214` | One-millisecond sleep before every reply write | The same writer announces entry on a rendezvous channel, then waits for the reader's admission channel. Dropping its sole producer returns `BrokenPipe` through the original writer and serving join. | Qualified at `5a9a6f9a10` |
 
 The original 101 ordered replies remain checked. The same named control also
 withdraws the reader before admitting its first write and requires the original
@@ -4525,7 +4525,6 @@ agent implementation remains separate from this expanded test audit.
 | `rust/crates/harness-tui/src/term/console_owner.rs:102` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/harness-tui/src/term/console_owner.rs:473` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/harness-core/src/mcp/stdio/native/tests.rs:117` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
-| `rust/crates/harness-core/src/mcp/stdio/native/server/tests.rs:213` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/harness-core/src/mcp/install.rs:121` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/harness-core/src/mcp/install.rs:179` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |
 | `rust/crates/harness-core/src/mcp/install/tests.rs:282` | Direct temporal or scheduling candidate | Audit the original producer and its terminal; this candidate is not an approved surviving delay. | Pending |

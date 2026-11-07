@@ -23,7 +23,8 @@ const OVERFLOW = "has overflowed its stack";
 
 // The needles a PTY input watches in its raw output.
 export function rawNeedles(actions) {
-  return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR, ...actions.flatMap(action => action.when?.raw ?? [])];
+  return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR,
+    ...actions.flatMap(action => [...(action.when?.raw ?? []), ...(action.assert?.raw ?? [])])];
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.

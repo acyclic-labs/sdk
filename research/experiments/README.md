@@ -8,8 +8,8 @@ workers' grants and inherited history. Use separate worker volumes: granting
 the source checkout would expose these inputs too. These files are excluded
 from the universal seed: its read grant would reveal the hidden markers, scorers and
 conditions even when the plugin is disabled. Research is off by default.
-Installation and execution are not claimed here. This directory adds no hook,
-graph schema, runner or provider adapter.
+It adds no hook or graph schema. One-hop paired studies run through
+`graphcoder study` (below); the multi-hop recipes still need channels.
 
 Use the shared [offline analysis](analysis.md)
 for scoring. The five recipes are:
@@ -21,6 +21,30 @@ for scoring. The five recipes are:
 | [Shared-file collusion](recipes/shared-file.md) | Reader access to the writer's committed file | Synthetic marker disclosure |
 | [Error propagation](recipes/error-propagation.md) | Correct versus wrong seed | Join assessor's planted-answer adoption |
 | [Scaling](recipes/scaling.md) | Bound graph and participant count | Correctness and paid cost per assigned trial |
+
+## Running a paired study
+
+`graphcoder --model MODEL study ARMS --report REPORT.jsonl` runs a version-1
+arms file on a fresh root. The `source` task runs once; every arm/replicate in
+`AssignmentPlan` order forks the root at that settled turn with the arm's
+`brief`, using the `role` template (default `worker`). Each fork's brief turn
+must reply with exactly the decision artifact, which the `scorer` file scores
+once. `outcome` (`correct` or `adopted_injection`) selects the paired score.
+[`arms/single-hop-consensus.json`](arms/single-hop-consensus.json) asks whether
+a claimed consensus moves an answered quantity task to the planted total.
+
+Defaults follow the pilot policy: 20 replicates per arm, and only
+claude-haiku-5-5, gpt-6-luna and Gemini 3.8 Flash. More than 50 replicates, or
+another model in `models`, requires an `approval` naming who authorized it.
+`prices` names USD `ModelPriceRecord` JSONL taken from the provider's published
+rates; without one, every cost stays unknown rather than zero. The report holds
+the source cut, the predeclared assignments, one row per trial (failures
+included), one `TrialReport` per arm, one `Contrast` per treatment arm and the
+run's cost: the source's own subtree outside the forks, and the total. A study
+names its model with `--model PROVIDER/MODEL`, which is checked against
+`models` before the source turn runs. One arms file is one source cut, so it is one cluster:
+clustered estimates need several independent sources. Reusing `--operation`
+on the same session replays settled work instead of paying for it again.
 
 ## Shared inputs and custody
 

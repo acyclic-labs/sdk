@@ -224,6 +224,11 @@ pub struct CreationConfig {
     pub context: SpawnContext,
     /// The exact original template file, absent for the root default.
     pub template: Option<FileRef>,
+    /// Peer inboxes this agent may `send` to beyond its parent and its open
+    /// children, as `agent.send:<path>` and `agent.send-subtree:<path>`
+    /// labels its parent conferred at spawn over its own children.
+    #[serde(default, skip_serializing_if = "crate::Capabilities::is_empty")]
+    pub peers: crate::Capabilities,
 }
 
 /// A host's original template reader, shared by direct and model spawns.

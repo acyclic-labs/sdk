@@ -17,7 +17,7 @@ pub(crate) async fn credential_event<T>(
     operation: impl std::future::Future<Output = T>,
 ) -> Result<T, StreamError> {
     use futures::future::{Either, select};
-    futures::pin_mut!(operation);
+    let operation = core::pin::pin!(operation);
     if let Some(changed) = changed {
         match select(changed, operation).await {
             Either::Left(_) => Err(StreamError::AccessDenied),

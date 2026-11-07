@@ -7,22 +7,24 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 const nativeReady=JSON.parse(readFileSync(new URL('../../../scripts/graphcoder-e2e/fixtures/native-report-ready.json',import.meta.url))).ready;
+const workspaceReady=JSON.parse(readFileSync(new URL('../../../scripts/graphcoder-e2e/fixtures/workspace-owner-ready.json',import.meta.url))).ready;
 
-test('workspace startup cancellation and early exit settle the original watch and process owner',async()=>{
- await Promise.all(['cancel-before','cancel-live','ready-before','exit','descriptor-without-ready','control-without-ready','exit-capture','ready-capture','ready-async-capture'].map(async mode=>{
+test('workspace startup joins serving readiness, cancellation and the original process owner',async()=>{
+ await Promise.all(['cancel-before','cancel-live','ready-before','exit','descriptor-without-ready','stale-descriptor','control-without-ready','exit-capture','ready-capture','ready-async-capture'].map(async mode=>{
   const root=mkdtempSync(join(realpathSync(tmpdir()),'workspace-owner-'));
   const scope=new Processes(),cancellation=new AbortController();
   const failure=new Error('original input closed');
   const captureFailure=new Error('step=record workspace owner terminal; recovery=node --test plugin/tests/hosts/workspace-owner.test.mjs');
+  const originalCapture=error=>error===captureFailure||error.cause===captureFailure;
   let child,events,launched;
   const admission=new Promise(resolve=>{launched=resolve;});
-  // This isolates the real process/pipe/watch mechanism. Only the ready frame
-  // is replayed from the retained native capture, rebound to this launch.
+  // This isolates the real process/pipe mechanism. Both ready frames come
+  // from native captures; only the report generation is rebound to this launch.
   // Full workspace-owner acceptance uses the actual shipping executable.
   const program=mode==='exit'?'process.exit(3)':mode==='descriptor-without-ready'?'process.exit(0)':`
    const fs=require('node:fs'),net=require('node:net');
    const frame=JSON.stringify({...${JSON.stringify(nativeReady)},generation:process.env.ACYCLIC_REPORT_GENERATION})+'\\n';
-   const closed=()=>{${mode==='exit-capture'?'process.exit(3)':"console.log(JSON.stringify({started:true}));process.stdin.resume();"}};
+   const closed=()=>{${mode==='exit-capture'?'process.exit(3)':`console.log(JSON.stringify({started:true}));${mode.startsWith('ready')?'console.log('+JSON.stringify(JSON.stringify(workspaceReady))+');':''}process.stdin.resume();`}};
    const data=${mode==='control-without-ready'?"''":'frame'};
    if(process.env.ACYCLIC_REPORT_PIPE)net.connect(process.env.ACYCLIC_REPORT_PIPE).end(data,closed);
    else if(process.env.ACYCLIC_REPORT_FD){const fd=Number(process.env.ACYCLIC_REPORT_FD);fs.writeSync(fd,data);fs.closeSync(fd);closed();}`;
@@ -36,7 +38,7 @@ test('workspace startup cancellation and early exit settle the original watch an
    return retained(await scope.startReported(process.execPath,['-e',program],options));}};
   try{
    if(mode==='cancel-before')cancellation.abort(failure);
-   if(mode.startsWith('ready')||mode==='descriptor-without-ready'){
+   if(mode.startsWith('ready')||mode==='descriptor-without-ready'||mode==='stale-descriptor'){
     mkdirSync(join(root,'.acyclic-sdk/host-files'),{recursive:true});
     writeFileSync(join(root,'.acyclic-sdk/host-files/owner.json'),'{}');
    }
@@ -51,12 +53,17 @@ test('workspace startup cancellation and early exit settle the original watch an
      await (await admission).keyed('started');
      cancellation.abort(failure);
     }
+    if(mode==='stale-descriptor'){
+     await (await admission).keyed('started');
+     await child.reportReady;
+     child.input.end();
+    }
     return started;
    }});
-   if(mode.endsWith('capture'))await assert.rejects(running,error=>error===captureFailure);
+   if(mode.endsWith('capture'))await assert.rejects(running,originalCapture);
    else if(mode==='ready-before')assert.equal((await running).run,child);
-   else if(mode==='exit')await assert.rejects(running,/workspace owner exited before descriptor|report capability ended/);
-   else if(mode==='descriptor-without-ready'||mode==='control-without-ready')await assert.rejects(running,{code:'REPORT_CONTROL_ENDED'});
+   else if(mode==='exit'||mode==='descriptor-without-ready'||mode==='control-without-ready'||mode==='stale-descriptor')
+    await assert.rejects(running,error=>error.code==='REPORT_CONTROL_ENDED'||(error.name==='SpoolEnded'&&error.kind==='eof'));
    else await assert.rejects(running,error=>error===failure);
    assert.equal(scope.started,mode==='cancel-before'?0:1);
    assert.equal(scope.children.size,0,'startup publication joins the same physical child');

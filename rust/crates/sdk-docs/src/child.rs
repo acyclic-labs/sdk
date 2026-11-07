@@ -139,7 +139,11 @@ pub fn with_command_executor<T>(
 pub fn execute_metadata(
     command: &cargo_metadata::MetadataCommand,
 ) -> cargo_metadata::Result<cargo_metadata::Metadata> {
-    let output = command.cargo_command().run_output()?;
+    decode_metadata_output(command.cargo_command().run_output()?)
+}
+
+#[doc(hidden)]
+pub fn decode_metadata_output(output: Output) -> cargo_metadata::Result<cargo_metadata::Metadata> {
     if !output.status.success() {
         return Err(cargo_metadata::Error::CargoMetadata {
             stderr: String::from_utf8(output.stderr)?,
@@ -237,23 +241,32 @@ mod tests {
             prop_assert_eq!(command_directory(), previous);
             prop_assert_eq!(std::env::current_dir().unwrap(), before);
         }
+    }
 
-        #[test]
-        fn metadata_command_outputs_round_trip_through_the_maintained_parser(
-            values in prop::collection::btree_map("[a-z]{1,12}", ".{0,16}", 0..12),
-        ) {
-            let value = serde_json::json!({"packages":[], "workspace_members":[],
-                "workspace_default_members":[], "resolve":null, "target_directory":"/checkout/target",
-                "workspace_root":"/checkout", "metadata":values, "version":1});
-            let bytes = format!("cargo diagnostic\n{}\n", serde_json::to_string(&value).unwrap()).into_bytes();
-            let result = with_command_executor(move |_| Ok(success(bytes.clone())), || {
-                execute_metadata(&cargo_metadata::MetadataCommand::new())
-            }).unwrap();
-            prop_assert_eq!(&result.workspace_metadata, &value["metadata"]);
-            let serialized = serde_json::to_string(&result).unwrap();
-            let again = cargo_metadata::MetadataCommand::parse(&serialized).unwrap();
-            prop_assert_eq!(serde_json::to_value(result).unwrap(), serde_json::to_value(again).unwrap());
+    #[test]
+    fn metadata_output_preserves_original_fields_and_failures() {
+        let workspace = include_bytes!("../fuzz/corpus/metadata_output/native-workspace.json");
+        let refusal =
+            include_bytes!("../fuzz/corpus/metadata_output/native-missing-manifest.stderr");
+        let mut prefixed = refusal.to_vec();
+        prefixed.extend_from_slice(workspace);
+        let mut invalid_utf8 = workspace.to_vec();
+        invalid_utf8.push(0xff);
+        for bytes in [
+            workspace.as_slice(),
+            refusal.as_slice(),
+            &prefixed,
+            &workspace[..workspace.len() / 2],
+            &invalid_utf8,
+        ] {
+            crate::metadata_output_oracle::check(bytes);
         }
+        proptest::test_runner::TestRunner::default()
+            .run(&prop::collection::vec(any::<u8>(), 0..2048), |bytes| {
+                crate::metadata_output_oracle::check(&bytes);
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

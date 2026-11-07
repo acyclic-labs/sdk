@@ -1,3 +1,5 @@
+use crate::native_mount::shared::outcome::{CallbackFailure, source_refusal};
+
 use super::{
     HR_DIRECTORY_NOT_EMPTY, HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND, HR_SHARING_VIOLATION,
     HR_VIRTUALIZATION_INVALID_OPERATION,
@@ -90,7 +92,14 @@ pub(super) fn write_listed_content(
     match (read, failure) {
         (_, Some(error)) => Err(format!("writing {path:?}: {error}")),
         (Ok(()), None) => Ok(delivered == size),
-        (Err(MountSourceError::Stale | MountSourceError::NotFound), None) => Ok(false),
+        (Err(error), None)
+            if matches!(
+                source_refusal(&error),
+                Some(CallbackFailure::Stale | CallbackFailure::NotFound)
+            ) =>
+        {
+            Ok(false)
+        }
         (Err(error), None) => Err(format!("reading {path:?}: {error}")),
     }
 }

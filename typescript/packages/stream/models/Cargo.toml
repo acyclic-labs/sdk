@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 autotests = false
 name = "acyclic-stream-typescript-models"
 version = "0.0.0"

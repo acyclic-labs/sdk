@@ -35,7 +35,7 @@ async fn input_result<T>(
     operation: impl std::future::Future<Output = T>,
     failed: &mut Option<oneshot::Receiver<StreamError>>,
 ) -> Result<T, StreamError> {
-    futures::pin_mut!(operation);
+    let mut operation = core::pin::pin!(operation);
     if let Some(receive) = failed {
         match select(receive, operation.as_mut()).await {
             Either::Left((Ok(error), _)) => return Err(error),

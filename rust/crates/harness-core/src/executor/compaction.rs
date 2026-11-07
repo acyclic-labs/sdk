@@ -3,6 +3,16 @@ use super::*;
 /// The backstop's one fixed marker, in place of every evicted range.
 pub(crate) const BACKSTOP_MARKER: &str = crate::seed::CONTEXT_BACKSTOP;
 
+pub(super) enum CompactionSource {
+    Projected,
+    Base {
+        context: crate::context::Context,
+        // Selected bases are counted only after the final pressure decision.
+        // A working-base probe transfers its already validated count here.
+        count: Option<crate::context::ModelTokenCount>,
+    },
+}
+
 impl StockExecution<'_> {
     pub(super) fn compaction_message_limit(
         &self,
@@ -21,29 +31,29 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         turn: (&TurnInput, u32, usize),
         captured: (ResponseProjection, ContextAccounting),
-        source: (crate::context::Context, bool),
+        source: CompactionSource,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step, prior) = turn;
-        let (context, pre_stage) = source;
         let (projection, accounting) = captured;
+        let (stage_messages, context, count, pre_stage) = match source {
+            CompactionSource::Projected => (0, projection.context, Some(accounting.count), false),
+            CompactionSource::Base { context, count } => {
+                let stage_messages = projection
+                    .context
+                    .messages
+                    .len()
+                    .saturating_sub(context.messages.len());
+                drop((projection.context, accounting.count));
+                (stage_messages, context, count, true)
+            }
+        };
         let message_limit = self.compaction_message_limit(
             step == 0 && input.selected_context.is_some(),
-            projection
-                .context
-                .messages
-                .len()
-                .saturating_sub(context.messages.len()),
+            stage_messages,
         );
         let (through, maximum) = self
-            .summary_budget(
-                accounting.count,
-                accounting.capacity,
-                &context,
-                pre_stage,
-                policy,
-                message_limit,
-            )
+            .summary_budget(count, accounting.capacity, &context, policy, message_limit)
             .await?;
         let summary = self
             .backstop_marker(journal, input.operation_id, step, (&context, through))
@@ -148,15 +158,16 @@ impl StockExecution<'_> {
 
     async fn summary_budget(
         &self,
-        count: crate::context::ModelTokenCount,
+        count: Option<crate::context::ModelTokenCount>,
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
-        pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
         message_limit: usize,
     ) -> Result<(usize, usize)> {
         let ceiling = policy.input_ceiling(capacity, self.output_tokens())?;
-        let count = if pre_stage {
+        let count = if let Some(count) = count {
+            count
+        } else {
             let canonical_request = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(context)?,
                 self.stock.limits,
@@ -170,9 +181,6 @@ impl StockExecution<'_> {
             )
             .await?;
             with_history_io(self.io, |work| count.validate(&canonical_request, work))?;
-            count
-        } else {
-            // The source is the projected request whose count the caller validated.
             count
         };
         let available = capacity

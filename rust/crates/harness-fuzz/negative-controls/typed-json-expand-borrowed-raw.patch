@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/executor/json/admission.rs
++++ b/rust/crates/harness-core/src/executor/json/admission.rs
+@@ -125,7 +125,7 @@
+                 .layout
+                 .is_some_and(|layout| layout.opaque(self.maximum_depth))
+         {
+-            <IgnoredAny as serde::Deserialize>::deserialize(decoder)?;
++            <serde_json::Value as serde::Deserialize>::deserialize(decoder)?;
+             return Ok(self.base());
+         }
+         if self.depth > 256 + usize::BITS {

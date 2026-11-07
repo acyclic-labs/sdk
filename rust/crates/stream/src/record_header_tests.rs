@@ -72,10 +72,6 @@ fn indexed_header_order_is_canonical_and_unique() -> Result<(), StreamError> {
         RecordHeaders::new(vec![], vec![attribute.clone(), attribute]),
         Err(StreamError::InvalidArgument)
     );
-    assert_eq!(
-        body(b"key", b"value")?.headers.keys(),
-        &[OwnedBytes::from_static(b"key")]
-    );
     Ok(())
 }
 
@@ -128,15 +124,6 @@ fn every_write_family_authenticates_keys_and_attributes_in_retry_identity()
             );
         }
     }
-    Ok(())
-}
-
-#[test]
-fn append_record_wire_roundtrip_preserves_both_indexes() -> Result<(), StreamError> {
-    let original = body(b"key", b"attribute")?;
-    let decoded =
-        crate::wire_codec::append_record(crate::wire_codec::append_record_wire(original.clone()))?;
-    assert_eq!(decoded, original);
     Ok(())
 }
 

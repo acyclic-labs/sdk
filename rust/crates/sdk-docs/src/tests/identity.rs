@@ -14,8 +14,7 @@ proptest! {
             &format!("/checkout/{}", parts.join("/")), "/checkout");
         prop_assert_ne!(normalize(&a), normalize(&b));
         let original = format!("/checkout/{}", a.join("/"));
-        let encoded = crate::path_identity::rebase(&original, "/checkout", "/relocated", false).unwrap();
-        prop_assert_eq!(crate::path_identity::stable_filename(&encoded, "/relocated"), normalize(&a));
+        crate::path_identity_oracle::check(&original, "/checkout", "/relocated", &a.join("/"), false);
     }
     // A physical rebase preserves the real normalized digest for every Windows
     // spelling, even when the test host cannot open any of these source paths.
@@ -28,24 +27,13 @@ proptest! {
             (format!("{drive}:\\old\\{directory}"), format!(r"\\?\{drive}:\OLD\{directory}\src\{leaf}.rs"), "D:\\new\\checkout".to_owned()),
             (format!(r"\\server\share\old\{directory}"), format!(r"\\?\UNC\SERVER\SHARE\old\{directory}\src\{leaf}.rs"), r"\\server\share\new\checkout".to_owned()),
         ] {
-            let rebase = crate::path_identity::rebase(&path, &old, &new, true).unwrap();
+            let rebase = crate::path_identity_oracle::check(&path, &old, &new, &format!("src/{leaf}.rs"), true);
             let normalize = |path: &str, root: &str| normalized_rustdoc_digest_bytes(
                 &serde_json::to_vec(&serde_json::json!({"index": {"0": {"span": {"filename": path}}}})).unwrap().into(), Path::new(root)).unwrap();
             prop_assert_eq!(normalize(&path, &old), normalize(&rebase, &new));
             prop_assert_ne!(normalize(&path, &old), normalize(&format!("{rebase}.changed"), &new));
         }
     }
-}
-
-#[test]
-fn treating_posix_backslashes_as_separators_is_detected() {
-    let paths = [r"/checkout/src/a\a.rs", "/checkout/src/a/a.rs"];
-    // Negative control: the former separator conversion aliases these names.
-    assert_eq!(paths[0].replace('\\', "/"), paths[1]);
-    assert_ne!(
-        crate::path_identity::stable_filename(paths[0], "/checkout"),
-        crate::path_identity::stable_filename(paths[1], "/checkout")
-    );
 }
 
 proptest! {

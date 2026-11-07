@@ -77,9 +77,19 @@ async fn selected_working_cut_case(signed: bool) -> Result<()> {
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;
-    let first = execution
-        .prepared_response(&journal, &input, 0, &[], None)
-        .await?;
+    let preparing = execution.prepared_response(&journal, &input, 0, &[], None);
+    // The caller retains the admitted owner and its small request/result handle;
+    // context capture and replay state belong to the same funded future.
+    let bound = std::mem::size_of::<
+        crate::conversation::BoundedContentFuture<'_, crate::model::PreparedModelRequest>,
+    >() + 1024;
+    let preparing_bytes = std::mem::size_of_val(&preparing);
+    assert!(
+        preparing_bytes <= bound,
+        "response preparation embeds {preparing_bytes} bytes"
+    );
+    println!("response preparation: caller={preparing_bytes} bound={bound}");
+    let first = preparing.await?;
     assert!(first.bytes().len() < 2_000);
     let restarted = StockExecution::ordinary(&executor);
     let replayed = restarted

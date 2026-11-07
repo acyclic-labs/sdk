@@ -108,7 +108,18 @@ async fn foreign_provider_survives_cut(scoped: bool) -> Result<u64> {
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     };
     if scoped {
-        deferring_provider_durability(&selected, publication).await?;
+        let body_bytes = std::mem::size_of_val(&publication);
+        let scope = deferring_provider_durability(&selected, publication);
+        let scope_bytes = std::mem::size_of_val(&scope);
+        // Task-local state retains its current/prior value, key and pin state;
+        // it needs one body, never an initial body plus an await-state copy.
+        let control_bytes = 2 * std::mem::size_of::<Deferral>() + 4 * std::mem::size_of::<usize>();
+        assert!(
+            scope_bytes <= body_bytes + control_bytes,
+            "durability scope retained {scope_bytes} bytes for a {body_bytes}-byte body"
+        );
+        eprintln!("provider durability scope: {scope_bytes} bytes, body {body_bytes} bytes");
+        scope.await?;
     } else {
         // Execute the former ambient scope: the selected journal's receipt
         // cannot make another authority's acknowledged append survive a cut.

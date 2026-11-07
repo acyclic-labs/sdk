@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/executor/json/admission.rs
++++ b/rust/crates/harness-core/src/executor/json/admission.rs
+@@ -121,7 +121,7 @@
+     ) -> std::result::Result<Branches, D::Error> {
+         // An absent schema cannot turn a borrowed or ignored subtree into
+         // an owned Value. Its actual layout still proves the skip is opaque.
+-        if (std::ptr::eq(self.schema, &NONE) || std::ptr::eq(self.schema, &UNKNOWN))
++        if std::ptr::eq(self.schema, &NONE)
+             && self
+                 .layout
+                 .is_some_and(|layout| layout.opaque(self.maximum_depth))

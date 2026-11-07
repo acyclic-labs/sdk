@@ -135,42 +135,15 @@ mod tests {
         fn reference_selection_keeps_every_basename_alias_and_windows_uncertainty(
             leaf in "[a-z]{1,12}", other in "[a-z]{1,12}", windows in any::<bool>(),
         ) {
-            let sources = vec![source(format!("first/{leaf}.rs"), 0, 0), source(format!("second/{leaf}.rs"), 1, 1), source(format!("third/{other}.json"), 2, 2)];
-            let filenames = BTreeSet::from([format!("src/{leaf}.rs")]);
-            let encoded = serde_json::to_vec(&filenames).unwrap();
-            let decoded: BTreeSet<String> = serde_json::from_slice(&encoded).unwrap();
-            prop_assert_eq!(referenced(&sources, &filenames, windows), referenced(&sources, &decoded, windows));
-            let posix = vec![source(format!(r"/checkout/{leaf}\{other}.rs"), 0, 0), source(format!("/checkout/{leaf}/{other}.rs"), 1, 1)];
-            prop_assert_eq!(referenced(&posix, &BTreeSet::from([format!(r"src/{leaf}\{other}.rs")]), false), posix[..1].to_vec());
-            prop_assert_eq!(referenced(&sources, &filenames, windows), sources[..2].to_vec());
-            if windows {
-                for spelling in [format!(r"C:\SRC\{}.RS", leaf.to_ascii_uppercase()), format!(r"\\?\C:\src\{leaf}.rs")] {
-                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling]), true), sources[..2].to_vec());
-                }
-                for spelling in ["C:/src/SHORT~1.RS", "C:/src/é.rs", "C:/src/file.rs.", "C:/src/file.rs ", "C:/src/file.rs:stream"] {
-                    prop_assert_eq!(referenced(&sources, &BTreeSet::from([spelling.to_owned()]), true), sources.clone());
-                }
-            }
-            prop_assert!(referenced(&sources, &BTreeSet::new(), windows).is_empty());
-            // A first-match-only selector would retain one alias and fail this oracle.
-            prop_assert_ne!(referenced(&sources, &filenames, windows), sources[..1].to_vec());
+            crate::source_identities_oracle::check_selection(&leaf, &other, windows);
         }
 
         #[test]
         fn bundling_deduplicates_only_complete_physical_logical_and_digest_identity(
             keys in prop::collection::vec((0u8..4, 0u8..4, 0u8..4), 0..32),
         ) {
-            let expected = keys.iter().copied().collect::<BTreeSet<_>>();
-            let mut sources = keys.iter().map(|(p,l,d)| source(format!("physical/{p}"), *l, *d)).collect::<Vec<_>>();
-            deduplicate(&mut sources);
-            let identities = sources.iter().map(|source| (source.physical_path.clone(), source.logical_path.clone(), source.sha256.clone())).collect::<BTreeSet<_>>();
-            prop_assert_eq!(sources.len(), expected.len());
-            for (p,l,d) in expected {
-                let item = source(format!("physical/{p}"), l, d);
-                prop_assert!(identities.contains(&(item.physical_path, item.logical_path, item.sha256)));
-            }
-            let once = sources.clone(); deduplicate(&mut sources);
-            prop_assert_eq!(sources, once);
+            let sources = keys.iter().map(|(p,l,d)| source(format!("physical/{p}"), *l, *d)).collect::<Vec<_>>();
+            crate::source_identities_oracle::check(&sources);
         }
     }
 }

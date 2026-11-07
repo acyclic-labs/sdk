@@ -1,4 +1,5 @@
 [package]
+license = "Apache-2.0"
 name = "acyclic-codec-fuzz"
 version = "0.0.0"
 edition = "2024"
@@ -14,6 +15,8 @@ object-revisions = ["acyclic-objects/grpc"]
 storage-schedules = ["acyclic-objects/local", "acyclic-native-runtime/test-support", "dep:tempfile", "dep:tokio"]
 
 [dependencies]
+acyclic-mcp = { path = "../crates/mcp", features = ["stdio"] }
+tokio-util = { version = "0.7.17", features = ["codec"] }
 acyclic-actors = { path = "../crates/actors", features = ["test-support"] }
 acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
 acyclic-fs = { path = "../crates/filesystem", default-features = false, features = ["distributed", "local", "test-support", "s3-http"] }

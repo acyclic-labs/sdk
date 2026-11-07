@@ -395,7 +395,7 @@ async fn unreconciled_empty_attempt(unsettled: bool) -> Result<Vec<ModelEvent>> 
     };
     {
         let pending = executor.model_step(&journal, &input, 0, &[]);
-        futures::pin_mut!(pending);
+        let mut pending = core::pin::pin!(pending);
         assert!(futures::poll!(&mut pending).is_pending());
         assert_eq!(provider.dispatches().len(), 1);
     }

@@ -220,19 +220,17 @@ where
         &self,
         wait: &CancellationToken,
     ) -> Result<bool, MountSourceError> {
-        let changed = !self.capture_retired();
-        self.cancel_cleanup(Some(wait)).map(|()| changed)
+        self.cancel_cleanup_with_join(Some(wait), SourceRetirementWait::Caller)?
+            .into_result()
     }
 
     fn shutdown_accepted_cleanup(&self) -> Result<bool, MountSourceError> {
-        let changed = !self.capture_retired();
-        self.cancel_cleanup(None).map(|()| changed)
+        self.cancel_cleanup_with_join(None, SourceRetirementWait::Caller)?
+            .into_result()
     }
 
-    fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
-        let changed = !self.capture_retired();
+    fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         self.cancel_cleanup_with_join(None, SourceRetirementWait::Physical)
-            .map(|()| changed)
     }
 
     fn supports_posix_named_attributes(&self) -> bool {

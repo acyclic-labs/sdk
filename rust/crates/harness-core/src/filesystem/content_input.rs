@@ -112,7 +112,8 @@ impl HashedSource<'_> {
         }
         let read = self.source.read(&mut destination[..maximum]).fuse();
         let cancelled = cancellation.cancelled().fuse();
-        futures::pin_mut!(read, cancelled);
+        let mut read = core::pin::pin!(read);
+        let mut cancelled = core::pin::pin!(cancelled);
         let count = futures::select_biased! {
             _ = cancelled => return Err(std::io::Error::new(std::io::ErrorKind::Interrupted,
                 "content source cancelled; recovery: start a new publication with a live cancellation token")),

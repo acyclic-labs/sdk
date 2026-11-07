@@ -143,9 +143,9 @@ async fn streaming_producer_retirement_and_cancellation_leave_no_publication() -
                 },
             )?
             .fuse();
-        futures::pin_mut!(publication);
+        let mut publication = core::pin::pin!(publication);
         let reading = reading.fuse();
-        futures::pin_mut!(reading);
+        let mut reading = core::pin::pin!(reading);
         futures::select_biased! {
             ready = reading => ready.map_err(|_| Error::Storage("source entrance retired; recovery: run streaming_producer_retirement_and_cancellation_leave_no_publication".into()))?,
             _ = publication => return Err(Error::Storage("publication settled before its source event; recovery: run streaming_producer_retirement_and_cancellation_leave_no_publication".into())),

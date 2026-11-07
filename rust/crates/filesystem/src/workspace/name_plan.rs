@@ -15,7 +15,7 @@ pub(super) fn inspect(
                 name,
                 |count| {
                     let delta = item_work(count);
-                    let native = crate::materializer::native_materialization_work_error;
+                    let native = crate::NativeTreeMaterializationError::from;
                     state
                         .admit(crate::WorkCounters::UNCHARGED)
                         .map_err(native)?;

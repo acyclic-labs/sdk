@@ -22,7 +22,7 @@ pub(crate) fn generate<'a>(
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let encoded = encode(provider,request,&names,None,&origin).await?;
         let events = generate_encoded(provider, request, dispatch, encoded.bytes.into(), encoded.cache, auth, names);
-        futures::pin_mut!(events);
+        let mut events = core::pin::pin!(events);
         while let Some(event) = events.next().await { yield event?; }
     })
 }
@@ -51,7 +51,7 @@ pub(crate) fn generate_encoded<'a>(
         });
         let events = crate::stream::events_named(provider.config.adapter, response.body,
             provider.config.max_event_bytes, dispatch, Some(&names), Some(origin), response.request_id);
-        futures::pin_mut!(events);
+        let mut events = core::pin::pin!(events);
         while let Some(event) = events.next().await {
             let mut event = event.map_err(crate::diagnostic::rejection)?;
             if let ModelEvent::Completed { metadata } = &mut event {

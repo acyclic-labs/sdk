@@ -71,6 +71,21 @@ fn alarm_drops_await_deadline(
     }
 }
 
+/// The checkpoint failure marks completion but loses the original parent report.
+fn report_loses_receipt(control: Control) -> (Control, bool) {
+    let (next, _) = production::report(control);
+    (next, false)
+}
+
+#[kani::proof]
+#[kani::unwind(8)]
+fn dropped_checkpoint_failure_report_is_caught() {
+    exactly_once_and_never_loses_a_wake(Kernel {
+        report: report_loses_receipt,
+        ..PRODUCTION
+    });
+}
+
 #[kani::proof]
 #[kani::unwind(8)]
 fn arrival_step_during_condition_wait_is_caught() {

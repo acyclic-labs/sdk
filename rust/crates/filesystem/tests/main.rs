@@ -1,4 +1,6 @@
 //! Integration behaviour tests.
+#[cfg(loom)]
+use acyclic_fs::NativeMountError;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(loom))]
 acyclic_test_support::counting_allocator!();

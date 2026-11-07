@@ -908,6 +908,7 @@ mod tests {
                 profile: Some(agent::CreationConfig {
                     context: agent::SpawnContext::TopLevel,
                     template: template.clone(),
+                    peers: Default::default(),
                 }),
                 forked_at: 0,
                 conversation_tail: 0,

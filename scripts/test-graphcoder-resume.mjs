@@ -16,13 +16,13 @@ host.holdCount("resume after kill");
 const args = [...host.args, ...(interactive ? [] : ["-p", "resume after kill"])];
 const submission = randomUUID();
 const processes = new Processes();
-const start = (first, resume = true) => {
+const start = async (first, resume = true) => {
   const launchArgs = [...args, ...(resume ? ["--operation", submission] : [])];
   const env = { ...process.env, CODEX_HOME: host.settings, HOME: host.settings,
     USERPROFILE: host.settings, LOCALAPPDATA: join(host.settings, "AppData", "Local"),
     APPDATA: join(host.settings, "AppData", "Roaming"), XDG_DATA_HOME: host.settings,
     OPENAI_API_KEY: "", GRAPHCODER_MODEL: "", TERM: "xterm-256color" };
-  const running = interactive ? processes.startTerminal(binary, launchArgs, { env }) : processes.start(binary, launchArgs, { env });
+  const running = interactive ? await processes.startTerminal(binary, launchArgs, { env }) : processes.start(binary, launchArgs, { env });
   if (!interactive) return { running, exit: running.closed };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   let submitted = false, complete = false, stopped = false;
@@ -46,7 +46,7 @@ const records = stdout => stdout.split("\n").slice(0, -1).filter(Boolean).map(JS
 let failure;
 try {
   const { expired } = await withOwnedCase({ processes, run: async () => {
-    const first = start(true);
+    const first = await start(true);
     await Promise.race([host.counting, first.exit.then(result => { throw new Error(`turn exited before preparation: ${JSON.stringify(result)}`); })]);
     assert.equal(host.calls(), 0, "no model dispatch before kill");
     first.running.killExecutable();
@@ -54,7 +54,8 @@ try {
     assert.ok(killed.signal || killed.code !== 0, "executable was not killed");
     const operation = interactive ? undefined : records(killed.stdout).find(Array.isArray)?.[0].TaskSession.session;
     host.completeCount();
-    const resumed = await start(false).exit;
+    const { exit: resumedExit } = await start(false);
+    const resumed = await resumedExit;
     assert.equal(resumed.code, 0, resumed.stderr + resumed.stdout);
     if (interactive) assert.ok(resumed.complete, "restart without input must complete the retained turn");
     else {
@@ -64,7 +65,8 @@ try {
     }
     assert.equal(host.calls(), 1, "resume dispatches the retained turn exactly once");
     if (!interactive) {
-      const fresh = await start(false, false).exit;
+      const { exit: freshExit } = await start(false, false);
+      const fresh = await freshExit;
       assert.equal(fresh.code, 0, fresh.stderr);
       assert.notEqual(JSON.parse(fresh.stdout.split("\n")[0])[0].TaskSession.session, operation, "completed request starts fresh");
       assert.equal(host.calls(), 2);

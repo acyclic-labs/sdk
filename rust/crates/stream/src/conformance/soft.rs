@@ -3,7 +3,7 @@ use super::*;
 /// A soft append lands only on an existing, unclosed stream. Otherwise the
 /// commit skips it, reports it and still publishes its other mutations; a
 /// skipped path is never created. Replays and recovery report the same skips.
-pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), Failure> {
     let open = path("soft/open")?;
     let closing = path("soft/closing")?;
     let marker = path("soft/closing-marker")?;
@@ -44,7 +44,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     };
     let outcome = provider.commit(request.clone()).await?;
     let CommitOutcome::Committed(receipt) = &outcome else {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     };
     let mut expected = vec![absent.clone(), closing.clone()];
     expected.sort();
@@ -56,7 +56,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         || provider.tail(absent.clone()).await != Err(StreamError::NotFound)
         || provider.commit(request.clone()).await? != outcome
     {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     receipt.validate_request(&{
         let mut canonical = request.clone();
@@ -67,7 +67,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
     let observation = provider
         .inspect_idempotency(commit_key)
         .await?
-        .ok_or(StreamError::Unavailable)?;
+        .ok_or(violated!())?;
     let mut recovered = request.clone();
     let binding =
         crate::request::commit_binding_with(&mut recovered, |_| Ok::<(), StreamError>(()))??;
@@ -76,7 +76,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         || observation.request_digest != binding.digest()
         || !binding.matches_with(&facts, |_| Ok::<(), StreamError>(()))??
     {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     // Refusals: a commit of only soft appends publishes nothing to ride on, and
     // a condition on a soft append's path would decide it twice.
@@ -101,11 +101,11 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         },
     ] {
         if provider.commit(request).await != Err(StreamError::InvalidArgument) {
-            return Err(StreamError::Unavailable);
+            return Err(violated!());
         }
     }
     if provider.tail(open).await? != 2 || provider.tail(marker).await? != 1 {
-        return Err(StreamError::Unavailable);
+        return Err(violated!());
     }
     Ok(())
 }

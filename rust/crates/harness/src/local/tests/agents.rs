@@ -260,6 +260,17 @@ pub(super) async fn settled(harness: &Arc<LocalHarness>, root: &AgentPath) -> Re
 
 #[tokio::test]
 async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
+    fn future_bytes<F>(_: fn(crate::LocalHarnessConfig) -> F) -> usize {
+        std::mem::size_of::<F>()
+    }
+    // The real open entry owns configuration and phase pointers, not their bodies.
+    let opening_bytes = future_bytes(crate::local::open::open);
+    assert!(
+        opening_bytes <= 8192,
+        "local open retained a {opening_bytes}-byte phase frame"
+    );
+    eprintln!("local opening future: {opening_bytes} bytes");
+
     use acyclic_harness_client::{AgentCommand, AgentReply, encode_agent_reply};
 
     let directory = tempfile::tempdir().map_err(agent)?;
@@ -272,7 +283,16 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         )
         .await?,
     );
-    let (agents, root) = harness.agents().await?;
+    let hosting = harness.agents();
+    // The caller carries the cell and its heap-owned initialization, not the
+    // complete serving/publication future. Keep that frame within two pages.
+    let hosting_bytes = std::mem::size_of_val(&hosting);
+    assert!(
+        hosting_bytes <= 8 * 1024,
+        "agent hosting frame: {hosting_bytes} bytes"
+    );
+    eprintln!("agent hosting frame: {hosting_bytes} bytes");
+    let (agents, root) = hosting.await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
     let client = Conversation::open(connection.clone());

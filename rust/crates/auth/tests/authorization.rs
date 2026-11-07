@@ -24,10 +24,10 @@ proptest! {
         fs::write(root.path().join("test.proto"),proto).unwrap();
         let source=acyclic_test_support::source_path("compatibility/proto");
         let output=root.path().join("test.bin");
-        let status=Command::new(protoc_bin_vendored::protoc_bin_path().unwrap())
+        let status=Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path).unwrap())
             .arg(format!("--proto_path={}",root.path().display()))
             .arg(format!("--proto_path={}",source.display()))
-            .arg(format!("--proto_path={}",protoc_bin_vendored::include_path().unwrap().display()))
+            .arg(format!("--proto_path={}",acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path).unwrap().display()))
             .arg(format!("--descriptor_set_out={}",output.display())).arg("--include_imports").arg("test.proto").status().unwrap();
         prop_assert!(status.success());
         let pool=DescriptorPool::decode(fs::read(output).unwrap().as_slice()).unwrap();
