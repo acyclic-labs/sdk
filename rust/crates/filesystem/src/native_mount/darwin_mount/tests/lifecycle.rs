@@ -4,11 +4,32 @@ use super::*;
 #[test]
 fn retirement_keeps_callback_storage_until_terminal_completion() {
     unsafe extern "C" {
-        fn acyclic_fs_darwin_test_retirement_custody() -> c_int;
+        fn acyclic_fs_darwin_test_retirement_custody(
+            check_result: extern "C" fn(c_int, c_int) -> bool,
+        ) -> c_int;
     }
-    // SAFETY: the model has no arguments or host operations; it exercises the
-    // production C adapter over every bounded callback ordering and dissent.
-    assert_eq!(unsafe { acyclic_fs_darwin_test_retirement_custody() }, 0);
+    extern "C" fn check_result(status: c_int, dissent: c_int) -> bool {
+        match super::super::teardown_error::retirement_result(status, dissent) {
+            Ok(()) => status == 0 && dissent == 0,
+            Err(error) => {
+                error.kind() == std::io::Error::from_raw_os_error(status).kind()
+                    && if dissent == 0 {
+                        error.raw_os_error() == Some(status)
+                    } else {
+                        error
+                            .get_ref()
+                            .and_then(|cause| cause.downcast_ref::<DarwinRetirementFailure>())
+                            .is_some_and(|cause| cause.0 == dissent)
+                    }
+            }
+        }
+    }
+    // SAFETY: the synchronous control retains no callback and performs no host
+    // operations. Its Rust callback cannot unwind across the C boundary.
+    assert_eq!(
+        unsafe { acyclic_fs_darwin_test_retirement_custody(check_result) },
+        0
+    );
 }
 
 #[test]
