@@ -785,6 +785,56 @@ async fn jsonl_prompts_share_one_conversation_and_exit_once_settled() {
 }
 
 #[tokio::test]
+async fn selected_agent_queries_use_the_explicit_owner_state() {
+    use acyclic_harness::local::LocalHarness;
+    use acyclic_harness_providers::{Credentials, Registry};
+
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let state = fixture._directory.path().join("owner-state");
+    let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
+    registry.load_catalog(&model.catalog).unwrap();
+    let config = registry
+        .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+        .without_user_settings()
+        .state_directory(&state)
+        .working_directory(&fixture.workspace)
+        .unwrap();
+    let local = Arc::new(LocalHarness::open(config).await.unwrap());
+    let connection = local.connect().await.unwrap();
+    let agent = connection.root().to_string();
+    drop(connection);
+    Arc::try_unwrap(local)
+        .unwrap_or_else(|_| panic!("owner retains a connection"))
+        .disconnect()
+        .await
+        .unwrap();
+
+    for (command, kind) in [("sessions", "children"), ("history", "history")] {
+        let output = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec![
+                "--default-config",
+                "--host-state-directory",
+                state.to_str().unwrap(),
+                "--agent",
+                &agent,
+                command,
+            ],
+            "",
+        )
+        .await;
+        let reply: Value = serde_json::from_str(&succeeded(&output)).unwrap();
+        assert_eq!(reply["kind"], kind);
+        assert_eq!(reply["items"], json!([]));
+        assert!(reply["next"].is_null());
+    }
+    assert_eq!(model.generated(), 0, "observation dispatched model work");
+    model.close().await;
+}
+
+#[tokio::test]
 async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     use acyclic_harness_providers::{Credentials, Registry};
     let fixture = fixture();
