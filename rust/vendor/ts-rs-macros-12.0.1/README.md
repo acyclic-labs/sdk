@@ -11,6 +11,10 @@ to describe serialization. The original Serde derives, validation, naming and
 catch-all behavior remain authoritative. Unknown attributes still report the
 upstream diagnostic; `no-serde-warnings` is not enabled.
 
+The obsolete crate-level `macro_use` attribute is removed so this crate's own
+parser control compiles under its existing `deny(unused)` lint. The required
+module-level macro imports remain unchanged.
+
 The parser control compares the generated serialization against the same
 declaration without ingress metadata and rejects malformed metadata. Actors'
 existing metadata properties, additive-event properties and generated authoring
