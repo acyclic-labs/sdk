@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/native_host/work.rs b/rust/crates/filesystem/src/native_host/work.rs
+--- a/rust/crates/filesystem/src/native_host/work.rs
++++ b/rust/crates/filesystem/src/native_host/work.rs
+@@ -123,8 +123,8 @@
+     operation: impl FnOnce() -> (T, WorkCounters),
+ ) -> Result<T, DemandError> {
+     work.admit(maximum)?;
+-    let (result, actual) = operation();
+-    work.record(actual)?;
++    let (result, _actual) = operation();
++    work.record(maximum)?;
+     Ok(result)
+ }
+ 
