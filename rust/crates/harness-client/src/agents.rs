@@ -128,6 +128,7 @@ pub struct AgentClient {
     resources: Vec<String>,
     next_stream: usize,
     credential: u32,
+    command: Option<(Client, u32)>,
     all: bool,
 }
 
@@ -140,10 +141,15 @@ pub struct AgentDelivery {
 }
 
 impl AgentClient {
-    /// Bind controls to this observer's exact authenticated pool and slot.
+    /// Bind controls to the original command owner while retaining observation.
     /// The host supplies canonical routing; no second wire owner is opened.
     pub fn controls(&self, binding: crate::AgentBinding) -> crate::AgentControls {
-        crate::AgentControls::new(self.session.client().clone(), self.credential, binding)
+        crate::AgentControls::observed(
+            self.session.client().clone(),
+            self.credential,
+            self.command.clone(),
+            binding,
+        )
     }
 
     /// Follow from explicit exclusive cursors. Callers choose a bounded history
@@ -161,6 +167,7 @@ impl AgentClient {
             AgentSelection::new(agent, conversation_from, status_from),
             credential,
             false,
+            None,
         )
     }
 
@@ -177,6 +184,7 @@ impl AgentClient {
             AgentSelection::new(agent, conversation_from, status_from),
             credential,
             true,
+            None,
         )
     }
 
@@ -185,6 +193,7 @@ impl AgentClient {
         selection: AgentSelection,
         credential: u32,
         all: bool,
+        command: Option<(Client, u32)>,
     ) -> Result<Self, AgentClientError> {
         let conversation = selection.agent.conversation()?;
         let mut selected = Self {
@@ -195,6 +204,7 @@ impl AgentClient {
             resources: Vec::new(),
             next_stream: 0,
             credential,
+            command,
             all,
         };
         selected.set_view(selection, std::iter::empty())?;

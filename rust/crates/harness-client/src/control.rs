@@ -316,10 +316,23 @@ impl AgentControls {
     /// Compose the host's existing session and published binding. Endpoint
     /// bootstrap belongs to the host; this constructor invents no routing.
     pub fn new(client: Client, credential: u32, binding: AgentBinding) -> Self {
+        Self::observed(client, credential, None, binding)
+    }
+
+    pub(crate) fn observed(
+        client: Client,
+        credential: u32,
+        command: Option<(Client, u32)>,
+        binding: AgentBinding,
+    ) -> Self {
+        let (client, credential, observation) = match command {
+            Some((command, slot)) => (command, slot, Some((client, credential))),
+            None => (client, credential, None),
+        };
         Self {
             client,
             credential,
-            observation: None,
+            observation,
             binding,
         }
     }
@@ -343,12 +356,7 @@ impl AgentControls {
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
-        crate::AgentClient::observing(
-            self.observation_client(),
-            selection,
-            self.observation_credential(),
-            false,
-        )
+        self.observing(selection, false)
     }
 
     /// Replay all committed transitions through the ordinary session owner.
@@ -356,11 +364,20 @@ impl AgentControls {
         &self,
         selection: crate::AgentSelection,
     ) -> Result<crate::AgentClient, crate::AgentClientError> {
+        self.observing(selection, true)
+    }
+
+    fn observing(
+        &self,
+        selection: crate::AgentSelection,
+        all: bool,
+    ) -> Result<crate::AgentClient, crate::AgentClientError> {
         crate::AgentClient::observing(
             self.observation_client(),
             selection,
             self.observation_credential(),
-            true,
+            all,
+            Some((self.client.clone(), self.credential)),
         )
     }
 
