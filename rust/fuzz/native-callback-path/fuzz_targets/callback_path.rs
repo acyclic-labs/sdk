@@ -1,4 +1,5 @@
 #![no_main]
+//! Check the production callback path codecs against independent component admission.
 
 #[path = "../../../crates/filesystem/src/native_mount/projfs/callback_path.rs"]
 mod callback_path;
@@ -10,8 +11,10 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
     let admitted: Vec<_> = std::iter::once(95)
         .chain(
             input
-                .chunks_exact(2)
-                .map(|pair| match u16::from_le_bytes([pair[0], pair[1]]) {
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&pair| match u16::from_le_bytes(pair) {
                     0 | 47 | 58 | 92 => 95,
                     unit => unit,
                 }),
@@ -29,10 +32,9 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         "valid callback component must be admitted unchanged"
     );
     assert_eq!(
-        callback_path::wide_components(&expected)
-            .expect("valid callback component must be encodable")
-            .collect::<Vec<_>>(),
-        admitted
+        callback_path::wide_components(&expected).map(|wide| wide.collect::<Vec<_>>()),
+        Some(admitted),
+        "valid callback component must be encodable"
     );
 
     let raw_parts: Vec<_> = input
@@ -48,8 +50,10 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         return;
     }
     let wide = input
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
         .collect::<Vec<_>>();
     if let Some(parts) = callback_path::components(&wide) {
         assert_eq!(parts.capacity(), parts.len());
@@ -62,8 +66,10 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
                 canonical.push(92);
             }
             canonical.extend(
-                part.chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
+                part.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&pair| u16::from_le_bytes(pair)),
             );
         }
         if let Some(direct) = callback_path::wide_components(&parts) {
