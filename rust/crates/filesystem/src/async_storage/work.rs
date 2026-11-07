@@ -400,7 +400,7 @@ pub trait AuthorityGuard: ProviderTask {
 
     /// Seals the provider's actual native commit attempt.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit<P: acyclic_stream::NativeStreamProvider>(
+    fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
         &mut self,
         provider: &P,
         request: CommitRequest,
@@ -471,7 +471,7 @@ where
         (self.0)(original).await.map_err(AuthorityError::Owner)
     }
 
-    async fn native_commit<P: acyclic_stream::NativeStreamProvider>(
+    async fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
         &mut self,
         provider: &P,
         request: CommitRequest,
@@ -491,9 +491,10 @@ where
             let future = callback(&original);
             async move { future.await.map_err(AuthorityError::Owner) }
         };
-        provider
-            .native_commit_guarded(request, deadline, meter, before)
-            .await
+        acyclic_stream::NativeStreamProviderExt::native_commit_with_guard(
+            provider, request, deadline, meter, before,
+        )
+        .await
     }
 }
 

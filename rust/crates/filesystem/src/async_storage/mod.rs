@@ -46,6 +46,8 @@ mod policy;
 pub use policy::{PolicyCut, PolicyOwner};
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
+mod erased_objects;
+pub use erased_objects::{DynObjectStore, SharedObjectStore, shared_objects};
 mod read_batch;
 pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
