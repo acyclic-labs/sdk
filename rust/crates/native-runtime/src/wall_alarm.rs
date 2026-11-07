@@ -10,7 +10,8 @@
 //! Each wake re-reads the clock and fires every elapsed registration, so a
 //! clock change is observed without polling.
 
-use std::collections::BTreeMap;
+use crate::host_index::{Counts, Work, completed};
+use acyclic_collections::{ExtractedEntries, ExtractedPrefix, FixedIndex};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -43,7 +44,7 @@ impl Drop for WallAlarm {
         // The thread may still wake for this deadline; it finds nothing due
         // and waits for the next one.
         if let Ok(alarms) = alarms() {
-            locked(&alarms.index).entries.remove(&self.key);
+            locked(&alarms.index).remove(self.key);
         }
     }
 }
@@ -51,7 +52,8 @@ impl Drop for WallAlarm {
 #[derive(Default)]
 struct Index {
     next: u64,
-    entries: BTreeMap<(u64, u64), AlarmCallback>,
+    entries: FixedIndex<AlarmCallback, (), 16>,
+    counts: Counts,
     failure: Option<Arc<io::Error>>,
 }
 
@@ -66,20 +68,42 @@ impl Index {
                 "step=wall-alarm-registration; recovery=restart the exhausted alarm owner",
             )
         })?;
-        self.entries.insert(key, fire);
+        completed(self.entries.get_or_try_insert_with(
+            Self::key(key),
+            &mut Work(&self.counts),
+            |_| Ok(fire),
+        ));
         Ok(key)
     }
 
+    fn key((deadline, token): (u64, u64)) -> [u8; 16] {
+        let mut key = [0; 16];
+        key[..8].copy_from_slice(&deadline.to_be_bytes());
+        key[8..].copy_from_slice(&token.to_be_bytes());
+        key
+    }
+
+    fn remove(&mut self, key: (u64, u64)) -> Option<AlarmCallback> {
+        completed(self.entries.remove(Self::key(key), &mut Work(&self.counts)))
+            .map(|entry| entry.into_parts().1)
+    }
+
+    fn first(&self) -> Option<u64> {
+        completed(self.entries.first(&mut Work(&self.counts))).map(|(key, _)| {
+            let mut time = [0; 8];
+            time.copy_from_slice(&key[..8]);
+            u64::from_be_bytes(time)
+        })
+    }
+
     /// Removes and returns the callbacks due at `now`, and the next deadline.
-    fn take_due(&mut self, now: u64) -> (Vec<AlarmCallback>, Option<u64>) {
-        let pending = now
-            .checked_add(1)
-            .map_or_else(BTreeMap::new, |after| self.entries.split_off(&(after, 0)));
-        let due = std::mem::replace(&mut self.entries, pending);
-        (
-            due.into_values().collect(),
-            self.entries.keys().next().map(|(deadline, _)| *deadline),
-        )
+    fn take_due(&mut self, now: u64) -> (ExtractedPrefix<AlarmCallback, (), 16>, Option<u64>) {
+        let due = self
+            .entries
+            .extract_through(Self::key((now, u64::MAX)), |items| {
+                self.counts.observe(items);
+            });
+        (due, self.first())
     }
 }
 
@@ -93,12 +117,16 @@ fn retained_error(error: &Arc<io::Error>) -> io::Error {
 }
 
 fn fail(index: &Mutex<Index>, error: io::Error) -> Arc<io::Error> {
-    let (error, pending) = {
+    let (error, mut pending) = {
         let mut index = locked(index);
         let error = Arc::clone(index.failure.get_or_insert_with(|| Arc::new(error)));
         (error, std::mem::take(&mut index.entries))
     };
-    crate::delivery::deliver(pending.into_values(), |fire| {
+    let pending = pending
+        .extract_prefix(&[], |_| {})
+        .unwrap_or_else(|_| unreachable!("an empty prefix fits every alarm key"));
+    crate::delivery::deliver(pending.into_entries(|_| {}), |entry| {
+        let fire = entry.into_parts().1;
         fire(Err(Arc::clone(&error)));
     });
     error
@@ -142,7 +170,7 @@ impl Wait for platform::Waiter {
 
 struct Driver<'a> {
     index: &'a Mutex<Index>,
-    due: std::vec::IntoIter<AlarmCallback>,
+    due: Option<ExtractedEntries<AlarmCallback, (), 16, fn(u64)>>,
 }
 
 impl Drop for Driver<'_> {
@@ -157,17 +185,15 @@ impl Drop for Driver<'_> {
                 "step=wall-alarm-producer; recovery=restart the lost alarm owner",
             ),
         );
-        crate::delivery::deliver(self.due.by_ref(), |fire| {
+        crate::delivery::deliver(self.due.iter_mut().flatten(), |entry| {
+            let fire = entry.into_parts().1;
             fire(Err(Arc::clone(&error)));
         });
     }
 }
 
 fn drive(index: &Mutex<Index>, waiter: &dyn Wait, now: impl Fn() -> u64) {
-    let mut driver = Driver {
-        index,
-        due: Vec::new().into_iter(),
-    };
+    let mut driver = Driver { index, due: None };
     loop {
         let (due, next) = {
             let mut index = locked(index);
@@ -176,8 +202,11 @@ fn drive(index: &Mutex<Index>, waiter: &dyn Wait, now: impl Fn() -> u64) {
             }
             index.take_due(now())
         };
-        driver.due = due.into_iter();
-        crate::delivery::deliver(driver.due.by_ref(), |fire| fire(Ok(())));
+        driver.due = Some(due.into_entries(|_| {}));
+        crate::delivery::deliver(driver.due.iter_mut().flatten(), |entry| {
+            let fire = entry.into_parts().1;
+            fire(Ok(()));
+        });
         if let Err(error) = waiter.wait(next) {
             fail(index, error);
             return;
@@ -613,6 +642,8 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::mpsc;
 
@@ -649,28 +680,84 @@ mod tests {
         sender.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[test]
-    fn an_elapsed_deadline_fires_at_registration_and_a_dropped_one_never() -> io::Result<()> {
-        let (sender, received) = mpsc::channel();
-        let sender = Mutex::new(sender);
-        let _elapsed = WallAlarm::register(
-            0,
-            Arc::new(move |outcome| {
-                let _ = locked_sender(&sender).send(outcome);
-            }),
-        )?;
-        received
-            .recv()
-            .map_err(|_| io::Error::other("elapsed alarm never fired"))?
-            .map_err(|error| retained_error(&error))?;
-        let (fired, fire) = counter();
-        let pending = WallAlarm::register(u64::MAX, fire)?;
-        let key = pending.key;
-        assert!(locked(&alarms()?.index).entries.contains_key(&key));
-        drop(pending);
-        assert!(!locked(&alarms()?.index).entries.contains_key(&key));
-        assert_eq!(fired.load(Ordering::SeqCst), 0, "a cancelled alarm fired");
-        Ok(())
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x7761_6c6c_6375_7473),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+        #[test]
+        fn alarm_histories_preserve_exact_owners_at_clock_cuts_without_scanning(
+            history in prop::collection::vec((any::<u64>(), any::<u8>(), any::<u64>()), 1..64),
+            token_prefix in any::<u64>(),
+        ) {
+            let mut index = Index { next: token_prefix & !255, ..Index::default() };
+            let mut expected = BTreeMap::new();
+            // An original retained callback, not a reconstructed identifier,
+            // remains the oracle even after cancellation or clock reversal.
+            for deadline in [0, 1, u64::MAX].into_iter().chain((0..64).map(|n| (1 << 63) + n)) {
+                let fire: AlarmCallback = Arc::new(|_| {});
+                let before = index.counts.examined();
+                let allocated = index.counts.allocations();
+                let key = index.insert(deadline, Arc::clone(&fire))?;
+                prop_assert!(index.counts.examined() - before <= 25 * 16 + 3,
+                    "alarm admission scanned live owners");
+                prop_assert!(index.counts.allocations() - allocated <= 2,
+                    "alarm admission allocated population-dependent backing");
+                expected.insert(key, fire);
+            }
+            // Exact endpoints are exercised on every generated history.
+            let mut operations = vec![(0, 2, 0), (0, 2, 1), (0, 1, u64::MAX)];
+            operations.extend(history);
+            operations.extend([(0, 2, u64::MAX), (0, 2, 0)]);
+            for (deadline, action, cut) in operations {
+                if action % 3 == 0 {
+                    let fire: AlarmCallback = Arc::new(|_| {});
+                    let before = index.counts.examined();
+                    let allocated = index.counts.allocations();
+                    let key = index.insert(deadline, Arc::clone(&fire))?;
+                    prop_assert!(index.counts.examined() - before <= 25 * 16 + 3,
+                        "alarm admission scanned live owners");
+                    prop_assert!(index.counts.allocations() - allocated <= 2,
+                        "alarm admission allocated population-dependent backing");
+                    expected.insert(key, fire);
+                } else if action % 3 == 1 && !expected.is_empty() {
+                    let position = usize::try_from(cut % expected.len() as u64)?;
+                    let key = *expected.keys().nth(position).unwrap();
+                    let original = expected.remove(&key).unwrap();
+                    let before = index.counts.examined();
+                    let allocated = index.counts.allocations();
+                    let retired = index.remove(key).expect("original alarm disappeared before cancellation");
+                    prop_assert!(Arc::ptr_eq(&original, &retired), "alarm cancellation replaced its original owner");
+                    prop_assert!(index.counts.examined() - before <= 17 * 16 + 1,
+                        "alarm cancellation scanned live owners");
+                    prop_assert_eq!(index.counts.allocations(), allocated,
+                        "alarm cancellation allocated replacement backing");
+                } else {
+                    let keys = expected.keys().copied().take_while(|(at, _)| *at <= cut).collect::<Vec<_>>();
+                    let due = keys.into_iter().map(|key| expected.remove(&key).unwrap()).collect::<Vec<_>>();
+                    let before = index.counts.examined();
+                    let allocated = index.counts.allocations();
+                    let (observed, next) = index.take_due(cut);
+                    prop_assert!(index.counts.examined() - before <= 25 * 16 + 4,
+                        "alarm clock cut scanned live owners");
+                    let before = index.counts.examined();
+                    let observed = observed.into_entries(|items| index.counts.observe(items))
+                        .map(|entry| entry.into_parts().1).collect::<Vec<_>>();
+                    prop_assert_eq!(observed.len(), due.len(), "alarm clock cut stranded or prematurely delivered an owner");
+                    for (actual, original) in observed.iter().zip(&due) {
+                        prop_assert!(Arc::ptr_eq(actual, original), "alarm clock order replaced its original owner");
+                    }
+                    prop_assert_eq!(next, expected.keys().next().map(|(at, _)| *at),
+                        "alarm clock cut lost its next producer deadline");
+                    prop_assert!(index.counts.examined() - before <= 12 * due.len() as u64,
+                        "alarm delivery repeated an index traversal");
+                    prop_assert_eq!(index.counts.allocations(), allocated,
+                        "alarm clock cut allocated replacement index backing");
+                }
+            }
+            prop_assert!(index.first().is_none(), "alarm at the final clock cut did not progress");
+        }
     }
 
     /// The thread's own loop over a scripted clock: each wait advances the
@@ -764,7 +851,7 @@ mod tests {
                 io::Error::new(io::ErrorKind::BrokenPipe, "later producer loss"),
             );
             assert!(Arc::ptr_eq(&second, &retained));
-            assert!(locked(&index).entries.is_empty());
+            assert!(locked(&index).first().is_none());
         }
 
         struct Lost;
@@ -823,6 +910,6 @@ mod tests {
         // The finished script ends the loop through its failure path.
         drive(&index, &script, move || now.load(Ordering::SeqCst));
         assert_eq!(fired.load(Ordering::SeqCst), 2);
-        assert!(locked(&index).entries.is_empty());
+        assert!(locked(&index).first().is_none());
     }
 }

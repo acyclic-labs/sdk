@@ -15,6 +15,8 @@ use std::sync::mpsc;
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 mod delivery;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+mod host_index;
 mod sync;
 use sync::Mutex as CompletionMutex;
 

@@ -1,8 +1,8 @@
-use std::convert::Infallible;
 use std::io;
 use std::time::Instant;
 
-use acyclic_collections::{FixedIndex, IndexWork};
+use crate::host_index::{Counts, Work, completed};
+use acyclic_collections::FixedIndex;
 
 pub(super) type Key = [u8; 16 + std::mem::size_of::<usize>()];
 
@@ -28,12 +28,12 @@ impl Default for Deadlines {
 impl Deadlines {
     #[cfg(test)]
     pub(super) fn examined(&self) -> u64 {
-        self.counts.examined.get()
+        self.counts.examined()
     }
 
     #[cfg(test)]
     pub(super) fn allocations(&self) -> u64 {
-        self.counts.allocations.get()
+        self.counts.allocations()
     }
 
     fn key(&self, at: Instant, token: usize) -> io::Result<Key> {
@@ -172,48 +172,5 @@ mod tests {
             prop_assert!(hub.registry().timers.first().is_none(),
                 "cancelled deadline retained native wait ownership");
         }
-    }
-}
-
-fn completed<T>(result: Result<T, Infallible>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(impossible) => match impossible {},
-    }
-}
-
-#[derive(Default)]
-struct Counts {
-    #[cfg(test)]
-    examined: std::cell::Cell<u64>,
-    #[cfg(test)]
-    allocations: std::cell::Cell<u64>,
-}
-
-// Like native queue and registration backing, these nodes belong to the host
-// readiness service. There is no new guest admission during original cleanup.
-struct Work<'a>(&'a Counts);
-
-impl IndexWork for Work<'_> {
-    type Error = Infallible;
-    type Allocation = ();
-
-    fn check(&mut self) -> Result<(), Infallible> {
-        let _ = self.0;
-        Ok(())
-    }
-
-    fn charge_items(&mut self, items: u64) -> Result<(), Infallible> {
-        #[cfg(test)]
-        self.0.examined.set(self.0.examined.get() + items);
-        #[cfg(not(test))]
-        let _ = items;
-        Ok(())
-    }
-
-    fn claim(&mut self, _: u64) -> Result<(), Infallible> {
-        #[cfg(test)]
-        self.0.allocations.set(self.0.allocations.get() + 1);
-        Ok(())
     }
 }
