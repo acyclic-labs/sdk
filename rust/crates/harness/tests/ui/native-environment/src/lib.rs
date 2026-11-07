@@ -4,8 +4,11 @@ pub mod real_seam;
 #[cfg(feature = "negative")]
 pub fn forbidden() {
     let _ = std::env::var_os("HOME");
-    let _ = std::env::var_os("HOME");
-    let _ = std::env::var_os(r"USERPROFILE");
+    use std::env::set_var as mutate;
+    unsafe {
+        mutate("HOME", "other");
+        std::env::remove_var("HOME");
+    }
     use std::env::var_os as renamed;
     let _ = renamed(r#"APPDATA"#);
     use std::env as process;

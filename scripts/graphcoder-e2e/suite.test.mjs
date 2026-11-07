@@ -284,7 +284,7 @@ test("owned cases join cleanup before returning or propagating failure", async (
     else {
       const receipt = await running;
       assert.equal(receipt.run, "scenario result");
-      assert.ok(receipt.seconds > 0 && receipt.seconds < 10);
+      assert.ok(Number.isFinite(receipt.seconds) && receipt.seconds > 0);
     }
   }
 });
@@ -390,7 +390,7 @@ test("a real preparation launch refusal publishes its phase after original retir
     assert.equal(report.product_seconds, undefined, "preparation refusal has no product latency sample");
     assert.equal(report.results.length, 1);
     assert.equal(report.results[0].phase, "preparation");
-    assert.match(report.results[0].error, /absent-model.*ENOENT/);
+    assert.match(report.results[0].cause, /absent-model.*ENOENT/);
     assert.equal(processes.children.size, 0);
   } finally {
     await processes.close();

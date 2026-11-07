@@ -195,6 +195,14 @@ pub enum Error {
         /// Fixed cause; no diagnostic allocation is needed.
         reason: &'static str,
     },
+    /// A fixed boundary diagnostic whose class has no owned error variant.
+    #[error("{reason}")]
+    Boundary {
+        /// The caller's original wire classification.
+        code: crate::wire::ErrorCode,
+        /// The original cause, without diagnostic allocation.
+        reason: &'static str,
+    },
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -632,6 +640,20 @@ impl Error {
         }
     }
 
+    /// Converts a fixed boundary diagnostic without substituting its wire class.
+    pub(crate) fn from_code(code: crate::wire::ErrorCode, reason: &'static str) -> Self {
+        use crate::wire::ErrorCode;
+        match code {
+            ErrorCode::Invalid => Self::Invalid(reason.into()),
+            ErrorCode::NotFound => Self::NotFound(reason.into()),
+            ErrorCode::Unauthorized => Self::Unauthorized(reason.into()),
+            ErrorCode::Conflict => Self::Conflict(reason.into()),
+            ErrorCode::Unsupported => Self::Unsupported(reason.into()),
+            ErrorCode::Storage => Self::Storage(reason.into()),
+            _ => Self::Boundary { code, reason },
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn process_io(error: std::io::Error) -> Self {
@@ -680,7 +702,7 @@ impl Error {
             | Self::UnsupportedRecordVersion(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
-            Self::ToolRejected { code, .. } => *code,
+            Self::ToolRejected { code, .. } | Self::Boundary { code, .. } => *code,
             Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
@@ -782,6 +804,10 @@ impl Error {
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
                 | Self::Cancelled
+                | Self::Boundary {
+                    code: crate::wire::ErrorCode::Indeterminate | crate::wire::ErrorCode::Cancelled,
+                    ..
+                }
         )
     }
 
@@ -918,6 +944,7 @@ impl Error {
             | Self::Unsupported(_)
             | Self::Invalid(_)
             | Self::ToolRejected { .. }
+            | Self::Boundary { .. }
             | Self::Unauthorized(_)
             | Self::ReadOnlyGitMetadata { .. }
             | Self::Cancelled
@@ -1443,5 +1470,45 @@ mod cleanup_tests {
             assert!(!matches!(error, Error::Cleanup(_)));
         }
         assert_eq!(Error::after_cleanup(Ok(7), Ok(())).unwrap(), 7);
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    #[test]
+    fn every_wire_code_and_original_reason_survive_boundary_conversion() {
+        let pool = prost_reflect::DescriptorPool::decode(crate::FILE_DESCRIPTOR_SET).unwrap();
+        let codes = pool
+            .get_enum_by_name("acyclic.harness.v2.ErrorCode")
+            .unwrap();
+        let reason = "the caller's original reason";
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let original = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(16_384, 16 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .unwrap();
+        for value in codes.values() {
+            let code = crate::wire::ErrorCode::try_from(value.number()).unwrap();
+            let portable = crate::store::guarded_boundary(&None, code, reason);
+            let encoded = crate::encode_error(&portable);
+            assert_eq!(encoded.code, value.number(), "{portable:?}");
+            assert!(encoded.message.contains(reason), "{portable:?}");
+            assert!(!portable.is_native_failure(), "{portable:?}");
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                let io = crate::filesystem::PreparationIo::from_native_work(&original).unwrap();
+                let mut history = &io;
+                let native = crate::store::guarded_boundary(&Some(&mut history), code, reason);
+                assert!(
+                    matches!(&native, super::Error::NativeBoundary { code: actual, reason: cause }
+                    if *actual == code && *cause == reason)
+                );
+                assert!(native.is_native_failure(), "{native:?}");
+                let encoded = crate::encode_error(&native);
+                assert_eq!(encoded.code, value.number());
+                assert_eq!(encoded.message, reason);
+            }
+        }
     }
 }

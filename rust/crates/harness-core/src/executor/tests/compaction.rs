@@ -80,7 +80,17 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
             allowed()?,
         )?
         .with_max_output_tokens(1024)?;
+        #[cfg(feature = "filesystem")]
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
         let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
         let operation = OperationId::new();
         let source = crate::context::Context {
             messages: vec![ModelMessage {
@@ -92,12 +102,12 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         let instruction = ModelContent::Text("Summarize this context".into());
         for _ in 0..2 {
             assert!(
-                matches!(executor.summarize(&journal, operation, source.clone(), instruction.clone()).await,
+                matches!(executor.summarize(journal, operation, source.clone(), instruction.clone()).await,
                 Err(Error::Indeterminate(id)) if id == operation)
             );
         }
         let summary = executor
-            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .summarize(journal, operation, source.clone(), instruction.clone())
             .await?;
         assert_eq!(
             journal.load(&summary.output, None)?.await?.as_ref(),
@@ -105,7 +115,7 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
         );
         assert_eq!(
             executor
-                .summarize(&journal, operation, source, instruction)
+                .summarize(journal, operation, source, instruction)
                 .await?,
             summary
         );
@@ -240,12 +250,28 @@ fn default_threshold_evicts_into_the_backstop_marker_without_a_model_call() -> R
     Ok(())
 }
 
-#[tokio::test]
-async fn compacted_projection_recovers_before_response_admission() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, accounting_calls) = counted_model(65_536, None, [], []);
-    let source = crate::context::Context {
-        messages: vec![
+#[test]
+fn compacted_projection_recovers_before_response_admission() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    for source in ["projected", "selected", "working"] {
+        #[cfg(feature = "filesystem")]
+        let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+            AgentId::new(),
+            65_536,
+        ))?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
+        let (provider, accounting_calls) = counted_model(65_536, None, [], []);
+        let history = vec![
             ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text("o".repeat(27_000)),
@@ -254,57 +280,111 @@ async fn compacted_projection_recovers_before_response_admission() -> Result<()>
                 role: ModelRole::Assistant,
                 content: ModelContent::Text("a".repeat(27_000)),
             },
-        ],
-        ..crate::context::Context::default()
-    };
-    let executor = StockExecutor::new(
-        Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "history",
-            "1",
-            Arc::new(source),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        max_steps: None,
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("current".into()),
-        selected_context: None,
-    };
-    StockExecution::ordinary(&executor)
-        .ensure_started(&journal, &input)
-        .await?;
-    let original = StockExecution::ordinary(&executor)
-        .prepared_response(&journal, &input, 0, &[], None)
-        .await?;
-    let counted = accounting_calls.load(Ordering::SeqCst);
-    let recovered = StockExecution::ordinary(&executor.clone())
-        .prepared_response(&journal, &input, 0, &[], None)
-        .await?;
-    assert_eq!(original.bytes(), recovered.bytes());
-    assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
-    assert!(provider.requests().is_empty());
-    let records = journal.0.lock().unwrap();
-    assert_eq!(
-        records
-            .iter()
-            .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
-            .count(),
-        1
-    );
-    assert!(!records.iter().any(|record| matches!(
-        record.event,
-        ExecutionEvent::ModelStarted {
-            purpose: ModelPurpose::Response,
-            ..
+        ];
+        let pipeline = if source == "projected" {
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(crate::context::Context {
+                    messages: history.clone(),
+                    ..Default::default()
+                }),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>])
+        } else {
+            ContextPipeline::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new("synthetic".into(), "byte-counter".into(), "1".into())?,
+            provider.clone(),
+            pipeline,
+            ToolRegistry::default(),
+        )
+        .with_compaction_policy(crate::context::CompactionPolicy::Threshold(
+            crate::context::ThresholdCompaction {
+                recent_tokens: 1,
+                ..Default::default()
+            },
+        ));
+        let mut input = TurnInput {
+            max_steps: None,
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("current".into()),
+            selected_context: None,
+        };
+        if source == "selected" {
+            let mut messages = history.clone();
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content: input.input.clone(),
+            });
+            input.selected_context = Some(SelectedModelContext {
+                selection: crate::conversation::ModelContextSelection {
+                    conversation_revision: messages.len() as u64,
+                    message_ids: (1..=messages.len())
+                        .map(|index| uuid::Uuid::from_u128(index as u128))
+                        .collect(),
+                    checkpoint: None,
+                },
+                messages,
+            });
         }
-    )));
+        let (step, prior) = if source == "working" {
+            (1, history)
+        } else {
+            (0, Vec::new())
+        };
+        let execution = StockExecution::ordinary(&executor);
+        runtime.block_on(execution.ensure_started(journal, &input))?;
+        let original =
+            runtime.block_on(execution.prepared_response(journal, &input, step, &prior, None))?;
+        let counted = accounting_calls.load(Ordering::SeqCst);
+        let restarted_executor = executor.clone();
+        let restarted = StockExecution::ordinary(&restarted_executor);
+        let (recovered, _trace) = acyclic_test_support::differential::observe::<
+            _,
+            _,
+            (&'static str, u64),
+        >(
+            || (),
+            |()| runtime.block_on(restarted.prepared_response(journal, &input, step, &prior, None)),
+        );
+        let recovered = recovered?;
+        assert_eq!(original.bytes(), recovered.bytes(), "{source}");
+        assert_eq!(accounting_calls.load(Ordering::SeqCst), counted);
+        assert!(provider.requests().is_empty());
+        let (_, records) = runtime.block_on(execution.model_records(
+            journal,
+            input.operation_id,
+            step,
+            ModelPurpose::Response,
+        ))?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ContextCompacted { .. }))
+                .count(),
+            1
+        );
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted {
+                purpose: ModelPurpose::Response,
+                ..
+            }
+        )));
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        assert_eq!(
+            _trace
+                .iter()
+                .filter(|(kind, _)| *kind == "clone request messages")
+                .count(),
+            if source == "projected" { 2 } else { 0 },
+            "{source}: recovery copied messages unused by its checkpoint proof"
+        );
+    }
     Ok(())
 }
-
 #[tokio::test]
 async fn impossible_default_capacity_fails_before_turn_admission() -> Result<()> {
     let journal = Journal::default();
@@ -548,12 +628,25 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);
+        #[cfg(feature = "filesystem")]
+        let storage =
+            crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+        #[cfg(feature = "filesystem")]
+        let (generation, _) = storage.list_private_directory("", None, None, 1).await?;
+        #[cfg(feature = "filesystem")]
+        let journal = storage.journal();
+        #[cfg(feature = "filesystem")]
+        let journal = journal.as_ref();
+        #[cfg(not(feature = "filesystem"))]
         let journal = Journal::default();
+        #[cfg(not(feature = "filesystem"))]
+        let journal = &journal;
+        let operation = OperationId::new();
         assert!(matches!(
             executor
                 .summarize(
-                    &journal,
-                    OperationId::new(),
+                    journal,
+                    operation,
                     crate::context::Context {
                         messages,
                         ..Default::default()
@@ -563,7 +656,13 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
                 .await,
             Err(Error::Invalid(_))
         ));
-        assert!(journal.0.lock().unwrap().is_empty());
+        assert!(journal.replay(operation, 0, 1, None)?.await?.is_empty());
+        #[cfg(feature = "filesystem")]
+        assert_eq!(
+            storage.list_private_directory("", None, None, 1).await?.0,
+            generation,
+        );
+        #[cfg(not(feature = "filesystem"))]
         assert!(journal.1.lock().unwrap().is_empty());
     }
     assert_eq!(accounting_calls.load(Ordering::SeqCst), 0);
@@ -571,8 +670,12 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
     Ok(())
 }
 
-#[tokio::test]
-async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
+#[test]
+fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     for (capacity, output, source_length, fault, counts) in [
         (100, 1_024, 1, None, 0),
         (131_072, 8_192, 1, None, 0),
@@ -595,14 +698,13 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
             }],
             ..Default::default()
         };
-        let error = executor
-            .summarize(
+        let error = runtime
+            .block_on(executor.summarize(
                 &journal,
                 OperationId::new(),
                 source,
                 ModelContent::Text("Summarize the preceding context".into()),
-            )
-            .await
+            ))
             .err()
             .ok_or_else(|| Error::Invalid("invalid summary was admitted".into()))?;
         assert!(matches!(error, Error::Invalid(_)), "{error}");
@@ -620,7 +722,19 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1_024)?;
+    #[cfg(feature = "filesystem")]
+    let storage = runtime.block_on(crate::filesystem::MemoryHarnessStorage::new(
+        crate::AgentId::new(),
+        65_536,
+    ))?;
+    #[cfg(feature = "filesystem")]
+    let journal = storage.journal();
+    #[cfg(feature = "filesystem")]
+    let journal = journal.as_ref();
+    #[cfg(not(feature = "filesystem"))]
     let journal = Journal::default();
+    #[cfg(not(feature = "filesystem"))]
+    let journal = &journal;
     let source = crate::context::Context {
         messages: vec![ModelMessage {
             role: ModelRole::User,
@@ -630,19 +744,42 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
     };
     let operation = OperationId::new();
     let instruction = ModelContent::Text("Summarize the preceding context".into());
-    let summary = executor
-        .summarize(&journal, operation, source.clone(), instruction.clone())
-        .await?;
+    let (summary, _preparations) =
+        acyclic_test_support::differential::observe::<_, _, (&'static str, u64)>(
+            || (),
+            |()| {
+                runtime.block_on(executor.summarize(
+                    journal,
+                    operation,
+                    source.clone(),
+                    instruction.clone(),
+                ))
+            },
+        );
+    let summary = summary?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     assert_eq!(
-        journal.load(&summary.output, None)?.await?.as_ref(),
+        _preparations
+            .iter()
+            .filter_map(|(operation, _)| {
+                matches!(*operation, "prepare request" | "count tokens").then_some(*operation)
+            })
+            .collect::<Vec<_>>(),
+        // The second preparation is the real journal's canonical request
+        // verification at ModelStarted. Dispatch reuses capacity admission.
+        ["prepare request", "count tokens", "prepare request"],
+        "summary dispatch must reuse admission and retain journal verification"
+    );
+    assert_eq!(
+        runtime
+            .block_on(journal.load(&summary.output, None)?)?
+            .as_ref(),
         b"summary"
     );
     let count_calls = accounting_calls.load(Ordering::SeqCst);
     assert_eq!(count_calls, 1);
     assert_eq!(
-        executor
-            .summarize(&journal, operation, source, instruction)
-            .await?,
+        runtime.block_on(executor.summarize(journal, operation, source, instruction))?,
         summary
     );
     assert_eq!(accounting_calls.load(Ordering::SeqCst), count_calls);
@@ -660,7 +797,17 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         ToolRegistry::default(),
     )
     .with_max_output_tokens(1024)?;
+    #[cfg(feature = "filesystem")]
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    #[cfg(feature = "filesystem")]
+    let journal = storage.journal();
+    #[cfg(feature = "filesystem")]
+    let journal = journal.as_ref();
+    #[cfg(not(feature = "filesystem"))]
     let journal = Journal::default();
+    #[cfg(not(feature = "filesystem"))]
+    let journal = &journal;
     let operation = OperationId::new();
     let source = crate::context::Context {
         messages: vec![ModelMessage {
@@ -673,7 +820,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     let instruction = ModelContent::Text("Summarize the preceding projection.".into());
     assert!(
         executor
-            .summarize(&journal, operation, source.clone(), instruction.clone())
+            .summarize(journal, operation, source.clone(), instruction.clone())
             .await
             .is_err()
     );
@@ -681,13 +828,24 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     changed.messages[0].content = ModelContent::Text("different source".into());
     assert!(
         executor
-            .summarize(&journal, operation, changed, instruction.clone())
+            .summarize(journal, operation, changed, instruction.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        executor
+            .summarize(
+                journal,
+                operation,
+                source.clone(),
+                ModelContent::Text("different instruction".into()),
+            )
             .await
             .is_err()
     );
     assert_eq!(provider.reconciliations().len(), 0);
     let summary = executor
-        .summarize(&journal, operation, source.clone(), instruction.clone())
+        .summarize(journal, operation, source.clone(), instruction.clone())
         .await?;
     assert_eq!(
         summary.source_digest,
@@ -699,7 +857,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
     );
     assert_eq!(
         executor
-            .summarize(&journal, operation, source, instruction)
+            .summarize(journal, operation, source, instruction)
             .await?,
         summary
     );

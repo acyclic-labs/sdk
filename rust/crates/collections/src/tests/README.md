@@ -54,3 +54,20 @@ git apply -R rust/crates/collections/src/tests/early_exact_retirement.patch
 
 Require `exact extraction retired original backing`, then restore the source and
 require the property to pass. The mutation retires the actual parent allocation.
+The same property reads the production `RecentIndex` through the original
+read-only work owner. It covers current hits, previous-window hits, evicted
+keys and absent keys, with every insufficient cumulative allowance refusing
+before a result. Neither window may turn an admission error into an absence
+fact. Reads allocate nothing and retain the original nodes and funding.
+
+The retained mutation swallows the previous window's refusal:
+
+```sh
+git apply rust/crates/collections/src/tests/swallowed_window_refusal.patch
+cargo test --locked -p acyclic-collections --lib tests::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
+git apply -R rust/crates/collections/src/tests/swallowed_window_refusal.patch
+```
+
+Require `recent window refusal must not become a cache miss`, then restore the
+exact source and require the same property to pass. This exercises both real
+window lookups on the original cumulative work owner.

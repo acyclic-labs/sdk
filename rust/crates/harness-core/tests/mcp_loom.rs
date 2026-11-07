@@ -7,5 +7,5 @@ pub(crate) mod mcp {
 }
 #[path = "../src/mcp/install/cancellation.rs"]
 mod cancellation;
-#[path = "../src/mcp/stdio/native/codec.rs"]
+#[path = "../../mcp/src/codec.rs"]
 mod codec;

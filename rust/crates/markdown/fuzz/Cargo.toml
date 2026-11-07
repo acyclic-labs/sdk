@@ -11,6 +11,9 @@ cargo-fuzz = true
 acyclic-markdown = { path = ".." }
 libfuzzer-sys = "0.4"
 unicode-width = "0.2"
+syntect = { package = "acyclic-syntect", version = "=0.2.0", path = "../../../vendor/syntect-5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+serde = "1.0"
+serde_json = "1.0"
 
 [[bin]]
 name = "streaming"
@@ -29,3 +32,10 @@ bench = false
 [workspace]
 members = ["."]
 resolver = "2"
+
+[[bin]]
+name = "syntax_data"
+path = "fuzz_targets/syntax_data.rs"
+test = false
+doc = false
+bench = false

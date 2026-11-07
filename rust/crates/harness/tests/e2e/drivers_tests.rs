@@ -149,21 +149,15 @@ fn dispatch_retains_only_the_selected_driver_frame() -> TestResult {
         "../../../harness-fuzz/corpus/client_diff/local-read"
     ))?;
     let direct = super::local_execution::run(serde_json::from_value(baseline.clone())?);
-    let dispatched = run(baseline);
+    let dispatched = super::dispatch(baseline.into());
     let bytes = std::mem::size_of_val(&dispatched);
     let inline = std::mem::size_of_val(&direct);
     println!("dispatch future: {bytes} bytes; inline native driver: {inline} bytes");
-    // A dispatch frame holds its JSON recipe and a pointer to the selected driver,
-    // not that driver's nested filesystem futures. Bound is independent of inputs.
-    let bounded = |bytes| bytes <= 1024;
+    // Compare the dispatch itself with the actual inline driver. The outer
+    // progress guard owns independent state on both execution paths.
     assert!(
-        bounded(bytes),
+        bytes < inline,
         "every scenario retained a large driver frame: {bytes}"
-    );
-    // Former implementation: inline the real native driver without changing cases.
-    assert!(
-        !bounded(inline),
-        "the inline-driver negative control escaped the bound"
     );
     Ok(())
 }

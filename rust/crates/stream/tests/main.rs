@@ -27,6 +27,9 @@ mod local_replay_model;
 #[cfg(not(loom))]
 mod record_formats;
 
+#[cfg(all(loom, feature = "local", feature = "model-checking"))]
+mod retry_recovery_loom;
+
 #[cfg(not(loom))]
 mod session_properties;
 

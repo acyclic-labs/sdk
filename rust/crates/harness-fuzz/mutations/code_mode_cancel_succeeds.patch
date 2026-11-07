@@ -1,9 +1,10 @@
 diff --git a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
 --- a/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
 +++ b/rust/crates/harness-core/src/executor/code_mode/interpreter.rs
-@@ -185,7 +185,7 @@
+@@ -185,8 +185,8 @@
      let cancelled = cancellation.cancelled();
-     futures::pin_mut!(execution, cancelled);
+     let execution = core::pin::pin!(execution);
+     let cancelled = core::pin::pin!(cancelled);
      match futures::future::select(cancelled, execution).await {
 -        futures::future::Either::Left(_) => Err("JavaScript interrupted".into()),
 +        futures::future::Either::Left(_) => Ok(Value::Null),

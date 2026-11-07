@@ -616,7 +616,7 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
 #[cfg(all(target_os = "linux", feature = "test-support"))]
 #[test]
 fn an_idle_custody_holds_no_descriptor() -> std::io::Result<()> {
-    use crate::testing::descriptors_naming;
+    use crate::resources::descriptors_naming;
     let root = tempfile::tempdir()?;
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes)?;

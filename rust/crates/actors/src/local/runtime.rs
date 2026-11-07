@@ -903,7 +903,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
-                futures::pin_mut!(interrupted);
+                let interrupted = core::pin::pin!(interrupted);
                 match futures::future::select(
                     handled,
                     futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),

@@ -21,6 +21,7 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 async-trait.workspace = true
 prost.workspace = true
 prost-types.workspace = true

@@ -54,14 +54,19 @@ pub struct SpawnAgentInput {
     /// Role file selecting the child's context and permissions: `worker` forks
     /// your settled conversation; `advisor` and `reviewer` see only the brief.
     pub role: String,
+    /// Sibling names, spawned already or later, the child may also `send`
+    /// to; `*` admits every agent under you. Edges may form cycles. None by
+    /// default: the child reaches only you and its own children.
+    #[serde(default)]
+    pub peers: Vec<String>,
 }
 
 /// Queue one message in a parent, open child or explicitly authorized peer inbox.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
-    /// Recipient: a child's name or agent path, as spawn returned them, or
-    /// the parent's agent path.
+    /// Recipient: a child's name or agent path, as spawn returned them, the
+    /// parent's agent path, or a peer's sibling name or agent path.
     pub agent: String,
     /// Message text.
     pub message: String,
@@ -177,7 +182,11 @@ impl AgentTool {
                         "this agent has no creation template to spawn from".into(),
                     )));
                 };
-                let profile = match templates
+                let peers = match peer_grants(&turn.agent, input.peers) {
+                    Ok(peers) => peers,
+                    Err(rejected) => return Ok(rejected),
+                };
+                let mut profile = match templates
                     .child(
                         parent,
                         &turn.agent,
@@ -192,6 +201,7 @@ impl AgentTool {
                     Ok(profile) => profile,
                     Err(error) => return Ok(super::rejected_input(error)),
                 };
+                profile.peers = peers;
                 // The agent's hard limit: a spawn the step would refuse is
                 // refused here, before the model is told it succeeded.
                 if !self.within(&intent, MAX_OPEN_CHILDREN).await? {
@@ -222,17 +232,20 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
+                // A peer by path, or by sibling name; the scope's grants or
+                // the parent's spawn-time peers authorize it.
                 let peer = || {
-                    AgentPath::try_from(input.agent.clone())
-                        .ok()
-                        .filter(|path| {
-                            context.as_ref().is_some_and(|context| {
-                                crate::agent::peer_send_allowed(
-                                    context.effective_scope().grants(),
-                                    path,
-                                )
-                            })
-                        })
+                    let path = AgentPath::try_from(input.agent.clone()).ok().or_else(|| {
+                        turn.parent
+                            .as_ref()
+                            .and_then(|parent| spawned_child(parent, &input.agent).ok())
+                    })?;
+                    let granted = context.as_ref().is_some_and(|context| {
+                        crate::agent::peer_send_allowed(context.effective_scope().grants(), &path)
+                    }) || turn.templates.as_ref().is_some_and(|(creation, _)| {
+                        crate::agent::peer_send_allowed(&creation.peers, &path)
+                    });
+                    granted.then_some(path)
                 };
                 let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
                     return Ok(rejected(
@@ -367,11 +380,31 @@ impl AgentTool {
     }
 }
 
+/// The send labels `peers` confers on a child of `parent`: each sibling
+/// name's exact inbox, or `*` for `parent`'s whole subtree. A spawning agent
+/// confers only inboxes under itself, which it may already reach.
+fn peer_grants(
+    parent: &AgentPath,
+    peers: Vec<String>,
+) -> std::result::Result<crate::Capabilities, ToolResult> {
+    let mut grants = Vec::with_capacity(peers.len());
+    for peer in peers {
+        grants.push(if peer == "*" {
+            format!("agent.send-subtree:{parent}")
+        } else {
+            let sibling = spawned_child(parent, &peer)
+                .map_err(|_| rejected(format!("peer {peer} is not a valid sibling name")))?;
+            format!("agent.send:{sibling}")
+        });
+    }
+    Ok(crate::Capabilities::new(grants))
+}
+
 /// The child of `agent` that `reference` names: a spawn name, or the agent
 /// path of one of its children, open or settled.
 fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-        return (path.parent().as_ref() == Some(agent)).then_some(path);
+        return path.is_child_of(agent).then_some(path);
     }
     spawned_child(agent, reference).ok()
 }
@@ -570,14 +603,14 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child from templates/<role>/AGENT.md in a fork of your volumes. The selected template chooses fresh or forked conversation; your creation template decides which templates you may spawn. Give it a self-contained task and file ownership; peers names the siblings it may message (`*` for all). Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Queue a message for your parent, an open child (by name or path), or an explicitly authorized peer inbox; steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
+                "Queue a message for your parent, an open child (by name or path), or a peer your spawn granted (by sibling name or path); steering arrives at the next model boundary after in-flight tools settle, and follow-up starts a later turn",
             )?,
         ),
         (

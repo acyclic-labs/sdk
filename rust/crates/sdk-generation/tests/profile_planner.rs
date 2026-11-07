@@ -30,25 +30,20 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
     .unwrap();
     let host = host_target();
     let targets = BTreeSet::from([host.clone(), "wasm32-unknown-unknown".to_owned()]);
-    let public_feature_roots = [
-        "acyclic-actors",
-        "acyclic-workers",
-        "acyclic-native-runtime",
-        "acyclic-plugin",
-        "acyclic-fs",
-        "acyclic-objects",
-        "acyclic-stream",
-        "acyclic-harness",
-        "acyclic-machines",
-        "acyclic-inference",
-    ];
+    let public_roots = metadata
+        .workspace_packages()
+        .into_iter()
+        .filter(|package| {
+            package
+                .publish
+                .as_ref()
+                .is_none_or(|registries| !registries.is_empty())
+        })
+        .collect::<Vec<_>>();
+    assert!(!public_roots.is_empty());
 
-    for package_name in public_feature_roots {
-        let package = metadata
-            .packages
-            .iter()
-            .find(|package| package.name.as_ref() == package_name)
-            .unwrap_or_else(|| panic!("missing package {package_name}"));
+    for package in public_roots {
+        let package_name = package.name.as_ref();
         let declared = package
             .features
             .keys()

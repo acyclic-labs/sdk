@@ -1,0 +1,21 @@
+{
+  "source_main": "e442218876fdf04853210942fec2f71e08c61fc7",
+  "platform": "windows",
+  "case": "child-fork-message-merge",
+  "original_capture_sha256": "9b76d7e2eced17de8fa9098b5ac87d73f050d618ed10897351ad9a7068e3fe02",
+  "projection": "Captured Responses request metadata and the rejected wait output; unrelated model input and tool schemas omitted.",
+  "record": {
+    "path": "responses",
+    "step": 6,
+    "status": 200,
+    "body": {
+      "input": [
+        {
+          "call_id": "wait",
+          "output": "tool execution failed: tool `wait` rejected its arguments: invalid request: tool input failed validation: Additional properties are not allowed ('mode' was unexpected)",
+          "type": "function_call_output"
+        }
+      ]
+    }
+  }
+}

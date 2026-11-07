@@ -330,7 +330,7 @@ async fn verify_cold_files(
             .await;
         match (expected, read) {
             (Some(expected), Ok(bytes)) if bytes.as_ref() == expected.as_bytes() => {}
-            (None, Err(acyclic_harness::Error::NotFound(_))) => {}
+            (None, Err(error)) if error.code() == acyclic_harness::wire::ErrorCode::NotFound => {}
             (_, actual) => {
                 return Err(format!("persisted file differs: {path}: {actual:?}").into());
             }

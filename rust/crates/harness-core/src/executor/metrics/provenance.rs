@@ -492,6 +492,7 @@ mod tests {
             let batch = project(Some(CreationConfig {
                 context,
                 template: Some(original.clone()),
+                peers: Default::default(),
             }))?;
             assert_eq!(text(&batch, "creation_context", 0)?, Some(expected));
             assert_eq!(
@@ -522,6 +523,7 @@ mod tests {
         let root = project(Some(CreationConfig {
             context: SpawnContext::TopLevel,
             template: None,
+            peers: Default::default(),
         }))?;
         assert_eq!(text(&root, "creation_context", 0)?, Some("top_level"));
         assert_eq!(text(&root, "artifact", 0)?, None);

@@ -170,8 +170,48 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = PreparationIo::from_native_work(&work)?;
-    let bytes = journal.load_range(&file, range, Some(&io))?.await?;
+    let read = journal.load_range(&file, range, Some(&io))?;
+    let setup_bytes = work.live_allocation_bytes();
+    let bytes = read.await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
+    {
+        // Fund the actual ledger and read frame, then leave less credit than
+        // the output requires, independently of provider chunks or caching.
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget {
+                peak_allocation_bytes: setup_bytes + range.length - 1,
+                ..acyclic_fs::WorkBudget::UNBOUNDED
+            },
+            &stop,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let error = journal
+            .load_range(&file, range, Some(&io))?
+            .await
+            .unwrap_err();
+        let cause = match &error {
+            Error::NativeWorkspace { source, .. } => match source.as_ref() {
+                acyclic_fs::WorkspaceError::Work(cause) => Some(cause),
+                _ => None,
+            },
+            Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(cause),
+                ..
+            } => Some(cause),
+            _ => None,
+        };
+        assert!(
+            matches!(
+                cause,
+                Some(acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
+    }
     let length = file.descriptor().byte_length();
     let receipt = work.receipt();
     // Authenticate the whole intersecting chunk even when storage lends its

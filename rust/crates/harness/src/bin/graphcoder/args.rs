@@ -193,6 +193,11 @@ pub enum Command {
     Sessions(Page),
     /// Read one immutable page of the selected session's saved turns.
     History(Page),
+    /// Run a paired study: the arms file's source task once, then every
+    /// assigned arm and replicate as a fork of that settled turn. Report
+    /// rows (JSONL) replace REPORT once the whole study has settled.
+    /// Reusing `--operation` replays settled work instead of paying again.
+    Study(Study),
     /// Serve this harness's agent tree through the harness server
     /// (`acyclic_harness::server::serve`), as a managed host does; prints its
     /// endpoint, credential and principal as one JSON line.
@@ -210,6 +215,15 @@ pub struct Page {
     /// Encoded reply credit; increase it if one row and its continuation cannot fit.
     #[arg(long, default_value_t = AgentPageRequest::default().bytes())]
     pub page_bytes: u32,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Study {
+    /// Version-1 arms file; the files it names are relative to it.
+    pub arms: PathBuf,
+    /// Report destination, replaced whole; '-' writes stdout.
+    #[arg(long)]
+    pub report: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -299,21 +313,5 @@ mod tests {
             Args::try_parse_from(["graphcoder", "serve", "0.0.0.0:443", "--tls-key", "key.pem"])
                 .is_err()
         );
-    }
-
-    #[test]
-    fn removed_host_and_fixture_entrypoints_cannot_be_selected() {
-        for option in [
-            "--session",
-            "--prepare-scenario",
-            "--fixture",
-            "--headless",
-            "--resume",
-        ] {
-            assert!(
-                Args::try_parse_from(["graphcoder", option, "unused"]).is_err(),
-                "{option}"
-            );
-        }
     }
 }

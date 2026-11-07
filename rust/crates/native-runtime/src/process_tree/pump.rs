@@ -182,14 +182,23 @@ impl<H: CaptureHandler> CaptureOutcome<H> {
         let cleanup_completed = result
             .as_ref()
             .map_or_else(|failure| failure.cleanup_completed, |_| true);
-        handler.retired(cleanup_completed);
-        if let Some(observation) = handler.observation() {
-            observation.retired(
-                cleanup_completed,
-                result.as_ref().err().map(|failure| &failure.error),
-            );
-        }
+        retire(
+            &mut handler,
+            cleanup_completed,
+            result.as_ref().err().map(|failure| &failure.error),
+        );
         Self { handler, result }
+    }
+}
+
+pub(super) fn retire<H: CaptureHandler>(
+    handler: &mut H,
+    cleanup_completed: bool,
+    error: Option<&io::Error>,
+) {
+    handler.retired(cleanup_completed);
+    if let Some(observation) = handler.observation() {
+        observation.retired(cleanup_completed, error);
     }
 }
 

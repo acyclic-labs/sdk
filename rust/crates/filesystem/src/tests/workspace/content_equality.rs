@@ -165,12 +165,16 @@ async fn comparison_preserves_independent_custody<S: crate::AsyncObjectStore>(
         inner: store,
         retired: std::sync::Mutex::new(Some(retired)),
     };
+    let config = crate::VolumeConfig::portable(crate::Lifecycle::Durable);
     assert!(
         crate::kernel::records_match_content(
             &store,
             selected,
             original,
-            crate::VolumeConfig::portable(crate::Lifecycle::Durable),
+            (
+                crate::kernel::DecodeLimits::for_volume(config),
+                config.limits.maximum_read_bytes,
+            ),
             &mut accounting,
             &cancellation,
         )

@@ -254,7 +254,7 @@ async fn pending_script_signals_recorded_dispatch_and_reconciles_after_drop() ->
         assert_eq!(provider.remaining(), 0);
         let first = {
             let first = stream.next();
-            futures::pin_mut!(first);
+            let mut first = core::pin::pin!(first);
             assert!(
                 futures::poll!(&mut first).is_pending(),
                 "dispatch events escaped inspection"

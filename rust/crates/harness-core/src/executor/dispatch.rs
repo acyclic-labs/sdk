@@ -37,7 +37,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        mut prior_messages: request::ModelStepHistory<'_>,
+        request: request::ModelStepRequest<'_>,
         purpose: ModelPurpose,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
@@ -45,6 +45,10 @@ impl StockExecution<'_> {
         let cancellation = journal.model_cancellation();
         let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
             Box::pin(async {
+                let request::ModelStepRequest {
+                    history: mut prior_messages,
+                    prepared,
+                } = request;
                 let scope = ModelStepScope {
                     purpose,
                     boundary: match &prior_messages {
@@ -87,7 +91,7 @@ impl StockExecution<'_> {
                     request::ModelStepHistory::Turn(history, _) => history.as_slice(),
                     request::ModelStepHistory::Selected(history) => history,
                 };
-                self.dispatch_model_step(journal, input, step, history, scope, phase)
+                self.dispatch_model_step(journal, input, step, (history, prepared), scope, phase)
                     .await
             });
         completion
@@ -111,11 +115,12 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        prior_messages: &[ModelMessage],
+        material: (&[ModelMessage], Option<crate::model::PreparedModelRequest>),
         scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
         let io = self.io;
+        let (prior_messages, prepared) = material;
         let PreparedDispatchStep {
             #[cfg(feature = "research")]
             journal_cut,
@@ -124,7 +129,14 @@ impl StockExecution<'_> {
             events: replayed,
             started,
         } = self
-            .prepare_dispatch_step(journal, input, step, prior_messages, scope, phase)
+            .prepare_dispatch_step(
+                journal,
+                input,
+                step,
+                (prior_messages, prepared),
+                scope,
+                phase,
+            )
             .await?;
         let purpose = scope.purpose;
         let request_digest = request.request_digest();
@@ -169,7 +181,7 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = self.hold_continuation(&continuation)?;
             }
-            Either::Left(futures::stream::iter(continuation.into_iter().map(Ok)))
+            Either::Left(continuation.into_iter())
         } else {
             #[cfg(feature = "filesystem")]
             {
@@ -238,11 +250,12 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
         step: u32,
-        prior_messages: &[ModelMessage],
+        material: (&[ModelMessage], Option<crate::model::PreparedModelRequest>),
         scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<PreparedDispatchStep> {
         let purpose = scope.purpose;
+        let (prior_messages, prepared) = material;
         self.require_model_producer().await?;
         let RetainedModelStep {
             #[cfg(feature = "research")]
@@ -260,8 +273,12 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let preparation =
-            self.resolve_model_request(journal, input, (step, prior_messages, scope), request);
+        let preparation = self.resolve_model_request(
+            journal,
+            input,
+            (step, prior_messages, scope, prepared),
+            request,
+        );
         let request = if started {
             preparation.await?
         } else {
@@ -328,31 +345,37 @@ impl StockExecution<'_> {
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
-        turn: (u32, &[ModelMessage], ModelStepScope<'_>),
+        turn: (
+            u32,
+            &[ModelMessage],
+            ModelStepScope<'_>,
+            Option<crate::model::PreparedModelRequest>,
+        ),
         retained_request: Option<crate::model::PreparedModelRequest>,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let (step, prior_messages, scope) = turn;
+        let (step, prior_messages, scope, prepared) = turn;
         let purpose = scope.purpose;
-        let mut request = match retained_request {
-            Some(recorded) => {
-                if purpose == ModelPurpose::Summary
-                    && self
-                        .prepare_request(input, step, prior_messages)
-                        .await?
-                        .request_digest()
-                        != recorded.request_digest()
-                {
-                    return Err(Error::Conflict(
-                        "summary source or instruction differs from retained admission".into(),
-                    ));
+        let mut request = match (retained_request, prepared) {
+            (Some(recorded), prepared) => {
+                if purpose == ModelPurpose::Summary {
+                    let selected = match prepared {
+                        Some(request) => request,
+                        None => self.prepare_request(input, step, prior_messages).await?,
+                    };
+                    if selected.request_digest() != recorded.request_digest() {
+                        return Err(Error::Conflict(
+                            "summary source or instruction differs from retained admission".into(),
+                        ));
+                    }
                 }
                 recorded
             }
-            None if purpose == ModelPurpose::Response => {
+            (None, Some(request)) => request,
+            (None, None) if purpose == ModelPurpose::Response => {
                 self.prepared_response(journal, input, step, prior_messages, scope.boundary)
                     .await?
             }
-            None => self.prepare_request(input, step, prior_messages).await?,
+            (None, None) => self.prepare_request(input, step, prior_messages).await?,
         };
         self.verify_model_request_content(journal, &mut request)
             .await?;
@@ -481,7 +504,7 @@ impl StockExecution<'_> {
         admission: &mut ModelEventAdmission,
         (stream, live): (
             Either<
-                impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
+                std::vec::IntoIter<ModelEvent>,
                 impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
             >,
             bool,
@@ -512,15 +535,18 @@ impl StockExecution<'_> {
             let mut stream = stream;
             loop {
                 // Stage the text so far whenever the provider pauses.
-                let next = match (stream.next().now_or_never(), text.as_mut()) {
-                    (Some(next), _) => next,
-                    (None, Some(text)) => {
-                        text.flush().await?;
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                    }
-                    (None, None) => {
-                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
-                    }
+                let next = match &mut stream {
+                    Either::Left(continuation) => continuation.next().map(Ok),
+                    Either::Right(stream) => match (stream.next().now_or_never(), text.as_mut()) {
+                        (Some(next), _) => next,
+                        (None, Some(text)) => {
+                            text.flush().await?;
+                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        }
+                        (None, None) => {
+                            crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                        }
+                    },
                 };
                 let Some(event) = next else {
                     break;
@@ -544,6 +570,15 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
+                // Reconciliation owns a finite continuation. Reject a known
+                // successor before committing its terminal event; live streams
+                // settle at completion without waiting for transport closure.
+                if admission.completed
+                    && let Either::Left(continuation) = &mut stream
+                    && let Some(next) = continuation.next()
+                {
+                    admission.validate_next(&next, self.stock.limits, io)?;
+                }
                 if let Some(text) = text.as_mut() {
                     text.observe(event);
                 }

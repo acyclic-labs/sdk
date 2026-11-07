@@ -1057,6 +1057,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         profile: acyclic_harness_core::agent::CreationConfig {
             context: acyclic_harness_core::agent::SpawnContext::Fork,
             template: None,
+            peers: Default::default(),
         },
         history: None,
         by: user(),
@@ -1072,7 +1073,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     // identifies this result. Refuse both before waiting for the step.
     for unrelated in [intent("s"), another] {
         let reply = host.spawned(&root, inbox, &unrelated);
-        futures::pin_mut!(reply);
+        let mut reply = core::pin::pin!(reply);
         assert!(matches!(
             futures::poll!(reply.as_mut()),
             std::task::Poll::Ready(Err(Error::Conflict(_)))
@@ -1080,7 +1081,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     }
     // Until the parent's step commits, the reply waits rather than guessing.
     let reply = host.spawned(&root, inbox, &spawn);
-    futures::pin_mut!(reply);
+    let mut reply = core::pin::pin!(reply);
     assert!(futures::poll!(reply.as_mut()).is_pending());
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
@@ -1119,6 +1120,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),
@@ -1163,6 +1165,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
             profile: acyclic_harness_core::agent::CreationConfig {
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
+                peers: Default::default(),
             },
             history: None,
             by: user(),

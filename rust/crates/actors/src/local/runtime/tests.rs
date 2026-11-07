@@ -896,7 +896,7 @@ async fn observe_while_running<T>(
     serving: std::pin::Pin<&mut impl Future<Output = Result<Infallible, Error>>>,
     observation: impl Future<Output = Result<T, Box<dyn std::error::Error>>>,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    futures::pin_mut!(observation);
+    let observation = core::pin::pin!(observation);
     match futures::future::select(serving, observation).await {
         futures::future::Either::Left((result, _)) => match result {
             Ok(never) => match never {},
@@ -1600,7 +1600,7 @@ async fn event_batch_yield_retains_placement_until_completion_or_abort() -> Test
     runtime.track(address.clone())?;
     {
         let delivery = runtime.drain_actor(&address);
-        futures::pin_mut!(delivery);
+        let mut delivery = core::pin::pin!(delivery);
         assert!(
             delivery
                 .as_mut()

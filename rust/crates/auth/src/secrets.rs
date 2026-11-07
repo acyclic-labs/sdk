@@ -455,7 +455,8 @@ impl<T: Transport> Client<T> {
             use futures::FutureExt;
             let changed = changed.fuse();
             let operation = operation.fuse();
-            futures::pin_mut!(changed, operation);
+            let mut changed = core::pin::pin!(changed);
+            let mut operation = core::pin::pin!(operation);
             futures::select_biased! {
                 _ = changed => Err(Error::Credential),
                 result = operation => result,

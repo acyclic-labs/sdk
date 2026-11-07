@@ -21,7 +21,7 @@ struct ProofDataWorkReport {
     original_cache_ledger:
         Option<std::sync::Weak<std::sync::Mutex<super::allocation::SharedAllocationBytes>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_accounting: Option<Arc<crate::demand::NativeProofAccounting>>,
+    native_accounting: Option<Arc<crate::demand::NativeAllocationAccounting>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_registered: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -47,7 +47,7 @@ impl ProofDataCustody {
     pub(crate) fn bind_native_original(
         &self,
         original: &Arc<crate::demand::NativeDemandReadMeter>,
-        accounting: &Arc<crate::demand::NativeProofAccounting>,
+        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
     ) -> bool {
         let mut completed = self.completed_data_work.lock();
         if let Some(bound) = &completed.native_original {
@@ -65,7 +65,7 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_registered_native_accounting(
         &self,
-        accounting: &Arc<crate::demand::NativeProofAccounting>,
+        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
     ) -> bool {
         let completed = self.completed_data_work.lock();
         completed.native_registered
@@ -77,7 +77,7 @@ impl ProofDataCustody {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn register_native_accounting(
         &self,
-        accounting: &Arc<crate::demand::NativeProofAccounting>,
+        accounting: &Arc<crate::demand::NativeAllocationAccounting>,
     ) -> Result<(), crate::NativeTreeMaterializationError> {
         let mut completed = self.completed_data_work.lock();
         if completed.native_registered

@@ -18,7 +18,13 @@ path = "src/bin/actors-rpc-inventory.rs"
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
-test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
+test-support = [
+    "acyclic-auth/test-support",
+    "acyclic-grpc-observability/test-support",
+    "acyclic-native-runtime/test-support",
+    "acyclic-objects/test-support",
+    "acyclic-stream/test-support",
+]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
@@ -68,6 +74,7 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 wasm-bindgen-test = "=0.3.67"
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

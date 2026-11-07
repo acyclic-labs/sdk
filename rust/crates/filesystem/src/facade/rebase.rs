@@ -209,18 +209,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         budget.finish_owned(result, &accounting)
     }
 
+    /// The one rebase phase of explicit rebases and live synchronization. It
+    /// runs in a funded heap frame, so every caller holds a pointer instead of
+    /// the classifier, the history replay and the adoption.
     pub(super) async fn rebase_head_with_accounting(
         &mut self,
         maximum_conflicts: u32,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<
-        (
-            RebaseDecision,
-            crate::kernel::allocation::KernelOwnedAllocation,
-        ),
-        FsError,
-    > {
+    ) -> Result<Decided, FsError> {
+        crate::heap_future::in_borrowed_frame!(
+            accounting,
+            |accounting| self.rebase_head_in_frame(maximum_conflicts, accounting, cancellation),
+            erase_task
+        )
+    }
+
+    async fn rebase_head_in_frame(
+        &mut self,
+        maximum_conflicts: u32,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Decided, FsError> {
         accounting.check()?;
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);

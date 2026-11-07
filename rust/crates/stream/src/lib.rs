@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
+pub mod authorization;
+pub use authorization::{AUTHORIZATION, StreamMethod};
 pub mod body;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 acyclic_test_support::counting_allocator!();
@@ -126,7 +128,7 @@ pub use wasm::{
     WasmFollow, WasmProviderRequest, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session,
     serve_wasm_session,
 };
-#[cfg(feature = "test-support")]
+#[cfg(any(feature = "test-support", all(test, feature = "local")))]
 #[doc(hidden)]
 pub mod codec_fuzz;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.

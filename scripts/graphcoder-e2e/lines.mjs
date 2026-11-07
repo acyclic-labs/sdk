@@ -26,10 +26,14 @@ export class Lines {
       start = end + 1;
     }
   }
-  // Call only when the protocol admits a final unterminated line.
-  end() {
+  end({ requireNewline = false } = {}) {
     const room = this.#text(this.#decoder.end());
     if (!this.#parts.length) return room;
+    if (requireNewline) {
+      this.#parts = [];
+      throw Object.assign(new Error("step=decode complete line; recovery=node --test scripts/graphcoder-e2e/decoder-fuzz.test.mjs"),
+        { code: "UNTERMINATED_LINE" });
+    }
     const tail = this.#parts.join("");
     this.#parts = [];
     return this.#accept(tail) !== false && room;

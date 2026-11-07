@@ -11,20 +11,15 @@ fn deserialize_uuid<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result
     admit_uuid(Uuid::deserialize(deserializer)?).map_err(serde::de::Error::custom)
 }
 
-fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    uuid::Builder::from_sha1_bytes(bytes).into_uuid()
-}
-
-/// Normalizes a Machines identity, preserving non-nil UUIDs in canonical form.
-/// Other nonempty values use the revision-one SHA-256 domain and caller kind.
-/// Empty values return an identity error.
-pub fn normalize_identity(kind: &str, value: &str) -> Result<String, IdentityError> {
+/// Preserves a non-nil UUID or derives one from a nonempty caller label.
+///
+/// Labels are hashed with the identity kind and the revision-one Machines
+/// identity domain. Nil UUID text is a label; an empty label is invalid.
+pub fn normalize_identity(kind: &str, value: &str) -> Result<Uuid, IdentityError> {
     if let Ok(parsed) = Uuid::parse_str(value)
         && !parsed.is_nil()
     {
-        return Ok(parsed.to_string());
+        return Ok(parsed);
     }
     if value.is_empty() {
         return Err(IdentityError);
@@ -34,7 +29,13 @@ pub fn normalize_identity(kind: &str, value: &str) -> Result<String, IdentityErr
     digest.update(kind.as_bytes());
     digest.update([0]);
     digest.update(value.as_bytes());
-    Ok(uuid_from_digest(digest.finalize().into()).to_string())
+    Ok(uuid_from_digest(digest.finalize().into()))
+}
+
+fn uuid_from_digest(digest: [u8; 32]) -> Uuid {
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_sha1_bytes(bytes).into_uuid()
 }
 
 macro_rules! uuid_identity {
@@ -111,6 +112,40 @@ impl MachineId {
 
 #[cfg(test)]
 mod resource_identity_tests {
+    proptest::proptest! {
+        #[test]
+        fn normalized_identity_preserves_retained_ids_and_domain(
+            retained in proptest::array::uniform16(proptest::prelude::any::<u8>()),
+            label in ".{0,64}",
+        ) {
+            use proptest::prelude::*;
+            use sha2::{Digest as _, Sha256};
+
+            let retained = uuid::Uuid::from_bytes(retained);
+            if !retained.is_nil() {
+                for spelling in [retained.to_string(), retained.simple().to_string(), retained.urn().to_string()] {
+                    prop_assert_eq!(super::normalize_identity("machine", &spelling), Ok(retained));
+                }
+            }
+            prop_assert!(super::normalize_identity("machine", "").is_err());
+            let label = format!("label:{label}");
+            for value in [label.as_str(), "00000000-0000-0000-0000-000000000000"] {
+                let mut identities = std::collections::BTreeSet::new();
+                for kind in ["machine", "checkpoint", "operation", "idempotency"] {
+                    let identity = super::normalize_identity(kind, value)
+                        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                    prop_assert_eq!(identity.get_version_num(), 5);
+                    prop_assert_eq!(identity.get_variant(), uuid::Variant::RFC4122);
+                    let protocol_bytes = [b"acyclic-machines-identity-v1\0".as_slice(), kind.as_bytes(), b"\0", value.as_bytes()].concat();
+                    let digest: [u8; 32] = Sha256::digest(protocol_bytes).into();
+                    let expected = super::MachineId::from_digest(digest).as_bytes();
+                    prop_assert_eq!(identity.as_bytes(), &expected);
+                    prop_assert!(identities.insert(identity));
+                }
+            }
+        }
+    }
+
     #[test]
     fn normalization_preserves_revision_one_bytes_and_domains()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -152,7 +187,10 @@ mod resource_identity_tests {
                 "01020304-0506-4708-890a-0b0c0d0e0f10",
             ),
         ] {
-            assert_eq!(super::normalize_identity(kind, value)?, expected);
+            assert_eq!(
+                super::normalize_identity(kind, value)?.to_string(),
+                expected
+            );
         }
         assert!(super::normalize_identity("machine", "").is_err());
         Ok(())

@@ -137,7 +137,7 @@ fn traced_future_retains_one_payload_and_records_only_when_ready() {
     // This is an ownership bound, independent of the particular payload size:
     // the tracing adapter must not retain a second copy of its child future.
     assert!(std::mem::size_of_val(&future) < 2 * std::mem::size_of::<Payload>());
-    futures::pin_mut!(future);
+    let mut future = core::pin::pin!(future);
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
     assert!(future.as_mut().poll(&mut cx).is_pending());
     assert!(!capture::has(

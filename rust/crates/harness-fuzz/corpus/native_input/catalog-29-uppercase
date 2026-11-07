@@ -1,0 +1,1 @@
+[{"name":"DELEGATE","aliases":["AGENT","SPAWN"],"description":"Delegate a task to a new agent","arguments":"required_text","action":{"kind":"tool","tool":"spawn"}}]

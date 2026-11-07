@@ -23,16 +23,11 @@ mod tests;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
-    /// Test-only snapshot of the view owner, using the shared OS sampler and
-    /// N/2N oracle. It never samples or executes a native child process.
-    #[cfg(feature = "test-support")]
-    ResourceProbe {
+    /// This owner process's resident views and its current OS resource use,
+    /// read from the OS on demand. Native host processes are not included.
+    Resources {
         /// Agent authorizing the query.
         task: AgentPath,
-        /// Retained child population at this measurement.
-        agents: u64,
-        /// Prior N snapshot: population, descriptors, threads and mounts.
-        previous: Option<[u64; 4]>,
     },
     /// The parent's open spawned children, by parent-local name.
     Sessions {
@@ -196,12 +191,11 @@ impl HostWorkspaceOwner {
 
     async fn dispatch_action(&self, operation: OperationId, action: HostAction) -> Result<Value> {
         match action {
-            #[cfg(feature = "test-support")]
-            HostAction::ResourceProbe {
-                task,
-                agents,
-                previous,
-            } => self.resource_probe(&task, agents, previous).await,
+            HostAction::Resources { task } => {
+                self.attach(&task).await?;
+                let resources = self.resources();
+                self.release_idle([task], resources).await
+            }
             HostAction::Sessions { parent } => {
                 self.attach(&parent).await?;
                 let sessions = self.sessions(&parent).await;
@@ -219,7 +213,7 @@ impl HostWorkspaceOwner {
                     changed.push(parent.clone());
                 }
                 // An observed child's cwd stays resident for the claim that follows.
-                let observe = matches!(action, SessionAction::Observe);
+                let observe = matches!(action, SessionAction::Observe {});
                 let session = {
                     let _locks = self.locks.hold(changed).await;
                     self.session(operation, &parent, &reference, action, next)
@@ -321,36 +315,18 @@ impl HostWorkspaceOwner {
         Ok(())
     }
 
-    #[cfg(feature = "test-support")]
-    async fn resource_probe(
-        &self,
-        task: &AgentPath,
-        agents: u64,
-        previous: Option<[u64; 4]>,
-    ) -> Result<Value> {
-        use acyclic_native_runtime::testing::{sample_process_resources, scale::ViewResources};
-        self.attach(task).await?;
-        let process = sample_process_resources().map_err(storage)?;
-        let current = ViewResources { agents, process };
-        let exceeded = previous
-            .map(|[agents, descriptors, threads, mounts]| {
-                ViewResources {
-                    agents,
-                    process: acyclic_native_runtime::testing::ProcessResources {
-                        descriptors,
-                        threads,
-                        mounts,
-                        ..Default::default()
-                    },
-                }
-                .exceeded(current)
-            })
-            .transpose()
-            .map_err(storage)?;
-        Ok(
-            json!({"counts": [agents, process.descriptors, process.threads, process.mounts],
-            "exceeded": exceeded}),
-        )
+    fn resources(&self) -> Result<Value> {
+        let process =
+            acyclic_native_runtime::resources::sample_process_resources().map_err(storage)?;
+        let views = self.views()?.len();
+        Ok(json!({
+            "views": views,
+            "memory_bytes": process.memory_bytes,
+            "threads": process.threads,
+            "descriptors": process.descriptors,
+            "mounts": process.mounts,
+            "cpu_centiseconds": process.cpu_centiseconds,
+        }))
     }
 
     async fn native_fs(
@@ -496,7 +472,7 @@ impl HostWorkspaceOwner {
     async fn capture_native(&self, operation: OperationId, task: &AgentPath) -> Result<Value> {
         self.attach(task).await?;
         let view = self.view(task)?;
-        let _quiescence = if task.parent().is_some() {
+        let _quiescence = if task.depth() != 0 {
             Some(
                 super::host_process::HostProcessLease::acquire(
                     self.local.workspace_path().ok_or_else(|| {

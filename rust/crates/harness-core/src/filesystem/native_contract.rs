@@ -216,12 +216,7 @@ pub(super) fn validation_error(
         return crate::Error::NativeBoundary { code, reason };
     }
     let _ = io;
-    match code {
-        crate::wire::ErrorCode::Unsupported => crate::Error::Unsupported(reason.into()),
-        crate::wire::ErrorCode::Unauthorized => crate::Error::Unauthorized(reason.into()),
-        crate::wire::ErrorCode::Conflict => crate::Error::Conflict(reason.into()),
-        _ => crate::Error::Invalid(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }
 
 /// Versioned effect kind supported by the optional one-shot process provider.

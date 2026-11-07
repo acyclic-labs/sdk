@@ -89,7 +89,10 @@
       "approved.txt"
     ],
     "tool_errors": [
-      "E2E approval policy"
+      "tool execution failed: interaction declined"
+    ],
+    "tool_contains": [
+      "tool execution failed: interaction declined"
     ]
   },
   "settings": {

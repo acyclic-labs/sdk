@@ -45,7 +45,8 @@ impl<T, E: Clone> PullCursor<T, E> {
         }
         let next = futures::FutureExt::fuse(futures::StreamExt::next(&mut stream));
         let cancelled = futures::FutureExt::fuse(cancellation.changed());
-        futures::pin_mut!(next, cancelled);
+        let next = core::pin::pin!(next);
+        let cancelled = core::pin::pin!(cancelled);
         match futures::future::select(next, cancelled).await {
             futures::future::Either::Left((Some(Ok(bytes)), _)) => {
                 let mut slot = self.stream.lock().map_err(|_| self.unavailable.clone())?;

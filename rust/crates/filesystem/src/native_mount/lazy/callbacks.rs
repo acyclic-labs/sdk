@@ -187,13 +187,16 @@ where
         Ok(changed)
     }
 
-    fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
+    fn shutdown_physical_cleanup(&self) -> Result<MountSourceRetirement, MountSourceError> {
         let changed = !self.physically_retired()?;
         self.cancel_cleanup_with_join(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Physical,
         )?;
-        Ok(changed)
+        Ok(MountSourceRetirement {
+            changed,
+            failure: None,
+        })
     }
 
     super::mutations::mutation_callbacks!();

@@ -1,0 +1,1 @@
+[{"name":"export","aliases":["logs","diagnostics"],"description":"Export diagnostics","arguments":"text","action":{"kind":"request","request":{"kind":"export"},"confirmation":false}}]

@@ -28,5 +28,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "acyclic-machines-v1.bin",
     )?;
     let output = std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?;
-    client::generate(std::path::Path::new(&output))
+    let output = std::path::Path::new(&output);
+    acyclic_proto_build::write_authorization(
+        &std::fs::read(output.join("acyclic-machines-v1.bin"))?,
+        "acyclic.machines.v1.MachinesService",
+        "MachinesMethod",
+        output,
+    )?;
+    client::generate(output)
 }

@@ -648,15 +648,7 @@ fn request_operation(
             || delivery.recv(),
         ) {
             Ok(Delivery::Reply(reply)) => reply,
-            Ok(Delivery::Gone) | Err(_) => {
-                drop(waiting);
-                // Withdrawn, so no later owner serves a request nobody awaits.
-                // Whatever the exited owner committed stays keyed by `operation`.
-                return Error::after_cleanup(
-                    Err(Error::Indeterminate(operation)),
-                    remove_held_projection(&bridge.shared.requests, leaf),
-                );
-            }
+            Ok(Delivery::Gone) | Err(_) => Err(Error::Indeterminate(operation)),
         };
         drop(waiting);
         // Withdrawing the request retires its reply and any saved result. Every

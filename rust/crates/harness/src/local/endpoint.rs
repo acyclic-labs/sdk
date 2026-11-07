@@ -78,9 +78,22 @@ impl Connection {
         exchanged(&self.controls, command).await
     }
 
-    /// Select an existing descendant through the same authenticated binding.
-    /// This query allocates no agent, host, process or additional session.
+    /// Select an existing descendant: a connection that drives and observes
+    /// it. A remote endpoint's credential already reaches the tree, so this
+    /// rebinds the same session. A local credential observes exactly the
+    /// agent it was minted for, so the in-process harness mints the
+    /// descendant's own instead of handing back a binding it cannot follow.
     pub async fn select(&self, agent: AgentPath) -> Result<Self> {
+        if let Some(host) = &self._host {
+            if !self.root.contains(&agent) {
+                return Err(Error::Unauthorized(
+                    "a selected agent must be the root or its descendant".into(),
+                ));
+            }
+            // Boxed: the in-process connection is a deep future, and select
+            // sits inside every frontend's own future.
+            return Box::pin(host.connect_agent(Some(agent))).await;
+        }
         let (controls, tools) = self
             .controls
             .select(agent.clone())
@@ -201,6 +214,12 @@ impl LocalHarness {
     /// # Errors
     /// Fails for an embedded harness or when the tree cannot be hosted.
     pub async fn connect(self: &Arc<Self>) -> Result<Connection> {
+        self.connect_agent(None).await
+    }
+
+    /// [`Self::connect`] under a credential minted for `agent`, the root when
+    /// `None`: the one credential that drives and observes that agent.
+    async fn connect_agent(self: &Arc<Self>, agent: Option<AgentPath>) -> Result<Connection> {
         self.agents().await?;
         let hosted = self
             .agents
@@ -213,7 +232,11 @@ impl LocalHarness {
             .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
         let bound = server.bound();
         let observation = bound
-            .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
+            .client_credential(
+                agent.as_ref().unwrap_or(server.root()),
+                server.resource(),
+                Arc::clone(&self.clock),
+            )
             .await
             .map_err(storage)?;
         let changes = bound.changes().map_err(storage)?;
@@ -225,6 +248,21 @@ impl LocalHarness {
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             Some(hosted.runtime.lifetime()),
         );
-        Connection::bind(session, observation.credential, Some(Arc::clone(self))).await
+        let connection =
+            Connection::bind(session, observation.credential, Some(Arc::clone(self))).await?;
+        let Some(agent) = agent else {
+            return Ok(connection);
+        };
+        let (controls, tools) = connection
+            .controls
+            .select(agent.clone())
+            .await
+            .map_err(exchange)?;
+        Ok(Connection {
+            controls,
+            root: agent,
+            tools,
+            _host: connection._host,
+        })
     }
 }

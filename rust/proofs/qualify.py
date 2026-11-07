@@ -14,8 +14,9 @@ class ClaimParser(argparse.ArgumentParser):
 
 
 parser = ClaimParser(description=__doc__)
-parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss"])
+parser.add_argument("claim", choices=["retained-credit", "settlement-terminal", "admission-rebind", "objects-empty-dispatch", "auth-producer-loss", "auth-generation", "work-arithmetic", "work-mixed", "borrowed-budget", "native-charge", "budget-errors", "ready-source-allocation", "scalar-charge-cost", "guest-refusal", "trust-catchup"])
 claim = parser.parse_args().claim
+target = ["--lib"]
 if claim == "retained-credit":
     source = "rust/crates/filesystem/src/kernel/allocation.rs"
     crate = "acyclic-fs"
@@ -40,14 +41,69 @@ elif claim == "objects-empty-dispatch":
     test = "local::outcome_tests::empty_ranges_preserve_native_presence_without_dispatch"
     diagnostic = "empty range dispatched a physical job for key"
     features = ["--no-default-features", "--features", "local,test-support"]
-else:
+elif claim == "auth-producer-loss":
     source = "rust/crates/auth/src/trust/follower.rs"
     crate = "acyclic-auth"
     test = "trust::follower::tests::account_events_preserve_exact_dependencies_without_unrelated_wakes"
     diagnostic = "account wait retained its lost global producer"
     features = ["--no-default-features"]
+elif claim == "auth-generation":
+    source = "rust/crates/auth/src/trust/follower.rs"
+    crate = "acyclic-auth"
+    test = "trust::follower::tests::swap_precedes_wake_and_lost_follow_fences"
+    diagnostic = "generation exhaustion retained a live publication owner"
+    features = ["--no-default-features"]
+elif claim in ("work-arithmetic", "work-mixed"):
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::full_width_work_arithmetic_preserves_exact_sums_and_refusals"
+    diagnostic = "full-width work sum disagreed with wider arithmetic"
+    features = []
+elif claim == "trust-catchup":
+    source = "rust/crates/stream/src/trust_feed.rs"
+    crate = "acyclic-stream"
+    test = "trust_feed::tests::losing_one_account_follow_fences_everything"
+    diagnostic = "reconnect served trust before its original observed tail"
+    features = ["--no-default-features"]
+elif claim == "ready-source-allocation":
+    source = "rust/crates/stream/src/runtime/sources.rs"
+    crate = "acyclic-stream"
+    test = "runtime::sources::tests::ready_records_reuse_the_registered_source_node"
+    diagnostic = "ready record scheduling allocated physical heap storage"
+    features = ["--no-default-features"]
+elif claim == "guest-refusal":
+    source = "rust/crates/actors/src/guest/state.rs"
+    crate = "acyclic-actors"
+    test = "guest_loom::state::tests::lock_order_checker_rejects_same_and_different_state_nesting"
+    diagnostic = "nested mutation lost its typed refusal"
+    features = ["--features", "model-checking"]
+    target = ["--test", "main"]
+elif claim == "scalar-charge-cost":
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::item_only_kernel_charge_preserves_exact_errors_receipts_and_cost"
+    diagnostic = "scalar charge performed unrelated counter arithmetic"
+    features = ["--no-default-features", "--features", "distributed"]
+elif claim == "budget-errors":
+    source = "rust/crates/filesystem/src/performance.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::borrowed_verification_preserves_exact_errors_and_priority"
+    diagnostic = "budget refusal lost the exact counter or priority"
+    features = []
+elif claim == "borrowed-budget":
+    source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
+    crate = "acyclic-fs"
+    test = "performance::tests::native::borrowed::completed_kernel_work_borrows_the_original_budget_without_allocating"
+    diagnostic = "verification copied the original budget"
+    features = []
+else:
+    source = "rust/crates/filesystem/src/kernel/allocation/accounting.rs"
+    crate = "acyclic-fs"
+    test = "kernel::allocation::accounting::charge_tests::native_charge_matches_the_old_path_at_every_completed_prefix"
+    diagnostic = "kernel charge allocated physical heap storage"
+    features = []
 SOURCE = ROOT / source
-COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, "--lib", test,
+COMMAND = ["cargo", "test", "--locked", "-p", crate, *features, *target, test,
            "--", "--exact", "--nocapture"]
 RECOVERY = f"git diff -- {source}; inspect target/{claim}/*.log; correct source or command, then python3 rust/proofs/qualify.py {claim}"
 
@@ -60,6 +116,9 @@ def require(condition, step):
 def run(label):
     environment = os.environ.copy()
     environment.setdefault("PROPTEST_RNG_SEED", "1697")
+    if claim == "guest-refusal":
+        wrapper = "loom-rustc.cmd" if os.name == "nt" else "loom-rustc.sh"
+        environment["RUSTC_WORKSPACE_WRAPPER"] = str(ROOT / "scripts" / wrapper)
     result = subprocess.run(COMMAND, cwd=ROOT, capture_output=True, text=True, env=environment)
     output = result.stdout + result.stderr
     directory = ROOT / "target" / claim
@@ -75,7 +134,8 @@ def run(label):
 
 def main():
     original = SOURCE.read_bytes()
-    patch = str(ROOT / "rust/proofs" / claim / "mutation.patch")
+    mutation = ("work-arithmetic", "mixed-mutation.patch") if claim == "work-mixed" else (claim, "mutation.patch")
+    patch = str(ROOT / "rust/proofs" / mutation[0] / mutation[1])
     require(subprocess.run(["git", "apply", "--check", patch], cwd=ROOT).returncode == 0,
             "check mutation anchors")
     try:

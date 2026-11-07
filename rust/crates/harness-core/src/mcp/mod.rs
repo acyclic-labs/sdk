@@ -48,10 +48,7 @@ fn error(work: NativeWork<'_>, code: ErrorCode, reason: &'static str) -> Error {
         return Error::NativeBoundary { code, reason };
     }
     let _ = work;
-    match code {
-        ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Invalid(reason.into()),
-    }
+    crate::Error::from_code(code, reason)
 }
 fn charge(work: NativeWork<'_>, items: u64, read: u64, copied: u64) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

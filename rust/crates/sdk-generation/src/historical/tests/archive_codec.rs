@@ -37,25 +37,51 @@ fn encode_path(name: &str) -> Vec<u8> {
     bytes
 }
 
-proptest::proptest! {
-    #[test]
-    fn cargo_archive_members_round_trip(
-        members in proptest::collection::btree_map(
-            "[a-z][a-z0-9_]{0,12}(/[a-z][a-z0-9_]{0,12}){0,2}",
-            proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1024),
-            0..8,
-        ),
-        compressed in proptest::prelude::any::<bool>(),
-    ) {
-        let bytes = encode(&members, compressed);
-        let limits = ArchiveLimits::default();
-        proptest::prop_assert_eq!(
-            decode_archive_members(&bytes, "fixture", "0.1.0").unwrap(),
-            super::archive_decoder_oracle::retained_archive_decoder(&bytes, "fixture", "0.1.0", limits).unwrap(),
+#[test]
+fn archive_members_preserve_original_inventory_and_bodies() {
+    use sha2::{Digest, Sha256};
+    let input = include_bytes!("../../../fuzz/corpus/archive_members/native-package");
+    let members = crate::archive_members_oracle::check_input(input).unwrap();
+    let inventory: BTreeMap<String, serde_json::Value> =
+        serde_json::from_slice(include_bytes!("../../../fuzz/archive-members-native.json"))
+            .unwrap();
+    assert_eq!(members.len(), inventory.len());
+    for (name, body) in &members {
+        let recorded = &inventory[&format!("sdk-file-identity-0.0.0/{name}")];
+        assert_eq!(body.len() as u64, recorded["bytes"].as_u64().unwrap());
+        assert_eq!(
+            format!("{:x}", Sha256::digest(body)),
+            recorded["sha256"].as_str().unwrap()
         );
-        proptest::prop_assert_eq!(decode_archive_members(&bytes, "fixture", "0.1.0").unwrap(), members);
     }
+    use proptest::prelude::*;
+    proptest::test_runner::TestRunner::new(proptest::test_runner::Config {
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0),
+        source_file: Some(file!()),
+        ..proptest::test_runner::Config::default()
+    })
+    .run(
+        &(
+            prop::collection::btree_map(
+                "[a-z][a-z0-9_]{0,12}(/[a-z][a-z0-9_]{0,12}){0,2}",
+                prop::collection::vec(any::<u8>(), 0..1024),
+                0..8,
+            ),
+            any::<bool>(),
+        ),
+        |(members, compressed)| {
+            let bytes = encode(&members, compressed);
+            prop_assert_eq!(
+                crate::archive_members_oracle::check_archive(&bytes, "fixture", "0.1.0").unwrap(),
+                members
+            );
+            Ok(())
+        },
+    )
+    .unwrap();
+}
 
+proptest::proptest! {
     #[test]
     fn archive_member_path_shapes_are_rejected_on_every_host(name in "[a-z]{1,8}") {
         for path in [
@@ -190,7 +216,7 @@ fn stage_bytes(
 }
 
 #[test]
-fn staged_archive_matches_retained_decoder_and_immutable_publication() {
+fn staged_archive_preserves_original_members_and_immutable_publication() {
     let members = BTreeMap::from([
         ("0-empty".into(), Vec::new()),
         ("Cargo.toml".into(), b"[package]".to_vec()),
@@ -199,13 +225,8 @@ fn staged_archive_matches_retained_decoder_and_immutable_publication() {
     ]);
     for compressed in [false, true] {
         let bytes = encode(&members, compressed);
-        let original = super::archive_decoder_oracle::retained_archive_decoder(
-            &bytes,
-            "fixture",
-            "0.1.0",
-            ArchiveLimits::default(),
-        )
-        .unwrap();
+        let original =
+            crate::archive_members_oracle::check_archive(&bytes, "fixture", "0.1.0").unwrap();
         let staged = stage_bytes(&bytes, ArchiveLimits::default()).unwrap();
         staged.assert_storage_contract(&original);
         assert_eq!(
@@ -282,13 +303,9 @@ fn staged_archive_refuses_late_corruption_duplicates_and_every_limit_before_publ
         encode_path("fixture-0.1.0/../escape"),
         plain[..515].to_vec(),
     ] {
-        assert!(super::archive_decoder_oracle::retained_archive_decoder(
-            &invalid,
-            "fixture",
-            "0.1.0",
-            ArchiveLimits::default()
-        )
-        .is_err());
+        assert!(
+            crate::archive_members_oracle::check_archive(&invalid, "fixture", "0.1.0").is_err()
+        );
         let destination = tempfile::tempdir().unwrap();
         let output = destination.path().join("published");
         let result = stage_bytes(&invalid, ArchiveLimits::default())
@@ -348,13 +365,8 @@ fn staged_dependency_verification_preserves_exact_inventory_bytes_and_refusals()
     ]);
     for compressed in [false, true] {
         let bytes = encode(&bodies, compressed);
-        let original = super::archive_decoder_oracle::retained_archive_decoder(
-            &bytes,
-            "fixture",
-            "0.1.0",
-            ArchiveLimits::default(),
-        )
-        .unwrap();
+        let original =
+            crate::archive_members_oracle::check_archive(&bytes, "fixture", "0.1.0").unwrap();
         let root = tempfile::tempdir().unwrap();
         let directory = "historical-fixture-0.1.0";
         let prefix = format!(".docs-producer/{directory}/");

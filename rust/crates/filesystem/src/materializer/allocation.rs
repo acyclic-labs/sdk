@@ -95,7 +95,7 @@ impl NativeAllocation {
             .ok_or(crate::WorkError::Overflow)?;
         self.meter
             .state(|state| state.release(bytes))
-            .map_err(native_materialization_work_error)
+            .map_err(NativeTreeMaterializationError::from)
     }
     pub(crate) fn release_deferred(&mut self, bytes: u64) {
         if let Err(error) = self.release(bytes) {
@@ -108,8 +108,7 @@ impl NativeAllocation {
             return self.release(self.bytes - bytes);
         }
         self.meter
-            .state(|state| state.retain_native_owned(bytes - self.bytes, &None))
-            .map_err(native_materialization_work_error)?;
+            .state(|state| state.retain_native_owned(bytes - self.bytes, &None))?;
         self.bytes = bytes;
         Ok(())
     }
@@ -157,6 +156,23 @@ impl NativeAllocation {
             resource: self.meter.resource.clone(),
             bytes,
         })
+    }
+    /// Retires a capture's remaining physical storage without re-entering its leaf.
+    /// Temporary upgrades may make the last capture owner die inside that leaf.
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn retire_captured_capacity(
+        &mut self,
+        captured: u64,
+        accounting: &crate::demand::NativeAllocationAccounting,
+    ) {
+        for bytes in [captured, std::mem::take(&mut self.bytes)] {
+            accounting.retire_native(bytes);
+            drop(NativeResourceRetirement {
+                original: self.meter.state.clone(),
+                resource: self.meter.resource.clone(),
+                bytes,
+            });
+        }
     }
     pub(crate) fn transfer_checkout_control(
         &mut self,

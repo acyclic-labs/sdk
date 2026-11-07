@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { createMachine, listMachines, machineEvents, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 import { normalize_identity as rustNormalizeIdentity, validatePageSize, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
@@ -42,6 +43,22 @@ describe("Machines simulation", () => {
     expect(operationId("operation-label")).toBe(rustNormalizeIdentity("operation", "operation-label"));
     const uuid = "01020304-0506-4708-890a-0b0c0d0e0f10";
     expect(machineId(uuid)).toBe(uuid);
+    expect(machineId(uuid.toUpperCase())).toBe(uuid);
+    const kinds = ["machine", "checkpoint", "operation", "idempotency"];
+    for (const label of ["caller-label", "00000000-0000-0000-0000-000000000000"]) {
+      const identities = kinds.map(kind => rustNormalizeIdentity(kind, label));
+      expect(new Set(identities).size).toBe(kinds.length);
+      for (const [index, identity] of identities.entries()) {
+        const bytes = createHash("sha256").update("acyclic-machines-identity-v1\0")
+          .update(kinds[index]!).update("\0").update(label).digest().subarray(0, 16);
+        bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+        bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+        const hex = bytes.toString("hex");
+        const expected = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+        expect(identity).toBe(expected);
+        expect(machineId(identity)).toBe(identity);
+      }
+    }
     expect(() => idempotencyKey("")).toThrow();
   });
 

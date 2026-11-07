@@ -6,3 +6,5 @@ export * from "./memory.js";
 export * from "./http.js";
 export { StreamSessions, SessionDelivery, type SessionOptions, type SessionConnect, type SessionTransport } from "./session.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";
+
+export { AUTHORIZATION, type StreamMethod } from "./generated/authorization.js";

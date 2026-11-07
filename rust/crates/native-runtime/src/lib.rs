@@ -149,8 +149,7 @@ mod wall_alarm;
 pub use wall_alarm::{AlarmCallback, WallAlarm};
 mod blocking;
 mod blocking_future;
-#[cfg(any(test, feature = "test-support"))]
-#[path = "testing/resources.rs"]
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub mod resources;
 mod task;
 pub use blocking_future::blocking_future;
@@ -167,10 +166,10 @@ pub use task::{
     spawn_persistence,
 };
 mod completion;
-pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use completion::submit_file_io;
 pub(crate) use completion::{CompletionState, FileCompletion, OperationFence, TaskTerminal};
+pub use completion::{NativeCompletion, NativeCompletionProducer};
 mod workers;
 pub use workers::initialize_native_io_services;
 #[cfg(test)]

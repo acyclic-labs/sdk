@@ -1,0 +1,1 @@
+[{"name":"compact","aliases":["../escape"],"description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}}]

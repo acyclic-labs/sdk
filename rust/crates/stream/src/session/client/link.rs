@@ -210,7 +210,7 @@ impl Pool {
         self.reads.push(Box::pin(async move {
             let frame = {
                 let closed = sender.cancelled();
-                futures::pin_mut!(closed);
+                let closed = core::pin::pin!(closed);
                 match future::select(response.next(), closed).await {
                     future::Either::Left((frame, _)) => frame,
                     future::Either::Right(_) => None,

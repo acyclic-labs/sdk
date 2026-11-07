@@ -306,7 +306,7 @@ impl<S: Source> TrustFeed<S> {
                     None => future::pending().await,
                 }
             };
-            futures::pin_mut!(account);
+            let account = core::pin::pin!(account);
             let event = {
                 let input = async {
                     match future::select(follows.next(), account).await {
@@ -314,9 +314,9 @@ impl<S: Source> TrustFeed<S> {
                         Either::Right((account, _)) => Either::Right(account),
                     }
                 };
-                futures::pin_mut!(input);
+                let input = core::pin::pin!(input);
                 let publication = anchor_changed(anchor, follower);
-                futures::pin_mut!(publication);
+                let publication = core::pin::pin!(publication);
                 match future::select(publication, input).await {
                     Either::Left((keys, _)) => {
                         follower
@@ -422,7 +422,8 @@ async fn apply_environment(
                 .map_err(|_| StreamError::Unavailable)?;
             Err::<(), _>(StreamError::Unavailable)
         };
-        futures::pin_mut!(changed, closed);
+        let changed = core::pin::pin!(changed);
+        let closed = core::pin::pin!(closed);
         let result = match future::select(closed, changed).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         };

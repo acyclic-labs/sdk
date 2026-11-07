@@ -1,0 +1,15 @@
+diff --git a/rust/crates/stream/src/journal.rs b/rust/crates/stream/src/journal.rs
+--- a/rust/crates/stream/src/journal.rs
++++ b/rust/crates/stream/src/journal.rs
+@@ -17,6 +17,11 @@ pub(crate) async fn replay(
+     mut command: WriteRequest,
+ ) -> Result<(), StreamError> {
++    if let WriteRequest::Append(request) = &mut command {
++        for record in &mut request.records {
++            record.value = crate::OwnedBytes::from_static(b"corrupted");
++        }
++    }
+     if let WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) = &mut command {
+         // Recovery installs an accepted decision rather than admitting a new deadline.
+         request.deadline_unix_millis = None;
+     }

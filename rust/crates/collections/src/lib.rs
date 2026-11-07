@@ -13,7 +13,7 @@ mod compiled_prefix;
 pub mod page;
 pub use arc::arc_allocation_bytes;
 pub use compiled_prefix::{
-    CompiledPrefixError, CompiledPrefixIndex, EntryBytes, PrefixKey, PrefixMatches,
+    CompiledPrefixError, CompiledPrefixIndex, EntryBytes, PrefixKey, PrefixMatch, PrefixMatches,
 };
 
 mod recent;

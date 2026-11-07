@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/trust_feed.rs b/rust/crates/stream/src/trust_feed.rs
+--- a/rust/crates/stream/src/trust_feed.rs
++++ b/rust/crates/stream/src/trust_feed.rs
+@@ -331,5 +331,5 @@
+                 Either::Left(Some(((key, Event::Opened { tail, position }), records))) => {
+                     next.insert(key.clone(), position);
+-                    if position >= tail {
++                    if true {
+                         serve(follower, key.as_deref());
+                     } else {
