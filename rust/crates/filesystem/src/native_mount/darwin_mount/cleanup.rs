@@ -8,6 +8,7 @@ pub(in crate::native_mount) struct DarwinRecoveryControl {
     pub(super) detached: bool,
     pub(super) start_aborted: bool,
     pub(super) recovery_probe: Option<MountProbe>,
+    pub(super) retirement: super::reclaim::RetirementOperations,
 }
 
 pub(super) struct DirectDetach {
@@ -22,6 +23,7 @@ impl DirectDetach {
     pub(super) fn new(
         path: Arc<DarwinOwned<CString>>,
         original: &Work,
+        retirement: super::reclaim::RetirementOperations,
     ) -> Result<Self, NativeMountError> {
         let credit = original
             .reserve_work(WorkCounters {
@@ -38,11 +40,12 @@ impl DirectDetach {
         .map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         let task = acyclic_native_runtime::run_blocking_io(
             move || {
-                super::reclaim::retire_mount(path.as_c_str(), |invoke, path| {
-                    let (status, recorded) = operation.attempt(|| invoke(path));
-                    status.and(recorded)
-                })
-                .map(|()| 0)
+                retirement
+                    .retire_mount(path.as_c_str(), |invoke| {
+                        let (status, recorded) = operation.attempt(invoke);
+                        status.and(recorded)
+                    })
+                    .map(|()| 0)
             },
             Some((meter, true)),
         )
@@ -120,11 +123,13 @@ impl DarwinRecoveryControl {
         &mut self,
         mount: &libc::statfs,
         original: &Work,
+        retirement: super::reclaim::RetirementOperations,
     ) -> Result<(), NativeMountError> {
         if self.recovery_probe.is_some() || self.controls_pending() || self.detached {
             return Err(NativeMountError::ControlPending);
         }
         self.recovery_probe = Some(MountProbe::for_mount(mount, original)?);
+        self.retirement = retirement;
         Ok(())
     }
 
@@ -155,7 +160,11 @@ impl DarwinRecoveryControl {
             if matches!(work, ProbeWork::Cleanup(..)) {
                 return Err(NativeMountError::ControlPending);
             }
-            self.direct = Some(DirectDetach::new(Arc::clone(&probe.0), work.original())?);
+            self.direct = Some(DirectDetach::new(
+                Arc::clone(&probe.0),
+                work.original(),
+                self.retirement.clone(),
+            )?);
         }
         let result = self.wait_direct(work);
         self.detached = !probe.mounted(destination, work)?;

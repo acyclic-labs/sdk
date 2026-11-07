@@ -72,7 +72,11 @@ impl DriverSessionResources {
             pointers[2 * index + 2] = option.as_ptr() as usize;
         }
         let control = DarwinRecoveryControl {
-            direct: Some(DirectDetach::new(Arc::clone(&destination), work)?),
+            direct: Some(DirectDetach::new(
+                Arc::clone(&destination),
+                work,
+                super::reclaim::RetirementOperations::default(),
+            )?),
             ..DarwinRecoveryControl::default()
         };
         let cleanup = work.reserve_work(WorkCounters {

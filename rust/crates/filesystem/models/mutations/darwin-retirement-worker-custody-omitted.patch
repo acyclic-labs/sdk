@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs b/rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs
+--- a/rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs
++++ b/rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs
+@@ -163,7 +163,7 @@ impl DarwinRecoveryControl {
+             self.direct = Some(DirectDetach::new(
+                 Arc::clone(&probe.0),
+                 work.original(),
+-                self.retirement.clone(),
++                super::reclaim::RetirementOperations::default(),
+             )?);
+         }
+         let result = self.wait_direct(work);

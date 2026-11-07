@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/native_mount/darwin_mount/reclaim.rs b/rust/crates/filesystem/src/native_mount/darwin_mount/reclaim.rs
+--- a/rust/crates/filesystem/src/native_mount/darwin_mount/reclaim.rs
++++ b/rust/crates/filesystem/src/native_mount/darwin_mount/reclaim.rs
+@@ -83,7 +83,7 @@ impl RetirementOperations {
+         };
+         match attempt(&direct) {
+             Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+-                attempt(&|| arbitration_unmount(destination))
++                Err(error)
+             }
+             result => result,
+         }

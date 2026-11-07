@@ -88,27 +88,17 @@ fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -
 
 #[test]
 fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
-    check_startup_recovery(true, crate::initialize_native_mount_services)
-}
-
-#[test]
-fn negative_control_direct_only_startup_cannot_retire_after_eperm() -> TestResult {
-    let attempted = std::cell::Cell::new(false);
+    let denied = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let result = check_startup_recovery(true, || {
-        attempted.set(true);
-        super::super::reclaim::reclaim_stale_mounts_direct_only()
+        super::super::reclaim::reclaim_stale_mounts_with_retirement(
+            super::super::reclaim::RetirementOperations::denying_direct(Arc::clone(&denied)),
+        )
     });
     assert!(
-        attempted.get(),
-        "fixture failed before exercising retirement"
+        denied.load(Ordering::Relaxed) > 0,
+        "fixture failed before the native worker attempted direct retirement"
     );
-    let error = result.expect_err("direct-only startup unexpectedly recovered after EPERM");
-    assert!(matches!(
-        error.downcast_ref::<NativeMountError>(),
-        Some(NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::EPERM)
-    ));
-    println!("RECLAIM_DIRECT_ONLY_REJECTED errno=EPERM");
-    Ok(())
+    result
 }
 
 fn check_startup_recovery(
@@ -169,11 +159,7 @@ fn check_startup_recovery(
         &foreign_fence,
         false,
     )?);
-    if deny_direct_unmount {
-        super::super::reclaim::with_direct_unmount_denied(startup)?;
-    } else {
-        startup()?;
-    }
+    startup()?;
     phase(began, "startup-retired");
     assert!(
         !mounted(&canonical.join("owned"))?,

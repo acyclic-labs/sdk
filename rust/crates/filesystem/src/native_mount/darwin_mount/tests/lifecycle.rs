@@ -16,15 +16,18 @@ fn retirement_uses_one_fallback_only_after_permission_denial() -> TestResult {
     for direct in [0, libc::EPERM, libc::EIO, libc::ENOENT] {
         for fallback in [0, libc::EACCES, libc::EIO] {
             let mut calls = 0;
-            let result = super::super::reclaim::retire_mount(c"/fixture", |_, _| {
-                calls += 1;
-                let error = if calls == 1 { direct } else { fallback };
-                if error == 0 {
-                    Ok(())
-                } else {
-                    Err(std::io::Error::from_raw_os_error(error))
-                }
-            });
+            let result = super::super::reclaim::RetirementOperations::default().retire_mount(
+                c"/fixture",
+                |_| {
+                    calls += 1;
+                    let error = if calls == 1 { direct } else { fallback };
+                    if error == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::from_raw_os_error(error))
+                    }
+                },
+            );
             assert_eq!(calls, if direct == libc::EPERM { 2 } else { 1 });
             let expected = if direct == libc::EPERM {
                 fallback
