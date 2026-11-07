@@ -381,24 +381,10 @@ impl Hub {
     }
 }
 
-// Removed signals retain their terminal outcomes until delivered.
-struct Delivery<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> {
-    signals: I,
-}
-
-impl<I: Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>> Drop for Delivery<I> {
-    fn drop(&mut self) {
-        for (signal, outcome) in self.signals.by_ref() {
-            signal.settle(outcome);
-        }
-    }
-}
-
 fn deliver(signals: impl Iterator<Item = (Arc<Signal>, ProcessWaitOutcome)>) {
-    let mut delivery = Delivery { signals };
-    for (signal, outcome) in delivery.signals.by_ref() {
+    crate::delivery::deliver(signals, |(signal, outcome)| {
         signal.settle(outcome);
-    }
+    });
 }
 
 // A producer that unwinds also settles its waits; no replacement is started.

@@ -376,6 +376,9 @@ fn a_tree_holds_the_hub_before_its_first_wait() -> io::Result<()> {
 
 #[test]
 fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io::Result<()> {
+    if crate::delivery::isolated()? {
+        return Ok(());
+    }
     use std::sync::mpsc;
 
     struct Notified(mpsc::Sender<()>);
@@ -523,24 +526,34 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
 
     // A consumer unwind cannot discard terminal outcomes already removed
     // from the registry. Delivery retains the remaining original producers.
-    struct Panicking;
+    struct Panicking(&'static str);
     impl Wake for Panicking {
         fn wake(self: Arc<Self>) {
-            panic!("original waiter unwound during terminal delivery");
+            std::panic::panic_any(self.0);
         }
     }
     let panicking = Arc::new(Signal::default());
+    let second = Arc::new(Signal::default());
     let following = Arc::new(Signal::default());
-    let waker = Waker::from(Arc::new(Panicking));
+    let waker = Waker::from(Arc::new(Panicking(
+        "original waiter unwound during terminal delivery",
+    )));
     assert!(
         panicking
             .poll(&mut Context::from_waker(&waker))
             .is_pending()
     );
+    assert!(
+        second
+            .poll(&mut Context::from_waker(&Waker::from(Arc::new(Panicking(
+                "later waiter unwound during terminal delivery",
+            )))))
+            .is_pending()
+    );
     assert!(following.poll(&mut context).is_pending());
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         deliver(
-            [panicking, Arc::clone(&following)]
+            [panicking, second, Arc::clone(&following)]
                 .into_iter()
                 .map(|signal| {
                     (
@@ -550,7 +563,10 @@ fn native_wait_failure_settles_live_waits_and_producer_loss_is_terminal() -> io:
                 }),
         );
     }));
-    assert!(result.is_err());
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<&str>(),
+        Some(&"original waiter unwound during terminal delivery")
+    );
     notified
         .recv()
         .expect("remaining original waiter was woken");

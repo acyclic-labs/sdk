@@ -98,9 +98,9 @@ fn fail(index: &Mutex<Index>, error: io::Error) -> Arc<io::Error> {
         let error = Arc::clone(index.failure.get_or_insert_with(|| Arc::new(error)));
         (error, std::mem::take(&mut index.entries))
     };
-    for fire in pending.into_values() {
+    crate::delivery::deliver(pending.into_values(), |fire| {
         fire(Err(Arc::clone(&error)));
-    }
+    });
     error
 }
 
@@ -157,9 +157,9 @@ impl Drop for Driver<'_> {
                 "step=wall-alarm-producer; recovery=restart the lost alarm owner",
             ),
         );
-        for fire in self.due.by_ref() {
+        crate::delivery::deliver(self.due.by_ref(), |fire| {
             fire(Err(Arc::clone(&error)));
-        }
+        });
     }
 }
 
@@ -177,9 +177,7 @@ fn drive(index: &Mutex<Index>, waiter: &dyn Wait, now: impl Fn() -> u64) {
             index.take_due(now())
         };
         driver.due = due.into_iter();
-        for fire in driver.due.by_ref() {
-            fire(Ok(()));
-        }
+        crate::delivery::deliver(driver.due.by_ref(), |fire| fire(Ok(())));
         if let Err(error) = waiter.wait(next) {
             fail(index, error);
             return;
@@ -697,7 +695,11 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn alarm_producer_loss_retains_native_failure_and_refuses_late_registration() {
+    fn alarm_producer_loss_retains_native_failure_and_refuses_late_registration() -> io::Result<()>
+    {
+        if crate::delivery::isolated()? {
+            return Ok(());
+        }
         for (now, detach) in [0, 1]
             .into_iter()
             .flat_map(|now| [false, true].map(|detach| (now, detach)))
@@ -772,6 +774,7 @@ mod tests {
             }
         }
         let index = Mutex::new(Index::default());
+        locked(&index).insert(1, Arc::new(|_| panic!("later alarm consumer unwound")))?;
         let (sender, received) = mpsc::channel();
         let sender = Mutex::new(sender);
         locked(&index)
@@ -782,16 +785,19 @@ mod tests {
                 }),
             )
             .unwrap();
-        assert!(
+        assert_eq!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 drive(&index, &Lost, || 0);
             }))
-            .is_err()
+            .unwrap_err()
+            .downcast_ref::<&str>(),
+            Some(&"original producer unwound")
         );
         assert_eq!(
             received.try_recv().unwrap().unwrap_err().kind(),
             io::ErrorKind::BrokenPipe
         );
+        Ok(())
     }
 
     #[test]

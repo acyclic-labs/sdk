@@ -218,22 +218,7 @@ mod tests {
         use std::io::{Read as _, Write as _};
         use std::os::fd::AsFd as _;
 
-        const CHILD: &str = "ACYCLIC_TEST_READINESS_OWNERS";
-        if std::env::var_os(CHILD).is_none() {
-            // Isolate descriptor allocation and permanent producer failure
-            // from the other real-process tests in this binary.
-            let current = std::thread::current();
-            let name = current
-                .name()
-                .ok_or_else(|| io::Error::other("readiness control has no test identity"))?;
-            let result = std::process::Command::new(std::env::current_exe()?)
-                .args(["--exact", name, "--nocapture"])
-                .env(CHILD, "1")
-                .status()?;
-            assert!(
-                result.success(),
-                "isolated readiness ownership control failed"
-            );
+        if crate::delivery::isolated()? {
             return Ok(());
         }
         let pool = Pool::open(NonZeroUsize::new(2).unwrap())?;
