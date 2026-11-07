@@ -174,7 +174,6 @@ impl NativeWorkReservation {
     }
     /// Performs bounded local work under this original reservation's custody.
     /// The operation must not re-enter the reservation or its original ledger.
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn with_admitted_work<T>(
         &self,
         maximum: WorkCounters,
@@ -244,7 +243,6 @@ impl NativeWorkReservation {
         let mut retry = Self::new(self.meter.clone(), missing);
         self.absorb(&mut retry)
     }
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn check_wait(
         &self,
         wait: Option<&crate::CancellationToken>,
