@@ -72,22 +72,22 @@ impl PacketBuffers {
 /// Admit every worker's storage before accepting the physical session. Quiet
 /// cancellation after startup must not turn late buffer construction into a
 /// producer failure while the host is still servicing kernel refusals.
-pub(super) struct PacketBufferPool(Mutex<FuseOwned<Vec<Option<PacketBuffers>>>>);
+pub(super) struct PacketBufferPool<T = PacketBuffers>(Mutex<FuseOwned<Vec<Option<T>>>>);
 
-impl PacketBufferPool {
+impl<T> PacketBufferPool<T> {
     pub(super) fn new(
         count: std::num::NonZeroU32,
-        capacity: usize,
         work: &NativeMaterializationWork,
+        mut prepare: impl FnMut() -> Result<T, NativeMountError>,
     ) -> Result<Self, NativeMountError> {
         let mut buffers = fuse_vec(count.get() as usize, work)?;
         for _ in 0..count.get() {
-            buffers.push(Some(PacketBuffers::new(capacity, work)?));
+            buffers.push(Some(prepare()?));
         }
         Ok(Self(Mutex::new(buffers)))
     }
 
-    pub(super) fn take(&self, index: u32) -> Result<PacketBuffers, NativeMountError> {
+    pub(super) fn take(&self, index: u32) -> Result<T, NativeMountError> {
         self.0
             .lock()
             .map_err(|_| libc::EIO)?
@@ -96,7 +96,7 @@ impl PacketBufferPool {
             .ok_or_else(|| libc::EIO.into())
     }
 
-    pub(super) fn put(&self, index: u32, buffers: PacketBuffers) -> Result<(), NativeMountError> {
+    pub(super) fn put(&self, index: u32, buffers: T) -> Result<(), NativeMountError> {
         let mut pool = self.0.lock().map_err(|_| libc::EIO)?;
         let slot = pool.get_mut(index as usize).ok_or(libc::EINVAL)?;
         if slot.is_some() {
