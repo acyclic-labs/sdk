@@ -1,15 +1,16 @@
 diff --git a/rust/crates/harness-core/src/executor/model_usage.rs b/rust/crates/harness-core/src/executor/model_usage.rs
 --- a/rust/crates/harness-core/src/executor/model_usage.rs
 +++ b/rust/crates/harness-core/src/executor/model_usage.rs
-@@ -137,6 +137,7 @@ pub struct ModelUsageRecord {
+@@ -137,6 +137,8 @@ pub struct ModelUsageRecord {
      /// Wall time at live provider dispatch, in Unix nanoseconds, with the
      /// shared wall clock's millisecond resolution. Unknown after recovery or
      /// when that observation cannot be represented as u64 nanoseconds.
 +    #[serde(default, deserialize_with = "discard_usage_time")]
++    #[heap_layout(scalar)]
      pub started_at: Option<u64>,
      /// Wall time when the terminal provider event arrived, before its commit.
      /// Same units and resolution as started_at. Clock corrections can put this
-@@ -157,6 +158,14 @@ pub struct ModelUsageRecord {
+@@ -157,6 +159,14 @@ pub struct ModelUsageRecord {
      pub cache: Option<ModelCacheObservation>,
  }
  
