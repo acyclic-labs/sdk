@@ -511,7 +511,7 @@ async fn committed_handover(refused_close: bool) -> Result {
         assert!(
             remote
                 .executor
-                .dispatch(&oversized, Some(&context))?
+                .dispatch(&oversized, Some(&context), None)?
                 .is_some()
         );
         let registry = acyclic_harness_core::tools::defaults()?;
@@ -519,7 +519,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             .get("shell", None, None)?
             .ok_or("shell is missing")?
             .executor;
-        assert!(shell.dispatch(&oversized, Some(&context))?.is_none());
+        assert!(shell.dispatch(&oversized, Some(&context), None)?.is_none());
         let mut recovery = shell.reconcile(oversized.clone(), Some(context.clone()));
         let std::task::Poll::Ready(recovered) = futures::poll!(recovery.as_mut()) else {
             return Err("rejected command recovery waited for an unpublished Run".into());
@@ -559,7 +559,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             assert!(
                 remote
                     .executor
-                    .dispatch(&invalid, Some(&context))?
+                    .dispatch(&invalid, Some(&context), None)?
                     .is_none()
             );
             let mut recovery = remote
@@ -856,12 +856,12 @@ async fn committed_handover(refused_close: bool) -> Result {
             assert!(matches!(
                 remote
                     .executor
-                    .cancellation(&invocation, Some(&foreign_context)),
+                    .cancellation(&invocation, Some(&foreign_context), None),
                 Err(acyclic_harness_core::Error::Unauthorized(_))
             ));
             remote
                 .executor
-                .cancellation(&invocation, Some(&context))?
+                .cancellation(&invocation, Some(&context), None)?
                 .ok_or("original device has no cancellation publisher")?
                 .await?;
             assert_eq!(provider.tail(call.log().clone()).await?, completed_tail);
@@ -893,7 +893,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             )?;
             let prepared = remote
                 .executor
-                .cancellation(&invocation, Some(&context))?
+                .cancellation(&invocation, Some(&context), None)?
                 .ok_or("original device has no cancellation publisher")?;
             drop(prepared);
             assert!(matches!(
@@ -902,7 +902,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             ));
             remote
                 .executor
-                .cancellation(&invocation, Some(&context))?
+                .cancellation(&invocation, Some(&context), None)?
                 .unwrap()
                 .await?;
             assert!(matches!(
@@ -944,7 +944,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             let (mut still_running, _) = listener.accept().await?;
             remote
                 .executor
-                .cancellation(&invocation, Some(&context))?
+                .cancellation(&invocation, Some(&context), None)?
                 .unwrap()
                 .await?;
             assert!(
@@ -1194,7 +1194,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             assert!(
                 recovery_target
                     .executor
-                    .dispatch(&invocation, Some(&context))
+                    .dispatch(&invocation, Some(&context), None)
                     .is_err()
             );
             let recovered = recovery_target

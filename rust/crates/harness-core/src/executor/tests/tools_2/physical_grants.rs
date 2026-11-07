@@ -16,12 +16,17 @@ struct NativeTool {
 impl ToolExecutor for NativeTool {
     fn authorize_execution_grant<'a>(
         &'a self,
-        _: &'a ToolInvocation,
+        invocation: &'a ToolInvocation,
         _: &'a ToolContext,
         grant: &'a ExecutionGrant,
         _: crate::NativeWork<'a>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            assert_eq!(invocation.name, "shell");
+            assert_eq!(
+                invocation.arguments,
+                json!({"command":"ignored", "timeout_ms":5000})
+            );
             if self.supported {
                 grant
                     .check_attenuation_async(grant, None)
@@ -45,6 +50,11 @@ impl ToolExecutor for NativeTool {
         context: Option<ToolContext>,
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
+            assert_eq!(invocation.name, "shell");
+            assert_eq!(
+                invocation.arguments,
+                json!({"command":"ignored", "timeout_ms":5000})
+            );
             self.calls.fetch_add(1, Ordering::SeqCst);
             let context = context.expect("original task");
             assert_eq!(context.operation_id(), invocation.operation_id);
@@ -145,8 +155,9 @@ impl ToolPolicy for PhysicalPolicy {
         _: Option<&PreparationIo>,
     ) -> Result<Option<ExecutionGrant>> {
         assert!(!self.deny);
+        let capability = tool.executor.capability().unwrap_or(tool);
         assert!(std::ptr::addr_eq(
-            Arc::as_ptr(&tool.executor),
+            Arc::as_ptr(&capability.executor),
             Arc::as_ptr(&self.executor),
         ));
         let context = context.expect("original task before dispatch");
@@ -199,18 +210,33 @@ async fn physical_grant_admission_reaches_native_dispatch_and_refusals_never_lau
             selections: AtomicUsize::new(0),
         });
         let scope = RuntimeScope::new(
-            Capabilities::new(["model:generate", "tool:call:example.echo"]),
+            Capabilities::new(["model:generate", "tool:call:shell"]),
             Limits::default(),
         )?;
         let task = admitted_context(scope.clone())?;
         let operation = OperationId::new();
-        let provider = Arc::new(scripted_model());
-        let tools = echo_tools(
+        let provider = Arc::new(
+            ScriptedModelProvider::new([
+                tool_turn(vec![ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "call-1".into(),
+                    "shell".into(),
+                    json!({"command":"ignored", "timeout":5000}),
+                ))]),
+                done_turn(),
+            ])
+            .with_token_counter(fixture_token_count),
+        );
+        let original = echo_tools(
             native.clone(),
             json!({"type":"object"}),
             json!({"type":"object"}),
             crate::tool::json_projection_schema(json!({"type":"object"})),
         )?;
+        let mut shell = original.get("example.echo", None, None)?.unwrap().clone();
+        shell.definition.name = "shell".into();
+        let mut tools = ToolRegistry::default();
+        tools.register((shell, None), &mut None, None)?;
+        crate::tools::native::bind(&mut tools, crate::model::NativeToolProfile::Anthropic)?;
         let executor = uncompacted_executor(
             Model::new("test".into(), "physical".into(), "1".into())?,
             provider.clone(),
@@ -245,7 +271,11 @@ async fn physical_grant_admission_reaches_native_dispatch_and_refusals_never_lau
         let unavailable = refusal
             .as_deref()
             .is_some_and(|text| text.contains("Landlock "));
-        assert_eq!(refusal.is_some(), !dispatched || unavailable);
+        assert_eq!(
+            refusal.is_some(),
+            !dispatched || unavailable,
+            "physical-grant authorization must reach the selected executor: {refusal:?}",
+        );
         assert_eq!(policy.selections.load(Ordering::SeqCst), usize::from(!deny));
         assert_eq!(native.calls.load(Ordering::SeqCst), usize::from(dispatched));
         assert_eq!(
@@ -266,8 +296,8 @@ async fn physical_grant_admission_reaches_native_dispatch_and_refusals_never_lau
         let accepted = ToolInvocation {
             operation_id: OperationId::new(),
             call_id: "accepted".into(),
-            name: "example.echo".into(),
-            arguments: json!({}),
+            name: "shell".into(),
+            arguments: json!({"command":"ignored", "timeout":5000}),
         };
         let selected = executor.tools.get(&accepted.name, None, None)?.unwrap();
         let reconciled = StockExecution::ordinary(&executor)

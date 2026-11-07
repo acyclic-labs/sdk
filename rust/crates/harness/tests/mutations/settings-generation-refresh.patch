@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/agent_settings.rs b/rust/crates/harness/src/local/agent_settings.rs
+--- a/rust/crates/harness/src/local/agent_settings.rs
++++ b/rust/crates/harness/src/local/agent_settings.rs
+@@ -105,6 +105,8 @@
+     clock: &dyn acyclic_stream::UnixMillisClock,
+ ) -> Result<Settings> {
++    let refreshed = Tree::new(tree.volumes).await?;
++    let tree = &refreshed;
+     let seed = Layer {
+         name: "seed",
+         generation: "",
+         bytes: crate::seed::file(config::AGENT),

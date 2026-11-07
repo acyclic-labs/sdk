@@ -53,6 +53,15 @@ impl StockExecution<'_> {
         let Some(hooks) = &self.stock.hooks else {
             return Ok(Some(HookOutput::default()));
         };
+        // Matching normalizes native declarations and owns request JSON.
+        // Refuse the unsupported execution mode before constructing it.
+        if self.io.is_some() {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Unsupported,
+                "hooks require ordinary task execution",
+            ));
+        }
         let event = HookEvent::only(site)?;
         let input = HookInput::Tool {
             invocation,
@@ -66,13 +75,6 @@ impl StockExecution<'_> {
             .is_none()
         {
             return Ok(Some(HookOutput::default()));
-        }
-        if self.io.is_some() {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Unsupported,
-                "hooks require ordinary task execution",
-            ));
         }
         let (task, _) = self
             .context

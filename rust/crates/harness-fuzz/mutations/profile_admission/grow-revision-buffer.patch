@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-providers/src/resolved.rs b/rust/crates/harness-providers/src/resolved.rs
+--- a/rust/crates/harness-providers/src/resolved.rs
++++ b/rust/crates/harness-providers/src/resolved.rs
+@@ -128,7 +128,7 @@ impl ResolvedModel {
+         revision.update(self.model.revision.as_bytes());
+         revision.update(&binding.digest());
+         let digest = revision.finalize().to_hex();
+-        let mut key = String::with_capacity("profile-v1:".len() + digest.len());
++        let mut key = String::new();
+         key.push_str("profile-v1:");
+         key.push_str(digest.as_str());
+         key

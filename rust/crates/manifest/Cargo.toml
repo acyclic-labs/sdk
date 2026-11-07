@@ -8,9 +8,6 @@ repository.workspace = true
 publish.workspace = true
 description = "Bounded deployment manifest admission shared by Cloud and SDK tooling"
 
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [dependencies]
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }

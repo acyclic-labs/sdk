@@ -86,7 +86,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
         let counted = provider.count_tokens(&request, u64::MAX).await?;
         let count_body = script.counted.lock().unwrap().take().unwrap();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);
-        provider.usage.observe(
+        provider.accounting.usage.observe(
             adapter,
             &request,
             &json!({"usage":{"input_tokens":5,"prompt_tokens":5,"promptTokenCount":5}}),
@@ -100,7 +100,7 @@ async fn native_images_use_verified_bytes_and_keep_mixed_content_order() -> Resu
             }),
         });
         let appended = PreparedModelRequest::prepare(appended, Limits::default(), None)?;
-        assert_eq!(provider.usage.bound(&appended)?, None);
+        assert_eq!(provider.accounting.usage.bound(&appended)?, None);
         let counted = provider.count_tokens(&appended, u64::MAX).await?;
         let count_body = script.counted.lock().unwrap().take().unwrap();
         assert_eq!(counted.input_tokens, count_body.len() as u64 + 512);

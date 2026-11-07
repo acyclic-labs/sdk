@@ -25,6 +25,9 @@ pub use chain::model as chain_model;
 mod input;
 mod request;
 pub use input::HookInput;
+#[cfg(all(feature = "test-support", feature = "filesystem"))]
+#[doc(hidden)]
+pub use request::check_native_patch_paths;
 
 #[cfg(feature = "filesystem")]
 pub(crate) struct BoundHooks {
@@ -74,7 +77,18 @@ impl Requests {
         (self.actions.is_empty()
             || field("action").is_some_and(|action| self.actions.iter().any(|a| a == action)))
             && selects(&self.command, "command")
-            && selects(&self.path, "path")
+            && self.path.as_ref().is_none_or(|pattern| {
+                field("path").is_some_and(|path| pattern.is_match(path))
+                    || request
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .is_some_and(|paths| {
+                            paths
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .any(|path| pattern.is_match(path))
+                        })
+            })
     }
 }
 
@@ -286,7 +300,7 @@ impl Hooks {
             let hooks: Vec<_> = self.candidates(event, input, registry)?.collect();
             let quota = capture_quota(maximum_bytes, hooks.len());
             let original = input.tool_input().unwrap_or(&Value::Null);
-            return chain::judge(
+            let reason = match chain::judge(
                 &hooks,
                 event,
                 original,
@@ -302,7 +316,22 @@ impl Hooks {
                 },
                 &mut execute,
             )
-            .await;
+            .await
+            {
+                Ok(output) => return Ok(output),
+                // Invalid tool arguments, including a hook's rewrite, reject
+                // this call through the ordinary blocking outcome.
+                Err(Error::Invalid(reason)) => reason,
+                Err(Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason,
+                }) => reason.into(),
+                Err(error) => return Err(error),
+            };
+            return Ok(HookOutput {
+                blocked: Some(reason),
+                ..HookOutput::default()
+            });
         }
         let commands = self.commands(event, input, registry)?;
         let quota = capture_quota(maximum_bytes, commands.clone().count());
