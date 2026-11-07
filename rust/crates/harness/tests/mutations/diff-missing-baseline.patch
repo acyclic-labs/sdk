@@ -1,0 +1,35 @@
+diff --git a/rust/crates/harness/src/local/files.rs b/rust/crates/harness/src/local/files.rs
+index 52f991c5a99..349d1b6fc22 100644
+--- a/rust/crates/harness/src/local/files.rs
++++ b/rust/crates/harness/src/local/files.rs
+@@ -49,6 +49,12 @@ impl LocalHarness {
+             .unwrap_or_else(|| workspace.view())
+             .workspace();
+         let cancellation = acyclic_fs::CancellationToken::new();
++        let current = selected
++            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
++            .await
++            .map_err(storage)?
++            .value
++            .id();
+         // Branches retain the checkout's imported source, not a new import
+         // receipt. Selection changes only the current endpoint.
+         let original = workspace.view().workspace();
+@@ -63,16 +69,7 @@ impl LocalHarness {
+             .await
+             .map_err(storage)?
+             .value
+-            .ok_or_else(|| {
+-                Error::Unsupported("workspace diff requires a complete source baseline".into())
+-            })?
+-            .id();
+-        let current = selected
+-            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+-            .await
+-            .map_err(storage)?
+-            .value
+-            .id();
++            .map_or(current, |baseline| baseline.id());
+         diffs
+             .page(
+                 &*self.signed_reader()?,

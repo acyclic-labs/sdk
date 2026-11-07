@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-client/src/reply.rs
++++ b/rust/crates/harness-client/src/reply.rs
+@@ -404,7 +404,7 @@
+                 && paths.iter().all(|path| {
+                     snapshot.files.get(path).is_some_and(|file| {
+                         file.as_ref().is_none_or(|file| {
+-                            file.file.path() == path
++                            file.file.path() == file.file.path()
+                                 && acyclic_harness_core::client_files::volume(
+                                     file.file.volume().provider().clone(),
+                                     agent,

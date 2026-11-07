@@ -3,7 +3,8 @@ use super::*;
 fn check<const OPEN: bool>(selection: &str, index: usize, operation: OperationId) {
     let modes = ["unified", "split", "stat"];
     let settings = json!({"diff_modes":modes,"diff_mode":modes[index],"retained":selection});
-    let layout = json!({"selected_task":selection,"history_page":42,"open_view":"help"});
+    let layout =
+        json!({"version":1,"selected_task":selection,"history_page":42,"open_view":"help"});
     let snapshot = BTreeMap::from([
         (
             CommandFileRoot::Config,

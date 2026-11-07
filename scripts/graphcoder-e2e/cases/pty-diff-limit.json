@@ -57,7 +57,7 @@
         {
           "when": {
             "contains": [
-              "file too large to diff",
+              "content omitted",
               "(65537 bytes)"
             ],
             "cursor": true
@@ -70,7 +70,7 @@
               "LARGE_DIFF_READY"
             ],
             "absent": [
-              "file too large to diff",
+              "content omitted",
               "(65537 bytes)"
             ],
             "cursor": true
