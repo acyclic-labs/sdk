@@ -2,7 +2,7 @@ use super::*;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
-const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::crashed_owner";
+const CHILD: &str = "native_mount::darwin_mount::tests::reclaim::startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts";
 
 fn request(
     destination: &Path,
@@ -17,8 +17,6 @@ fn request(
     })
 }
 
-#[test]
-#[ignore = "subprocess fixture for the live macOS crash recovery test"]
 fn crashed_owner() -> TestResult {
     let Some(root) = std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT") else {
         return Ok(());
@@ -85,6 +83,9 @@ impl Drop for CrashRoots {
 #[test]
 #[ignore = "requires live macOS NFS mounts and SIGKILL"]
 fn startup_reclaims_crashed_sdk_mounts_and_preserves_live_and_foreign_mounts() -> TestResult {
+    if std::env::var_os("ACYCLIC_RECLAIM_TEST_ROOT").is_some() {
+        return crashed_owner();
+    }
     check_startup_recovery(false, crate::initialize_native_mount_services)
 }
 
@@ -140,7 +141,7 @@ fn check_startup_recovery(
     };
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["--exact", CHILD, "--ignored", "--nocapture"])
+        .args(["--exact", CHILD, "--include-ignored", "--nocapture"])
         .env("ACYCLIC_RECLAIM_TEST_ROOT", &canonical)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped());

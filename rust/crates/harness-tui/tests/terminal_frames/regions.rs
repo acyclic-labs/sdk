@@ -2,7 +2,7 @@ use super::*;
 use acyclic_harness_tui::term::RegionScroll;
 use std::{cell::Cell as Count, time::Instant};
 
-fn one_native_submission(calls: u64, writes: u64, frames: usize, idle: bool) {
+pub(super) fn one_native_submission(calls: u64, writes: u64, frames: usize, idle: bool) {
     assert_eq!(
         calls,
         if idle { 0 } else { frames as u64 },
@@ -32,7 +32,6 @@ fn scene(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 /// Native kernel/device cost, paired with the independently initialized old
 /// terminal. Run in ConPTY on Windows and a drained kernel PTY on Unix.
 #[test]
-#[ignore = "physical terminal measurement: run via the platform host"]
 fn real_terminal_region_cost() -> io::Result<()> {
     let size = Size::new(100, 40);
     let area = Rect::new(0, 0, size.width, size.height);
