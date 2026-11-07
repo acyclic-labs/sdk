@@ -80,7 +80,7 @@ impl PostgresStream {
         let generation: Vec<u8> = client
             .query_one(
                 "INSERT INTO acyclic_stream_generation(namespace, generation) VALUES ($1, $2)                  ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation                  RETURNING generation",
-                &[&namespace, &uuid::Uuid::new_v4().as_bytes().as_slice()],
+                &[&namespace, &crate::new_identity().as_slice()],
             )
             .await
             .map_err(unavailable)?

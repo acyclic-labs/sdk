@@ -102,7 +102,7 @@ fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
             Err(error) => return Err(error.into()),
         }
     }
-    let incarnation = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
+    let incarnation = u128::from_be_bytes(crate::new_identity());
     let temporary = root.join(INCARNATION_TEMPORARY);
     {
         let mut file = File::create(&temporary)?;

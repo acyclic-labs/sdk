@@ -1047,6 +1047,7 @@ dependencies = [
 name = "acyclic-model-render"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "proptest",
  "serde",
  "serde_json",
