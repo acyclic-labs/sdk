@@ -5,8 +5,7 @@ use acyclic_fs::{
     CancellationToken, Digest, FsError, ObjectId, ObjectKind, OperationClaims, VolumeId, WorkError,
 };
 
-#[path = "../../src/sync.rs"]
-mod sync;
+use loom::sync;
 
 fn key(byte: u8) -> ObjectId {
     ObjectId {
@@ -21,6 +20,7 @@ mod cache {
     impl<T> FoldedDirectoryCache<T> {
         // Negative control: writers can select the same slot without one section.
         pub(super) fn insert_split(&self, key: ObjectId, value: DirectoryNames<T>) {
+            let key = content_key(key);
             let position = {
                 let state = self
                     .state
@@ -48,6 +48,7 @@ mod cache {
 
         // Negative control: payload retirement may acquire an accounting lock.
         pub(super) fn insert_dropping_locked(&self, key: ObjectId, value: DirectoryNames<T>) {
+            let key = content_key(key);
             let mut state = self
                 .state
                 .lock()
@@ -64,7 +65,6 @@ mod cache {
 }
 
 mod retry;
-mod view;
 
 #[path = "../../src/access/projection.rs"]
 mod projection;
@@ -107,6 +107,29 @@ fn admission_model(insert: fn(&cache::FoldedDirectoryCache<bool>, ObjectId, bool
             cache.get(key(3)).map(result),
             Some(true),
             "cache admission lost"
+        );
+        let associated = ObjectId {
+            storage: Some(acyclic_fs::ObjectStorage {
+                locator: Digest::from_bytes([7; 32]),
+                root_file_id: acyclic_fs::FileId::from_bytes([11; 16]),
+                origin_generation: Digest::from_bytes([13; 32]),
+            }),
+            ..key(1)
+        };
+        assert_eq!(
+            cache.get(associated).map(result),
+            Some(true),
+            "immutable names changed with their storage association"
+        );
+        assert_eq!(
+            cache
+                .get(ObjectId {
+                    kind: ObjectKind::Blob,
+                    ..associated
+                })
+                .map(result),
+            None,
+            "cache crossed the object-kind domain"
         );
     });
 }
