@@ -26,6 +26,34 @@ const claims = {
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
   ],
+  "native-eof-refusal": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
+    "original process must retire before reply drain",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
+  ],
+  "native-child-branch-scope": [
+    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "parent-scoped child reference",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
+  ],
+  "native-child-merge-custody": [
+    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "canonical child merge bypassed running-session custody",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_merge_custody.patch" },
+  ],
+  "native-added-metadata": [
+    "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "step=codex merge right child",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/filesystem/fuzz/mutations/added_metadata_observation.patch" },
+  ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
     "session::client::admissions::tests::home_rebinding_preserves_pending_memberships_without_allocating",
@@ -115,17 +143,18 @@ if (claim === "--help" && extra.length === 0) {
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-  const patch = claim === "work-mixed"
+  const patchRelative = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const patch = fileURLToPath(new URL(patchRelative, new URL("../../", import.meta.url)));
   const target = options.target ?? ["--lib"];
   const command = options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.positive
+  const positive = options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
-    : command;
+    : command);
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
@@ -193,9 +222,9 @@ if (claim === "--help" && extra.length === 0) {
     require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed";
-    require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
+    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    require(restored.status === 0 && !restored.signal && completed.every(summary => restored.output.includes(summary)));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;

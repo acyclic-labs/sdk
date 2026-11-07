@@ -46,6 +46,7 @@ export default function acyclic(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     selected = process.env.ACYCLIC_TASK ? {task: process.env.ACYCLIC_TASK, cwd: ctx.cwd}
       : await workspace<Location>(ctx.cwd, {kind: "open", host: "pi", session: ctx.sessionManager.getSessionId()});
+    pi.appendEntry("acyclic.agent.v1", {task: task().task});
     await workspace(ctx.cwd, {kind: "hook", host: "pi", event: "NativeSession",
       input: {task: task().task, native_session: {id: ctx.sessionManager.getSessionId(), file: ctx.sessionManager.getSessionFile() ?? null}}});
   });
@@ -62,7 +63,7 @@ export default function acyclic(pi: ExtensionAPI) {
   for (const name of ["spawn", "send", "wait", "archive", "cancel", "resume"]) {
     const prompt = ["spawn", "send", "resume"].includes(name);
     pi.registerTool({name, label: `Acyclic ${name}`,
-      description: `${name} a separate native Pi process in an admitted workspace view. Native subagents are unmanaged. Merge with acyclic fs merge agents/<reference>.`,
+      description: `${name} a separate native Pi process in an admitted workspace view. Native subagents are unmanaged. A parent merges its direct child's captured changes with acyclic fs merge agents/<reference>. Return your own result to your parent; do not merge yourself.`,
       parameters: Type.Object({reference: Type.String(), ...(prompt ? {prompt: Type.String()} : {})}, {additionalProperties: false}),
       async execute(_call, params, signal) {
         const response = await call(name, params, signal);

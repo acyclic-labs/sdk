@@ -457,7 +457,7 @@ where
 
     /// The one credential a client of `root` holds: it invokes `calls`, the
     /// actor resource of the server of this binding's tree, and observes
-    /// `root`'s conversation, status and tool output; with the session
+    /// `root`'s stream subtree, matching status subtree and tool output; with the session
     /// authority admitting it.
     ///
     /// # Errors
@@ -509,6 +509,48 @@ where
             .tool_resource(&private.volume)
             .await
             .map_err(turn)
+    }
+
+    /// Native enrollment of a selected agent's read-only observation on an
+    /// existing session. Platform custody uses its original admitted credential
+    /// instead; the host never creates signing custody from that invocation.
+    /// The enrollment derives from the selected agent's scope, not from the
+    /// caller's command credential, and carries no actor invocation grant.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    #[inline(never)]
+    pub fn selected_observation<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(String, Vec<u8>)>, Error>> {
+        Box::pin(async move {
+            self.admit_path(agent)?;
+            if self.issuer.native().is_none() {
+                return Ok(None);
+            }
+            let state = self.agents.state(agent).await?;
+            let authority = agent_authority(
+                &self.issuer,
+                &self.admission,
+                &state.path,
+                &state.volumes,
+                &[],
+            )
+            .await
+            .map_err(turn)?;
+            let clock = ObservationClock(self.clock.clone());
+            let (resource, credential, _) = self
+                .volumes
+                .observation_credential(
+                    &authority,
+                    &state.path,
+                    &authority.private.volume,
+                    &clock,
+                    None,
+                )
+                .await
+                .map_err(turn)?;
+            Ok(Some((resource, credential)))
+        })
     }
 
     /// Query current project heads through the selected agent's original grant
@@ -1184,6 +1226,16 @@ where
     ) -> Result<RootSubmission, Error> {
         self.submit_root(self.prepare_root(intent, request).await?)
             .await
+    }
+}
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+struct ObservationClock(Arc<dyn Clock>);
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+impl acyclic_stream::UnixMillisClock for ObservationClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.now_unix_ms()
     }
 }
 

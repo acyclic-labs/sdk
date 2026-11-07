@@ -98,6 +98,12 @@ The [settlement terminal control](settlement-terminal/README.md) joins the
 actual serving runtime's completion event to raw actor-checkpoint observation.
 It drops the model dispatch producer and requires the original error without
 settling recoverable input; removing the join must fail the unchanged oracle.
+
+The [native EOF refusal control](native-eof-refusal/README.md) withdraws the
+actual workspace directory while a native child and reply writer remain live.
+Restoring the production cancellation-only shutdown must leave that original
+process alive at the pre-drain assertion; the fixed path retains the original
+request refusal after physical retirement.
 The native spawn-brief end-to-end test still requires an original runtime
 diagnosis for its macOS timeout. This event-consumption control does not qualify
 its native projection or identify that timeout's cause. Increasing a timeout

@@ -24,10 +24,40 @@ pub fn check_native_readiness(input: &[u8]) {
     not(target_arch = "wasm32")
 ))]
 pub fn check_native_child_reference(input: &[u8]) {
+    use crate::agent::{AgentId, AgentPath};
+    use crate::local::host_owner::child;
     use crate::local::host_workspace::child_reference;
     use std::path::{Component, Path};
 
+    crate::agent::codec_fuzz::check(input);
+
+    let mut identity = [0; 16];
+    for (destination, source) in identity.iter_mut().zip(input) {
+        *destination = *source;
+    }
+    let parent = AgentPath::root(&AgentId::from_bytes(identity));
     if let Ok(reference) = std::str::from_utf8(input) {
+        for operation in ["diff", "merge", "discard"] {
+            let mut arguments = [operation.into(), reference.into()];
+            match crate::tools::resolve_child_branch(&parent, &mut arguments, child) {
+                Ok(Some(admitted)) => {
+                    assert!(admitted.is_child_of(&parent));
+                    assert_eq!(arguments[1], admitted.as_str());
+                }
+                Ok(None) | Err(crate::Error::Invalid(_)) => {}
+                Err(error) => panic!("child branch lost its invalid-input type: {error}"),
+            }
+        }
+        if reference.contains('/') {
+            match child(&parent, reference) {
+                Ok(admitted) => {
+                    assert_eq!(admitted.as_str(), reference);
+                    assert!(admitted.is_child_of(&parent));
+                }
+                Err(crate::Error::Invalid(_)) => {}
+                Err(error) => panic!("child path lost its invalid-input type: {error}"),
+            }
+        }
         match child_reference(reference) {
             Ok(()) => {
                 let mut components = Path::new(reference).components();
@@ -68,6 +98,44 @@ pub fn check_native_child_reference(input: &[u8]) {
         child_reference(&portable).is_ok(),
         "generated portable child component was refused"
     );
+    let admitted = child(&parent, &portable).expect("portable child must resolve");
+    assert!(admitted.is_child_of(&parent));
+    assert_eq!(
+        child(&parent, admitted.as_str()).expect("canonical child alias must resolve"),
+        admitted,
+        "local and canonical references must name the same child"
+    );
+    let grandchild = child(&admitted, &portable).expect("nested child must resolve");
+    for operation in ["diff", "merge", "discard"] {
+        for reference in [format!("agents/{portable}"), admitted.to_string()] {
+            let mut arguments = [operation.into(), reference];
+            assert_eq!(
+                crate::tools::resolve_child_branch(&parent, &mut arguments, child)
+                    .expect("child branch alias must resolve"),
+                Some(admitted.clone()),
+            );
+            assert_eq!(arguments[1], admitted.as_str());
+        }
+        for unrelated in [&parent, &grandchild] {
+            let mut arguments = [operation.into(), unrelated.to_string()];
+            assert!(
+                matches!(
+                    crate::tools::resolve_child_branch(&parent, &mut arguments, child),
+                    Err(crate::Error::Invalid(_))
+                ),
+                "a canonical branch bypassed direct-child ownership"
+            );
+        }
+    }
+    for unrelated in [&parent, &grandchild] {
+        assert!(
+            matches!(
+                child(&parent, unrelated.as_str()),
+                Err(crate::Error::Invalid(_))
+            ),
+            "a canonical non-child must be rejected before any storage access"
+        );
+    }
 }
 
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.

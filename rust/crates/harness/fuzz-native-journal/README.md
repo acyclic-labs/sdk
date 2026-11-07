@@ -46,7 +46,33 @@ the portable mount alphabet and bounds invalid-input diagnostics. A separate
 generator requires valid components to be admitted, so a reject-all parser
 cannot pass. Arbitrary input is not
 truncated; generated components obey the existing 255-byte filesystem bound.
-This checks reference syntax, not mount confinement or process lifetime.
+It also calls the production child resolver with generated local names and
+their canonical AgentPath aliases. Both must retain one identity; parent and
+grandchild paths must fail with an invalid-input classification before storage
+is involved. Arbitrary canonical input exercises the same direct-child check.
+This checks reference syntax and routing, not mount confinement or process lifetime.
+
+The same target invokes the retained agent codec oracle. Intent text has no
+independent name cap; the complete encoded frame remains the record writer's
+and reader's boundary. `maximum` is the original 255-byte request that exposed
+the former 128-byte intent cap. `intent-frame-overflow` is an explicitly
+authored 65,536-byte request, not an external response. The shared codec oracle
+preserves fitting identities exactly and requires typed refusal above the
+complete frame. `mutations/native_child_intent_cap.patch` restores the actual
+primitive cap; the unchanged oracle must fail. The persisted record shape and
+version are unchanged.
+
+The existing real actor control
+`agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects`
+also exercises long identity round trips and frame refusal, then drives the
+actual step and commit lowering with oversized approval and archive identities.
+Both must settle as a bounded failure before publishing any driver effect.
+`mutations/native_intent_frame_guard.patch` removes those production guards and
+must fail this unchanged control at unchecked effects. The independent
+`mutations/native_archive_frame_guard.patch` retains approval admission and
+removes only archive admission; the same control must fail to settle the turn.
+Run it with
+`cargo test -p acyclic-harness-core --features test-support --test main agent_model::slot_schedules::an_invalid_turn_fails_before_publishing_status_or_effects -- --exact`.
 
 The corpus contains explicitly authored user references, including `first`
 (the input used by the real-owner receipt control), parent/current paths,
@@ -56,6 +82,19 @@ patches remove parent refusal, force reject-all admission, and restore the
 original diagnostic that copied the entire rejected input. Each must fail
 the unchanged oracle at its corresponding assertion; none is a compiler
 failure control.
+
+The real-owner control
+`local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership`
+uses the production owner and native process custody for all three host adapters.
+Its local reference fills the portable 255-byte component.
+Local names and canonical paths retain one live process, replay retains the
+original prompt, cancellation physically retires that process, and archived
+sessions refuse spawn and send, including exact prompt replay. It also requires
+the parent's merge authority and rejects parent and grandchild coordination.
+The kept `mutations/native_child_canonical_alias.patch` removes canonical routing;
+`mutations/native_archived_prompt.patch` removes the prompt admission guard.
+Each restores its production defect and fails the same control. The native
+process is a shell fixture; this does not establish installed host CLI behavior.
 
 The native ready-queue control
 `local::host_process::children::framing::only_fired_registrations_reach_the_ready_queue`
@@ -195,3 +234,30 @@ restores the original error-as-withdrawal defect and must fail at
 forces actual directory scans and must fail at
 `named request observation scanned history`. These are component controls;
 original caller/owner cancellation and physical retirement remain separate.
+
+Native MCP input closure retires children before output drain through the shared
+provider close callback. The real owner control holds the reply writer, delivers
+EOF, and checks child process exit and original claim settlement before releasing
+the writer. It runs all three host adapters against the production workspace
+owner and actual shell-process custody; it does not qualify installed native
+CLIs. Each held write has one original release producer, including on a failed
+retirement observation. No timeout or periodic probe is used.
+
+```sh
+cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply -- --exact --nocapture
+```
+
+The retained `mutations/native_eof_retirement.patch` restores shutdown after
+serving returns instead of at provider close. The unchanged control must fail at
+`EOF left native children running before reply drain` and still release its
+original held writer.
+
+The same control also withdraws the actual checkout directory before EOF.
+The original control request then refuses while the original process remains
+live. Retirement must still finish before output release, and serving must
+retain the request's typed failure and operation identity. Restoring the
+directory permits ordinary owner cleanup. A refused settlement leaves its
+original claim available for recovery rather than reporting it as settled.
+`mutations/native_eof_refusal_retirement.patch` restores cancellation without
+the fallback through the existing physical process owner. It must fail at
+`original process must retire before reply drain` without a timeout.

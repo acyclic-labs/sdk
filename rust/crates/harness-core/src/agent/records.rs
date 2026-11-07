@@ -9,13 +9,12 @@ use super::{AgentId, AgentPath, Error};
 use crate::conversation::{FileRef, VolumeRef};
 use serde::{Deserialize, Serialize};
 
-/// Largest agent record. Every part of one is bounded (paths by
-/// [`super::MAX_DEPTH`], file and volume references by the conversation
-/// maxima, texts by their own limits), so every record a step builds is
-/// within this; `checkpoint`'s bound test checks each kind at its worst.
+/// Largest encoded agent record. Paths and references have their own bounds;
+/// caller-chosen intent text consumes the remaining frame. Writers and readers
+/// enforce the frame bound independently of field validation.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
-/// Largest intent identity.
-pub const MAX_INTENT_BYTES: usize = 128;
+/// Largest binding, principal or host name.
+pub const MAX_NAME_BYTES: usize = 128;
 /// Largest failure message carried in a record.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 /// Most volumes bound to one agent.
@@ -37,7 +36,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
 /// Version 13 uses named MessagePack values after a four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 13;
+/// Version 14 scopes status addresses by the agent's complete ancestry.
+pub const RECORD_VERSION: u32 = 14;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -123,6 +123,7 @@ pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Er
 }
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
+/// Text has no independent length limit; the record's encoded frame bounds it.
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
 )]
@@ -143,15 +144,10 @@ impl TryFrom<String> for IntentId {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Error> {
-        if !value.is_empty()
-            && value.len() <= MAX_INTENT_BYTES
-            && value.bytes().all(|byte| byte.is_ascii_graphic())
-        {
+        if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_graphic()) {
             Ok(Self(value))
         } else {
-            Err(Error::Record(
-                "intent id must be 1-128 printable ASCII bytes",
-            ))
+            Err(Error::Record("intent id must be nonempty printable ASCII"))
         }
     }
 }
@@ -582,7 +578,8 @@ pub struct StatusRecord {
     /// Inbox cursor consumed by that transition.
     pub cursor: u64,
     /// The agent's conversation length after that transition, committed
-    /// with it: the conversation stream exists once this is above zero.
+    /// with it: the first conversation append always publishes this creation
+    /// event, even when the phase is unchanged. The stream exists above zero.
     #[serde(default)]
     pub conversation: u64,
 }
@@ -662,7 +659,7 @@ pub(super) fn check_volumes<'a>(
 /// A name: a binding, principal or host. Like a label, it admits no control
 /// character, so its encoding is at most twice its length.
 pub(super) fn check_text(text: &str) -> Result<(), Error> {
-    if text.is_empty() || text.len() > MAX_INTENT_BYTES || text.chars().any(char::is_control) {
+    if text.is_empty() || text.len() > MAX_NAME_BYTES || text.chars().any(char::is_control) {
         return Err(Error::Record(
             "name must be 1-128 bytes without control characters",
         ));

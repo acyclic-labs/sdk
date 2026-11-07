@@ -147,6 +147,38 @@ pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
     TurnEffect::child(parent, &intent).map_err(agent)
 }
 
+/// Resolves the child operand of diff, merge or discard exactly once. File
+/// operands (including `add agents/file`) retain their ordinary path meaning.
+/// The driver supplies its existing child derivation; the repository key is
+/// always the complete canonical address, including the owning ancestry.
+/// Both local names and canonical addresses must name a direct child.
+pub fn resolve_child_branch(
+    parent: &AgentPath,
+    arguments: &mut [String],
+    resolve: fn(&AgentPath, &str) -> Result<AgentPath>,
+) -> Result<Option<AgentPath>> {
+    let [command, branch] = arguments else {
+        return Ok(None);
+    };
+    if !matches!(command.as_str(), "diff" | "merge" | "discard") {
+        return Ok(None);
+    }
+    let child = if let Some(name) = branch.strip_prefix("agents/") {
+        resolve(parent, name)?
+    } else if branch.starts_with("harness/agents/") {
+        AgentPath::try_from(branch.clone()).map_err(agent)?
+    } else {
+        return Ok(None);
+    };
+    if !child.is_child_of(parent) {
+        return Err(Error::Invalid(
+            "only direct children can be coordinated; ask the owning parent".into(),
+        ));
+    }
+    *branch = child.as_str().to_owned();
+    Ok(Some(child))
+}
+
 impl AgentTool {
     async fn run(
         &self,
@@ -173,9 +205,7 @@ impl AgentTool {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = IntentId::try_from(format!("{SPAWN}{}", input.name)) else {
-                    return Ok(rejected(
-                        "name must be short printable ASCII without spaces",
-                    ));
+                    return Ok(rejected("name must use printable ASCII without spaces"));
                 };
                 let Some((parent, templates)) = &turn.templates else {
                     return Ok(super::rejected_input(Error::Unsupported(

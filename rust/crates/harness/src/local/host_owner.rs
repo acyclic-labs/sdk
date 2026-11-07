@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod agents;
 mod events;
 mod sessions;
+pub(crate) use agents::child;
 /// Exercises the production native session storage codecs.
 #[cfg(feature = "test-support")]
 pub use agents::validation::check_native_session_storage;
@@ -335,14 +336,9 @@ impl HostWorkspaceOwner {
         task: &AgentPath,
         command: &str,
     ) -> Result<Value> {
-        let parsed = crate::tools::parse_fs_command(command)?;
-        let merged = match parsed.arguments.as_slice() {
-            [name, reference] if name == "merge" => reference
-                .strip_prefix("agents/")
-                .map(|reference| agents::child(task, reference))
-                .transpose()?,
-            _ => None,
-        };
+        let mut parsed = crate::tools::parse_fs_command(command)?;
+        let child = crate::tools::resolve_child_branch(task, &mut parsed.arguments, agents::child)?;
+        let merged = child.filter(|_| parsed.arguments[0] == "merge");
         // A merge reads its child's settled project: it holds both locks.
         let changed = [Some(task.clone()), merged.clone()];
         let _locks = self
@@ -351,7 +347,12 @@ impl HostWorkspaceOwner {
             .await;
         self.attach(task).await?;
         if let Some(child) = &merged {
-            let (state, session) = self.native.session(child).await?;
+            let (state, session) = self.native.session(child).await.map_err(|error| match error {
+                Error::NotFound(_) => Error::Invalid(
+                    "only a parent can merge its direct child's changes; return your result to your parent, which runs acyclic fs merge agents/<reference>".into(),
+                ),
+                error => error,
+            })?;
             if session.claimed().is_some() || session.pending(&state) > 0 {
                 return Err(Error::Conflict(
                     "native session is still running; wait for its captured result before merging"

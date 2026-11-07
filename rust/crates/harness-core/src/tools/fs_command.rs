@@ -12,7 +12,12 @@ pub struct FsCommand {
 
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
-        [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),
+        [command, branch]
+            if command == "diff"
+                && (branch.starts_with("agents/") || branch.starts_with("harness/agents/")) =>
+        {
+            Some(branch)
+        }
         _ => None,
     }
 }
@@ -75,10 +80,22 @@ mod tests {
         fn agent_diff_selects_only_its_exact_operand(
             command in prop::sample::select(vec!["diff", "show", "merge"]),
             agent in any::<bool>(),
+            canonical in any::<bool>(),
             name in "[a-z0-9_-]{1,32}",
             extra in prop::collection::vec(".{0,16}", 0..3),
         ) {
-            let branch = if agent { format!("agents/{name}") } else { name };
+            let branch = if agent {
+                if canonical {
+                    let parent = crate::agent::AgentPath::root(
+                        &crate::agent::AgentId::from_bytes([1; 16]),
+                    );
+                    crate::tools::spawned_child(&parent, &name).unwrap().to_string()
+                } else {
+                    format!("agents/{name}")
+                }
+            } else {
+                name
+            };
             let mut args = vec![command.to_owned(), branch.clone()];
             args.extend(extra);
             let selected = agent_diff(&args);

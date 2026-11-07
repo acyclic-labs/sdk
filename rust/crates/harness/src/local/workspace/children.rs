@@ -209,15 +209,14 @@ impl LocalWorkspace {
         &self,
         agent: &crate::agent::AgentPath,
         volumes: &[crate::agent::VolumeBinding],
-        arguments: &[String],
+        arguments: &mut [String],
     ) -> Result<()> {
-        let names: Vec<&str> = arguments
-            .iter()
-            .filter_map(|argument| argument.strip_prefix("agents/"))
-            .collect();
-        if names.is_empty() {
+        let Some(child) =
+            crate::tools::resolve_child_branch(agent, arguments, crate::tools::spawned_child)?
+        else {
             return Ok(());
-        }
+        };
+        let branch = child.as_str();
         let repository = self.view().workspace().id();
         let mut project = None;
         for binding in volumes {
@@ -239,37 +238,38 @@ impl LocalWorkspace {
             .map(|state| state.branches)
             .unwrap_or_default();
         let cancellation = acyclic_fs::CancellationToken::new();
-        for name in names {
-            // A name no spawn could carry names no child; git reports it.
-            let Ok(child) = crate::tools::spawned_child(agent, name) else {
-                continue;
-            };
-            let volume = crate::filesystem::spawned_binding(&child, project).map_err(storage)?;
-            let id = self
-                .filesystem
-                .workspace_id(&volume.storage_name(&mut None)?)
-                .map_err(storage)?;
-            let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
-            let forked = self
-                .store
-                .load_lazy_workspace(id, &mut accounting)
-                .await
-                .map_err(storage)?
-                .is_some_and(|state| {
-                    state.fork_origin.is_some() && state.parent_workspace_id == Some(repository)
-                });
-            let branch = format!("agents/{name}");
-            if !forked || registered.contains_key(&branch) {
-                continue;
-            }
-            // Bound first, so the branch names a workspace that serves reads;
-            // a stop between the two steps repeats both idempotently.
-            self.spawned_project_view(&volume).await?;
-            acyclic_fs::GitCompatRepository::new(repository, self.store.clone())
-                .register_branch_workspace(branch, id, None, false)
-                .await
-                .map_err(storage)?;
+        let volume = crate::filesystem::spawned_binding(&child, project).map_err(storage)?;
+        let id = self
+            .filesystem
+            .workspace_id(&volume.storage_name(&mut None)?)
+            .map_err(storage)?;
+        let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let forked = self
+            .store
+            .load_lazy_workspace(id, &mut accounting)
+            .await
+            .map_err(storage)?
+            .is_some_and(|state| {
+                state.fork_origin.is_some() && state.parent_workspace_id == Some(repository)
+            });
+        if !forked {
+            return Ok(());
         }
+        if let Some(existing) = registered.get(branch) {
+            if existing.workspace_id != id {
+                return Err(Error::Conflict(
+                    "child branch belongs to another workspace".into(),
+                ));
+            }
+            return Ok(());
+        }
+        // Bound first, so the branch names a workspace that serves reads;
+        // a stop between the two steps repeats both idempotently.
+        self.spawned_project_view(&volume).await?;
+        acyclic_fs::GitCompatRepository::new(repository, self.store.clone())
+            .register_branch_workspace(branch, id, None, false)
+            .await
+            .map_err(storage)?;
         Ok(())
     }
 }
