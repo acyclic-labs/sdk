@@ -579,6 +579,48 @@ mod tests {
         inputs
     }
 
+    // Find the admitted boundary through the production encoder, retaining
+    // each original record's other maximum-width fields.
+    fn largest_intent(record: InboxRecord) -> InboxRecord {
+        let mut value = serde_json::to_value(&record).expect("record fields");
+        let Some(fields) = value
+            .as_object_mut()
+            .and_then(|record| record.values_mut().next())
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return record;
+        };
+        let Some(identity) = fields.get_mut("id") else {
+            return record;
+        };
+        if !identity.is_string() {
+            return record;
+        }
+        let mut low = 1;
+        let mut high = MAX_RECORD_BYTES + 1;
+        while low + 1 < high {
+            let middle = low + (high - low) / 2;
+            value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] =
+                "a".repeat(middle).into();
+            let candidate: InboxRecord =
+                serde_json::from_value(value.clone()).expect("intent fields");
+            if candidate.encode().is_ok() {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(high).into();
+        assert!(
+            serde_json::from_value::<InboxRecord>(value.clone())
+                .unwrap()
+                .encode()
+                .is_err()
+        );
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(low).into();
+        serde_json::from_value(value).expect("admitted intent")
+    }
+
     #[test]
     fn bounded_record_fields_and_settled_checkpoints_fit_their_frames() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
@@ -634,7 +676,15 @@ mod tests {
             .encode()
             .expect("a status fits");
         }
-        for input in turn_inputs() {
+        let mut inputs = vec![TurnInput::Brief {
+            brief: Box::new(file()),
+        }];
+        for record in inbox_records() {
+            let record = largest_intent(record);
+            record.encode().expect("original inbox admission");
+            inputs.extend(crate::agent::input::input(0, record).map(|queued| queued.input));
+        }
+        for input in inputs {
             ConversationEntry {
                 inbox: u64::MAX,
                 input,
