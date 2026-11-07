@@ -201,52 +201,49 @@ impl StreamProvider for LocalStream {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        crate::erase_provider_future(|| async {
-            acyclic_observability::async_operation!(
-                "acyclic.stream.follow",
-                StreamError::code,
-                acyclic_native_runtime::obs::OperationSpan::new,
-                async {
-                    let crate::FollowRequest {
+        acyclic_observability::async_operation!(
+            "acyclic.stream.follow",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let crate::FollowRequest {
+                    path,
+                    from,
+                    preceding,
+                    filter,
+                    progress,
+                    when_absent,
+                    at_least,
+                    bootstrap_head,
+                    until,
+                } = request;
+                // Parks before any visibility guard, so no writer waits on a parked read.
+                self.inner.provider.revisions.wait(&at_least).await?;
+                if progress {
+                    self.progress_from(
                         path,
                         from,
                         preceding,
-                        filter,
-                        progress,
                         when_absent,
-                        at_least,
+                        filter,
                         bootstrap_head,
                         until,
-                    } = request;
-                    // Parks before any visibility guard, so no writer waits on a parked read.
-                    self.inner.provider.revisions.wait(&at_least).await?;
-                    if progress {
-                        self.progress_from(
-                            path,
-                            from,
-                            preceding,
-                            when_absent,
-                            filter,
-                            bootstrap_head,
-                            until,
-                        )
-                        .await
-                    } else {
-                        self.follow_from(
-                            path,
-                            from,
-                            preceding,
-                            when_absent,
-                            filter,
-                            bootstrap_head,
-                            until,
-                        )
-                        .await
-                    }
+                    )
+                    .await
+                } else {
+                    self.follow_from(
+                        path,
+                        from,
+                        preceding,
+                        when_absent,
+                        filter,
+                        bootstrap_head,
+                        until,
+                    )
+                    .await
                 }
-            )
-        })
-        .await
+            }
+        )
     }
 
     async fn read_commit(
