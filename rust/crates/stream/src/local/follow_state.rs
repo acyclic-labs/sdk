@@ -17,12 +17,14 @@ impl crate::snapshot::Snapshot for Box<FollowState> {
         let state = &mut **self;
         state
             .provider
-            .accepted_snapshot(state.provider.inner.provider.next_checked_record(
-                &state.path,
-                &mut state.cursor,
-                &mut state.anchor,
-                &state.filter,
-            ))
+            .accepted_snapshot(|| {
+                state.provider.inner.provider.next_checked_record(
+                    &state.path,
+                    &mut state.cursor,
+                    &mut state.anchor,
+                    &state.filter,
+                )
+            })
             .await?
     }
 }

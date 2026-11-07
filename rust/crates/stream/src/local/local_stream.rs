@@ -727,7 +727,10 @@ impl LocalStream {
     }
 
     /// Observes accepted publications without joining their durability wait.
-    async fn accepted<T>(&self, read: impl Future<Output = T> + Send) -> Result<T, StreamError> {
+    async fn accepted<T, F>(&self, read: impl FnOnce() -> F + Send) -> Result<T, StreamError>
+    where
+        F: Future<Output = T> + Send,
+    {
         let read = self.accepted_snapshot(read);
         #[cfg(feature = "test-support")]
         return acyclic_native_runtime::testing::observe_read(read).await;
@@ -737,22 +740,28 @@ impl LocalStream {
 
     // Snapshot operations have no asynchronous acknowledgement after mutation.
     // The shared stream driver owns observation outside its cancellable probe.
-    fn accepted_snapshot<'a, T: 'a>(
+    fn accepted_snapshot<'a, T: 'a, F>(
         &'a self,
-        read: impl Future<Output = T> + Send + 'a,
-    ) -> crate::BoxProviderFuture<'a, Result<T, StreamError>> {
-        crate::erase_provider_future(|| async {
-            self.check_available()?;
-            let mut failed = self.inner.failed.subscribe();
-            let read = std::pin::pin!(async {
-                let _visibility = self.inner.publication.read().await;
+        read: impl FnOnce() -> F + Send + 'a,
+    ) -> crate::BoxProviderFuture<'a, Result<T, StreamError>>
+    where
+        F: Future<Output = T> + Send + 'a,
+    {
+        crate::erase_provider_future(|| {
+            let read = read();
+            async move {
                 self.check_available()?;
-                Ok(read.await)
-            });
-            let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
-            match futures::future::select(unavailable, read).await {
-                futures::future::Either::Left((error, _)) => Err(error),
-                futures::future::Either::Right((result, _)) => result,
+                let mut failed = self.inner.failed.subscribe();
+                let read = std::pin::pin!(async {
+                    let _visibility = self.inner.publication.read().await;
+                    self.check_available()?;
+                    Ok(read.await)
+                });
+                let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+                match futures::future::select(unavailable, read).await {
+                    futures::future::Either::Left((error, _)) => Err(error),
+                    futures::future::Either::Right((result, _)) => result,
+                }
             }
         })
     }

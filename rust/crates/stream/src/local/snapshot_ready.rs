@@ -99,13 +99,16 @@ async fn records(
                             .await
                     }
                     BaselineProvider::Local(provider) => {
+                        let filter = crate::FollowFilter::default();
                         provider
-                            .accepted(provider.inner.provider.next_checked_record(
-                                &path,
-                                &mut cursor,
-                                &mut anchor,
-                                &crate::FollowFilter::default(),
-                            ))
+                            .accepted(|| {
+                                provider.inner.provider.next_checked_record(
+                                    &path,
+                                    &mut cursor,
+                                    &mut anchor,
+                                    &filter,
+                                )
+                            })
                             .await?
                     }
                 }
