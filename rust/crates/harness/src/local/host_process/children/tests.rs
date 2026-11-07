@@ -451,7 +451,13 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
             let plan = source
                 .join_into(&target)
                 .git_metadata()
-                .plan_at(&theirs, &ours, work, &cancel)
+                .plan_for_replay_at(
+                    &theirs,
+                    &ours,
+                    acyclic_fs::IdempotencyKey::from_bytes(pending.id.operation_id().into_bytes()),
+                    work,
+                    &cancel,
+                )
                 .await?
                 .value;
             let ancestor = acyclic_fs::WorkspaceResolver::resolve(
@@ -467,6 +473,8 @@ pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Resul
                 for path in ["/left.txt", "/nested.txt", "/right.txt"] {
                     let entry = generation.stat(path, work, &cancel).await;
                     eprintln!("native {host} original merge {side} {path}: {entry:?}");
+                    let content = generation.read(path, 64, work, &cancel).await;
+                    eprintln!("native {host} original merge {side} {path} content: {content:?}");
                 }
             }
             Ok(())
