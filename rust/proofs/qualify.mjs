@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "system-clock-runtime-retirement": [
+    "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
+    "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
+    "wall clock retained a retired Tokio timer driver", [],
+  ],
   "ready-alarm-progress": [
     "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
     "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
