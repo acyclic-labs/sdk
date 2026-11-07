@@ -1,16 +1,16 @@
 diff --git a/rust/crates/stream/src/postgres.rs b/rust/crates/stream/src/postgres.rs
-index 608d83b7f84..f400038f232 100644
+index 4cce9812b73..2326daf880a 100644
 --- a/rust/crates/stream/src/postgres.rs
 +++ b/rust/crates/stream/src/postgres.rs
-@@ -333,7 +333,6 @@ impl PostgresStream {
+@@ -330,7 +330,6 @@ impl PostgresStream {
+             Ok(command) => command,
              Err(error) => return completion.finish(Err(error), StreamError::code),
          };
-         self.check()?;
 -        let mut failure = self.inner.failure.subscribe();
          let provider = self.clone();
          // This one exact publication retains custody through caller cancellation.
          let publication = tokio::spawn(span.scope(completion.observe_output(
-@@ -358,7 +357,6 @@ impl PostgresStream {
+@@ -355,7 +354,6 @@ impl PostgresStream {
          tokio::select! {
              biased;
              result = publication => result.map_err(unavailable)?,

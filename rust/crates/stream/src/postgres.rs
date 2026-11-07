@@ -258,12 +258,7 @@ impl PostgresStream {
                         return;
                     };
                     let mut replica = provider.inner.session.lock().await;
-                    if replica.is_failed() {
-                        Err(StreamError::Unavailable)
-                    } else {
-                        let cursor = replica.cursor;
-                        Ok(replica.journal.changed(cursor))
-                    }
+                    replica.changed()
                 };
                 let result = match changed {
                     Ok(changed) => changed.await,
@@ -328,11 +323,13 @@ impl PostgresStream {
             }
         };
         let completion = acyclic_observability::Completion::new(&span);
-        let command = match command.validated() {
+        let command = match command
+            .validated()
+            .and_then(|command| self.check().map(|()| command))
+        {
             Ok(command) => command,
             Err(error) => return completion.finish(Err(error), StreamError::code),
         };
-        self.check()?;
         let mut failure = self.inner.failure.subscribe();
         let provider = self.clone();
         // This one exact publication retains custody through caller cancellation.

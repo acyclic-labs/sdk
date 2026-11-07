@@ -1,8 +1,8 @@
 diff --git a/rust/crates/stream/src/postgres.rs b/rust/crates/stream/src/postgres.rs
-index 608d83b7f84..bbb7ecc9f39 100644
+index 4cce9812b73..b11372d7cd0 100644
 --- a/rust/crates/stream/src/postgres.rs
 +++ b/rust/crates/stream/src/postgres.rs
-@@ -300,15 +300,8 @@ impl PostgresStream {
+@@ -295,15 +295,8 @@ impl PostgresStream {
  
      async fn refresh(&self) -> Result<(), StreamError> {
          self.check()?;

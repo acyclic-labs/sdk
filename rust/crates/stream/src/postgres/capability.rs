@@ -5,7 +5,7 @@
 //! and include `%a` in `log_line_prefix` when collecting those observations.
 
 use super::*;
-use crate::replicated::ReplayObserver;
+use crate::replicated::{JournalNotifications as _, ReplayObserver};
 use futures::FutureExt as _;
 
 async fn append(provider: &PostgresStream, path: &str) -> Result<(), StreamError> {

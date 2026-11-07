@@ -58,6 +58,15 @@ fn cancellation(broken: bool) {
             1,
             "cancellation removed another interest's publication"
         );
+        let mut next = Box::pin(kept.next(async || Ok(Some(()))));
+        assert!(
+            matches!(
+                next.as_mut().poll(&mut Context::from_waker(&wake)),
+                std::task::Poll::Ready(Ok(()))
+            ),
+            "cancellation removed another interest's publication"
+        );
+        drop(next);
         drop(kept);
         assert!(registry.entries.lock().unwrap().is_empty());
     });

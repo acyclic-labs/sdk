@@ -126,6 +126,13 @@ pub(crate) trait CommandJournal: ProviderPlatform {
     ) -> impl Future<Output = Result<JournalPage, StreamError>> + ProviderTask;
 }
 
+/// Journal notifications for replicas refreshed by an independent writer.
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub(crate) trait JournalNotifications: CommandJournal {
+    /// Registers atomically against `after`; an already advanced head is ready.
+    fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
+}
+
 pub(crate) trait ReplayObserver: ProviderPlatform {
     fn observe<'a>(
         &'a mut self,
@@ -354,6 +361,17 @@ impl<J: CommandJournal> Replicated<J> {
             self.stale = false;
         }
         result
+    }
+
+    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+    pub(crate) fn changed(
+        &mut self,
+    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError>
+    where
+        J: JournalNotifications,
+    {
+        self.check()?;
+        Ok(self.journal.changed(self.cursor))
     }
 
     #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
