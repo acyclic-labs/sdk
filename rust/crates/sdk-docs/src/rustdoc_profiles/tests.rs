@@ -245,6 +245,10 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             stderr.contains("profile-owner compiler diagnostic witness"),
             "successful compiler diagnostics must reach the producer's stderr: {stderr}"
         );
+        assert!(
+            stderr.contains("scenario compiler diagnostic witness"),
+            "successful scenario compiler diagnostics must reach the producer's stderr: {stderr}"
+        );
         return;
     }
     crate::with_rustdoc_cache(|| {
@@ -403,6 +407,44 @@ fn actual_cargo_resolves_renamed_dependency_feature_expressions() {
             2,
             "all profiles share one producer and target discovery"
         );
+        let scenario_root = root.join("rust/crates/scenario-owner");
+        fs::create_dir_all(scenario_root.join("examples")).unwrap();
+        fs::write(
+            scenario_root.join("Cargo.toml"),
+            "[package]\nname='scenario-owner'\nversion='0.1.0'\nedition='2021'\n[workspace]\n",
+        )
+        .unwrap();
+        let scenario_source = scenario_root.join("examples/diagnostic.rs");
+        fs::write(
+            &scenario_source,
+            "#[deprecated(note=\"scenario compiler diagnostic witness\")] fn witness() {}\nfn main() { witness(); }\n",
+        )
+        .unwrap();
+        assert!(
+            Command::new(&cargo)
+                .args(["generate-lockfile", "--offline", "--manifest-path"])
+                .arg(scenario_root.join("Cargo.toml"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        let source = crate::scenarios::ScenarioSource {
+            scenario: crate::scenarios::Scenario {
+                id: "scenario/compiler-diagnostics",
+                family: "scenario-owner",
+                package: "scenario-owner",
+                example: "diagnostic",
+                features: &[],
+                ..crate::scenarios::SCENARIOS[0]
+            },
+            source_sha256: String::new(),
+            source_files: vec![scenario_source.clone()],
+        };
+        crate::scenarios::compile_all(root, std::slice::from_ref(&source), Some(&cargo)).unwrap();
+        fs::write(&scenario_source, "fn main() { missing_symbol(); }\n").unwrap();
+        let failure = crate::scenarios::compile_all(root, &[source], Some(&cargo)).unwrap_err();
+        assert!(matches!(failure, crate::scenarios::Error::Invalid(message)
+            if message.starts_with("scenario scenario/compiler-diagnostics failed to compile:")));
     });
 }
 
