@@ -2883,50 +2883,13 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
     Ok(())
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn a_local_root_left_open_is_flushed_whole_on_reopen()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let open = async || crate::LocalMedium::open(root.path(), Default::default(), None).await;
-    let body = OwnedBytes::from(vec![4; 32]);
-    let store = Store::new(open().await?);
-    store
-        .account(b"account")?
-        .put(body.clone(), Vec::new())
-        .await?;
-    drop(store);
-    // A clean close flushed everything and cleared the marker.
-    let marker = root.path().join("OPEN");
-    assert!(!marker.exists());
-    // As a close that never ran leaves it.
-    std::fs::write(&marker, b"")?;
-    // A clean close before the store repaired the root keeps it unclean.
-    let unrepaired = open().await?;
-    assert!(unrepaired.recovered());
-    drop(unrepaired);
-    assert!(marker.exists());
-    let reopened = Store::new(open().await?);
-    assert!(reopened.medium().recovered());
-    let object = reopened
-        .account(b"account")?
-        .get(Digest::of(&body), ByteRange::FULL, 32)
-        .await?;
-    assert_eq!(object.body(), &body);
-    // Its repair settled the root, so this close clears the marker.
-    assert!(!reopened.medium().recovered());
-    drop(reopened);
-    assert!(!marker.exists());
-    Ok(())
-}
-
 #[cfg(all(
     feature = "local",
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
 #[tokio::test]
-async fn a_local_root_closes_only_after_its_last_accepted_write()
+async fn a_dropped_root_stays_owned_until_its_last_accepted_write()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::testing::Schedule;
     use std::sync::atomic::AtomicBool;
@@ -2954,8 +2917,8 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
     });
     let boundary = schedule
         .scope(async {
-            // Control: a root with nothing in flight reopens at once.
-            drop(open().await?);
+            // Control: an explicit close releases a clean root at once.
+            assert_eq!(open().await?.close().await?, crate::LocalClose::Released);
             let medium = open().await?;
             holding.store(true, Ordering::SeqCst);
             let mut write = Box::pin(medium.create("k/key", OwnedBytes::from(vec![1; 8])));
@@ -2963,7 +2926,7 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
                 boundary = held => boundary?,
                 _ = &mut write => return Err::<_, Box<dyn std::error::Error>>("unheld".into()),
             };
-            // The put is cancelled with its write accepted, and its owner closes.
+            // The put is cancelled with its write accepted, and its caller drops.
             drop(write);
             drop(medium);
             assert!(matches!(
@@ -2975,9 +2938,12 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
         .await?;
     boundary.release();
     schedule.drained().await;
-    // The write done, the root closed clean, the write flushed with it.
+    // Physical completion releases the lock without an unobserved flush.
     let reopened = schedule.scope(open()).await?;
-    assert!(!reopened.recovered());
+    assert!(
+        reopened.recovered(),
+        "accepted write bypassed recovery on Drop"
+    );
     assert!(reopened.read("k/key", None).await?.is_some());
     drop(reopened);
     driver.abort();

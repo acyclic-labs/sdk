@@ -134,6 +134,11 @@ async fn owned_close_reports_physical_completion_and_failure()
     );
     let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
     assert!(medium.recovered(), "Drop bypassed original recovery");
+    // Even explicit close cannot certify a root before its repair settles.
+    assert_eq!(medium.close().await?, LocalClose::Released);
+    assert!(root.path().join(OPEN).exists());
+    let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    assert!(medium.recovered());
     let reopened = Store::new(medium).account(b"local")?;
     assert_eq!(
         reopened
@@ -144,6 +149,7 @@ async fn owned_close_reports_physical_completion_and_failure()
         b"committed"
     );
     assert_eq!(reopened.close().await?, LocalClose::Released);
+    assert!(!root.path().join(OPEN).exists());
 
     let root = tempfile::tempdir()?;
     let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
