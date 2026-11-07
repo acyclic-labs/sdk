@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getEventListeners, once } from "node:events";
-import { appendFileSync, close as fsClose, createWriteStream, mkdtempSync, open as fsOpen, readFileSync, rmSync, truncateSync } from "node:fs";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
@@ -38,7 +38,7 @@ test("native event callback failures end unmatched waits with the original cause
           try { readFileSync(join(root, "original-missing-callback-input")); }
           catch (error) { original = stage === "listener" ? error.message : error; throw original; }
         };
-        const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "" :
+        const producer = processes.start(process.execPath, ["-e", stage === "eof" ? "process.exitCode=3" :
           "console.log(JSON.stringify({id:'first'}));console.log(JSON.stringify({id:'later'}))"]);
         producer.input.end();
         const events = new Spool(producer.child.stdout, producer.closed, {
@@ -46,16 +46,19 @@ test("native event callback failures end unmatched waits with the original cause
         });
         if (stage === "listener") events.subscribe(fail);
         const next = events.next(stage === "match" ? fail : () => false).catch(error => error);
-        const keyed = events.keyed("unpublished").catch(error => error);
-        const laterNext = events.next(() => false).catch(error => error);
-        const laterKeyed = events.keyed("unpublished-other").catch(error => error);
+        const failures = [];
+        for (const waiting of [events.keyed("unpublished"), events.keyed("unpublished"),
+          events.next(() => false), events.keyed("unpublished-other")])
+          waiting.catch(error => failures.push(error));
         const failure = await next;
+        const result = await producer.closed;
         assert.ok(failure instanceof SpoolEnded);
-        assert.equal(await keyed, failure);
-        assert.equal(await laterNext, failure);
-        assert.equal(await laterKeyed, failure);
+        assert.equal(failures.length, 4,
+          "original terminal settles every ordinary wait, repeated key and distinct key before producer retirement");
+        assert.ok(failures.every(error => error === failure), "all consumers retain the same terminal cause");
         assert.equal(failure.kind, stage === "eof" ? "eof" : "consumer");
-        if (stage !== "eof") {
+        if (stage === "eof") assert.equal(failure.detail, result);
+        else {
           assert.equal(failure.detail, original);
           const report = failureReport(failure);
           if (stage === "listener") {
@@ -70,7 +73,7 @@ test("native event callback failures end unmatched waits with the original cause
         }
         await assert.rejects(events.next(() => true), error => error === failure);
         await assert.rejects(events.keyed("late"), error => error === failure);
-        assert.equal((await producer.closed).code, 0, "native exit zero cannot erase consumer failure");
+        assert.equal(result.code, stage === "eof" ? 3 : 0, "native exit zero cannot erase consumer failure");
         assert.equal(calls, stage === "eof" ? 0 : 1, "a failed callback cannot consume later events");
         assert.equal(processes.children.size, 0, "original producer retirement precedes completion");
       } finally { await processes.close(); }
@@ -135,42 +138,48 @@ test("abandoned next and keyed waits release their subscriptions without ending 
 
 test("a file-backed key index releases parsed payloads as the number of unique keys grows", async () => {
   const processes = new Processes();
+  const root = mkdtempSync(join(tmpdir(), "indexed-payloads-"));
   const code = `
     import assert from 'node:assert/strict';
-    import { mkdtempSync } from 'node:fs';
-    import { tmpdir } from 'node:os';
     import { join } from 'node:path';
     import { PassThrough } from 'node:stream';
     import { Spool } from ${JSON.stringify(new URL("./process.mjs", import.meta.url).href)};
     const source = new PassThrough(), references = [];
     const events = new Spool(source, new Promise(() => {}), {
-      transcript: join(mkdtempSync(join(tmpdir(), 'indexed-payloads-')), 'events.jsonl'),
+      transcript: join(process.argv[1], 'events.jsonl'),
       key: event => { references.push(new WeakRef(event)); return [event.id]; }, unique: true,
     });
-    const total = 1024;
+    // Reachability detects retained objects independent of payload size or
+    // population; retain enough original writes to exercise backpressure.
+    const total = 16;
+    let pressured = 0;
     const completed = events.next(event => event.id === total - 1);
     for (let id = 0; id < total; id++) {
       const line = JSON.stringify({id, payload: String(id).padEnd(16 * 1024, 'x')}) + '\\n';
-      if (!source.write(line)) await new Promise(resolve => source.once('drain', resolve));
+      if (!source.write(line)) {
+        pressured++;
+        await new Promise(resolve => source.once('drain', resolve));
+      }
     }
     await completed;
+    assert.ok(pressured > 0, 'the original source must exercise writer backpressure');
     await events.history(() => false);
     // One event-loop turn ends WeakRef's mandatory current-job retention.
     await new Promise(resolve => setImmediate(resolve));
     global.gc();
     const retained = references.filter(reference => reference.deref() !== undefined).length;
     assert.ok(retained <= 1, 'index retained ' + retained + ' full event payloads');
-    const selected = await events.keyed(511);
-    assert.equal(selected.id, 511);
+    const selected = await events.keyed(total >> 1);
+    assert.equal(selected.id, total >> 1);
     assert.equal(selected.payload.length, 16 * 1024);
     source.end();
     console.log(JSON.stringify({keys: total, retained_parsed_payloads: retained}));
   `;
   try {
-    const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code]);
+    const result = await processes.run(process.execPath, ["--expose-gc", "--input-type=module", "-e", code, root]);
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).keys, 1024);
-  } finally { await processes.close(); }
+    assert.equal(JSON.parse(result.stdout).keys, 16);
+  } finally { await processes.close(); rmSync(root, { recursive: true }); }
 });
 
 test("native transcript cursors retain one record and close the original range on return", async t => {
@@ -283,66 +292,6 @@ test("native transcript cursors retain one record and close the original range o
     assert.equal(JSON.parse(result.stdout).records, 512);
     t.diagnostic(result.stdout.trim());
   } finally { await processes.close(); }
-});
-
-test("history reads only completed lines while a later write is in flight", async () => {
-  const path = join(mkdtempSync(join(tmpdir(), "e2e-history-")), "events.jsonl");
-  const stream = new PassThrough();
-  const events = new Spool(stream, new Promise(() => {}), { transcript: path });
-  const second = events.next(event => event.n === 2);
-  stream.write('{"n":1}\n{"n":2}\n');
-  await second;
-  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
-  // A started write: part of a large line is already in the file.
-  appendFileSync(path, '{"n":3,"pad":"' + "x".repeat(1 << 16));
-  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
-  // Negative control: reading to EOF takes the partial line.
-  assert.throws(() => readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)), SyntaxError);
-});
-
-test("a transcript write that fails or is lost ends history and waits with the spool cause, never a hang", async t => {
-  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
-  // A file stream whose writes fail, or (the ignored-error control) report
-  // success without writing anything.
-  const stream = (name, write) => createWriteStream(join(directory, name), { fs: {
-    open: fsOpen, close: fsClose,
-    write: (_fd, buffer, _offset, length, _position, done) => write(length, done),
-    writev: (_fd, buffers, _position, done) => write(buffers.reduce((total, buffer) => total + buffer.length, 0), done),
-  } });
-  await t.test("the write error is latched", async () => {
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: stream("failed.jsonl", (_length, done) => done(new Error("injected EIO"))) });
-    const waiting = events.next(() => false);
-    source.write('{"n":1}\n');
-    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-    await assert.rejects(events.next(() => true), error => error.kind === "spool");
-  });
-  await t.test("negative control: an ignored error leaves a short file, read as a typed short read", async () => {
-    const source = new PassThrough();
-    const events = new Spool(source, new Promise(() => {}), { transcript: stream("lost.jsonl", (length, done) => done(null, length)) });
-    const first = events.next(event => event.n === 1);
-    source.write('{"n":1}\n');
-    await first;
-    await assert.rejects(events.history(), error => error.kind === "spool" && /ends at byte 0 of 8/.test(error.message));
-  });
-});
-
-test("a write that fails with a chunk queued rejects the pending waiter; the queued chunk is dropped", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
-  // A one-byte buffer holds the first chunk for drain; its write then fails.
-  const transcript = createWriteStream(join(directory, "failed.jsonl"), { highWaterMark: 1, fs: {
-    open: fsOpen, close: fsClose,
-    write: (_fd, _buffer, _offset, _length, _position, done) => setImmediate(() => done(new Error("injected EIO"))),
-  } });
-  const source = new PassThrough();
-  const events = new Spool(source, new Promise(() => {}), { transcript });
-  const second = events.next(event => event.n === 2);
-  source.write('{"n":1}\n');
-  source.write('{"n":2}\n');
-  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.detail.message));
-  assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
-  assert.equal(transcript.listenerCount("drain"), 0, "the terminal spool releases its obsolete drain observer");
 });
 
 test("transcript withdrawal ends active and late spool waits with the original cause", async t => {

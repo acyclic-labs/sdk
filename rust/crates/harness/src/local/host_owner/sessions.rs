@@ -121,8 +121,8 @@ impl HostWorkspaceOwner {
         action: SessionAction,
         next: bool,
     ) -> Result<Value> {
-        self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
+        self.attach(parent).await?;
         if let SessionAction::Spawn { prompt } = &action {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;
@@ -176,7 +176,7 @@ impl HostWorkspaceOwner {
                 if self.native.session(&child).await?.1.control == Control::Archive
                     && control != Control::Archive
                 {
-                    return Err(Error::Conflict("native session is archived".into()));
+                    return Err(Error::Conflict(agents::ARCHIVED.into()));
                 }
                 self.native
                     .request(&child, operation, &Event::Control { control })

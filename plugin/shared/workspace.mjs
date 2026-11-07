@@ -16,10 +16,11 @@ export function workspace(executable, cwd, action) {
   });
 }
 
-export async function nativeSession(executable, host, cwd, session, file = null) {
+export async function nativeSession(executable, host, cwd, session, file = null, onSelected) {
   const location = process.env.ACYCLIC_TASK
     ? {task: process.env.ACYCLIC_TASK, cwd}
     : await workspace(executable, cwd, {kind: "open", host, session});
+  onSelected?.(location);
   await workspace(executable, cwd, {kind: "hook", host, event: "NativeSession",
     input: {task: location.task, native_session: {id: session, file}}});
   return location;

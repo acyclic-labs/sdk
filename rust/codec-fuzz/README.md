@@ -131,6 +131,11 @@ bytes, including refusal and Unknown results, and must reject unknown/duplicate
 protobuf fields and preserve a non-200 Actors status. Its byte source is immediate;
 this exercises response admission without modeling a network or its failures.
 These selectors are not product formats.
+The retained `reply-bind-observation` capture also enters the public reply
+decoder on every input, then changes only its credential's base64 alphabet.
+`negative-controls/agent-observation-base64-admit-invalid.patch` removes that
+production alphabet check; replaying the same target must fail at
+`invalid base64 wire admitted`. Reverse the patch before ordinary validation.
 Every input also requires admission of the retained public `command-root` writer
 capture, so refusing all command frames cannot make the conditional oracles pass.
 The kept `negative-controls/agent-command-reject-all.patch` changes only the

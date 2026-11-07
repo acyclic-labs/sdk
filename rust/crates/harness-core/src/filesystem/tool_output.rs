@@ -1,5 +1,5 @@
-//! Live observation of one agent: its conversation and status streams and its
-//! tool output, `tools/` on its private volume.
+//! Live observation of an agent, or its hosted tree, and its tool output,
+//! `tools/` on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
 use acyclic_auth::{
@@ -9,13 +9,13 @@ use acyclic_auth::{
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
-/// A read-only observation of one agent: its conversation and status streams
+/// A read-only observation of one agent, or its hosted tree's streams,
 /// and its tool output, under one credential.
 pub struct AgentObservation {
     /// The `fs:/` resource of [`TOOL_OUTPUT`]; a turn's output is under
     /// `{resource}/{turn}`.
     pub resource: String,
-    /// Sealed credential to follow the agent's conversation and status and to
+    /// Sealed credential to observe the agent's streams and to
     /// list and read under `resource`, bound to the agent's audience; it lives
     /// no longer than the agent's scope and is revoked with it.
     pub credential: Vec<u8>,
@@ -29,8 +29,9 @@ pub struct AgentObservation {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
     /// Native enrollment derives an [`AgentObservation`] of `agent`, whose private volume is
     /// `volume`, from `authority`'s scope at `clock`'s time. With `calls`, the
-    /// credential also invokes that actor resource: the hosting server of
-    /// `agent`'s tree, so one credential drives and observes it.
+    /// credential also invokes that actor resource, the hosting server of
+    /// `agent`'s tree, and lists, reads and follows the tree's streams. The
+    /// tree's status namespace has the same ancestry and grant boundary.
     ///
     /// # Errors
     /// Fails unless that scope is `agent`'s and already grants listing and
@@ -44,83 +45,119 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
+        let (resource, credential, principal) = self
+            .observation_credential(authority, agent, volume, clock.as_ref(), calls)
+            .await?;
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
-        if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id_bytes())) {
-            return Err(Error::Unauthorized(
-                "an observation derives from the agent's own scope".into(),
-            ));
-        }
-        ContentGrant::verify_directory_read(
-            &authority.verifier,
-            &authority.scope,
-            volume,
-            TOOL_OUTPUT,
-            &mut None,
-        )?;
-        let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
-        let workspace = self.open(&reference, None).await?;
-        // A structured filesystem scope is only enforced by its compiled
-        // view, so prove it before minting: the derived credential may never
-        // reach a path or action the parent cannot. The parent must list and
-        // read all of `tools/`; the rest of the volume does not matter.
-        if let Some(label) =
-            crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
-        {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let io = PreparationIo::from_budget(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )?;
-            let view = super::access::access_view(
-                &workspace,
-                &authority.scope,
-                None,
-                super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
-                None,
-                &io,
-            )
-            .await?;
-            if !view.0.allows_subtree(
-                TOOL_OUTPUT,
-                &[
-                    acyclic_fs::access::Action::List,
-                    acyclic_fs::access::Action::Read,
-                ],
-                super::access::access_now()?,
-            ) {
-                return Err(Error::Unauthorized(
-                    "an observation needs list and read on all of the tool output".into(),
-                ));
-            }
-        }
-        let resource = acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
-            .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
-        let stream =
-            |path: std::result::Result<acyclic_stream::StreamPath, crate::agent::Error>| {
-                path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
-                    .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
-            };
-        let (conversation, status) = (stream(agent.conversation())?, stream(agent.status())?);
-        let follow: &[&str] = &["streams/follow"];
-        let read: &[&str] = &["fs/list", "fs/read"];
-        let invoke: &[&str] = &["actors/invoke"];
-        let mut grants = vec![
-            (conversation.as_str(), false, follow),
-            (status.as_str(), false, follow),
-            (resource.as_str(), true, read),
-        ];
-        if let Some(calls) = calls {
-            grants.push((calls, false, invoke));
-        }
-        let (credential, principal) =
-            issuer.resource_credential(&authority.scope, &grants, seconds(clock.as_ref()))?;
         Ok(AgentObservation {
             resource,
             credential,
             authority: Arc::new(session_authority(issuer, clock)?),
             principal,
+        })
+    }
+
+    /// Enrollment without constructing a second verifier for an existing
+    /// authenticated session. The caller retains its original command identity.
+    #[inline(never)]
+    pub(super) fn observation_credential<'a>(
+        &'a self,
+        authority: &'a AgentAuthority<'_>,
+        agent: &'a crate::agent::AgentPath,
+        volume: &'a VolumeRef,
+        clock: &'a dyn UnixMillisClock,
+        calls: Option<&'a str>,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(String, Vec<u8>, String)>> {
+        Box::pin(async move {
+            let issuer = authority.issuer.native().ok_or_else(|| {
+                Error::Invalid("client credential enrollment requires native custody".into())
+            })?;
+            if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id_bytes())) {
+                return Err(Error::Unauthorized(
+                    "an observation derives from the agent's own scope".into(),
+                ));
+            }
+            ContentGrant::verify_directory_read(
+                &authority.verifier,
+                &authority.scope,
+                volume,
+                TOOL_OUTPUT,
+                &mut None,
+            )?;
+            let reference = super::bounded_io::content_workspace(&self.provider, volume, None)?;
+            let workspace = self.open(&reference, None).await?;
+            // A structured filesystem scope is only enforced by its compiled
+            // view, so prove it before minting: the derived credential may never
+            // reach a path or action the parent cannot. The parent must list and
+            // read all of `tools/`; the rest of the volume does not matter.
+            if let Some(label) =
+                crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
+            {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let io = PreparationIo::from_budget(
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )?;
+                let view = super::access::access_view(
+                    &workspace,
+                    &authority.scope,
+                    None,
+                    super::access::capability_payload(Some(label), VolumeOperation::Read, &io)?,
+                    None,
+                    &io,
+                )
+                .await?;
+                if !view.0.allows_subtree(
+                    TOOL_OUTPUT,
+                    &[
+                        acyclic_fs::access::Action::List,
+                        acyclic_fs::access::Action::Read,
+                    ],
+                    super::access::access_now()?,
+                ) {
+                    return Err(Error::Unauthorized(
+                        "an observation needs list and read on all of the tool output".into(),
+                    ));
+                }
+            }
+            let resource =
+                acyclic_fs::session::resource(workspace.id().volume_id(), TOOL_OUTPUT)
+                    .map_err(|error| Error::Invalid(format!("tool output resource: {error}")))?;
+            let stream = |path: std::result::Result<
+                acyclic_stream::StreamPath,
+                crate::agent::Error,
+            >| {
+                path.map(|path| acyclic_stream::wire_codec::session::stream_resource(path.as_str()))
+                    .map_err(|error| Error::Invalid(format!("agent stream: {error}")))
+            };
+            let observed = stream(if calls.is_some() {
+                agent.inbox()
+            } else {
+                agent.conversation()
+            })?;
+            let status = stream(agent.status())?;
+            let follow: &[&str] = &["streams/follow"];
+            let observe: &[&str] = &["streams/list", "streams/read", "streams/follow"];
+            let read: &[&str] = &["fs/list", "fs/read"];
+            let invoke: &[&str] = &["actors/invoke"];
+            let grants = match calls {
+                Some(calls) => vec![
+                    (observed.as_str(), true, observe),
+                    (status.as_str(), true, observe),
+                    (resource.as_str(), true, read),
+                    (calls, false, invoke),
+                ],
+                None => vec![
+                    (observed.as_str(), false, follow),
+                    (status.as_str(), false, follow),
+                    (resource.as_str(), true, read),
+                ],
+            };
+            let (credential, principal) =
+                issuer.resource_credential(&authority.scope, &grants, seconds(clock))?;
+            Ok((resource, credential, principal))
         })
     }
 }

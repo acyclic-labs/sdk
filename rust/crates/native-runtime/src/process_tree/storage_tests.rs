@@ -80,6 +80,62 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
 }
 
 #[test]
+fn recording_refusal_cannot_extend_sealed_capture() {
+    let root = tempfile::tempdir().unwrap();
+    let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
+    let observer: Arc<dyn crate::NativeReadMeter> = original;
+    let mut slot = ProcessTreeStorage::new(&observer).unwrap();
+    let mut command = super::super::tests::command("partial", root.path());
+    command.stdout(ProcessStdio::null());
+    slot.spawn(&mut command, None).unwrap();
+    {
+        let mut io = slot.io(&observer).unwrap();
+        loop {
+            let mut ready = [0];
+            match io.read_stderr(&mut ready).unwrap() {
+                Some(1) => {
+                    assert_eq!(&ready, b"s");
+                    break;
+                }
+                Some(_) => panic!("original stderr producer ended before readiness"),
+                None => io.readiness().unwrap().0.block().into_result().unwrap(),
+            }
+        }
+        io.seal_output().unwrap();
+    }
+    {
+        let mut refused = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+        // Refuse recording the consuming transfer, after its native query.
+        refused.fail_recorded_operation = Some(2);
+        let refused: Arc<dyn crate::NativeReadMeter> = Arc::new(refused);
+        let expected = &b"stderr-before-stop"[1..];
+        let mut prefix = [0; 8];
+        assert!(slot.io(&refused).unwrap().read_stderr(&mut prefix).is_err());
+        assert_eq!(
+            &prefix,
+            &expected[..prefix.len()],
+            "the refused read physically consumed bytes"
+        );
+        let mut remaining = [0; 64];
+        let mut io = slot.io(&observer).unwrap();
+        assert_eq!(
+            io.read_stderr(&mut remaining).unwrap(),
+            Some(expected.len() - prefix.len())
+        );
+        assert_eq!(
+            &remaining[..expected.len() - prefix.len()],
+            &expected[prefix.len()..]
+        );
+        assert_eq!(
+            io.read_stderr(&mut remaining).unwrap(),
+            Some(0),
+            "a recording refusal cannot extend capture into the still-open pipe"
+        );
+    }
+    slot.terminate().unwrap();
+}
+
+#[test]
 fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
     let root = tempfile::tempdir().unwrap();
     let original = Arc::new(crate::tests::ReadBudgetMeter::new(256, 65536));

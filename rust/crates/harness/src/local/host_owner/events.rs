@@ -86,7 +86,7 @@ impl HostWorkspaceOwner {
             return Ok(json!({}));
         }
         Ok(
-            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Harness agent {agent}. Use Acyclic spawn/send/wait/archive for isolated sessions and acyclic fs merge agents/<ref> to merge. Native subagents retain their host behavior and are not harness forks.")}}),
+            json!({"hookSpecificOutput":{"hookEventName":event,"additionalContext":format!("Harness agent {agent}. Use Acyclic spawn/send/wait/archive for isolated sessions. A parent merges its direct child's captured changes with acyclic fs merge agents/<ref>. Return your own result to your parent; do not merge yourself. Native subagents retain their host behavior and are not harness forks.")}}),
         )
     }
 

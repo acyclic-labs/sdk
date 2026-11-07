@@ -5,13 +5,28 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PassThrough } from "node:stream";
 import { mock, test } from "bun:test";
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
 import {stagePiExtension} from './package.mjs';
 
 // Run this file in its own Bun process: only the harness request boundary is
 // stubbed. The child and its failed-spawn/pipe event ordering are native Node APIs.
 const native = { ...childProcess };
+
+// Open a native session emitted by the pinned CLI. The real session writer
+// and reader own custom-entry persistence; no model request is needed.
+function nativeSession(directory: string) {
+  const path = join(directory, "session.jsonl");
+  writeFileSync(path, readFileSync(new URL("./fixtures/native/pi.jsonl", import.meta.url)));
+  return SessionManager.open(path, directory, directory);
+}
+
+function assertBinding(session: SessionManager, task: string) {
+  const reopened = SessionManager.open(session.getSessionFile()!, session.getSessionDir(), session.getCwd());
+  assert.deepEqual(reopened.getEntries().filter(entry => entry.type === "custom")
+    .map(entry => [entry.customType, entry.data]), [["acyclic.agent.v1", {task}]]);
+  assert.deepEqual(reopened.buildSessionContext().messages, [], "identity must stay outside model context");
+}
 
 test("installed Pi failed spawn closes custody and shutdown without adjacent assets or an exit event", async () => {
   const directory = mkdtempSync(join(import.meta.dir, ".pi-bridge-"));
@@ -24,6 +39,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
   const hooks = new Map<string, (...args: any[]) => Promise<void>>();
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
   const events = createEventBus();
+  const sessionManager = nativeSession(directory);
   try {
     const recovery = "ACYCLIC_TEST_BINARY=/absolute/acyclic bun test --test-name-pattern 'installed Pi failed spawn' plugin/tests/hosts/pi-bridge.test.ts";
     const binary = process.env.ACYCLIC_TEST_BINARY;
@@ -67,10 +83,12 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
       },
     }));
     const { default: acyclic } = await import(pathToFileURL(path).href);
-    acyclic({ events, on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
+    acyclic({ events, appendEntry: sessionManager.appendCustomEntry.bind(sessionManager),
+      on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
-    const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
+    const ctx = { cwd: directory, sessionManager };
     await hooks.get("session_start")!({}, ctx);
+    assertBinding(sessionManager, "fixture-task");
     const cancelled = new AbortController(); cancelled.abort();
     await assert.rejects(tools.get("spawn")!.execute("cancelled", { reference: "child", prompt: "fixture" }, cancelled.signal), /cancelled/);
     assert.equal(spawns, 0, "cancelled dispatch must not allocate a native process");
@@ -112,6 +130,7 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
   const hooks = new Map<string, (...args: any[]) => Promise<void>>();
   const actions: Record<string, any>[] = [];
   const previous = process.env.ACYCLIC_TASK;
+  const sessionManager = nativeSession(directory);
   process.env.ACYCLIC_TASK = "managed-child";
   mock.module("node:child_process", () => ({ ...native,
     execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
@@ -130,10 +149,12 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
   try {
     const path = await stagePiExtension(directory);
     const { default: acyclic } = await import(pathToFileURL(path).href);
-    acyclic({on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
+    acyclic({appendEntry: sessionManager.appendCustomEntry.bind(sessionManager),
+      on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool() {}});
-    const ctx = {cwd: directory, sessionManager: {getSessionId: () => "fixture", getSessionFile: () => undefined}};
+    const ctx = {cwd: directory, sessionManager};
     await hooks.get("session_start")!({}, ctx);
+    assertBinding(sessionManager, "managed-child");
     await hooks.get("agent_end")!({}, ctx);
     await hooks.get("session_shutdown")!({}, ctx);
     assert.deepEqual(actions.map(action => [action.kind, action.host, action.event, action.input?.task]), [

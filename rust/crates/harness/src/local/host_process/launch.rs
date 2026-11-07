@@ -305,20 +305,25 @@ pub(super) fn child_input(host: &str, prompt: &str) -> Result<Vec<u8>> {
     Ok(input)
 }
 
-/// Runs `acyclic host HOST -- POLICY_ARGS`: the interactive native root under
-/// its validated policy, which every managed child inherits unchanged.
+/// Runs `acyclic host HOST [--headless] -- POLICY_ARGS` under the policy every
+/// managed child inherits. Headless roots use the same native event mode as
+/// managed children, with their input and output inherited from the caller.
 pub fn launch(args: &[String]) -> Result<()> {
     let host = args
         .first()
         .ok_or_else(|| invalid("host requires codex, claude-code, pi, opencode or agy"))?;
     let flags = args.get(1..).unwrap_or_default();
+    let (headless, flags) = match flags {
+        [mode, rest @ ..] if mode == "--headless" => (true, rest),
+        _ => (false, flags),
+    };
     let flags = match flags {
         [separator, rest @ ..] if separator == "--" => rest,
         _ => flags,
     };
     let cwd = std::env::current_dir().map_err(storage)?;
     let flags = parent_flags(host, flags, &cwd)?;
-    let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags)?;
+    let status = run_root_session(&cwd, host, OsStr::new(program(host)?), &flags, headless)?;
     if !status.success() {
         return Err(invalid(format!("native {host} exited {status}")));
     }

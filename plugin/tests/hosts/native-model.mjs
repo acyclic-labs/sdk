@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {toolOutcome} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
-import {nativeHost,nativeProvider,nativeProxy} from './native-host.mjs';
+import {codexSandboxConfig,nativeHost,nativeProvider,nativeProxy} from './native-host.mjs';
 
 const completionRecovery='node --test plugin/tests/hosts/native-completion.test.mjs';
 function nativeFailure(host,code,message,cause) {
@@ -204,7 +204,7 @@ export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,
    :['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model',model];
-  const policy=[...provider,
+  const policy=[...provider,...codexSandboxConfig,
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
   return {policy,args:[...policy,'exec',...(resume===undefined?[]:['resume',resume]),'--json',input?'-':prompt]};
  }
