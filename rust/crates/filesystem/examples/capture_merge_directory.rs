@@ -1,7 +1,7 @@
 //! Captures unchanged merge-directory writer output from a local deployment.
 
-use acyclic_fs::facade::{FileMetadata, MetadataField};
 use acyclic_fs::foundation::OperationId;
+use acyclic_fs::kernel::{FileMetadata, MetadataField};
 use acyclic_fs::workspace::{ApplyOptions, ForkOptions, MergeDirectorySection};
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, LocalOptions, OperationReceipt, PublicationPermit,
