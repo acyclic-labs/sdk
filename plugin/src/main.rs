@@ -286,7 +286,8 @@ fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
         return hook_failure(event, error);
     }
     // The native host ignores hook exit status. Its own invocation disposition
-    // carries refusal; Stop keeps the session open to expose the failed capture.
+    // carries refusal. Stop must not re-enter a failed PreInvocation; the root
+    // launcher retains the final capture error after the native process exits.
     let reason = format!(
         "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode plan"
     );
@@ -294,7 +295,7 @@ fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
         "PreInvocation" => {
             json!({"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":reason}}]})
         }
-        "Stop" => json!({"decision":"continue","reason":reason}),
+        "Stop" => json!({"decision":"stop","reason":reason}),
         _ => json!({"reason":reason}),
     }
 }
