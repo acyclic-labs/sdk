@@ -3,7 +3,10 @@ use acyclic_harness_tui::term::ScreenMode;
 
 fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, supported: bool) {
     let scene: Scene = (vec!["Z".into()], Some((3, 2)));
-    let expected = per_command(&[scene.clone()]).unwrap().concat().concat();
+    let expected = per_command(std::slice::from_ref(&scene))
+        .unwrap()
+        .concat()
+        .concat();
     let device = Device::default();
     let mut profile = caps(true);
     profile.modes.insert(1049, ModeState::Reset);
