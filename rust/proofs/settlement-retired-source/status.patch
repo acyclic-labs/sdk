@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness/src/local/observer.rs b/rust/crates/harness/src/local/observer.rs
+--- a/rust/crates/harness/src/local/observer.rs
++++ b/rust/crates/harness/src/local/observer.rs
+@@ -48,7 +48,6 @@
+     pub(super) fn belongs_to(&self, connection: &Connection) -> bool {
+         std::sync::Arc::ptr_eq(&self.connection.controls, &connection.controls)
+             && self.client.session().is_following(&self.conversation)
+-            && self.client.session().is_following(&self.status)
+     }
+ 
+     /// Observes `connection`'s root from conversation sequence `from` and
