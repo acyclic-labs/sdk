@@ -115,23 +115,18 @@ pub trait NativeStreamProvider: StreamProvider {
     /// A cached success skips the guard. Otherwise the guard runs once, outside
     /// publication locks; a changed canonical cut returns `PrefixNotRetained`
     /// without running the guard again. A fresh invocation may try a new cut.
-    fn native_commit_guarded<E, F, Fut>(
+    /// Callers with a typed guard use [`NativeStreamProviderExt::native_commit_with_guard`].
+    fn native_commit_guarded(
         &self,
         request: CommitRequest,
         deadline_unix_millis: Option<u64>,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        before: F,
-    ) -> NativeProviderFuture<'_, CommitOutcome, E>
-    where
-        Self: Sized,
-        E: From<StreamError> + Send + 'static,
-        F: FnMut() -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-    {
+        before: NativeCommitGuard,
+    ) -> NativeProviderFuture<'_, CommitOutcome, NativeCommitError> {
         let _ = (request, deadline_unix_millis, before);
         NativeProviderFuture::ready_observed(
             crate::native::span!("acyclic.stream.commit"),
-            Ok(Err(E::from(StreamError::Unsupported))),
+            Ok(Err(NativeCommitError::Stream(StreamError::Unsupported))),
             |_| "unsupported",
         )
     }
@@ -150,3 +145,83 @@ pub trait NativeStreamProvider: StreamProvider {
         )
     }
 }
+
+/// The owned guard a native Commit runs before its effect.
+///
+/// It is erased so the provider contract stays object safe: a caller's guard
+/// type never reaches a provider's type, and providers compose as
+/// `dyn NativeStreamProvider`. The guard is boxed once per Commit.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeCommitGuard =
+    Box<dyn FnMut() -> BoxProviderFuture<'static, Result<(), NativeCommitError>> + Send>;
+
+/// A guard's refusal, carried unchanged from the guard back to the caller
+/// that built it. Only [`NativeStreamProviderExt::native_commit_with_guard`] creates one.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct NativeGuardRefusal(Box<dyn std::any::Any + Send>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl std::fmt::Debug for NativeGuardRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeGuardRefusal")
+    }
+}
+
+/// Why a guarded native Commit failed.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+pub enum NativeCommitError {
+    /// The provider refused or failed the Commit.
+    Stream(StreamError),
+    /// The caller's guard refused before the effect.
+    Guard(NativeGuardRefusal),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl From<StreamError> for NativeCommitError {
+    fn from(error: StreamError) -> Self {
+        Self::Stream(error)
+    }
+}
+
+/// Typed guards over [`NativeStreamProvider::native_commit_guarded`].
+#[cfg(not(target_arch = "wasm32"))]
+pub trait NativeStreamProviderExt: NativeStreamProvider {
+    /// Runs a guarded native Commit with a typed guard and returns the guard's
+    /// own error unchanged. A refusal this guard did not raise is a provider
+    /// fault, reported as [`StreamError::InvalidResponse`].
+    fn native_commit_with_guard<E, F, Fut>(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        mut before: F,
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome, E>> + Send + '_
+    where
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
+        let guard: NativeCommitGuard = Box::new(move || {
+            let refusal = before();
+            Box::pin(async move {
+                refusal
+                    .await
+                    .map_err(|error| NativeCommitError::Guard(NativeGuardRefusal(Box::new(error))))
+            })
+        });
+        let commit = self.native_commit_guarded(request, deadline_unix_millis, meter, guard);
+        async move {
+            commit.await.map(|result| {
+                result.map_err(|error| match error {
+                    NativeCommitError::Stream(error) => E::from(error),
+                    NativeCommitError::Guard(NativeGuardRefusal(refusal)) => refusal
+                        .downcast::<E>()
+                        .map_or_else(|_| E::from(StreamError::InvalidResponse), |error| *error),
+                })
+            })
+        }
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: NativeStreamProvider + ?Sized> NativeStreamProviderExt for P {}

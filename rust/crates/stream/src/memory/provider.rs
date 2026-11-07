@@ -645,19 +645,13 @@ impl crate::NativeStreamProvider for MemoryStream {
         )
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_guarded<E, F, Fut>(
+    fn native_commit_guarded(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        before: F,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
-    where
-        Self: Sized,
-        E: From<StreamError> + Send + 'static,
-        F: FnMut() -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
-    {
+        before: crate::NativeCommitGuard,
+    ) -> crate::NativeProviderFuture<'_, CommitOutcome, crate::NativeCommitError> {
         self.guarded_commit(
             request,
             deadline,
