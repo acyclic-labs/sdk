@@ -197,6 +197,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) cleanup_cancelled: Option<Box<dyn Fn() + Send + Sync>>,
     /// Observes a completed original-ledger refund, including unwind cuts.
     credit_returned: Option<Box<dyn Fn(reservations::Credit) + Send + Sync>>,
+    /// Observes the original completed examination, including unwind cuts.
+    pub(super) examination_recorded: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
     /// Observes original ledger-owner selection before allocation admission.
     owner_selected: Option<Box<dyn Fn() + Send + Sync>>,
     memory_limit: u64,
@@ -210,7 +212,7 @@ pub(super) struct ReadBudgetMeter {
 }
 
 impl ReadBudgetMeter {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub(super) fn on_allocation_returned(&mut self, returned: impl Fn() + Send + Sync + 'static) {
         self.credit_returned = Some(Box::new(move |credit| {
             if credit == reservations::Credit::Allocation {
@@ -499,6 +501,9 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
     }
     fn record_examination(&self, items: u64, _: u64) -> io::Result<()> {
+        if let Some(recorded) = &self.examination_recorded {
+            recorded()?;
+        }
         match self.item_limit {
             Some(limit) => Self::charge(&self.examined_items, items, limit).map(|_| ()),
             None => Ok(()),
