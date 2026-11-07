@@ -3,6 +3,10 @@ use super::*;
 use crate::wire::ErrorCode::Unsupported;
 use futures::{FutureExt as _, future::Either};
 
+#[cfg(test)]
+#[path = "dispatch_size_tests.rs"]
+mod size_tests;
+
 struct ObservedCall<'a> {
     operation_id: OperationId,
     dispatch: crate::model::ModelDispatch,
@@ -43,57 +47,57 @@ impl StockExecution<'_> {
     ) -> Result<Vec<ModelEvent>> {
         let completion = super::phase::PreparedPhase::new(journal, self.io)?;
         let cancellation = journal.model_cancellation();
-        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
-            Box::pin(async {
-                let request::ModelStepRequest {
-                    history: mut prior_messages,
-                    prepared,
-                } = request;
-                let scope = ModelStepScope {
-                    purpose,
-                    boundary: match &prior_messages {
-                        request::ModelStepHistory::Turn(..) => journal.model_boundary(),
-                        request::ModelStepHistory::Selected(_) => None,
-                    },
-                };
-                if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
-                    && let Some(boundary) = scope.boundary
-                {
-                    let (_, records) = self
-                        .model_records(journal, input.operation_id, step, ModelPurpose::Response)
-                        .await?;
-                    let frozen = records.iter().find_map(|record| match record.event {
-                        ExecutionEvent::ContextPrepared {
-                            step: recorded,
-                            steering,
-                            ..
-                        } if recorded == step => Some(steering),
-                        _ => None,
-                    });
-                    if matches!(frozen, Some(None)) {
-                        return Err(Error::Storage(
-                            "agent request has no frozen inbox range".into(),
-                        ));
-                    }
-                    let messages = boundary
-                        .messages(input.operation_id, step, frozen.flatten())
-                        .await?;
-                    let from = history.len();
-                    for message in messages {
-                        with_history_io(self.io, |work| {
-                            message.content.validate_limits(self.stock.limits, work)
-                        })?;
-                        stock_vec_push(history, message, self.io)?;
-                    }
-                    steering.admit(from..history.len(), self.io)?;
+        let request::ModelStepRequest {
+            history: mut prior_messages,
+            prepared,
+        } = request;
+        let execution = async {
+            let scope = ModelStepScope {
+                purpose,
+                boundary: match &prior_messages {
+                    request::ModelStepHistory::Turn(..) => journal.model_boundary(),
+                    request::ModelStepHistory::Selected(_) => None,
+                },
+            };
+            if let request::ModelStepHistory::Turn(history, steering) = &mut prior_messages
+                && let Some(boundary) = scope.boundary
+            {
+                let (_, records) = self
+                    .model_records(journal, input.operation_id, step, ModelPurpose::Response)
+                    .await?;
+                let frozen = records.iter().find_map(|record| match record.event {
+                    ExecutionEvent::ContextPrepared {
+                        step: recorded,
+                        steering,
+                        ..
+                    } if recorded == step => Some(steering),
+                    _ => None,
+                });
+                if matches!(frozen, Some(None)) {
+                    return Err(Error::Storage(
+                        "agent request has no frozen inbox range".into(),
+                    ));
                 }
-                let history = match &prior_messages {
-                    request::ModelStepHistory::Turn(history, _) => history.as_slice(),
-                    request::ModelStepHistory::Selected(history) => history,
-                };
-                self.dispatch_model_step(journal, input, step, (history, prepared), scope, phase)
-                    .await
-            });
+                let messages = boundary
+                    .messages(input.operation_id, step, frozen.flatten())
+                    .await?;
+                let from = history.len();
+                for message in messages {
+                    with_history_io(self.io, |work| {
+                        message.content.validate_limits(self.stock.limits, work)
+                    })?;
+                    stock_vec_push(history, message, self.io)?;
+                }
+                steering.admit(from..history.len(), self.io)?;
+            }
+            let history = match &prior_messages {
+                request::ModelStepHistory::Turn(history, _) => history.as_slice(),
+                request::ModelStepHistory::Selected(history) => history,
+            };
+            self.dispatch_model_step(journal, input, step, (history, prepared), scope, phase)
+                .await
+        };
+        futures::pin_mut!(execution);
         completion
             .run(async {
                 match futures::future::select(cancellation, execution).await {
@@ -119,130 +123,145 @@ impl StockExecution<'_> {
         scope: ModelStepScope<'_>,
         phase: &mut DispatchPhase,
     ) -> Result<Vec<ModelEvent>> {
-        let io = self.io;
-        let (prior_messages, prepared) = material;
-        let PreparedDispatchStep {
-            #[cfg(feature = "research")]
-            journal_cut,
-            request,
-            mut admission,
-            events: replayed,
-            started,
-        } = self
-            .prepare_dispatch_step(
-                journal,
-                input,
-                step,
-                (prior_messages, prepared),
-                scope,
-                phase,
-            )
-            .await?;
-        let purpose = scope.purpose;
-        let request_digest = request.request_digest();
-        let purpose_key = model_purpose_key(purpose);
-        if started
-            && purpose == ModelPurpose::Response
-            && let Some(boundary) = scope.boundary
-        {
-            boundary.admitted(input.operation_id, step).await?;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        self.record_model_phase(&admission, started);
-        if admission.completed {
-            #[cfg(feature = "research")]
-            if purpose == ModelPurpose::Response {
-                phase.1 = journal_cut;
+        crate::conversation::BoundedContentFuture::new(self.io, || async {
+            let io = self.io;
+            let (prior_messages, prepared) = material;
+            let PreparedDispatchStep {
+                #[cfg(feature = "research")]
+                journal_cut,
+                request,
+                mut admission,
+                events: replayed,
+                started,
+            } = self
+                .prepare_dispatch_step(
+                    journal,
+                    input,
+                    step,
+                    (prior_messages, prepared),
+                    scope,
+                    phase,
+                )
+                .await?;
+            let purpose = scope.purpose;
+            let request_digest = request.request_digest();
+            let purpose_key = model_purpose_key(purpose);
+            if started
+                && purpose == ModelPurpose::Response
+                && let Some(boundary) = scope.boundary
+            {
+                boundary.admitted(input.operation_id, step).await?;
             }
-            crate::obs::obs_record!("items" = replayed.len());
-            if purpose == ModelPurpose::Response {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.record_model_phase(&admission, started);
+            if admission.completed {
+                #[cfg(feature = "research")]
+                if purpose == ModelPurpose::Response {
+                    phase.1 = journal_cut;
+                }
+                crate::obs::obs_record!("items" = replayed.len());
+                if purpose == ModelPurpose::Response {
+                    self.retain_response_request(
+                        journal,
+                        input,
+                        step,
+                        prior_messages.len(),
+                        request,
+                    )
+                    .await?;
+                }
+                return Ok(replayed);
+            }
+            let dispatch = crate::model::ModelDispatch {
+                operation_id: purpose.attempt_operation(input.operation_id, io)?,
+                step,
+                request_digest,
+            };
+            #[cfg(feature = "filesystem")]
+            let _continuation_hold;
+            let continuation = if started {
+                self.reconcile_model_events(dispatch, &replayed).await?
+            } else {
+                None
+            };
+            // Only a fresh provider generation streams; a continuation replays.
+            let live = continuation.is_none() && purpose == ModelPurpose::Response;
+            let mut clock = super::model_usage::CallClock::unknown();
+            let stream = if let Some(continuation) = continuation {
+                #[cfg(feature = "filesystem")]
+                {
+                    _continuation_hold = self.hold_continuation(&continuation)?;
+                }
+                Either::Left(continuation.into_iter())
+            } else {
+                #[cfg(feature = "filesystem")]
+                {
+                    _continuation_hold = None;
+                }
+                if started {
+                    return Err(self.unreconciled_attempt(input.operation_id));
+                }
+                let attempt =
+                    super::phase::claim(super::phase::Publication::ModelDispatch.observe(
+                        input.operation_id,
+                        step,
+                        self.claim_model_dispatch(
+                            journal,
+                            input,
+                            (step, scope, purpose_key),
+                            &request,
+                            phase,
+                        ),
+                    ))
+                    .await?;
+                clock.start();
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let generated = if let Some(work) = self.native_work() {
+                    Either::Right(
+                        attempt
+                            .generate_native(
+                                self.stock.provider.as_ref(),
+                                &request,
+                                dispatch,
+                                work,
+                            )?
+                            .await?
+                            .map(|result| self.admit_model_event(result)),
+                    )
+                } else {
+                    Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
+                };
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
+                Either::Right(generated)
+            };
+            let observed = self
+                .record_model_events(
+                    journal,
+                    ObservedCall {
+                        operation_id: input.operation_id,
+                        dispatch,
+                        model: &request.request().model,
+                        sampling: request.request().sampling,
+                        max_output_tokens: request.request().max_output_tokens,
+                        purpose,
+                        clock,
+                    },
+                    replayed,
+                    &mut admission,
+                    (stream, live),
+                    #[cfg(feature = "research")]
+                    phase,
+                )
+                .await?;
+            if purpose == ModelPurpose::Response && admission.completed {
                 self.retain_response_request(journal, input, step, prior_messages.len(), request)
                     .await?;
             }
-            return Ok(replayed);
-        }
-        let dispatch = crate::model::ModelDispatch {
-            operation_id: purpose.attempt_operation(input.operation_id, io)?,
-            step,
-            request_digest,
-        };
-        #[cfg(feature = "filesystem")]
-        let _continuation_hold;
-        let continuation = if started {
-            self.reconcile_model_events(dispatch, &replayed).await?
-        } else {
-            None
-        };
-        // Only a fresh provider generation streams; a continuation replays.
-        let live = continuation.is_none() && purpose == ModelPurpose::Response;
-        let mut clock = super::model_usage::CallClock::unknown();
-        let stream = if let Some(continuation) = continuation {
-            #[cfg(feature = "filesystem")]
-            {
-                _continuation_hold = self.hold_continuation(&continuation)?;
-            }
-            Either::Left(continuation.into_iter())
-        } else {
-            #[cfg(feature = "filesystem")]
-            {
-                _continuation_hold = None;
-            }
-            if started {
-                return Err(self.unreconciled_attempt(input.operation_id));
-            }
-            let attempt = super::phase::claim(super::phase::Publication::ModelDispatch.observe(
-                input.operation_id,
-                step,
-                self.claim_model_dispatch(
-                    journal,
-                    input,
-                    (step, scope, purpose_key),
-                    &request,
-                    phase,
-                ),
-            ))
-            .await?;
-            clock.start();
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let generated = if let Some(work) = self.native_work() {
-                Either::Right(
-                    attempt
-                        .generate_native(self.stock.provider.as_ref(), &request, dispatch, work)?
-                        .await?
-                        .map(|result| self.admit_model_event(result)),
-                )
-            } else {
-                Either::Left(attempt.generate(self.stock.provider.as_ref(), &request, dispatch))
-            };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let generated = attempt.generate(self.stock.provider.as_ref(), &request, dispatch);
-            Either::Right(generated)
-        };
-        let observed = self
-            .record_model_events(
-                journal,
-                ObservedCall {
-                    operation_id: input.operation_id,
-                    dispatch,
-                    model: &request.request().model,
-                    sampling: request.request().sampling,
-                    max_output_tokens: request.request().max_output_tokens,
-                    purpose,
-                    clock,
-                },
-                replayed,
-                &mut admission,
-                (stream, live),
-                #[cfg(feature = "research")]
-                phase,
-            )
-            .await?;
-        if purpose == ModelPurpose::Response && admission.completed {
-            self.retain_response_request(journal, input, step, prior_messages.len(), request)
-                .await?;
-        }
-        crate::obs::obs_record!("items" = observed.len());
-        Ok(observed)
+            crate::obs::obs_record!("items" = observed.len());
+            Ok(observed)
+        })?
+        .await
     }
 
     async fn prepare_dispatch_step(
@@ -273,14 +292,16 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        let preparation = self.resolve_model_request(
-            journal,
-            input,
-            (step, prior_messages, scope, prepared),
-            request,
-        );
+        let preparation = || {
+            self.resolve_model_request(
+                journal,
+                input,
+                (step, prior_messages, scope, prepared),
+                request,
+            )
+        };
         let request = if started {
-            preparation.await?
+            crate::conversation::BoundedContentFuture::new(self.io, preparation)?.await?
         } else {
             super::phase::run(journal, self.io, preparation).await?
         };

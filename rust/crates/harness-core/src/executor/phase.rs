@@ -185,11 +185,15 @@ impl Publication {
     }
 }
 
-pub(crate) async fn run<T>(
+pub(crate) async fn run<T, F>(
     journal: &dyn ExecutionJournal,
     io: Option<&PreparationIo>,
-    future: impl std::future::Future<Output = Result<T>>,
-) -> Result<T> {
+    build: impl FnOnce() -> F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask,
+{
+    let future = crate::conversation::BoundedContentFuture::new(io, build)?;
     PreparedPhase::new(journal, io)?.run(future).await
 }
 
