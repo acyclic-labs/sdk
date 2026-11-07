@@ -95,7 +95,9 @@ nextest() {
   # with the existing Rust producer; these lanes do not require Bun or protoc JS.
   cargo run --locked -p acyclic-actors --example actors-http-routes -- \
     typescript/packages/actors/src/generated/actors-service.ts
-  cargo nextest run --profile ci "$@" || status=$?
+  # Clippy checks every target; contract generation executes its exporters.
+  # Build executable tests here without linking ordinary examples again.
+  cargo nextest run --tests --profile ci "$@" || status=$?
   mv -f -- "$target_dir/nextest/ci/junit.xml" "$observability/rust.xml" 2>/dev/null || true
   return "$status"
 }
