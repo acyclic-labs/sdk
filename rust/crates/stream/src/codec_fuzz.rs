@@ -402,13 +402,6 @@ async fn publications(
             42
         }
     }
-    let mut seeds = Vec::new();
-    for operation in crate::TokenOperation::ALL {
-        seeds.push((
-            format!("token-{}", operation.as_str()),
-            operation.as_str().as_bytes().to_vec(),
-        ));
-    }
     let memory = crate::MemoryStream::new_with_clock(
         crate::MemoryLimits::default(),
         std::sync::Arc::new(Clock),
@@ -422,6 +415,14 @@ async fn publications(
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
+        #[cfg(any(
+            feature = "local",
+            feature = "postgres",
+            all(
+                any(feature = "wasm", feature = "wasm-journal"),
+                target_arch = "wasm32"
+            )
+        ))]
         let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
@@ -459,10 +460,16 @@ async fn publications(
 /// Capture actual journal and framing encoder output without filesystem IO.
 pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     let mut seeds = Vec::new();
-    let (memory, publications) = publications(None).await?;
+    for operation in crate::TokenOperation::ALL {
+        seeds.push((
+            format!("token-{}", operation.as_str()),
+            operation.as_str().as_bytes().to_vec(),
+        ));
+    }
+    let (_memory, publications) = publications(None).await?;
     for Publication {
         name,
-        command,
+        command: _command,
         observation,
         envelope,
     } in publications
@@ -475,11 +482,11 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
                 target_arch = "wasm32"
             )
         ))]
-        seeds.push((name.to_owned(), command.encode_to_vec()));
+        seeds.push((name.to_owned(), _command.encode_to_vec()));
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         seeds.push((
             format!("frame-{name}"),
-            crate::local::codec_fuzz::frame(&command)?,
+            crate::local::codec_fuzz::frame(&_command)?,
         ));
         seeds.push((
             format!("observation-{name}"),
@@ -494,7 +501,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     seeds.push(("journal-header".into(), crate::local::codec_fuzz::header()?));
     #[cfg(feature = "local")]
     {
-        let state = memory.capture_state().await.encode();
+        let state = _memory.capture_state().await.encode();
         #[cfg(not(target_arch = "wasm32"))]
         {
             seeds.push((
@@ -544,7 +551,18 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
 #[cfg(all(test, feature = "local", not(target_arch = "wasm32")))]
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
-    for (name, bytes) in futures::executor::block_on(seeds())? {
+    let seeds = futures::executor::block_on(seeds())?;
+    for operation in crate::TokenOperation::ALL {
+        assert!(
+            seeds.iter().any(|(name, bytes)| {
+                name == &format!("token-{}", operation.as_str())
+                    && bytes == operation.as_str().as_bytes()
+            }),
+            "token corpus omitted declared operation {}",
+            operation.as_str()
+        );
+    }
+    for (name, bytes) in seeds {
         for length in [bytes.len(), bytes.len().saturating_sub(1)] {
             assert!(
                 check(&bytes[..length]),
