@@ -24,9 +24,15 @@ does not parse, rewrite or substitute the documents' identities or metadata.
 | `conflicts-0-v1` | 737 | `77628a6af3d22b0d543be4abd85d3b50e49223e499e9f887cbb1619016835542` |
 | `conflicts-1-v1` | 554 | `d068ca4b236221834626e17333d381d34fb3512078ea4e1557484f9af379c2b0` |
 
+`type-v1` was captured with the same command on Linux x86_64 at source
+`1bad6a85e4502f18e6945f428ec2be386a25491e`. The local nested forks created a
+regular file and a directory at the same original binding. The retained 905
+bytes are unchanged writer output, SHA-256
+`5fda6e169af209a8e58166648bcd529511fd3bc1b95b1fe0e012d1f7e5b1f42e`.
+
 These witnesses cover admission of the plan, clean and non-text conflict
-schemas, with binary and deletion conflicts. They do not cover user-authored
-resolutions, metadata/type conflicts, restart, upgrades or remote serving.
+schemas, with binary, deletion and entry-kind conflicts. They do not cover
+user-authored resolutions, metadata conflicts, restart, upgrades or remote serving.
 
 ## Session subtree
 
