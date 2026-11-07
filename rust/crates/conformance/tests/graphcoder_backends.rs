@@ -641,12 +641,13 @@ impl Shape {
                 .unwrap_or_else(|| panic!("no {call} result: {outputs:?}"));
             serde_json::from_str(output).unwrap_or_else(|_| output.as_str().into())
         };
-        let pick = |value: &Value, pointers: &[&str]| -> Value {
-            pointers
-                .iter()
-                .map(|pointer| value.pointer(pointer).cloned().unwrap_or_default())
-                .collect()
-        };
+        let written = parsed("write");
+        assert!(
+            written["version"]
+                .as_str()
+                .is_some_and(|version| !version.is_empty()),
+            "write named no immutable version: {written}"
+        );
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
         let child: Vec<&str> = spawned["agent"]
@@ -663,14 +664,7 @@ impl Shape {
             .collect();
         Self {
             answer: answer.trim().to_owned(),
-            results: vec![
-                parsed("shell"),
-                pick(
-                    &parsed("write"),
-                    &["/file/descriptor", "/file/path", "/file/volume/class"],
-                ),
-                child.into(),
-            ],
+            results: vec![parsed("shell"), written["path"].clone(), child.into()],
             steps,
         }
     }
@@ -742,12 +736,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         "shell did not present a successful command and its output: {:?}",
         local.results[0]
     );
-    assert_eq!(
-        local.results[1][0]["byte_length"],
-        WRITTEN.len(),
-        "{:?}",
-        local.results
-    );
+    assert_eq!(local.results[1], "conformance.txt");
     assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
     for (name, shape) in &shapes[1..] {
         assert_eq!(shape.answer, local.answer, "{name} answered otherwise");
