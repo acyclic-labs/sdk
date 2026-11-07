@@ -1,0 +1,33 @@
+diff --git b/rust/crates/harness-core/src/tools/agents.rs a/rust/crates/harness-core/src/tools/agents.rs
+index 523956d6ef0..eb63204b832 100644
+--- b/rust/crates/harness-core/src/tools/agents.rs
++++ a/rust/crates/harness-core/src/tools/agents.rs
+@@ -151,7 +151,6 @@ pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
+ /// operands (including `add agents/file`) retain their ordinary path meaning.
+ /// The driver supplies its existing child derivation; the repository key is
+ /// always the complete canonical address, including the owning ancestry.
+-/// Both local names and canonical addresses must name a direct child.
+ pub fn resolve_child_branch(
+     parent: &AgentPath,
+     arguments: &mut [String],
+@@ -163,18 +162,10 @@ pub fn resolve_child_branch(
+     if !matches!(command.as_str(), "diff" | "merge" | "discard") {
+         return Ok(None);
+     }
+-    let child = if let Some(name) = branch.strip_prefix("agents/") {
+-        resolve(parent, name)?
+-    } else if branch.starts_with("harness/agents/") {
+-        AgentPath::try_from(branch.clone()).map_err(agent)?
+-    } else {
++    let Some(name) = branch.strip_prefix("agents/") else {
+         return Ok(None);
+     };
+-    if !child.is_child_of(parent) {
+-        return Err(Error::Invalid(
+-            "only direct children can be coordinated; ask the owning parent".into(),
+-        ));
+-    }
++    let child = resolve(parent, name)?;
+     *branch = child.as_str().to_owned();
+     Ok(Some(child))
+ }

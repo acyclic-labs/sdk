@@ -40,6 +40,13 @@ const claims = {
     ["--no-default-features", "--features", "filesystem-local,native-execution"],
     { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
   ],
+  "native-child-merge-custody": [
+    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "canonical child merge bypassed running-session custody",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_merge_custody.patch" },
+  ],
   "native-added-metadata": [
     "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
     "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",

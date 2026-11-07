@@ -37,6 +37,17 @@ pub fn check_native_child_reference(input: &[u8]) {
     }
     let parent = AgentPath::root(&AgentId::from_bytes(identity));
     if let Ok(reference) = std::str::from_utf8(input) {
+        for operation in ["diff", "merge", "discard"] {
+            let mut arguments = [operation.into(), reference.into()];
+            match crate::tools::resolve_child_branch(&parent, &mut arguments, child) {
+                Ok(Some(admitted)) => {
+                    assert!(admitted.is_child_of(&parent));
+                    assert_eq!(arguments[1], admitted.as_str());
+                }
+                Ok(None) | Err(crate::Error::Invalid(_)) => {}
+                Err(error) => panic!("child branch lost its invalid-input type: {error}"),
+            }
+        }
         if reference.contains('/') {
             match child(&parent, reference) {
                 Ok(admitted) => {
@@ -95,6 +106,27 @@ pub fn check_native_child_reference(input: &[u8]) {
         "local and canonical references must name the same child"
     );
     let grandchild = child(&admitted, &portable).expect("nested child must resolve");
+    for operation in ["diff", "merge", "discard"] {
+        for reference in [format!("agents/{portable}"), admitted.to_string()] {
+            let mut arguments = [operation.into(), reference];
+            assert_eq!(
+                crate::tools::resolve_child_branch(&parent, &mut arguments, child)
+                    .expect("child branch alias must resolve"),
+                Some(admitted.clone()),
+            );
+            assert_eq!(arguments[1], admitted.as_str());
+        }
+        for unrelated in [&parent, &grandchild] {
+            let mut arguments = [operation.into(), unrelated.to_string()];
+            assert!(
+                matches!(
+                    crate::tools::resolve_child_branch(&parent, &mut arguments, child),
+                    Err(crate::Error::Invalid(_))
+                ),
+                "a canonical branch bypassed direct-child ownership"
+            );
+        }
+    }
     for unrelated in [&parent, &grandchild] {
         assert!(
             matches!(

@@ -50,9 +50,11 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
     let left_task = left_run.claim.agent.clone();
     let (right_run, right_view) = claim(&mut right, cwd, "shared", spawn())
         .map_err(|cause| failed("parent-scoped child reference", cause))?;
+    let right_task = right_run.claim.agent.clone();
     assert_ne!(left_task, right_run.claim.agent);
     let mut nested = NativeChildren::own(host, cwd, left_task.clone(), left.flags.clone())?;
     let (nested_run, nested_view) = claim(&mut nested, cwd, "shared", spawn())?;
+    let nested_task = nested_run.claim.agent.clone();
     assert!(nested_run.claim.agent.is_child_of(&left_task));
     let events = match host {
         "codex" => include_str!("../fixtures/codex-completed.jsonl"),
@@ -82,10 +84,10 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
             "child write escaped its fork"
         );
     }
-    for (name, parent) in [
-        ("nested", left_task),
-        ("left", left_parent.clone()),
-        ("right", right_parent.clone()),
+    for (name, parent, branch) in [
+        ("nested", left_task.clone(), nested_task.to_string()),
+        ("left", left_parent.clone(), "agents/shared".into()),
+        ("right", right_parent.clone(), right_task.to_string()),
     ] {
         let inspect = |command: &str| {
             host_files::request(
@@ -96,9 +98,9 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
                 },
             )
         };
-        let diff = inspect("diff agents/shared")
+        let diff = inspect(&format!("diff {branch}"))
             .map_err(|cause| failed(&format!("{host} inspect {name} child"), cause))?;
-        inspect("merge agents/shared").map_err(|cause| {
+        inspect(&format!("merge {branch}")).map_err(|cause| {
             failed(
                 &format!("{host} merge {name} child"),
                 format!("{cause}; parent={parent}; diff={diff}"),
@@ -112,7 +114,7 @@ fn shared_references(host: &str, cwd: &Path) -> Result {
         cwd,
         HostAction::Fs {
             task: left_parent,
-            command: "discard agents/shared".into(),
+            command: format!("discard {left_task}"),
         },
     )?;
     host_files::request(
@@ -150,6 +152,23 @@ fn references(host: &str, cwd: &Path) -> Result {
     assert!(sessions.wait(&reference)?.is_none());
     assert!(sessions.wait(&key)?.is_none());
     assert_eq!(sessions.accepted.len(), 1);
+    for branch in [key.clone(), format!("agents/{reference}")] {
+        let refused = host_files::request(
+            cwd,
+            HostAction::Fs {
+                task: parent.clone(),
+                command: format!("merge {branch}"),
+            },
+        )
+        .expect_err("canonical child merge bypassed running-session custody");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
+        assert!(
+            refused
+                .to_string()
+                .contains("native session is still running"),
+            "{refused}"
+        );
+    }
     let grandchild = crate::local::host_owner::child(&task, "grandchild")?;
     for other in [&parent, &grandchild] {
         assert!(
@@ -157,6 +176,23 @@ fn references(host: &str, cwd: &Path) -> Result {
                 if message.contains("only direct children can be waited on")),
             "a non-child path must fail before a storage lookup"
         );
+    }
+    for other in [&parent, &grandchild] {
+        for operation in ["diff", "merge", "discard"] {
+            let refused = host_files::request(
+                cwd,
+                HostAction::Fs {
+                    task: parent.clone(),
+                    command: format!("{operation} {other}"),
+                },
+            )
+            .expect_err("a full non-child address bypassed parent ownership");
+            assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
+            assert!(
+                refused.to_string().contains("only direct children"),
+                "{refused}"
+            );
+        }
     }
     let refused = host_files::request(
         cwd,

@@ -336,14 +336,9 @@ impl HostWorkspaceOwner {
         task: &AgentPath,
         command: &str,
     ) -> Result<Value> {
-        let parsed = crate::tools::parse_fs_command(command)?;
-        let merged = match parsed.arguments.as_slice() {
-            [name, reference] if name == "merge" => reference
-                .strip_prefix("agents/")
-                .map(|reference| agents::child(task, reference))
-                .transpose()?,
-            _ => None,
-        };
+        let mut parsed = crate::tools::parse_fs_command(command)?;
+        let child = crate::tools::resolve_child_branch(task, &mut parsed.arguments, agents::child)?;
+        let merged = child.filter(|_| parsed.arguments[0] == "merge");
         // A merge reads its child's settled project: it holds both locks.
         let changed = [Some(task.clone()), merged.clone()];
         let _locks = self
