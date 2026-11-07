@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "local-prepared-ingress-close": [
+    "rust/crates/stream/src/native/prepared.rs", "acyclic-stream",
+    "local::tests::native::abandoned_prepared_packet_releases_worker_capacity_without_edit",
+    "abandoned prepared producer did not reach its original completion boundary", ["--no-default-features", "--features", "local"],
+    {
+      patchPath: "rust/proofs/local-prepared-ingress-close/mutation.patch",
+      negativeLabel: "omitted-original-ingress-close",
+    },
+  ],
   "local-prepared-producer-loss": [
     "rust/crates/stream/src/local/prepared_commit.rs", "acyclic-stream",
     "local::tests::native::prepared_worker_retirement_ends_original_completion_without_publication",
