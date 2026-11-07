@@ -25,6 +25,15 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "runtime-completion-obligations": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion producer survived its unpolled host", [],
+    { mutations: [
+      { patch: "rust/proofs/runtime-completion-custody/retirement.patch", label: "producer-loss-accepted", diagnostic: "completion producer survived its unpolled host" },
+      { patch: "rust/proofs/runtime-completion-custody/cost.patch", label: "extra-control-request", diagnostic: "completion added a control request outside its original idle cut" },
+    ] },
+  ],
   "runtime-completion-custody": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
     "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
@@ -207,25 +216,28 @@ if (claim === "--help" && extra.length === 0) {
   try {
     const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
-    step = "check mutation anchors";
-    const anchor = run("git", ["apply", "--check", patch]);
-    if (anchor.status !== 0) throw new Error(anchor.output);
-    try {
-      step = "apply production mutation";
-      const applied = run("git", ["apply", patch]);
-      if (applied.status !== 0) throw new Error(applied.output);
-      step = "unchanged oracle rejects production mutation";
-      const mutated = check(options.negativeLabel ?? "mutated");
-      require(options.fuzz
-        ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(diagnostic)
-          && mutated.output.includes("ERROR: libFuzzer:")
-        : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
-        && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
-    } finally {
-      writeFileSync(sourcePath, original);
+    const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
+    for (const mutation of mutations) {
+      step = `check mutation anchors: ${mutation.patch}`;
+      const anchor = run("git", ["apply", "--check", mutation.patch]);
+      if (anchor.status !== 0) throw new Error(anchor.output);
+      try {
+        step = `apply production mutation: ${mutation.patch}`;
+        const applied = run("git", ["apply", mutation.patch]);
+        if (applied.status !== 0) throw new Error(applied.output);
+        step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+        const mutated = check(mutation.label);
+        require(options.fuzz
+          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && mutated.output.includes("ERROR: libFuzzer:")
+          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+      } finally {
+        writeFileSync(sourcePath, original);
+      }
+      step = "restore exact original source";
+      require(readFileSync(sourcePath).equals(original));
     }
-    step = "restore exact original source";
-    require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
     const completed = options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
