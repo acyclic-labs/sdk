@@ -25,6 +25,34 @@ const claims = {
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
   ],
+  "public-settlement-source": [
+    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "settlement admitted an unrelated progress producer or performed I/O before refusal", nativeHarness,
+    { mutations: [
+      { patch: "rust/proofs/public-settlement-source/mutation.patch", label: "foreign-producer", diagnostic: "settlement admitted an unrelated progress producer or performed I/O before refusal" },
+      { patch: "rust/proofs/public-settlement-source/cost.patch", label: "query-before-admission", diagnostic: "settlement admitted an unrelated progress producer or performed I/O before refusal" },
+    ] },
+  ],
+  "public-settlement-retirement": [
+    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "public settlement retained its lost model producer", nativeHarness,
+  ],
+  "runtime-completion-obligations": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion producer survived its unpolled host", [],
+    { mutations: [
+      { patch: "rust/proofs/runtime-completion-custody/retirement.patch", label: "producer-loss-accepted", diagnostic: "completion producer survived its unpolled host" },
+      { patch: "rust/proofs/runtime-completion-custody/cost.patch", label: "extra-control-request", diagnostic: "completion added a control request outside its original idle cut" },
+    ] },
+  ],
+  "runtime-completion-custody": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion parked without an original dispatcher producer", [],
+  ],
   "retained-credit": [
     "rust/crates/filesystem/src/kernel/allocation.rs", "acyclic-fs",
     "kernel::allocation::retained::tests::retained_credit_conserves_full_width_ownership_transitions",
@@ -145,10 +173,10 @@ if (claim === "--help" && extra.length === 0) {
   const command = options.fuzz ? fuzzCommand(1) : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
+  const positive = options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
-    : command;
+    : command);
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
@@ -202,29 +230,32 @@ if (claim === "--help" && extra.length === 0) {
   try {
     const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
-    step = "check mutation anchors";
-    const anchor = run("git", ["apply", "--check", patch]);
-    if (anchor.status !== 0) throw new Error(anchor.output);
-    try {
-      step = "apply production mutation";
-      const applied = run("git", ["apply", patch]);
-      if (applied.status !== 0) throw new Error(applied.output);
-      step = "unchanged oracle rejects production mutation";
-      const mutated = check(options.negativeLabel ?? "mutated");
-      require(options.fuzz
-        ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(diagnostic)
-          && mutated.output.includes("ERROR: libFuzzer:")
-        : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(diagnostic)
-        && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
-    } finally {
-      writeFileSync(sourcePath, original);
+    const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
+    for (const mutation of mutations) {
+      step = `check mutation anchors: ${mutation.patch}`;
+      const anchor = run("git", ["apply", "--check", mutation.patch]);
+      if (anchor.status !== 0) throw new Error(anchor.output);
+      try {
+        step = `apply production mutation: ${mutation.patch}`;
+        const applied = run("git", ["apply", mutation.patch]);
+        if (applied.status !== 0) throw new Error(applied.output);
+        step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
+        const mutated = check(mutation.label);
+        require(options.fuzz
+          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && mutated.output.includes("ERROR: libFuzzer:")
+          : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
+      } finally {
+        writeFileSync(sourcePath, original);
+      }
+      step = "restore exact original source";
+      require(readFileSync(sourcePath).equals(original));
     }
-    step = "restore exact original source";
-    require(readFileSync(sourcePath).equals(original));
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    const completed = options.completed ?? (options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"]);
     require(restored.status === 0 && !restored.signal && completed.every(marker => restored.output.includes(marker)));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
