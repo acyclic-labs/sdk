@@ -403,6 +403,108 @@ async fn full_diagnostic_pipe() -> io::Result<(io::PipeReader, InheritedOutput)>
 
 #[cfg(target_os = "linux")]
 #[test]
+fn failure_output_retains_cause_and_progress_with_native_backpressure() -> io::Result<()> {
+    use std::{future::poll_fn, io::Read as _, task::Poll};
+
+    let runtime = acyclic_native_runtime::coordination_runtime()?;
+    runtime.block_on(async {
+        CliCompletion::executed(Ok(()), None)
+            .write_failure(std::future::pending().boxed().shared(), || {
+                panic!("successful completion admitted an output descriptor")
+            })
+            .await
+            .into_result()
+            .unwrap();
+        for case in ["open", "closed", "blocked", "stopped", "producer-lost"] {
+            let (reader, output) = if matches!(case, "blocked" | "stopped" | "producer-lost") {
+                full_diagnostic_pipe().await?
+            } else {
+                let (reader, writer) = io::pipe()?;
+                (
+                    reader,
+                    InheritedOutput::from_file(std::os::fd::OwnedFd::from(writer).into())?,
+                )
+            };
+            let mut reader = Some(reader);
+            if case == "closed" {
+                drop(reader.take());
+            }
+            let cause: Failure = Box::new(acyclic_harness::completion::Exit::new(
+                std::num::NonZeroU8::new(17).unwrap(),
+                "original failure",
+            ));
+            let original = std::ptr::from_ref(cause.as_ref());
+            let completion =
+                CliCompletion::rejected(CliPhase::Execution, cause, FailureReport::Written);
+            let (terminate, signal) = tokio::sync::oneshot::channel();
+            let mut terminate = Some(terminate);
+            let shutdown = async {
+                signal
+                    .await
+                    .map_err(|_| Arc::new(io::Error::from(io::ErrorKind::BrokenPipe)))?;
+                Ok(143)
+            }
+            .boxed()
+            .shared();
+            if case == "stopped" {
+                terminate.take().unwrap().send(()).unwrap();
+            }
+            let delivery = completion.write_failure(shutdown, || Ok(output));
+            tokio::pin!(delivery);
+            let completion = if matches!(case, "blocked" | "producer-lost") {
+                poll_fn(|cx| {
+                    assert!(
+                        delivery.as_mut().poll(cx).is_pending(),
+                        "full original pipe lost backpressure"
+                    );
+                    Poll::Ready(())
+                })
+                .await;
+                if case == "blocked" {
+                    terminate.take().unwrap().send(()).unwrap();
+                } else {
+                    drop(terminate.take());
+                }
+                poll_fn(|cx| {
+                    let Poll::Ready(completion) = delivery.as_mut().poll(cx) else {
+                        panic!("failure output retained a lost shutdown producer")
+                    };
+                    Poll::Ready(completion)
+                })
+                .await
+            } else {
+                delivery.await
+            };
+            let failure = completion.into_result().unwrap_err();
+            let expected = failure.render();
+            assert!(std::ptr::eq(original, failure.cause.as_ref()));
+            assert_eq!(failure.code().get(), 17);
+            assert!(matches!(failure.failure_report, FailureReport::Written));
+            match (case, failure.stderr_report) {
+                ("open", FailureReport::Written) => {
+                    let mut bytes = String::new();
+                    reader.take().unwrap().read_to_string(&mut bytes)?;
+                    assert_eq!(bytes, expected);
+                }
+                ("closed", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe)
+                }
+                ("blocked" | "stopped", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::Interrupted)
+                }
+                ("producer-lost", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe)
+                }
+                (_, other) => panic!("original stderr disposition lost: {case}: {other:?}"),
+            }
+            drop(terminate);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<()> {
     use std::{
         future::poll_fn,

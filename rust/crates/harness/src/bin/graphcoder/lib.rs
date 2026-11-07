@@ -26,7 +26,6 @@ use args::{Args, Command, InputFormat, OutputFormat};
 use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, sync::Arc};
-use tracing_subscriber::util::SubscriberInitExt as _;
 
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
@@ -46,26 +45,53 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// endpoint/runtime is explicitly incomplete observation. The original cause
 /// remains available through [`CliCompletion::into_result`]. A failure returned
 /// after setup uses that same channel before completion, independently of an
-/// earlier diagnostic snapshot. No post-terminal output, implicit text storage
-/// or replacement reporter is started on error. JSONL execution errors use the
-/// original event output owner before their result returns; text execution
-/// errors write one stderr line from the operation itself.
+/// earlier diagnostic snapshot. Failure stderr uses the original runtime and
+/// shutdown event; pre-runtime refusals retain an incomplete stderr outcome.
+/// No output starts in OS termination. JSONL execution errors also use their
+/// original event output owner before their result returns.
 /// Diagnostic delivery ends with the original operation, report and shutdown
 /// owner; its best-effort failure never replaces the original operation result.
 pub fn main_with(
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     diagnostic_storage: Option<Vec<Box<[u8]>>>,
 ) -> CliCompletion {
-    let admission = match acyclic_native_runtime::obs::ReportAdmission::from_environment() {
-        Ok(admission) => admission,
+    let arguments = arguments();
+    let runtime = match acyclic_native_runtime::coordination_runtime() {
+        Ok(runtime) => runtime,
         Err(error) => {
+            let (phase, error) = arguments.err().map_or((CliPhase::Runtime, error), |error| {
+                (CliPhase::ReportAdmission, error)
+            });
             return CliCompletion::rejected(
-                CliPhase::ReportAdmission,
+                phase,
                 Box::new(error),
                 FailureReport::Incomplete(None),
             );
         }
     };
+    // Keep Tokio's entry frame independent of the size of the CLI future.
+    let result = runtime.block_on(phase(|| async {
+        let shutdown = lifecycle::shutdown();
+        let completion = match arguments {
+            Ok((args, admission)) => {
+                execute(args, admission, seams, diagnostic_storage, shutdown.clone()).await
+            }
+            Err(error) => CliCompletion::rejected(
+                CliPhase::ReportAdmission,
+                Box::new(error),
+                FailureReport::Incomplete(None),
+            ),
+        };
+        completion
+            .write_failure(shutdown, acyclic_native_runtime::InheritedOutput::stderr)
+            .await
+    }));
+    runtime.shutdown_background();
+    result
+}
+
+fn arguments() -> std::io::Result<(Args, Option<acyclic_native_runtime::obs::ReportAdmission>)> {
+    let admission = acyclic_native_runtime::obs::ReportAdmission::from_environment()?;
     let matches = Args::command().get_matches();
     let mut args = Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     if args.default_config && matches.value_source("model") != Some(ValueSource::CommandLine) {
@@ -76,6 +102,16 @@ pub fn main_with(
             .error(clap::error::ErrorKind::ArgumentConflict, error)
             .exit();
     }
+    Ok((args, admission))
+}
+
+async fn execute(
+    mut args: Args,
+    admission: Option<acyclic_native_runtime::obs::ReportAdmission>,
+    seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    diagnostic_storage: Option<Vec<Box<[u8]>>>,
+    shutdown: completion::Shutdown,
+) -> CliCompletion {
     let event_failure = (args.output_format == OutputFormat::Jsonl).then(|| {
         let operation = args
             .operation
@@ -87,124 +123,69 @@ pub fn main_with(
         args.operation = Some(operation.clone());
     }
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
-    let runtime = match acyclic_native_runtime::coordination_runtime() {
-        Ok(runtime) => runtime,
+    let port = match admission
+        .map(acyclic_native_runtime::obs::ReportAdmission::into_port)
+        .transpose()
+    {
+        Ok(port) => port,
         Err(error) => {
             return CliCompletion::rejected(
-                CliPhase::Runtime,
+                CliPhase::ReportRegistration,
                 Box::new(error),
                 FailureReport::Incomplete(None),
             );
         }
     };
-    // Keep Tokio's entry frame independent of the size of the CLI future.
-    let result = runtime.block_on(phase(|| async {
-        let port = match admission
-            .map(acyclic_native_runtime::obs::ReportAdmission::into_port)
-            .transpose()
+    let report = acyclic_native_runtime::obs::WaitReport::default();
+    let diagnostics = match lifecycle::setup(
+        &report,
+        diagnostic_storage,
+        args.diagnostic_records,
+        args.diagnostic_record_bytes,
+    ) {
+        Ok(diagnostics) => diagnostics,
+        Err((phase, cause)) => {
+            let report =
+                completion::report_failure(port, shutdown.clone(), phase, cause.as_ref()).await;
+            return CliCompletion::rejected(phase, cause, report);
+        }
+    };
+    let run_shutdown = shutdown.clone();
+    let operation = phase(|| async move {
+        let mut event_output = event_failure
+            .as_ref()
+            .map(|_| acyclic_native_runtime::InheritedOutput::stdout().map(headless::Output::new))
+            .transpose()?;
+        let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
+        // The original completion scope owns stderr delivery. JSONL also
+        // reports it in-stream, unless the stream already ended with the
+        // outcome this exit reports.
+        if let (Err(error), Some((operation, generated))) = (&result, &event_failure)
+            && !error.is::<Exit>()
         {
-            Ok(port) => port,
-            Err(error) => {
-                return CliCompletion::rejected(
-                    CliPhase::ReportRegistration,
-                    Box::new(error),
-                    FailureReport::Incomplete(None),
-                );
-            }
-        };
-        let report = acyclic_native_runtime::obs::WaitReport::default();
-        let shutdown = lifecycle::shutdown();
-        let setup = (|| {
-            let (subscriber, receiver) =
-                lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok(), || {
-                    lifecycle::storage(
-                        diagnostic_storage,
-                        args.diagnostic_records,
-                        args.diagnostic_record_bytes,
-                    )
-                })
-                .map_err(|error| {
-                    (
-                        CliPhase::Diagnostics,
-                        Box::new(error) as Box<dyn std::error::Error>,
-                    )
-                })?;
-            subscriber.try_init().map_err(|error| {
-                (
-                    CliPhase::Subscriber,
-                    Box::new(error) as Box<dyn std::error::Error>,
+            let recovery = headless::Recovery::capture(generated.then_some(operation.as_str()))?;
+            let step = if error.is::<headless::PreparationFailure>() {
+                "prepare_output"
+            } else {
+                "execute"
+            };
+            let output = event_output.as_mut().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "original event output owner is absent",
                 )
             })?;
-            let diagnostics = receiver
-                .map(|receiver| {
-                    acyclic_native_runtime::InheritedOutput::stderr()
-                        .map(|writer| (receiver, writer))
-                })
-                .transpose()
-                .map_err(|error| {
-                    (
-                        CliPhase::OutputAdmission,
-                        Box::new(error) as Box<dyn std::error::Error>,
-                    )
-                })?;
-            Ok::<_, (CliPhase, Box<dyn std::error::Error>)>(diagnostics)
-        })();
-        let diagnostics = match setup {
-            Ok(diagnostics) => diagnostics,
-            Err((phase, cause)) => {
-                let report =
-                    completion::report_failure(port, shutdown, phase, cause.as_ref()).await;
-                return CliCompletion::rejected(phase, cause, report);
-            }
-        };
-        let run_shutdown = shutdown.clone();
-        let operation = phase(|| async move {
-            let mut event_output = event_failure
-                .as_ref()
-                .map(|_| {
-                    acyclic_native_runtime::InheritedOutput::stdout().map(headless::Output::new)
-                })
-                .transpose()?;
-            let result = run(args, seams, run_shutdown, event_output.as_mut()).await;
-            // Every failure's stderr line is the shared terminal's. JSONL also
-            // reports it in-stream, unless the stream already ended with the
-            // outcome this exit reports.
-            if let (Err(error), Some((operation, generated))) = (&result, &event_failure)
-                && !error.is::<Exit>()
-            {
-                let recovery =
-                    headless::Recovery::capture(generated.then_some(operation.as_str()))?;
-                let step = if error.is::<headless::PreparationFailure>() {
-                    "prepare_output"
-                } else {
-                    "execute"
-                };
-                let output = event_output.as_mut().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotConnected,
-                        "original event output owner is absent",
-                    )
-                })?;
-                if output.available() {
-                    headless::terminal_error(
-                        output,
-                        operation,
-                        &error.to_string(),
-                        step,
-                        &recovery,
-                    )
+            if output.available() {
+                headless::terminal_error(output, operation, &error.to_string(), step, &recovery)
                     .await?;
-                }
             }
-            result
-        });
-        let original = completion::observe(&report, Ok(port), shutdown, graceful, operation);
-        let ((result, _report_result, failure_report), _diagnostic_failure) =
-            lifecycle::diagnostics(original, diagnostics).await;
-        CliCompletion::executed(result, failure_report)
-    }));
-    runtime.shutdown_background();
-    result
+        }
+        result
+    });
+    let original = completion::observe(&report, Ok(port), shutdown.clone(), graceful, operation);
+    let ((result, _report_result, failure_report), _diagnostic_failure) =
+        lifecycle::diagnostics(original, diagnostics).await;
+    CliCompletion::executed(result, failure_report)
 }
 
 /// The `GraphCoder` preset with argv's overrides for the local harness: the

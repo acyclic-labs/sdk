@@ -66,6 +66,9 @@ pub struct CliFailure {
     /// The returned failure's independent delivery disposition. A diagnostic
     /// ACK does not substitute for this frame or for physical retirement.
     pub failure_report: FailureReport,
+    /// Independent stderr delivery. Runtime admission failure leaves this
+    /// incomplete; OS termination never starts another write.
+    pub stderr_report: FailureReport,
 }
 
 impl fmt::Display for CliFailure {
@@ -122,8 +125,8 @@ impl fmt::Display for Exit {
 
 impl std::error::Error for Exit {}
 
-/// The shared executable completion. Its terminal is the one exit path: it
-/// renders every failure on stderr and exits with that failure's status.
+/// The shared executable completion. Failure output belongs to the original
+/// runtime and shutdown scope; its terminal only returns the exit status.
 /// Embedders can consume the original typed result before OS termination.
 #[derive(Debug)]
 pub struct CliCompletion(Result<(), CliFailure>);
@@ -140,6 +143,7 @@ impl CliCompletion {
             phase,
             cause,
             failure_report: report,
+            stderr_report: FailureReport::Incomplete(None),
         }))
     }
 
@@ -149,7 +153,29 @@ impl CliCompletion {
             phase: CliPhase::Execution,
             cause,
             failure_report: report.unwrap_or(FailureReport::Incomplete(None)),
+            stderr_report: FailureReport::Incomplete(None),
         }))
+    }
+
+    /// Writes a failure through the caller's original native output admission.
+    /// Success admits no descriptor and formats no text. The original shutdown
+    /// event ends a blocked write without replacing the cause or its status.
+    /// A synchronous native write retains custody until physical completion;
+    /// an incomplete observation makes no claim that accepted bytes retired.
+    pub async fn write_failure(
+        mut self,
+        shutdown: Shutdown,
+        open: impl FnOnce() -> io::Result<acyclic_native_runtime::InheritedOutput>,
+    ) -> Self {
+        if let Err(failure) = &mut self.0 {
+            failure.stderr_report = settle_failure(shutdown, async {
+                let output = open()?;
+                output.write_owned(failure.render().into_bytes()).await?;
+                Ok(())
+            })
+            .await;
+        }
+        self
     }
 }
 
@@ -162,7 +188,7 @@ impl CliFailure {
             .map_or(std::num::NonZeroU8::MIN, Exit::code)
     }
 
-    /// The stderr line the terminal writes: the executable and the reason.
+    /// The stderr line for delivery in the original runtime: executable and reason.
     #[must_use]
     pub fn render(&self) -> String {
         let name = std::env::args_os()
@@ -179,17 +205,9 @@ impl CliFailure {
 
 impl std::process::Termination for CliCompletion {
     fn report(self) -> std::process::ExitCode {
-        // The original cause and write/incomplete disposition survive until
-        // this shared terminal, which renders it: stderr is the one account of
-        // a failure that every host captures, whatever else it consumes.
         match self.0 {
             Ok(()) => std::process::ExitCode::SUCCESS,
-            Err(failure) => {
-                use std::io::Write as _;
-                // The status reports the failure even when stderr is closed.
-                let _ = std::io::stderr().write_all(failure.render().as_bytes());
-                std::process::ExitCode::from(failure.code().get())
-            }
+            Err(failure) => std::process::ExitCode::from(failure.code().get()),
         }
     }
 }
@@ -214,15 +232,23 @@ pub async fn report_failure(
             port.reject_startup(phase.name(), cause).await
         }
     };
+    settle_failure(shutdown, write).await
+}
+
+async fn settle_failure(
+    shutdown: Shutdown,
+    write: impl Future<Output = io::Result<()>>,
+) -> FailureReport {
     tokio::select! {
+        biased;
+        stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
+            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),
+            Err(error) => io::Error::new(error.kind(), error),
+        })),
         result = write => match result {
             Ok(()) => FailureReport::Written,
             Err(error) => FailureReport::Incomplete(Some(error)),
         },
-        stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
-            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),
-            Err(error) => io::Error::other(error),
-        })),
     }
 }
 
