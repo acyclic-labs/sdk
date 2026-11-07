@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "config-retained-cut": [
+    "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "original dependency observation was discarded", [],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
+        { patch: "rust/proofs/config-retained-cut/identity.patch", label: "discarded-original-read-cut-identity", diagnostic: "settings input identity aliased a different dependency cut" },
+      ],
+    },
+  ],
   "trust-fenced-close-progress": [
     "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
     "trust_anchor::closing_a_fenced_environment_ends_its_original_anchor_wait",

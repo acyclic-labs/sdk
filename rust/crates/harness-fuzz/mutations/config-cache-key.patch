@@ -1,10 +1,10 @@
---- a/rust/crates/harness-core/src/config/evaluate.rs
-+++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -87,7 +87,6 @@
-         .lock()
-         .unwrap_or_else(std::sync::PoisonError::into_inner)
-         .as_ref()
--        .filter(|(cached_key, _)| cached_key == &key)
-         .map(|(_, outcome)| outcome.clone());
-     let outcome = match cached {
-         Some(outcome) => outcome,
+--- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
++++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
+@@ -110,7 +110,6 @@
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .as_ref()
+-            .filter(|(cached_key, _)| cached_key == &key)
+             .map(|(_, outcome)| outcome.clone());
+         let outcome = match cached {
+             Some(outcome) => outcome,

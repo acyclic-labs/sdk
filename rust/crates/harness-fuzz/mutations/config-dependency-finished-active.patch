@@ -1,6 +1,6 @@
---- a/rust/crates/harness-core/src/config/evaluate.rs
-+++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -170,7 +170,7 @@
+--- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
++++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
+@@ -171,7 +171,7 @@
      while let Some((current, index)) = stack.last_mut() {
          let Some(next) = modules[current.as_str()].0.imports.get(*index) else {
              if let Some((_, active)) = modules.get_mut(current.as_str()) {
