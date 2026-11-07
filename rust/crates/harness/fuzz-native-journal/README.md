@@ -251,3 +251,13 @@ The retained `mutations/native_eof_retirement.patch` restores shutdown after
 serving returns instead of at provider close. The unchanged control must fail at
 `EOF left native children running before reply drain` and still release its
 original held writer.
+
+The same control also withdraws the actual checkout directory before EOF.
+The original control request then refuses while the original process remains
+live. Retirement must still finish before output release, and serving must
+retain the request's typed failure and operation identity. Restoring the
+directory permits ordinary owner cleanup. A refused settlement leaves its
+original claim available for recovery rather than reporting it as settled.
+`mutations/native_eof_refusal_retirement.patch` restores cancellation without
+the fallback through the existing physical process owner. It must fail at
+`original process must retire before reply drain` without a timeout.

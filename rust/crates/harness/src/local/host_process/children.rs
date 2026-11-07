@@ -658,14 +658,28 @@ impl NativeChildren {
     }
 
     /// Interrupts every running child; the owner's host is going away.
+    /// A refused control still retires its physical process through the
+    /// original custody owner, retaining the claim for later recovery. The
+    /// first failed child's control and cleanup causes remain in the result.
     pub fn shutdown(&mut self) -> Result<()> {
-        let mut failure = None;
+        let mut stopped = Ok(());
         for reference in self.children.keys().cloned().collect::<Vec<_>>() {
-            if let Err(error) = self.cancel(&reference) {
-                failure = Some(error);
-            }
+            let result = match self.cancel(&reference) {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    // A refused control cannot make physical retirement depend
+                    // on the owner's reply consumer. Keep the original claim
+                    // for recovery and use its existing process custody now.
+                    let retired = self.children.get_mut(&reference).map_or(Ok(()), |running| {
+                        running.armed = None;
+                        running.process.release()
+                    });
+                    Error::after_cleanup(Err(error), retired)
+                }
+            };
+            stopped = stopped.and(result);
         }
-        failure.map_or(Ok(()), Err)
+        stopped
     }
 }
 
