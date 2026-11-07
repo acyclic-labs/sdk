@@ -28,6 +28,59 @@ The self-hosted mount runners execute only trusted `main` pushes or explicit
 manual dispatches; pull-request code is never run automatically on privileged,
 persistent mount hosts.
 
+## Physical workspace mounting
+
+Hosts that cannot mount (containers without `/dev/fuse`, `CAP_SYS_ADMIN`, an
+unconfined AppArmor profile or `fusermount3`) select physical mounting instead:
+`LocalHarnessConfig::workspace_mounting(WorkspaceMounting::Physical)`, or
+GraphCoder's `--workspace-mounting physical`. GraphCoder's default, `auto`,
+selects it when `probe_native_mount` reports the native provider unavailable
+and writes one stderr line naming the reason. `native` refuses to start without
+the provider, as before. `auto` cannot detect a usable `/dev/fuse` whose mount is
+still refused by capabilities or AppArmor; select `physical` explicitly there.
+It needs no device, capability, mount helper or privileged process.
+
+Physical mounting is the checkout's existing plain-directory path, applied to
+every task view. The checkout is always a plain directory; its persistent
+watcher (per-directory inotify on Linux, FSEvents, ReadDirectoryChangesW) and
+capture engine commit each tool call's effects at that call's boundary. A
+spawned agent's first binding promotes every lazily inherited entry of its fork
+view (`exactify`) and materializes that exact generation into
+`.volumes/agents/.physical/<workspace-id>`, through staging and a no-replace
+rename. Later bindings reuse the directory. Its tools, commands, file
+publications, Git facade checkouts and captures then take the same unmounted
+path as the checkout. Merge, diff and fork read the views, never the directories.
+
+Guarantees that differ from native mounting:
+
+- Observation is by notification at tool boundaries, not interception. Native
+  providers see each operation as it happens. A physical capture records what
+  the directory holds when the call completes, and attributes to that call any
+  change another process of the same user made since the previous boundary.
+- Cost is bounded by the changed paths reported by the watcher, except for one
+  full reconciliation of a directory when an owner first binds it (each spawned
+  agent turn, and each checkout open) and after a watcher overflow. A native
+  view is lazy and never scans. Each spawned agent's first binding copies its
+  whole view. Physical mounting therefore does not meet the O(1) per-agent scale
+  target: it costs a copy, a directory and a watcher per agent view.
+- No volume is projected. `.volumes/home` and other bound volumes are absent,
+  and the model's context omits the home-volume convention.
+  Shell overflow is retained as `shell-<operation>.log` in the primary view,
+  captured and committed with the command's other effects. A projected home
+  retains the same output in that private volume instead.
+- Physical view directories remain after an agent is archived, below the
+  reserved `.volumes/agents` root, which checkout capture, the Git facade and Git
+  exclusions all omit. Their contents are ordinary files of the harness user:
+  the same user can change them, and the next capture records the change.
+- After a crash, edits not yet captured in a physical directory are reconciled
+  at its next binding, as the checkout's are.
+- `--host-workspace` coordination for native coding hosts still requires
+  native mounting.
+
+The shipping GraphCoder end-to-end matrix runs its checkout, file-tool, Git
+facade, child and resume cases a second time on Linux with
+`--workspace-mounting physical` (the `-physical` case variants).
+
 ## Measured lazy customer lifecycle
 
 Initialize `acyclic_native_runtime::initialize_native_io_services` and

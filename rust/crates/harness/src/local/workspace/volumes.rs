@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 use acyclic_native_runtime::spawn;
 
-pub(super) const HOME_PATH: &str = ".volumes/home";
+pub(in crate::local) const HOME_PATH: &str = ".volumes/home";
 /// The directory in a checkout holding its incarnation token, outside every
 /// workspace view.
 pub(in crate::local) const INCARNATION_PATH: &str = ".volumes/.incarnation";

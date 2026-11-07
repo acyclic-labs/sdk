@@ -17,7 +17,10 @@ pub use lifecycle::DiagnosticConfigurationError;
 
 use acyclic_harness::{
     OperationId, completion,
-    local::{Connection, LocalHarness, LocalHarnessConfig, agent_conversation::Conversation},
+    local::{
+        Connection, LocalHarness, LocalHarnessConfig, WorkspaceMounting,
+        agent_conversation::Conversation,
+    },
     native_settings::SettingsConfig,
     server::ServerConfig,
 };
@@ -231,6 +234,20 @@ fn configure(
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
     }
+    let mounting = match args.workspace_mounting {
+        args::Mounting::Native => WorkspaceMounting::Native,
+        args::Mounting::Physical => WorkspaceMounting::Physical,
+        args::Mounting::Auto => {
+            let (mounting, unavailable) = WorkspaceMounting::detect();
+            if let Some(reason) = unavailable {
+                eprintln!(
+                    "graphcoder: native workspace mounting is unavailable ({reason}); using physical workspace mounting, which captures changes at each tool boundary"
+                );
+            }
+            mounting
+        }
+    };
+    config = config.workspace_mounting(mounting);
     if args.default_config {
         config = config.without_user_settings();
     } else if let Some(root) = &args.settings_root {

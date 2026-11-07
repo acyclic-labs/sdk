@@ -6,6 +6,7 @@ release commit.
 
 ## 0.2.0 - Unreleased
 
+- Add physical workspace mounting for hosts without FUSE, ProjFS or NFS mounting: `WorkspaceMounting::Physical` and GraphCoder `--workspace-mounting auto|native|physical` (`auto` reports its fallback on stderr). The checkout and every task view are plain directories whose changes are captured at tool boundaries by the existing watcher and capture engines; a spawned view is materialized from its exact generation on first binding. `NATIVE_MOUNT_QUALIFICATION.md` lists the guarantees that differ.
 - Scope the checkout root witness by a durable volume id (Linux `f_fsid`, Windows volume serial number, macOS device) when reopening incarnation-selected state, reject default-state overlap before publishing checkout metadata, and flush existing Git exclusion rules as well as newly appended rules.
 - Release core-state owner, transaction and record locks at their logical lifetime end, including action unwind before a forked child execs. Store clones and admitted owner transactions retain exclusion; native cleanup spends its original reservation exactly once, and explicitly released guards do not unlock again on drop.
 - Generate ignored Actors guest and timer authoring contracts with the locked Rust producer before Rust workspace qualification, preserving read-only drift checks without requiring JavaScript tooling.

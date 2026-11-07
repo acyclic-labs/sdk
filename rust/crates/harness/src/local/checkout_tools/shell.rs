@@ -55,9 +55,21 @@ impl CheckoutTools {
             .map_err(storage)?;
         let output_health = files.health.clone();
         let spill_name = format!("shell-{operation}.log");
-        let (scratch, _) = state
+        let (scratch, relative) = state
             .mounts
-            .resolve(std::path::Path::new(".volumes/home"))?;
+            .resolve(std::path::Path::new(workspace::volumes::HOME_PATH))?;
+        // An absent home binding resolves inside the primary volume. Keep
+        // overflow there so ordinary command capture commits the visible file.
+        let spill_directory = if relative.is_empty() {
+            workspace::volumes::HOME_PATH
+        } else {
+            ""
+        };
+        let spill_path = if spill_directory.is_empty() {
+            spill_name.clone()
+        } else {
+            format!("{spill_directory}/{spill_name}")
+        };
         scratch.check(
             acyclic_fs::access::Action::Write,
             &spill_name,
@@ -66,7 +78,7 @@ impl CheckoutTools {
         let spill_root = scratch
             .native_root
             .clone()
-            .unwrap_or_else(|| state.mounts.root.join(".volumes/home"));
+            .unwrap_or_else(|| state.mounts.root.join(spill_directory));
         let retained = tail::Tail::new(spill_root.join(&spill_name), maximum_output.min(30_000));
         let (output, (state, files, claims, retained)) =
             native_process::capture::capture_with_custody(
@@ -115,7 +127,7 @@ impl CheckoutTools {
                     ToolResult {
                         value: serde_json::json!({
                             "success": output.success, "exit_code": output.exit_code,
-                            "spill": format!(".volumes/home/{spill_name}"),
+                            "spill": spill_path,
                             "stop": output.stop,
                         }),
                     },

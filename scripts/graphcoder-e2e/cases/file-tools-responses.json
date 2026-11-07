@@ -104,5 +104,6 @@
       }
     ]
   },
-  "adapter": "responses"
+  "adapter": "responses",
+  "physical": true
 }

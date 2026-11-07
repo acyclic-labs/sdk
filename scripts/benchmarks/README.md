@@ -80,9 +80,11 @@ agent logs. Nonzero exits propagate without a logging pipeline masking them.
 Successful setup grants execution only in that exact environment object; a
 different container or a failed reinstall cannot reuse that authority.
 
-The environment must already admit native FUSE mounts: a usable `/dev/fuse`,
-`fusermount3`, the binary's runtime libraries, mount authority, and a task working
-directory other than `/`. Host Docker/FUSE availability alone does not prove
+The environment must provide the binary's runtime libraries and a task working
+directory other than `/`. Native FUSE mounts additionally need a usable
+`/dev/fuse`, `fusermount3` and mount authority; without them, GraphCoder's
+`--workspace-mounting physical` runs with no device or capability (see
+`NATIVE_MOUNT_QUALIFICATION.md`). Host Docker/FUSE availability alone does not prove
 container readiness. The adapter never changes container privileges or task
 images. Native mount admission inside the actual task images still needs a
 credential-free qualification before a run. Loopback endpoint addresses refer
