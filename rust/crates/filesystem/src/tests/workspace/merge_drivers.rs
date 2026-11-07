@@ -752,44 +752,50 @@ async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
     drop(calibration);
     let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
     let before = unbounded!(staging, head())?.id();
-    let join = unbounded!(source.join_into(&target), plan())?;
-    let preview = value!(
-        join.preview_pages(
-            options,
-            WorkBudget {
-                items_examined: allowance,
-                ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .await
-    )?;
-    let mut bounded = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
-    // EOF consumes one cursor item but renders no record, path or body. A
-    // refusal here must be staging work, not a renderer's earlier boundary.
-    assert!(matches!(
-        bounded
-            .write_page(
-                MergeDirectorySection::Conflicts,
-                step,
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await,
-        Err(WorkspaceError::Work(
-            crate::WorkError::BudgetExceeded { .. }
-        ))
-    ));
-    assert_eq!(unbounded!(staging, head())?.id(), before);
-    assert!(matches!(
-        bounded
-            .write_page(
-                MergeDirectorySection::Conflicts,
-                step,
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await,
-        Err(WorkspaceError::InvalidMergeResolution)
-    ));
+    // Preparation and publication spend the same retained allowance. Zero
+    // append credit must refuse the page before its authority head changes.
+    for budget in [
+        WorkBudget {
+            items_examined: allowance,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            authority_records_appended: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+    ] {
+        let join = unbounded!(source.join_into(&target), plan())?;
+        let preview = value!(join.preview_pages(options, budget, &cancellation).await)?;
+        let mut bounded =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        // EOF renders no conflict, path or body, isolating staging and commit.
+        assert!(
+            matches!(
+                bounded
+                    .write_page(
+                        MergeDirectorySection::Conflicts,
+                        step,
+                        crate::PublicationPermit::Unrestricted,
+                    )
+                    .await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "page publication escaped the preview's original credit"
+        );
+        assert_eq!(unbounded!(staging, head())?.id(), before);
+        assert!(matches!(
+            bounded
+                .write_page(
+                    MergeDirectorySection::Conflicts,
+                    step,
+                    crate::PublicationPermit::Unrestricted,
+                )
+                .await,
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
 
     let join = unbounded!(source.join_into(&target), plan())?;
     let preview = value!(
