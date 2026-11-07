@@ -83,7 +83,12 @@ fn post_exit(hub: &super::Hub, context: *mut c_void) {
         PostQueuedCompletionStatus(hub.poller.port.as_raw_handle(), 0, EXIT_KEY, context.cast())
     } == 0
     {
-        hub.fail(io::Error::last_os_error());
+        // The original OS refusal is retained before terminal fanout. User
+        // wakers cannot unwind through this thread-pool callback's C ABI.
+        let error = io::Error::last_os_error();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            hub.fail(error);
+        }));
     }
 }
 
@@ -191,6 +196,9 @@ impl PipeOperation {
         self: &Arc<Self>,
         transfer: impl FnOnce(*mut OVERLAPPED) -> i32,
     ) -> io::Result<Option<usize>> {
+        if let Some(error) = self.owner.service_failure.get() {
+            return Err(io::Error::new(error.kind(), Arc::clone(error)));
+        }
         // SAFETY: no operation is pending, so this process owns the
         // OVERLAPPED; zero it before handing it to the kernel.
         unsafe { *self.overlapped.get() = std::mem::zeroed() };
@@ -364,7 +372,10 @@ impl PipeOperation {
             };
             // The completion count remains work even when the kernel reports
             // cancellation/error, or nobody polls the writer again.
-            let result = self.finish_write(entry.dwNumberOfBytesTransferred as usize, result);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.finish_write(entry.dwNumberOfBytesTransferred as usize, result)
+            }))
+            .unwrap_or_else(|payload| Err(crate::task::panic_error(payload)));
             *self.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
         }
         self.pending.store(false, Ordering::SeqCst);
@@ -465,7 +476,10 @@ impl Poller {
                 Err(error)
             };
         }
-        for entry in entries.iter().take(removed as usize) {
+        // Every dequeued packet retains its original kernel reference until
+        // this delivery visits it, including after another packet's final
+        // allocation refund unwinds.
+        crate::delivery::deliver(entries.iter().take(removed as usize), |entry| {
             match entry.lpCompletionKey {
                 EXIT_KEY => ready.push(entry.lpOverlapped.addr()),
                 PIPE_KEY => {
@@ -478,7 +492,7 @@ impl Poller {
                 }
                 _ => {}
             }
-        }
+        });
         Ok(())
     }
 }
@@ -499,6 +513,12 @@ mod tests {
                 self.0.store(true, Ordering::Release);
             }
         }
+        struct Panicking;
+        impl Wake for Panicking {
+            fn wake(self: Arc<Self>) {
+                std::panic::panic_any("exit callback consumer panic");
+            }
+        }
 
         // A live pipe cannot accept an IOCP packet. The original OS call
         // supplies its rejection, with no fabricated native error fixture.
@@ -515,6 +535,11 @@ mod tests {
         let waker = Waker::from(Arc::clone(&notification));
         let mut context = Context::from_waker(&waker);
         assert!(Pin::new(&mut active).poll(&mut context).is_pending());
+        assert!(
+            Pin::new(&mut early)
+                .poll(&mut Context::from_waker(&Waker::from(Arc::new(Panicking))))
+                .is_pending()
+        );
         let token = active.first.as_ref().unwrap().token;
         let context_token = std::ptr::without_provenance_mut::<c_void>(token);
 
