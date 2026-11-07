@@ -40,7 +40,9 @@ impl ReadAllocationReservation {
 impl Drop for ReadAllocationReservation {
     fn drop(&mut self) {
         if let Some(bytes) = self.bytes {
-            self.meter.cancel_reserved_allocation(bytes);
+            crate::delivery::deliver(std::iter::once(bytes), |bytes| {
+                self.meter.cancel_reserved_allocation(bytes);
+            });
         }
     }
 }
@@ -236,6 +238,8 @@ impl<M: Deref<Target: NativeReadMeter>> std::fmt::Debug for ReadAllocation<M> {
 
 impl<M: Deref<Target: NativeReadMeter>> Drop for ReadAllocation<M> {
     fn drop(&mut self) {
-        self.meter.release(self.bytes);
+        crate::delivery::deliver(std::iter::once(self.bytes), |bytes| {
+            self.meter.release(bytes);
+        });
     }
 }
