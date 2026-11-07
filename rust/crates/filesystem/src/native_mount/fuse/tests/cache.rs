@@ -21,16 +21,20 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         }
     }
 
-    for directory in [false, true] {
+    for (directory, projected_creation) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let (source, around) = shared_sources(posix_config())?;
         let path = name("held");
-        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
-            if directory {
-                around.create_directory(&path, FileMetadata::default(), work)
-            } else {
-                around.create_file(&path, FileMetadata::default(), None, work)
-            }
-        })?;
+        if !projected_creation {
+            crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                if directory {
+                    around.create_directory(&path, FileMetadata::default(), work)
+                } else {
+                    around.create_file(&path, FileMetadata::default(), None, work)
+                }
+            })?;
+        }
         let source = Arc::new(source);
         let core = projection_core(
             source.clone(),
@@ -40,11 +44,33 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         let observer: Arc<dyn ViewObserver> = core.clone();
         source.observe_view(Arc::downgrade(&observer))?;
         let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
-        let entry = projection.lookup_entry(
-            ROOT_INODE,
-            std::ffi::OsStr::new("held"),
-            &fuse_fixture_work(),
-        )?;
+        let entry = core
+            .request(|work| {
+                if !projected_creation {
+                    projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)
+                } else if directory {
+                    projection.create_node(
+                        ROOT_INODE,
+                        std::ffi::OsStr::new("held"),
+                        |path, work| {
+                            Ok(source.create_directory(path, FileMetadata::default(), work)?)
+                        },
+                        work,
+                    )
+                } else {
+                    projection
+                        .create_file(
+                            (0, 0),
+                            ROOT_INODE,
+                            std::ffi::OsStr::new("held"),
+                            0o644,
+                            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                            work,
+                        )
+                        .map(|created| created.0)
+                }
+            })
+            .map_err(|(cause, _)| cause)?;
         if directory {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
                 around.create_file(
@@ -69,7 +95,7 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         assert!(notifications.inodes.borrow().contains(&entry.attr.ino.0));
         assert!(
             notifications.entries.borrow().is_empty(),
-            "a node change must not detach its unchanged name: directory={directory}"
+            "a node change must not detach its unchanged name: directory={directory}, projected_creation={projected_creation}"
         );
 
         crate::native_mount::adapter::boundary(around.cancellation(), |work| {
