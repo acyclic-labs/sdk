@@ -91,7 +91,7 @@ fn permission_denied_startup_preserves_live_and_foreign_mounts() -> TestResult {
     let denied = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let result = check_startup_recovery(true, || {
         super::super::reclaim::reclaim_stale_mounts_with_retirement(
-            super::super::reclaim::RetirementOperations::denying_direct(Arc::clone(&denied)),
+            &super::super::reclaim::RetirementOperations::denying_direct(Arc::clone(&denied)),
         )
     });
     assert!(

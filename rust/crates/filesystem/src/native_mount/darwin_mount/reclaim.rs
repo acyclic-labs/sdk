@@ -137,11 +137,11 @@ fn verify_detached(mount: &libc::statfs) -> Result<(), NativeMountError> {
 // is the durable SDK ownership record and its kernel lock is the process
 // liveness witness, including after SIGKILL and across PID reuse.
 pub(in crate::native_mount) fn reclaim_stale_mounts() -> Result<(), NativeMountError> {
-    reclaim_stale_mounts_with_retirement(RetirementOperations::default())
+    reclaim_stale_mounts_with_retirement(&RetirementOperations::default())
 }
 
 pub(super) fn reclaim_stale_mounts_with_retirement(
-    retirement: RetirementOperations,
+    retirement: &RetirementOperations,
 ) -> Result<(), NativeMountError> {
     acyclic_native_runtime::initialize_native_io_services()?;
     // SAFETY: getuid has no preconditions.
