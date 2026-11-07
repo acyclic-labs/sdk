@@ -2,7 +2,9 @@
 
 use acyclic_fs::foundation::OperationId;
 use acyclic_fs::kernel::{FileMetadata, MetadataField};
-use acyclic_fs::workspace::{ApplyOptions, ForkOptions, MergeDirectorySection};
+use acyclic_fs::workspace::{
+    ApplyOptions, ForkOptions, MergeConflictFile, MergeConflictFileKind, MergeDirectorySection,
+};
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, IdempotencyKey, LocalOptions,
     OperationReceipt, PublicationPermit, Transaction, WorkBudget, WorkCounters, WorkspaceError,
@@ -45,7 +47,7 @@ fn emit(name: &str, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
 async fn main() {
     if let Err(error) = capture().await {
         eprintln!(
-            "merge-directory capture failed: {error}; recovery: cargo run --locked -p acyclic-fs --no-default-features --features local --example capture_merge_directory"
+            "step=merge-directory-capture; cause={error}; recovery: cargo run --locked -p acyclic-fs --no-default-features --features local --example capture_merge_directory"
         );
         std::process::exit(1);
     }
@@ -146,7 +148,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             .await?;
     }
     let generation = staging.head(work, &cancellation).await?.value;
-    let path = directory.path();
+    let path = directory.path().to_owned();
     let bytes = generation
         .read(&format!("{path}/plan.json"), 16384, work, &cancellation)
         .await?
@@ -178,6 +180,39 @@ async fn capture() -> Result<(), Box<dyn Error>> {
                     .await?
                     .value;
                 emit(&format!("{section}-{index}-v1"), &bytes)?;
+                if section == "conflicts" {
+                    let descriptor: MergeConflictFile = serde_json::from_slice(&bytes)?;
+                    let proposals: &[(&str, &str)] = match descriptor.kind {
+                        MergeConflictFileKind::Binary => &[
+                            ("take-ours", r#"{"take":"ours"}"#),
+                            ("take-theirs", r#"{"take":"theirs"}"#),
+                        ],
+                        MergeConflictFileKind::Deleted => &[("remove", r#"{"remove":true}"#)],
+                        _ => &[],
+                    };
+                    for (label, document) in proposals {
+                        let proposal_path = format!(
+                            "{}.resolve.json",
+                            directory.conflict_file_path(&descriptor.conflict.key)?
+                        );
+                        staging.write_text(&proposal_path, document).await?;
+                        let proposed = staging.head(work, &cancellation).await?.value;
+                        let accepted = directory
+                            .resolution(&proposed, &descriptor.conflict.key)
+                            .await?;
+                        let original = proposed
+                            .read(&proposal_path, 16384, work, &cancellation)
+                            .await?
+                            .value;
+                        // The expected resolution is real public admission output.
+                        let trace = serde_json::to_vec(&(
+                            &descriptor.conflict,
+                            original.as_ref(),
+                            accepted,
+                        ))?;
+                        emit(&format!("resolution-{label}-v1"), &trace)?;
+                    }
+                }
                 index += 1;
             }
             if !page.has_more {
