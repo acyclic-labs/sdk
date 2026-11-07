@@ -150,3 +150,58 @@ fn allocation_reservation_preserves_original_unwind() -> io::Result<()> {
 fn allocation_preserves_original_unwind() -> io::Result<()> {
     preserves_unwind(Credit::Allocation)
 }
+
+#[test]
+fn shrinking_allocation_commits_custody_before_refund_callback() -> io::Result<()> {
+    type Shrink = fn(&mut ReadAllocation, usize) -> io::Result<()>;
+    let shrink: [(&str, Shrink); 3] = [
+        ("release", |allocation, retained| {
+            allocation.release(8 - retained)
+        }),
+        ("resize_retained", ReadAllocation::resize_retained),
+        ("reconcile_capacity", ReadAllocation::reconcile_capacity),
+    ];
+    let mut violations = Vec::new();
+    for (name, shrink) in shrink {
+        for retained in [0, 4] {
+            let returned = Arc::new(AtomicU64::new(0));
+            let mut ledger = ReadBudgetMeter::new(8, 8);
+            ledger.credit_returned = Some(Box::new({
+                let returned = Arc::clone(&returned);
+                move |credit| {
+                    if credit == Credit::Allocation && returned.fetch_add(1, Ordering::AcqRel) == 0
+                    {
+                        std::panic::panic_any("original allocation shrink callback");
+                    }
+                }
+            }));
+            let observed = Arc::new(ledger);
+            let meter: Arc<dyn NativeReadMeter> = observed.clone();
+            let mut allocation = ReadAllocation::new(&meter, 8)?;
+            // Retire actual backing before returning its admitted credit. Any
+            // remaining claim conservatively outlives that physical retirement.
+            let backing = Vec::<u8>::with_capacity(8);
+            drop(backing);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                shrink(&mut allocation, retained)
+            }));
+            assert_eq!(
+                result.err().and_then(|p| p.downcast::<&str>().ok()),
+                Some(Box::new("original allocation shrink callback"))
+            );
+            let custody = allocation.bytes();
+            let charged = observed.memory.load(Ordering::Acquire);
+            drop(allocation);
+            let final_charge = observed.memory.load(Ordering::Acquire);
+            if custody != retained as u64 || charged != retained as u64 || final_charge != 0 {
+                violations.push((name, retained, custody, charged, final_charge));
+            }
+            assert_eq!(returned.load(Ordering::Acquire), 2);
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "allocation retained ownership precedes original refund callback: {violations:?}"
+    );
+    Ok(())
+}

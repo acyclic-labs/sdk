@@ -110,15 +110,23 @@ impl ReadAllocation {
         let actual = actual as u64;
         if actual > self.bytes {
             self.meter.adopt(actual - self.bytes)?;
+            self.bytes = actual;
         } else if actual < self.bytes {
-            self.meter.release(self.bytes - actual);
+            self.shrink_to(actual);
         }
-        self.bytes = actual;
         Ok(())
     }
 }
 
 impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+    // All callers establish retained <= bytes before returning original credit.
+    // Commit custody first: a callback unwind must not refund these bytes again.
+    fn shrink_to(&mut self, retained: u64) {
+        let released = self.bytes - retained;
+        self.bytes = retained;
+        self.meter.release(released);
+    }
+
     /// Records real capacity discovered after a controlled allocation.
     ///
     /// # Panics
@@ -140,8 +148,7 @@ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
                 "successful adoption retains all actual excess"
             );
         } else if actual < self.bytes {
-            self.meter.release(self.bytes - actual);
-            self.bytes = actual;
+            self.shrink_to(actual);
         }
         Ok(())
     }
@@ -206,8 +213,7 @@ impl ReadAllocation {
             .bytes
             .checked_sub(bytes)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        self.meter.release(bytes);
-        self.bytes = remaining;
+        self.shrink_to(remaining);
         Ok(())
     }
 }

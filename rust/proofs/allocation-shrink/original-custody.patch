@@ -1,0 +1,50 @@
+diff --git b/rust/crates/native-runtime/src/meter/allocation.rs a/rust/crates/native-runtime/src/meter/allocation.rs
+index 0fd730dcb76..6b4021a7424 100644
+--- b/rust/crates/native-runtime/src/meter/allocation.rs
++++ a/rust/crates/native-runtime/src/meter/allocation.rs
+@@ -110,23 +110,15 @@ impl ReadAllocation {
+         let actual = actual as u64;
+         if actual > self.bytes {
+             self.meter.adopt(actual - self.bytes)?;
+-            self.bytes = actual;
+         } else if actual < self.bytes {
+-            self.shrink_to(actual);
++            self.meter.release(self.bytes - actual);
+         }
++        self.bytes = actual;
+         Ok(())
+     }
+ }
+ 
+ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+-    // All callers establish retained <= bytes before returning original credit.
+-    // Commit custody first: a callback unwind must not refund these bytes again.
+-    fn shrink_to(&mut self, retained: u64) {
+-        let released = self.bytes - retained;
+-        self.bytes = retained;
+-        self.meter.release(released);
+-    }
+-
+     /// Records real capacity discovered after a controlled allocation.
+     ///
+     /// # Panics
+@@ -148,7 +140,8 @@ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+                 "successful adoption retains all actual excess"
+             );
+         } else if actual < self.bytes {
+-            self.shrink_to(actual);
++            self.meter.release(self.bytes - actual);
++            self.bytes = actual;
+         }
+         Ok(())
+     }
+@@ -213,7 +206,8 @@ impl ReadAllocation {
+             .bytes
+             .checked_sub(bytes)
+             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+-        self.shrink_to(remaining);
++        self.meter.release(bytes);
++        self.bytes = remaining;
+         Ok(())
+     }
+ }
