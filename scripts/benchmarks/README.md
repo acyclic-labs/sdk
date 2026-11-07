@@ -76,6 +76,10 @@ login. Its stdout JSONL, stderr and artifact/source receipt remain in Harbor's
 agent logs. Nonzero exits propagate without a logging pipeline masking them.
 Successful setup grants execution only in that exact environment object; a
 different container or a failed reinstall cannot reuse that authority.
+Task skills are copied from Harbor's environment-side skills directory into
+the task workspace's `.agents/skills`, including auxiliary and hidden files.
+The harness discovers them through the ordinary volume path. Copy failures
+reject setup and revoke execution authority; task MCP servers remain unsupported.
 
 The environment must already admit native FUSE mounts: a usable `/dev/fuse`,
 `fusermount3`, the binary's runtime libraries, mount authority, and a task working

@@ -103,7 +103,7 @@ class HarborContracts(unittest.IsolatedAsyncioTestCase):
                 if "cp " in command:
                     self.commands.append(command)
                     child = await asyncio.create_subprocess_exec(
-                        "sh", "-ec", command, cwd=workspace,
+                        "bash", "-ec", command, cwd=workspace,
                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                     stdout, stderr = await child.communicate()
                     return SimpleNamespace(return_code=child.returncode,
