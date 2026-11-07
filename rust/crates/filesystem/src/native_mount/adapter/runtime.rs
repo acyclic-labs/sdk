@@ -71,6 +71,12 @@ impl Drop for RuntimeAllocation<'_> {
 /// A lazy mount watches its host source, so the mount services include the
 /// native watch services: macOS loads the `FSEvents` framework here, where no
 /// finite source invocation has to fund it.
+///
+/// The persistent mount registry uses an absolute `LOCALAPPDATA` override on
+/// Windows, or an absolute `XDG_STATE_HOME` followed by `HOME/.local/state`
+/// elsewhere, before the native data directory. Empty and relative roots are
+/// ignored. If no absolute root is available, initialization returns a service
+/// error before creating registry state.
 pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
     #[cfg(target_os = "macos")]
     crate::native_mount::darwin_mount::reclaim_stale_mounts()?;
