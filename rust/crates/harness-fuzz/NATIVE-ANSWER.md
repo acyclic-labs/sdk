@@ -48,7 +48,7 @@ Replay the same oracle without libFuzzer instrumentation:
 
 ```sh
 cargo test --locked -p acyclic-harness-fuzz --no-default-features --features native-answer \
-  --test native_answer recorded_and_derived_native_events_satisfy_the_same_fuzz_oracle -- --exact
+  --lib native_answer::recorded_and_derived_native_events_satisfy_the_same_fuzz_oracle -- --exact
 ```
 
 From `rust/crates/harness-fuzz`, use the retained target and corpus:
