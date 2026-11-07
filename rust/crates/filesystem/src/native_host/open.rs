@@ -465,6 +465,67 @@ pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
     assert_eq!(work.live_allocation_bytes(), live);
 }
 
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub fn check_native_root_name_prefix(name: &str) {
+    let Some(prefix) = name.split_once('\0').map(|(prefix, _)| prefix) else {
+        return;
+    };
+    #[cfg(unix)]
+    let (examined, encoded) = (prefix.len() as u64 + 1, 0);
+    #[cfg(windows)]
+    let (examined, encoded) = {
+        let length = name.encode_utf16().count() as u64;
+        let prefix = prefix.encode_utf16().count() as u64 + 1;
+        (length + prefix, prefix * 2)
+    };
+    let work =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    let live = work.live_allocation_bytes();
+    let before = work.receipt();
+    assert!(matches!(
+        work.root_identity(Path::new(name)),
+        Err(NativeTreeMaterializationError::InvalidLayout)
+    ));
+    let after = work.receipt();
+    assert_eq!(after.items_examined - before.items_examined, examined);
+    assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded);
+    assert_eq!(
+        after.backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(work.live_allocation_bytes(), live);
+    // The demand adapter must keep the same original ledger and exact prefix.
+    let mut original = work.clone();
+    assert!(matches!(
+        HostRoot::open(Path::new(name), &mut original),
+        Err(DemandError::InvalidRequest)
+    ));
+    let after_demand = work.receipt();
+    assert_eq!(after_demand.items_examined - after.items_examined, examined);
+    assert_eq!(after_demand.bytes_encoded - after.bytes_encoded, encoded);
+    assert_eq!(
+        after_demand.backend_read_operations,
+        after.backend_read_operations
+    );
+    assert_eq!(work.live_allocation_bytes(), live);
+    let denied = NativeMaterializationWork::new(
+        WorkBudget {
+            items_examined: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    assert!(matches!(
+        denied.root_identity(Path::new(name)),
+        Err(NativeTreeMaterializationError::Work(_))
+    ));
+    assert_eq!(denied.receipt().items_examined, 0);
+    assert_eq!(denied.receipt().backend_read_operations, 0);
+}
+
 #[cfg(all(test, not(loom)))]
 mod prepared_leaf_tests {
     use super::*;
@@ -521,6 +582,25 @@ mod prepared_leaf_tests {
         assert_eq!(work.work.allocation_operations, 0);
         assert!(!temporary.path().join("literal & %.lock").exists());
         Ok(())
+    }
+
+    #[test]
+    fn native_root_names_exhaust_nul_positions_on_original_work() {
+        for length in 1..=32 {
+            for position in 0..length {
+                let mut name = "a".repeat(length);
+                name.replace_range(position..position + 1, "\0");
+                check_native_root_name_prefix(&name);
+            }
+        }
+        for name in [
+            "\0\u{e9}\u{10400}",
+            "\u{e9}\0\u{10400}",
+            "\u{e9}\u{10400}\0",
+            "\u{e9}\u{10400}\0tail\0",
+        ] {
+            check_native_root_name_prefix(name);
+        }
     }
 
     #[test]
