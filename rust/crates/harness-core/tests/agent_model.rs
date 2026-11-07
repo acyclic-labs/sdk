@@ -20,6 +20,8 @@ mod control_trace;
 mod corpus;
 #[path = "agent_model/driver.rs"]
 mod driver;
+#[path = "agent_model/failed_child.rs"]
+mod failed_child;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
@@ -1387,22 +1389,28 @@ async fn quorum_wait() -> Result {
     Ok(())
 }
 
-/// A wait parks only on children that can still settle, and asks each of
-/// them: a child spawned in the same step is one. A wait no open child can
-/// meet continues at once instead of parking on its deadline, so its call
-/// reports the named failure.
+/// A wait parks only while its open children can still meet it, and asks
+/// each of them. A child the same step spawns cannot be written by that step,
+/// so it is never asked: the wait continues and its call reports the child
+/// spawning. A condition the open children cannot meet continues at once
+/// instead of parking on its deadline, so its call reports the named failure.
+/// Every step lowers to its one commit.
 ///
-/// Negative control: mapping the wait before applying the step's spawns
-/// counted the new child unreachable and parked on the deadline alone,
-/// asking no one.
+/// Negative control: the former mapping parked the unmeetable condition on
+/// its deadline alone, asking no one.
 #[tokio::test]
 async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
     let root = AgentPath::root(&id(1));
+    let open = root.child(&id(2))?;
     let spawned = root.child(&AgentId::derive(&root.id(), "w1"))?;
-    let stranger = root.child(&id(9))?;
     let start = InboxRecord::Approval(Approval { id: intent("q1") });
-    for (awaited, spawn, parks) in [(spawned.clone(), true, true), (stranger, false, false)] {
-        let state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
+    for (awaited, need, spawn, parks) in [
+        (open.clone(), 1, false, true),
+        (spawned.clone(), 1, true, false),
+        (open.clone(), 2, false, false),
+    ] {
+        let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
+        state.open_children.insert(open.clone());
         let outs = if spawn {
             vec![Out::Spawn {
                 profile: None,
@@ -1414,15 +1422,24 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
         } else {
             Vec::new()
         };
-        let driver = script(vec![TurnStep {
-            reserved_children: 0,
-            checkpoint: Some(b"waiting".to_vec()),
-            outs,
-            wait: Wait::Until(
-                Until::quorum(BTreeSet::from([awaited.clone()]), 1).within(Some(1_000)),
-            ),
-            drops: None,
-        }]);
+        let driver = script(vec![
+            TurnStep {
+                reserved_children: 0,
+                checkpoint: Some(b"waiting".to_vec()),
+                outs,
+                wait: Wait::Until(
+                    Until::quorum(BTreeSet::from([awaited.clone()]), need).within(Some(1_000)),
+                ),
+                drops: None,
+            },
+            TurnStep {
+                reserved_children: 0,
+                checkpoint: None,
+                outs: Vec::new(),
+                wait: Wait::Input,
+                drops: None,
+            },
+        ]);
         let stepped = step(
             &driver,
             &root,
@@ -1438,15 +1455,25 @@ async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
         let asked = stepped
             .outs
             .iter()
-            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::Awaited } if *to == awaited))
+            .filter(|out| {
+                matches!(
+                    out,
+                    Out::Send {
+                        record: InboxRecord::Awaited,
+                        ..
+                    }
+                )
+            })
             .count();
-        assert_eq!(asked, usize::from(parks), "{awaited}");
+        let case = format!("{awaited} need {need}");
+        assert_eq!(asked, usize::from(parks), "{case}");
         assert_eq!(
             matches!(stepped.state.phase, Phase::Waiting { .. }),
             parks,
-            "{awaited}: {:?}",
+            "{case}: {:?}",
             stepped.state.phase
         );
+        lower(&stepped, 1, delivery_key(&stepped.state, "t")?)?;
     }
     Ok(())
 }

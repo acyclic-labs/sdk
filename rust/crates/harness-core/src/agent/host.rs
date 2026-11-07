@@ -224,7 +224,8 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     }
 
     /// Host every agent until the runtime fails: one activation follow and one
-    /// timer for all agents. Per-agent failures go to `report` and stay queued.
+    /// timer for all agents. Per-agent failures a retry may pass go to `report`
+    /// and stay queued; one storage refuses for good settles the agent failed.
     pub async fn run(
         &self,
         report: impl Fn(&ActorReference, &acyclic_actors::local::Error),

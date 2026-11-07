@@ -256,18 +256,22 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
+    /// The delivery's transition, or with `failure`, the transition that
+    /// settles the agent as that failure from the same checkpoint instead
+    /// of stepping (see [`super::machine::failed_step`]).
     async fn transition(
         &self,
-        delivery: Delivery,
+        delivery: &Delivery,
         checkpoint: Option<&Checkpoint>,
         cancellation: acyclic_actors::guest::CancellationToken,
+        failure: Option<&str>,
     ) -> Result<Transition, Error> {
         let saved = checkpoint.map(checkpoint_state).transpose()?;
         let cut = delivery
             .subscriptions
             .get(INBOX)
             .ok_or(Error::Record("agent inbox subscription missing"))?;
-        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record.as_ref()) {
             (
                 Trigger::Record {
                     subscription,
@@ -316,7 +320,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         let was_open = saved.as_ref().is_none_or(|state| !state.closed);
         let mut state = saved;
-        if let Some(state) = state.as_mut() {
+        if let Some(state) = state.as_mut().filter(|_| failure.is_none()) {
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
                 Wake::Inbox { sequence, .. } => *sequence,
@@ -327,15 +331,21 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
-        let mut prepared = super::machine::prepare_step(
-            &self.driver,
-            &path,
-            state,
-            (cursor, delivery.now_unix_ms),
-            wake,
-            cancellation,
-        )
-        .await?;
+        let mut prepared = match (failure, state) {
+            (None, state) => {
+                super::machine::prepare_step(
+                    &self.driver,
+                    &path,
+                    state,
+                    (cursor, delivery.now_unix_ms),
+                    wake,
+                    cancellation,
+                )
+                .await?
+            }
+            (Some(failure), Some(state)) => super::machine::failed_step(state, cursor, failure)?,
+            (Some(_), None) => return Err(Error::Record("a failed first step has no agent")),
+        };
         let participant = match &self.volumes {
             Some(volumes) => {
                 let (state, outs) = prepared.state_and_outs();
@@ -419,12 +429,48 @@ where
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> GuestFuture<'a, Transition> {
         Box::pin(async move {
-            self.transition(delivery, checkpoint, cancellation)
+            let stepped = self
+                .transition(&delivery, checkpoint, cancellation.clone(), None)
+                .await;
+            // A step that fails for good settles the agent as that failure,
+            // reported to its parent once, instead of leaving its input to
+            // fail again on every attempt; an uncertain or cancelled one
+            // retries the same delivery.
+            let stepped = match stepped {
+                Err(error)
+                    if checkpoint.is_some()
+                        && !error.uncertain()
+                        && !cancellation.is_cancelled()
+                        && !matches!(error, Error::IncompatibleCheckpointCodec) =>
+                {
+                    let failure = error.to_string();
+                    self.transition(&delivery, checkpoint, cancellation, Some(&failure))
+                        .await
+                }
+                stepped => stepped,
+            };
+            stepped.map_err(|error| match error {
+                Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
+                error => guest(error),
+            })
+        })
+    }
+
+    fn on_failure<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        failure: &'a str,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        Box::pin(async move {
+            if checkpoint.is_none() {
+                return Ok(None);
+            }
+            let token = acyclic_actors::guest::CancellationToken::new();
+            self.transition(&delivery, checkpoint, token, Some(failure))
                 .await
-                .map_err(|error| match error {
-                    Error::IncompatibleCheckpointCodec => GuestError::IncompatibleCodec,
-                    error => guest(error),
-                })
+                .map(Some)
+                .map_err(guest)
         })
     }
 }

@@ -1062,7 +1062,6 @@ async fn run<T: TurnDriver + ?Sized>(
     if let Some(end) = turn.drops {
         state.drop_before(end);
     }
-    let spawned = outs.len();
     outs.extend(turn.outs);
     let wait = match turn.wait {
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
@@ -1082,11 +1081,10 @@ async fn run<T: TurnDriver + ?Sized>(
             None,
         ),
         Wait::Until(until) => {
-            // Only an open child can still settle; one already done has and
-            // counts now. This step's own spawns are open children too, so
-            // apply them first: a wait on a child spawned in the same step
-            // asks it. Applying is idempotent for the step's later pass.
-            apply_spawns(state, outs, spawned, MAX_OPEN_CHILDREN);
+            // Only an open child can still be asked; one already done has
+            // settled and counts now. A child this step spawns cannot be
+            // written by it, so it is not asked here: the wait continues and
+            // its call reports the child as spawning.
             let open: BTreeSet<AgentPath> = until
                 .awaited
                 .intersection(&state.open_children)
@@ -1192,6 +1190,30 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
         report(state, outcome.clone(), outs);
     }
     state.phase = Phase::Done { outcome };
+}
+
+/// The step that settles an agent whose step failed for good, from its state
+/// before that step: it consumes the input, sheds, and settles `Done` as
+/// `failure`, reported to its parent once (see [`shed`]). A parent waiting on
+/// it settles instead of waiting on a child that cannot step again.
+pub(super) fn failed_step(
+    mut state: AgentState,
+    cursor: u64,
+    failure: &str,
+) -> Result<PreparedStep, Error> {
+    let previous = published(&state);
+    let mut end = failure.len().min(super::MAX_MESSAGE_BYTES);
+    while !failure.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut outs = Vec::new();
+    shed(&mut state, &mut outs, &failure[..end]);
+    let step = finalize_step(state, outs, &previous, cursor)?;
+    let bytes = checkpoint::encode(&step.state)?;
+    Ok(PreparedStep {
+        step,
+        checkpoint: checkpoint::from_encoded(bytes)?,
+    })
 }
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.

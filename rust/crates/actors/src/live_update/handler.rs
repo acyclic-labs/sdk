@@ -134,4 +134,15 @@ impl Handler for FencedHandler {
             .handler
             .on_record(delivery, checkpoint, cancellation)
     }
+
+    fn on_failure<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        failure: &'a str,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        self.package
+            .handler
+            .on_failure(delivery, checkpoint, failure)
+    }
 }

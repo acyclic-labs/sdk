@@ -902,8 +902,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
-            let handled = self.handler.on_record(
-                Delivery {
+            let delivery = || -> Result<Delivery, Error> {
+                Ok(Delivery {
                     actor: actor.clone(),
                     epoch,
                     trigger: trigger.clone(),
@@ -916,10 +916,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .ok_or(Error::Invalid("actor state has no committed anchor"))?,
                         state.subscriptions().clone(),
                     ),
-                },
-                state.checkpoint(),
-                cancellation.clone(),
-            );
+                })
+            };
+            let handled =
+                self.handler
+                    .on_record(delivery()?, state.checkpoint(), cancellation.clone());
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation.clone());
                 let interrupted = core::pin::pin!(interrupted);
@@ -976,6 +977,57 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error) => return Err(error),
             };
             publication.require(self.handler.publication_conditions())?;
+            let refusal = match self.submit_delivery(&snapshot, publication).await {
+                Ok(observed) => {
+                    inner.refused = None;
+                    inner.observed = Some(Arc::new(
+                        observed.ok_or(Error::Invalid("actor receipt has no state"))?,
+                    ));
+                    continue;
+                }
+                Err(Error::PreconditionChanged(conflicts)) => match inner.refused(conflicts) {
+                    Ok(()) => continue,
+                    Err(refusal) => refusal,
+                },
+                Err(Error::Unknown {
+                    publication,
+                    source,
+                }) => {
+                    inner.pending = Some((snapshot, *publication));
+                    return Err(Error::Stream(source));
+                }
+                Err(error) if terminal(&error) => error,
+                Err(error) => {
+                    // Settlement can fail after a successful commit. Reopen the
+                    // actual state next time instead of rerunning its handler.
+                    inner.observed = None;
+                    return Err(error);
+                }
+            };
+            // Storage refused this transition for good: the same input would
+            // be refused again forever. The handler settles it as a failure
+            // that consumes the input, or the refusal stands.
+            let Some(transition) = self
+                .handler
+                .on_failure(delivery()?, state.checkpoint(), &refusal.to_string())
+                .await?
+            else {
+                return Err(refusal);
+            };
+            if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                > limits.checkpoint_bytes()
+            {
+                return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+            }
+            let mut publication = self.store.prepare_publish(
+                &snapshot,
+                epoch,
+                &trigger,
+                record.as_ref(),
+                transition,
+                key(&snapshot, "failure")?,
+            )?;
+            publication.require(self.handler.publication_conditions())?;
             match self.submit_delivery(&snapshot, publication).await {
                 Ok(observed) => {
                     inner.refused = None;
@@ -983,7 +1035,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                     ));
                 }
-                Err(Error::PreconditionChanged(conflicts)) => inner.refused(conflicts)?,
                 Err(Error::Unknown {
                     publication,
                     source,
@@ -992,8 +1043,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Err(Error::Stream(source));
                 }
                 Err(error) => {
-                    // Settlement can fail after a successful commit. Reopen the
-                    // actual state next time instead of rerunning its handler.
                     inner.observed = None;
                     return Err(error);
                 }
@@ -1090,6 +1139,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
         }
         Ok(None)
+    }
+}
+
+/// A refusal the same delivery can never get past: a definite storage
+/// refusal, or a guard refusal identical to the last. Retrying it would touch
+/// storage forever without progress, so its handler settles it instead (see
+/// [`Handler::on_failure`]); backpressure and uncertain outcomes retry.
+pub(super) fn terminal(error: &Error) -> bool {
+    match error {
+        Error::PreconditionUnchanged => true,
+        Error::Stream(error) => !error.uncertain() && !matches!(error, StreamError::Capacity),
+        _ => false,
     }
 }
 

@@ -10,11 +10,17 @@
 //! - every handler run is justified by an unsettled event (no self re-arm);
 //! - at quiescence, every unsettled event with work behind it was delivered
 //!   or settled as a named failure (no lost wake-up);
+//! - every delivery ends in progress (its input consumed), a retryable wait
+//!   (an uncertain or handler failure keeps it for the next attempt), or a
+//!   failure its handler records and reports: a refusal the production
+//!   `terminal` rule names never strands its input;
 //! - the host reaches quiescence (no delivery loop).
 //!
 //! Negative controls: reinstalling the delivered alarm as a due wake (the
-//! pre-fix arming) violates the first property; the runtime tests in
-//! `retry.rs` are the end-to-end controls for both delivery loops.
+//! pre-fix arming) violates the first property, and a handler that settles
+//! no terminal refusal (the default `on_failure`) strands its input; the
+//! runtime tests in `retry.rs` are the end-to-end controls for both delivery
+//! loops.
 use super::super::Inner;
 use super::*;
 use crate::local::Alarm;
@@ -85,17 +91,23 @@ enum Outcome {
     RefuseSame,
     /// A composed-guard refusal evidencing an external append.
     RefuseChanged,
+    /// Storage refuses the transition for good.
+    Refused,
+    /// Storage left the outcome undecided.
+    Uncertain,
     /// A new input commits while this handler runs.
     InputDuring,
 }
 
 impl Outcome {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Fail,
         Self::Consume,
         Self::ConsumeAndArm,
         Self::RefuseSame,
         Self::RefuseChanged,
+        Self::Refused,
+        Self::Uncertain,
         Self::InputDuring,
     ];
 }
@@ -108,6 +120,8 @@ struct Actor {
     /// External events so far, and how many of them are delivered or settled.
     events: u32,
     settled: u32,
+    /// A terminal refusal left its input unconsumed and unreported.
+    stranded: bool,
 }
 
 struct World {
@@ -117,10 +131,12 @@ struct World {
     evidence: u64,
     guard: StreamPath,
     arm: Arm,
+    /// Whether the handler settles a terminal refusal (`on_failure`).
+    settles: bool,
 }
 
 impl World {
-    fn new(arm: Arm) -> Result<Self, String> {
+    fn new(arm: Arm, settles: bool) -> Result<Self, String> {
         let ready = ReadySet::default();
         let mut actors = Vec::new();
         for id in 0..ACTORS {
@@ -142,6 +158,7 @@ impl World {
                 inputs: 0,
                 events: 1,
                 settled: 0,
+                stranded: false,
             });
         }
         Ok(Self {
@@ -151,6 +168,7 @@ impl World {
             evidence: 0,
             guard: StreamPath::new("guard").map_err(|error| error.to_string())?,
             arm,
+            settles,
         })
     }
 
@@ -223,24 +241,48 @@ impl World {
                         }
                         break;
                     }
-                    refusal @ (Outcome::RefuseSame | Outcome::RefuseChanged) => {
-                        if matches!(refusal, Outcome::RefuseChanged) {
-                            self.evidence += 1;
-                        }
-                        let conflict = acyclic_stream::CommitConflict::Tail {
-                            path: self.guard.clone(),
-                            expected: self.evidence,
-                            actual: Some(self.evidence + 1),
+                    refusal @ (Outcome::RefuseSame
+                    | Outcome::RefuseChanged
+                    | Outcome::Refused
+                    | Outcome::Uncertain) => {
+                        let refusal = match refusal {
+                            Outcome::Refused => Error::Stream(StreamError::AccessDenied),
+                            Outcome::Uncertain => Error::Stream(StreamError::Unavailable),
+                            changed => {
+                                if matches!(changed, Outcome::RefuseChanged) {
+                                    self.evidence += 1;
+                                }
+                                let conflict = acyclic_stream::CommitConflict::Tail {
+                                    path: self.guard.clone(),
+                                    expected: self.evidence,
+                                    actual: Some(self.evidence + 1),
+                                };
+                                match self.actors[id].inner.refused(vec![conflict]) {
+                                    Ok(()) => break,
+                                    Err(refusal) => refusal,
+                                }
+                            }
                         };
                         let actor = &mut self.actors[id];
-                        match actor.inner.refused(vec![conflict]) {
-                            Ok(()) => break,
-                            Err(Error::PreconditionUnchanged) => {
-                                actor.settled = start;
-                                return Ok(());
-                            }
-                            Err(error) => return Err(error.to_string()),
+                        if !super::super::terminal(&refusal) {
+                            // A retryable wait: the input stays for the next attempt.
+                            actor.settled = start;
+                            return Ok(());
                         }
+                        if !self.settles {
+                            actor.stranded = true;
+                            actor.settled = start;
+                            return Ok(());
+                        }
+                        // The handler's failure transition consumes the
+                        // trigger and reports the failure once.
+                        actor.inner.refused = None;
+                        if due {
+                            actor.alarm.delivered_generation = Some(actor.alarm.generation);
+                        } else {
+                            actor.inputs -= 1;
+                        }
+                        break;
                     }
                     Outcome::InputDuring => self.input(id),
                 }
@@ -266,6 +308,11 @@ impl World {
             }
         }
         for (id, actor) in self.actors.iter().enumerate() {
+            if actor.stranded {
+                return Err(format!(
+                    "actor {id} stranded a terminally refused input unreported"
+                ));
+            }
             let work = actor.inputs > 0
                 || actor
                     .alarm
@@ -279,10 +326,10 @@ impl World {
     }
 }
 
-fn explore(arm: Arm) -> Result<(), String> {
+fn explore(arm: Arm, settles: bool) -> Result<(), String> {
     let mut choices = Choices::default();
     loop {
-        World::new(arm)?
+        World::new(arm, settles)?
             .run(&mut choices)
             .map_err(|violation| format!("{violation}; choices {:?}", choices.trace))?;
         if !choices.next() {
@@ -302,14 +349,25 @@ fn reinstalled(registration: &Registration<usize>, alarm: &Alarm, now: u64) -> R
 }
 
 #[test]
-fn every_event_is_delivered_or_settled_and_no_attempt_rearms_itself() -> TestResult {
-    explore(production)?;
+fn every_event_is_delivered_settled_or_reported_and_no_attempt_rearms_itself() -> TestResult {
+    explore(production, true)?;
     Ok(())
 }
 
 #[test]
+fn a_terminal_refusal_no_handler_settles_is_found_stranded() {
+    let violation = explore(production, false).err();
+    assert!(
+        violation
+            .as_deref()
+            .is_some_and(|violation| violation.contains("stranded")),
+        "{violation:?}"
+    );
+}
+
+#[test]
 fn a_delivered_alarm_left_due_is_found_redelivering_itself() {
-    let violation = explore(reinstalled).err();
+    let violation = explore(reinstalled, true).err();
     assert!(
         violation
             .as_deref()

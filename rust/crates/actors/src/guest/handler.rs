@@ -265,4 +265,16 @@ pub trait Handler: acyclic_stream::ProviderPlatform {
         checkpoint: Option<&'a Checkpoint>,
         cancellation: super::CancellationToken,
     ) -> GuestFuture<'a, Transition>;
+    /// Settle a delivery whose transition storage refused for good, so the
+    /// same input would be refused again forever: a transition from the same
+    /// checkpoint that consumes the input and records `failure`. `None`, the
+    /// default, leaves the input queued and the refusal stands.
+    fn on_failure<'a>(
+        &'a self,
+        _delivery: Delivery,
+        _checkpoint: Option<&'a Checkpoint>,
+        _failure: &'a str,
+    ) -> GuestFuture<'a, Option<Transition>> {
+        Box::pin(async { Ok(None) })
+    }
 }
