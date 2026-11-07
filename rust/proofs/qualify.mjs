@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "public-settlement-source": [
+    "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "settlement admitted an unrelated progress producer or performed I/O before refusal", nativeHarness,
+    { mutations: [
+      { patch: "rust/proofs/public-settlement-source/mutation.patch", label: "foreign-producer", diagnostic: "settlement admitted an unrelated progress producer or performed I/O before refusal" },
+      { patch: "rust/proofs/public-settlement-source/cost.patch", label: "query-before-admission", diagnostic: "settlement admitted an unrelated progress producer or performed I/O before refusal" },
+    ] },
+  ],
   "public-settlement-retirement": [
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
@@ -141,10 +150,10 @@ if (claim === "--help" && extra.length === 0) {
   const command = options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = options.positive
+  const positive = options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
-    : command;
+    : command);
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
@@ -215,9 +224,9 @@ if (claim === "--help" && extra.length === 0) {
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
-      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed";
-    require(restored.status === 0 && !restored.signal && restored.output.includes(completed));
+    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+      : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
+    require(restored.status === 0 && !restored.signal && completed.every(summary => restored.output.includes(summary)));
   } catch (error) {
     console.error(`step=${step}; cause=${error.message}; recovery: ${recovery}`);
     process.exitCode = 1;
