@@ -1,0 +1,7 @@
+[[hooks.PreToolUse]]
+matcher = "shell"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "guard"
+args = ["one argument"]
+onFailure = "block"

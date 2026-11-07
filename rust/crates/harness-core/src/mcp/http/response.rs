@@ -1,11 +1,11 @@
 //! One response decoder for JSON and SSE, independent of platform HTTP I/O.
-use super::{HttpMcpTransport, McpHttpResponse, sse};
+use super::{HttpMcpTransport, McpHttpResponse, body::bounded, sse};
 use crate::{Error, OperationId, Result, mcp::rpc::rpc_result, runtime::ToolContext};
 use futures::StreamExt as _;
 use serde_json::Value;
 
 pub(super) async fn decode(
-    mut response: McpHttpResponse,
+    response: McpHttpResponse,
     operation: OperationId,
     maximum_bytes: u32,
     callbacks: Option<(&HttpMcpTransport, ToolContext)>,
@@ -33,13 +33,10 @@ pub(super) async fn decode(
         }
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.body.next().await {
+    let body = bounded(response.body, maximum_bytes, operation);
+    futures::pin_mut!(body);
+    while let Some(chunk) = body.next().await {
         let chunk = chunk?;
-        bytes
-            .len()
-            .checked_add(chunk.len())
-            .filter(|total| *total as u64 <= u64::from(maximum_bytes))
-            .ok_or(Error::Indeterminate(operation))?;
         bytes.extend_from_slice(&chunk);
     }
     let value = crate::contract::json_from_slice(&bytes).map_err(|error| {
