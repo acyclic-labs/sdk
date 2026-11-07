@@ -417,14 +417,10 @@ async fn publications(
     let mut publications = Vec::with_capacity(3);
     for (name, mut command) in commands(value)? {
         // This history has one source record. Both zero and one are real fork
-        // positions; the journal admission check still exercises the full u64.
+        // positions; journal codec checks still exercise the full u64.
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
-        // Journal admission exists only with a journal backend; the memory
-        // provider admits every command on write.
-        #[cfg(feature = "local")]
-        let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
             WriteRequest::Fork(request) => request.idempotency_key.clone(),

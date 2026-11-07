@@ -200,13 +200,13 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             .ok_or(CompiledPrefixError::Invariant)
     }
 
-    fn compile<W: IndexWork<Allocation = A>>(
-        entries: Vec<V>,
-        key: K,
-        position: impl Fn(usize) -> Option<usize>,
+    fn validate_order<W: IndexWork<Allocation = A>>(
+        entries: &[V],
+        key: &K,
+        position: &impl Fn(usize) -> Option<usize>,
         work: &mut W,
-    ) -> Result<Self, CompiledPrefixError<W::Error>> {
-        use CompiledPrefixError::{Allocation, Capacity, Invariant, Order, Work};
+    ) -> Result<(), CompiledPrefixError<W::Error>> {
+        use CompiledPrefixError::{Invariant, Order, Work};
         for index in 1..entries.len() {
             let left = key.bytes(
                 entries
@@ -224,6 +224,17 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
                 return Err(Order(position(index).ok_or(Invariant)?));
             }
         }
+        Ok(())
+    }
+
+    fn compile<W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        position: impl Fn(usize) -> Option<usize>,
+        work: &mut W,
+    ) -> Result<Self, CompiledPrefixError<W::Error>> {
+        use CompiledPrefixError::{Allocation, Capacity, Invariant, Work};
+        Self::validate_order(&entries, &key, &position, work)?;
         let capacity = entries.len().checked_mul(2).ok_or(Capacity)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Node>())

@@ -7,7 +7,7 @@
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct BranchBit {
     pub(crate) byte: usize,
-    pub(crate) offset: u32,
+    pub(crate) offset: usize,
 }
 
 /// Borrowed interpretation of an original key's branch coordinates. `None`
@@ -81,7 +81,7 @@ impl BinaryKey<'_> {
             if xor != 0 {
                 return Ok(Some(BranchBit {
                     byte,
-                    offset: xor.leading_zeros() + 1,
+                    offset: xor.leading_zeros() as usize + 1,
                 }));
             }
         }
@@ -97,27 +97,27 @@ impl BranchBit {
     pub const fn from_binary_bit(bit: usize) -> Self {
         Self {
             byte: bit / 9,
-            offset: (bit % 9) as u32,
+            offset: bit % 9,
         }
     }
 
     /// Packs a prefix-free binary coordinate, refusing representation overflow.
     pub fn binary_bit_index(self) -> Option<usize> {
-        self.byte.checked_mul(9)?.checked_add(self.offset as usize)
+        self.byte.checked_mul(9)?.checked_add(self.offset)
     }
 
     /// Expands a backing's compact bit position without a key-width truncation.
     pub const fn from_bit(bit: usize) -> Self {
         Self {
             byte: bit / 8,
-            offset: (bit % 8) as u32,
+            offset: bit % 8,
         }
     }
 
     /// Encodes a coordinate for compact original backing, when representable.
     /// Wide byte coordinates remain valid even if this packed form overflows.
     pub fn bit_index(self) -> Option<usize> {
-        self.byte.checked_mul(8)?.checked_add(self.offset as usize)
+        self.byte.checked_mul(8)?.checked_add(self.offset)
     }
 
     /// Selects the branch side without copying or encoding the original key.
@@ -136,7 +136,7 @@ impl BranchBit {
             let xor = a ^ b;
             (xor != 0).then(|| Self {
                 byte,
-                offset: xor.leading_zeros(),
+                offset: xor.leading_zeros() as usize,
             })
         })
     }
