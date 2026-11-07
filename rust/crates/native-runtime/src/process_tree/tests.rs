@@ -282,13 +282,12 @@ fn closed_spawn_retires_native_objects_at_every_callback_cut() -> io::Result<()>
                     "original callback did not unwind at {cut}"
                 );
             } else {
-                assert_eq!(
-                    outcome
-                        .expect("error callback must not unwind")
-                        .unwrap_err()
-                        .kind(),
-                    io::ErrorKind::Interrupted,
-                );
+                let Err(error) =
+                    outcome.map_err(|_| io::Error::other("error callback unexpectedly unwound"))?
+                else {
+                    return Err(io::Error::other("original callback cut was ignored"));
+                };
+                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             }
             // The shared reservation records an attempt before invoking the
             // native call: an error still executes it, an unwind does not.
