@@ -32,6 +32,10 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "sdk-generation"
+test = false
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
