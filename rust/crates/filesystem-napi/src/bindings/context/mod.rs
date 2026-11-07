@@ -88,7 +88,8 @@ impl NativeWorkspaceGraph {
         ))
         .map(|records| {
             records
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(native_workspace_lineage_record)
                 .collect()
         })
