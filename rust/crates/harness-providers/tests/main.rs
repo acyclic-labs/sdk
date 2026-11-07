@@ -1,5 +1,10 @@
 //! Harness composition with real model provider adapters.
 #![cfg(not(target_arch = "wasm32"))]
+// Compile-time depth headroom. This crate composes the deepest stack (tools,
+// Git engine, filesystem, publication and objects over concrete backends).
+// Each layer erases its futures at its boundary, so query depth stays well
+// below the default 128; a by-value chain across layers fails here first.
+#![recursion_limit = "112"]
 use acyclic_harness_providers::Adapter;
 mod benchmark_catalog;
 #[cfg(loom)]

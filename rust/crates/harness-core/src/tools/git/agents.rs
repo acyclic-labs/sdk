@@ -1,13 +1,11 @@
 //! Read a registered agent's published view through the repository binding.
 use super::*;
 
-impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
+impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     pub(super) async fn diff_agent(
         &self,
@@ -79,7 +77,7 @@ where
             .union(&target.tracked_paths)
             .cloned()
             .collect();
-        self.validate().await?;
+        self.validate_lease().await?;
         let result = self
             .execute(
                 OperationId::new(),
@@ -90,7 +88,7 @@ where
                 },
             )
             .await?;
-        self.validate().await?;
+        self.validate_lease().await?;
         Ok(super::Output {
             command: Some(GitCommandOutput::Filesystem(result)),
             switched: None,

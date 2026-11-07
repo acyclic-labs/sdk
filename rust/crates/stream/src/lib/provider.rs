@@ -5,6 +5,22 @@ pub type BoxProviderFuture<'a, T> = futures::future::BoxFuture<'a, T>;
 #[cfg(target_arch = "wasm32")]
 pub type BoxProviderFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
 
+/// Builds and erases `create`'s future at a layering boundary.
+///
+/// The future is built and boxed in this never-inlined frame, so a caller's
+/// layout, optimisation and auto-trait proof hold only the pointer: each
+/// layer's type and compile-time depth stay constant whatever the layer below
+/// does. A bare `Box::pin` is no such boundary, as it inlines into its caller.
+#[inline(never)]
+pub fn erase_provider_future<'a, F>(
+    create: impl FnOnce() -> F,
+) -> BoxProviderFuture<'a, F::Output>
+where
+    F: std::future::Future + ProviderTask + 'a,
+{
+    Box::pin(create())
+}
+
 /// Bound for provider futures submitted to the platform executor.
 /// A formatter retained over a suspension cannot satisfy the native contract:
 ///
