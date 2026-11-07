@@ -40,11 +40,10 @@ class GraphCoder(BaseInstalledAgent):
 
     async def install(self, environment):
         self._installed_environment = None
-        # Task images must provide the native mount prerequisites. Never alter
-        # the task image, relax its isolation, or build a different executable.
+        # The binary owns workspace admission and its physical/native choice.
+        # The adapter requires only the artifact transport tools and task cwd.
         await self.exec_as_agent(environment, command=(
-            "test -c /dev/fuse && test -r /dev/fuse && test -w /dev/fuse"
-            " && command -v fusermount3 >/dev/null && command -v sha256sum >/dev/null"
+            "command -v sha256sum >/dev/null"
             " && test \"$PWD\" != /"))
         await self.exec_as_root(environment, command="install -d -m 700 " + shlex.join([
             self.state, self.state + "/home", self.state + "/fixture-codex", self.state + "/tmp"]))
@@ -71,7 +70,7 @@ class GraphCoder(BaseInstalledAgent):
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "artifact.json").write_text(json.dumps({
             "source_sha": self.artifact.source_sha, "sha256": self.artifact.sha256,
-            "runner": "harbor==0.24.0", "native_mount_prerequisite": "checked",
+            "runner": "harbor==0.24.0", "workspace_mounting": "auto",
             "model_calls": "not part of setup",
         }, indent=2) + "\n")
         self._installed_environment = environment
