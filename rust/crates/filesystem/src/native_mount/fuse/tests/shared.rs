@@ -380,21 +380,21 @@ pub(super) fn linux_server_loss_and_owner_death_retire_the_original_connection_a
     assert!(live.stop()?);
     assert_eq!(mounts_at(server_root.path())?, 0);
 
-    for early_cancel in [false, true] {
-        owner_exit_namespace(early_cancel)?;
+    for killed_action in [false, true] {
+        owner_exit_namespace(killed_action)?;
     }
     Ok(())
 }
 
-fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::{BufRead as _, BufReader, Write as _};
+fn owner_exit_namespace(killed_action: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead as _, BufReader};
     let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("views");
     let mut owner = child(
         "native_mount::fuse::tests::shared::shared_view_owner_until_killed",
         temporary.path(),
     )
-    .stdin(Stdio::piped())
+    .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::inherit())
     .spawn()?;
@@ -418,18 +418,22 @@ fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Er
     }
     // SAFETY: pidfd_open returned this fresh owned descriptor.
     let cleanup = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd)?) };
-    // Plant the missing owner-exit action by cancelling the real admitted
-    // action before the namespace's owner dies. Registration precedes this
-    // control too, so it waits on the very same original PID in both cases.
-    owner
-        .stdin
-        .take()
-        .ok_or("owner control")?
-        .write_all(&[u8::from(early_cancel)])?;
-    loop {
-        let line = lines.next().ok_or("owner control was not acknowledged")??;
-        if line.ends_with("shared view owner: armed") {
-            break;
+    // Remove the actual cleanup producer through its retained kernel identity.
+    // This negative control cannot accidentally signal a reused numeric PID.
+    if killed_action {
+        // SAFETY: the retained pidfd names the original action; SIGKILL carries
+        // no siginfo pointer and flags zero selects the ordinary delivery.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                cleanup.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
         }
     }
     owner.kill()?;
@@ -453,17 +457,17 @@ fn owner_exit_namespace(early_cancel: bool) -> Result<(), Box<dyn std::error::Er
     let [fence, ..] = crate::native_mount_control_paths(&root)?;
     assert!(fence.exists(), "the original fence remains recoverable");
     println!(
-        "owner-exit action control: early_cancel={early_cancel}, remaining_mounts={remaining}"
+        "owner-exit action control: killed_action={killed_action}, remaining_mounts={remaining}"
     );
     if remaining != 0 {
-        // The planted early-disarm control must not itself abandon a mount.
+        // The planted producer-loss control must not itself abandon a mount.
         let (source, _) = shared_sources(posix_config())?;
         let mut recovered = view(source, &root.join("negative-cleanup"))?;
         assert!(recovered.stop()?);
     }
     assert_eq!(
         remaining == 0,
-        !early_cancel,
+        !killed_action,
         "the killed owner's namespace outlived its cleanup action"
     );
     let (source, _) = shared_sources(posix_config())?;
@@ -500,23 +504,6 @@ pub(super) fn shared_view_owner_until_killed() -> Result<(), Box<dyn std::error:
         .and_then(|view| view.exit_action_id())
         .ok_or("original owner-exit action")?;
     println!("shared view owner: ready {cleanup}");
-    use std::io::Read as _;
-    let mut early_cancel = [0];
-    std::io::stdin().read_exact(&mut early_cancel)?;
-    if early_cancel[0] != 0 {
-        session
-            .driver
-            .as_ref()
-            .ok_or("live driver")?
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .shared
-            .as_ref()
-            .ok_or("original shared namespace")?
-            .cancel_exit_action()?;
-    }
-    println!("shared view owner: armed");
     loop {
         std::thread::park();
     }
