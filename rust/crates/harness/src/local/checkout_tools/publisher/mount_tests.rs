@@ -42,7 +42,18 @@ async fn native_fixture() -> Result<(
 
 #[tokio::test]
 async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -> Result<()> {
-    let (_directory, _state, harness, initial) = native_fixture().await?;
+    let (directory, _state, harness, initial) = native_fixture().await?;
+    std::fs::write(directory.path().join("branch.txt"), b"before\n").map_err(storage)?;
+    initial
+        .stage_once(
+            OperationId::new(),
+            "branch.txt",
+            b"original",
+            "text/plain",
+            "branch.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
     let task = Arc::new(crate::runtime::test_context::agent_context(
         RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?,
         None,
@@ -183,6 +194,23 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             std::fs::read(mounted.path.join("branch.txt")).map_err(storage)?,
             b"original"
         );
+        if !broken {
+            // The real selected branch has no import receipt. Its diff must
+            // retain the original checkout's before-image, not its fork head.
+            let pages = harness
+                .project_diff(
+                    &crate::hosting::DiffPages::default(),
+                    &acyclic_harness_client::AgentPageRequest::new(32, 64 * 1024, None)
+                        .map_err(storage)?,
+                )
+                .await?;
+            let changed = pages
+                .iter()
+                .find(|page| page.path == "branch.txt")
+                .expect("selected branch diff");
+            assert!(changed.patch.contains("-before\n"), "{changed:?}");
+            assert!(changed.patch.contains("+selected"), "{changed:?}");
+        }
     }
     Ok(())
 }

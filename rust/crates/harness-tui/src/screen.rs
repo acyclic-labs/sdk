@@ -31,8 +31,11 @@ pub struct Screen<'a> {
     pub plans: &'a [Line<'a>],
     /// Notification/feedback rows from the followed attention files.
     pub notifications: &'a [Line<'a>],
-    /// Optional modal view, rendered over the transcript while preserving it.
+    /// Optional panel, docked over the top of the transcript region. The
+    /// transcript's tail stays visible beneath it, next to the prompt.
     pub overlay: &'a [Line<'a>],
+    /// First shown panel row; the transcript keeps its own scroll.
+    pub overlay_scroll: usize,
     /// Catalog-owned title of the selected modal view.
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
@@ -58,8 +61,12 @@ pub struct ScreenAreas {
     pub animation: bool,
     /// Agent breadcrumb.
     pub header: Rect,
-    /// Transcript viewport.
+    /// Transcript viewport: the tail beneath an open panel.
     pub transcript: Rect,
+    /// Panel, including its border. Its size is fixed by the screen alone, so
+    /// a query's page credit is known before the panel opens; the transcript
+    /// yields these rows only while a panel is open.
+    pub overlay: Rect,
     /// Track hit area, separate from transcript and prompt hit testing.
     pub scrollbar: Rect,
     /// Optional terminal panel.
@@ -81,9 +88,7 @@ pub struct ScreenAreas {
 
 impl ScreenAreas {
     fn overlay_content(&self) -> Rect {
-        Block::default()
-            .borders(Borders::ALL)
-            .inner(self.transcript)
+        Block::default().borders(Borders::ALL).inner(self.overlay)
     }
 
     /// Modal content columns after its border.
@@ -100,6 +105,11 @@ impl ScreenAreas {
         } else {
             content.height.saturating_sub(reserved)
         }
+    }
+
+    /// Last first-row of a panel of `rows` rows that still fills the panel.
+    pub fn overlay_tail(&self, rows: usize) -> usize {
+        rows.saturating_sub(usize::from(self.overlay_rows(0)))
     }
 
     /// Capture drag only for the painted track. A click resolves through the
@@ -169,21 +179,20 @@ impl Screen<'_> {
         self.transcript.len() + self.tools.len()
     }
 
+    fn docked(&self) -> bool {
+        !self.overlay.is_empty() && !self.feedback
+    }
+
     /// Default follow-tail position; a followed layout file may override it.
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
-        let areas = self.areas(area, input);
-        let height = areas.transcript.height;
+        let height = self.areas(area, input).transcript.height;
         if self.feedback {
             0
-        } else if self.overlay.is_empty() {
+        } else {
             (self.reasoning.len()
                 + self.transcript_len()
                 + usize::from(input.busy && !self.hidden_tail))
             .saturating_sub(usize::from(height))
-        } else {
-            self.overlay
-                .len()
-                .saturating_sub(usize::from(areas.overlay_content().height))
         }
     }
 
@@ -257,6 +266,13 @@ impl Screen<'_> {
             remaining.height,
         );
         remaining.width -= side_width;
+        // One layout for every panel: it takes the top four fifths and the
+        // transcript keeps its newest rows beneath it.
+        let mut tail = remaining;
+        let overlay = take_top(&mut tail, remaining.height - remaining.height / 5);
+        if self.docked() {
+            remaining = tail;
+        }
         let scrollbar = Rect::new(
             remaining.right().saturating_sub(1),
             remaining.y,
@@ -273,6 +289,7 @@ impl Screen<'_> {
             animation: false,
             header,
             transcript: remaining,
+            overlay,
             scrollbar,
             scrollbar_total: 0,
             terminal,
@@ -298,7 +315,6 @@ impl Screen<'_> {
         if !input.busy
             || self.hidden_tail
             || self.feedback
-            || !self.overlay.is_empty()
             || area.width == 0
             || row < scroll
             || row - scroll >= usize::from(area.height)
@@ -332,8 +348,7 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> ScreenAreas {
         let mut areas = self.areas(frame.area(), input);
-        if self.overlay.is_empty()
-            && !self.feedback
+        if !self.feedback
             && let Some((visible, total)) = &self.scrollbar
         {
             if visible.end.saturating_sub(visible.start) < *total
@@ -356,7 +371,7 @@ impl Screen<'_> {
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
-        } else if self.overlay.is_empty() {
+        } else {
             let count = self.reasoning.len()
                 + self.transcript_len()
                 + usize::from(input.busy && !self.hidden_tail);
@@ -384,7 +399,8 @@ impl Screen<'_> {
                     frame.render_widget(line, area);
                 }
             }
-        } else {
+        }
+        if self.docked() {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .title(self.overlay_title);
@@ -392,9 +408,9 @@ impl Screen<'_> {
                 frame,
                 self.overlay,
                 areas.overlay_content(),
-                transcript_scroll,
+                self.overlay_scroll,
             );
-            frame.render_widget(block, areas.transcript);
+            frame.render_widget(block, areas.overlay);
         }
         rows(frame, self.terminal, areas.terminal, 0);
         rows(frame, self.notifications, areas.notifications, 0);

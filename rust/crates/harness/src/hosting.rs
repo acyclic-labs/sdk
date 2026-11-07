@@ -29,6 +29,8 @@ pub use acyclic_harness_core::filesystem::{
 mod runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub use runtime::Runtime;
+mod diff;
+pub use diff::{DIFF_FILE_BYTES, DiffPages};
 
 use crate::{
     agent::{
@@ -456,6 +458,34 @@ where
                     inbox_tail,
                     page,
                     settled,
+                })
+            }
+            AgentCommand::ClientFiles {
+                agent,
+                session,
+                paths,
+                after,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFiles {
+                    snapshot: self
+                        .bound
+                        .client_files(agent, *session, paths, after.as_ref())
+                        .await?,
+                })
+            }
+            AgentCommand::PublishClientFiles {
+                agent,
+                session,
+                operation,
+                changes,
+            } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::ClientFilesPublished {
+                    generation: self
+                        .bound
+                        .publish_client_files(agent, *session, *operation, changes)
+                        .await?,
                 })
             }
             AgentCommand::Read {
@@ -1048,20 +1078,32 @@ impl PageCredit {
         item: &impl serde::Serialize,
         next_bytes: Option<u64>,
     ) -> Result<bool, Error> {
-        let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
-        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
-        if !acyclic_harness_client::encoded_agent_reply_size(bytes + envelope)
-            .is_ok_and(|encoded| encoded <= self.maximum)
-        {
+        let Some(bytes) = self.admits(item, next_bytes)? else {
             return if self.items == 0 {
                 Err(Error::Stream(StreamError::Capacity))
             } else {
                 Ok(false)
             };
-        }
+        };
         self.bytes = bytes;
         self.items += 1;
         Ok(true)
+    }
+
+    /// The page's row bytes with `item` appended, or `None` when it would
+    /// exceed the requested credit.
+    fn admits(
+        &self,
+        item: &impl serde::Serialize,
+        next_bytes: Option<u64>,
+    ) -> Result<Option<u64>, Error> {
+        let bytes = self.bytes + page_json_bytes(item)? + u64::from(self.items != 0);
+        let envelope = next_bytes.map_or(self.end_envelope, |bytes| self.next_envelope + bytes);
+        Ok(
+            acyclic_harness_client::encoded_agent_reply_size(bytes + envelope)
+                .is_ok_and(|encoded| encoded <= self.maximum)
+                .then_some(bytes),
+        )
     }
 }
 
@@ -1195,6 +1237,7 @@ where
                 | AgentCommand::Diff { .. }
                 | AgentCommand::Usage { .. }
                 | AgentCommand::Events { .. }
+                | AgentCommand::ClientFiles { .. }
                 | AgentCommand::Read { .. } => true,
                 AgentCommand::Prompt { .. }
                 | AgentCommand::Cancel { .. }
@@ -1205,6 +1248,7 @@ where
                 | AgentCommand::Spawn { .. }
                 | AgentCommand::Fork { .. }
                 | AgentCommand::Decide { .. }
+                | AgentCommand::PublishClientFiles { .. }
                 | AgentCommand::Stage { .. }
                 | AgentCommand::Staged { .. } => false,
             };

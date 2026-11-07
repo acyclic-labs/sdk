@@ -25,12 +25,24 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+type MemoryHost =
+    FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+
 struct Fixture {
+    #[cfg(feature = "hosting")]
+    filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
     _issuer: AuthorityRoot,
-    host: Arc<FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>>,
+    host: Arc<MemoryHost>,
     root: ContextRoot,
     writer: ContentGrant,
     reader: Arc<dyn ContentResidencyVerifier>,
+    #[cfg(feature = "hosting")]
+    files: Arc<
+        FilesystemContentVerifier<
+            acyclic_fs::MemoryAuthorityBackend,
+            acyclic_fs::MemoryObjectBackend,
+        >,
+    >,
 }
 
 #[test]
@@ -222,7 +234,8 @@ async fn publication_replay_hashing_does_not_allocate_an_encoded_copy() -> Resul
 impl Fixture {
     async fn new() -> Result<Self> {
         let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let filesystem = Fs::memory();
+        let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,
@@ -261,8 +274,13 @@ impl Fixture {
             u64::MAX,
             &mut None,
         )?;
+        let files = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 1 << 20, None)?;
         let reader = FilesystemContentVerifier::new(host.clone(), &verifier, &scope, 32_768, None)?;
+        #[cfg(not(feature = "hosting"))]
+        let _ = files;
         Ok(Self {
+            #[cfg(feature = "hosting")]
+            filesystem,
             _issuer: issuer,
             host,
             root: ContextRoot {
@@ -271,6 +289,8 @@ impl Fixture {
             },
             writer,
             reader,
+            #[cfg(feature = "hosting")]
+            files,
         })
     }
     async fn put(&self, path: &str, text: &str, key: &str) -> Result<()> {
@@ -301,6 +321,457 @@ impl Fixture {
             path: path.into(),
         })
     }
+}
+
+/// The shared platform producer: one exact projection of the volume's changes
+/// since its fork base, paged without loss from its retained projection and
+/// disclosed only under the requesting reader's list authority.
+#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn workspace_diff_pages_exact_changes_since_the_fork_base() -> Result<()> {
+    use acyclic_harness::client::{AgentPageRequest, AgentReply, DiffKind};
+    use acyclic_harness::hosting::DiffPages;
+    let fixture = Fixture::new().await?;
+    let pages = DiffPages::default();
+    for (path, text) in [
+        ("kept.txt", "same\n"),
+        ("edited.txt", "before\n"),
+        ("removed.txt", "gone\n"),
+        ("restored.txt", "original\n"),
+    ] {
+        fixture.put(path, text, &format!("base-{path}")).await?;
+    }
+    let base = fixture.source("kept.txt").await?.generation;
+    fixture.put("edited.txt", "after\n", "edit").await?;
+    fixture.put("restored.txt", "changed\n", "change").await?;
+    fixture.put("restored.txt", "original\n", "restore").await?;
+    fixture
+        .put(
+            "added.txt",
+            &format!("one\ntwo\n{}\n", "🙂".repeat(48)),
+            "add",
+        )
+        .await?;
+    let large = "x".repeat(65_537);
+    fixture.put("large.txt", &large, "large").await?;
+    let workspace = acyclic_harness::filesystem::workspace_ref(
+        fixture.root.volume.provider().clone(),
+        &fixture.root.volume.storage_name(&mut None)?,
+    )?;
+    fixture
+        .host
+        .apply(
+            &workspace,
+            None,
+            &[acyclic_harness::filesystem::WorkspaceMutation::Remove {
+                path: "/removed.txt".into(),
+            }],
+            &IdempotencyKey::new("remove")?,
+        )
+        .await?;
+    let current = fixture.source("kept.txt").await?.generation;
+    let volume = &fixture.root.volume;
+    let page = |items, cursor| AgentPageRequest::new(items, 64 * 1024, cursor).expect("page");
+
+    let whole = pages
+        .page(&fixture.files, volume, (&base, &current), &page(128, None))
+        .await?;
+    let rows = whole
+        .iter()
+        .map(|file| {
+            (
+                file.path.as_str(),
+                file.kind,
+                file.added,
+                file.removed,
+                file.omitted_bytes,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            ("added.txt", DiffKind::Added, 3, 0, None),
+            ("edited.txt", DiffKind::Modified, 1, 1, None),
+            ("large.txt", DiffKind::Added, 0, 0, Some(65_537)),
+            ("removed.txt", DiffKind::Removed, 0, 1, None),
+        ]
+    );
+    assert!(whole.iter().all(|file| !file.continued));
+    assert_eq!(whole.last().and_then(|file| file.next.as_ref()), None);
+
+    // One row per page reassembles exactly the same projection.
+    let (mut cursor, mut page_count, mut patches) = (None, 0, std::collections::BTreeMap::new());
+    loop {
+        let fragments = pages
+            .page(&fixture.files, volume, (&base, &current), &page(1, cursor))
+            .await?;
+        assert_eq!(fragments.len(), 1);
+        page_count += 1;
+        let fragment = &fragments[0];
+        patches
+            .entry(fragment.path.clone())
+            .or_insert_with(String::new)
+            .push_str(&fragment.patch);
+        cursor = fragment
+            .next
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .expect("cursor");
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert!(page_count > whole.len());
+    assert_eq!(
+        patches,
+        whole
+            .iter()
+            .map(|file| (file.path.clone(), file.patch.clone()))
+            .collect()
+    );
+
+    // Fund one worst-case metadata envelope and one scalar. This forces the
+    // long Unicode line to split without guessing the projection digest's size.
+    // The next fragment cannot fit beside an accepted prefix; keep that prefix.
+    {
+        let mut metadata = whole[0].clone();
+        metadata.patch.clear();
+        metadata.publication.fill(u8::MAX);
+        let next = metadata.next.as_mut().expect("more files");
+        next.publication.fill(u8::MAX);
+        next.path.clone_from(&metadata.path);
+        next.offset = Some(usize::MAX);
+        let encoded = serde_json::to_vec(&AgentReply::Diff {
+            items: vec![metadata],
+        })
+        .expect("metadata envelope");
+        let bytes = u32::try_from(
+            acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
+                .expect("wire metadata")
+                + '🙂'.len_utf8() as u64,
+        )
+        .expect("one-fragment credit");
+        let mut cursor = None;
+        let mut actual = std::collections::BTreeMap::<String, String>::new();
+        loop {
+            let request = AgentPageRequest::new(128, bytes, cursor).expect("page");
+            let fragments = pages
+                .page(&fixture.files, volume, (&base, &current), &request)
+                .await?;
+            assert!(!fragments.is_empty());
+            for fragment in &fragments {
+                if fragment.omitted_bytes.is_none() {
+                    actual
+                        .entry(fragment.path.clone())
+                        .or_default()
+                        .push_str(&fragment.patch);
+                }
+            }
+            cursor = fragments
+                .last()
+                .and_then(|item| item.next.as_ref())
+                .map(serde_json::to_string)
+                .transpose()
+                .expect("cursor");
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(
+            actual.contains_key("added.txt"),
+            "small Unicode changes must remain exact"
+        );
+        for (path, patch) in actual {
+            assert_eq!(
+                patch,
+                whole
+                    .iter()
+                    .find(|item| item.path == path)
+                    .expect("same projection path")
+                    .patch
+            );
+        }
+    }
+
+    // A cursor of one projection never resumes another generation's.
+    let stale = serde_json::to_string(whole[0].next.as_ref().expect("more files")).expect("cursor");
+    fixture.put("added.txt", "four\n", "later").await?;
+    let later = fixture.source("kept.txt").await?.generation;
+    assert!(matches!(
+        pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &later),
+                &page(128, Some(stale))
+            )
+            .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    // No change since the base is an empty projection.
+    assert!(
+        pages
+            .page(&fixture.files, volume, (&later, &later), &page(128, None))
+            .await?
+            .is_empty()
+    );
+
+    // A quadratic replacement remains visible without retaining its trace
+    // beyond the actual request credit. It is isolated from the paging cases
+    // above, so one-line pages never recompute this deliberately costly input.
+    fixture
+        .put("expensive.txt", &"a\n".repeat(64), "old-expensive")
+        .await?;
+    fixture.put("z-empty-removed.txt", "", "old-empty").await?;
+    let expensive_base = fixture.source("expensive.txt").await?.generation;
+    fixture
+        .put("expensive.txt", &"b\n".repeat(64), "new-expensive")
+        .await?;
+    fixture.put("z-empty-added.txt", "", "new-empty").await?;
+    fixture
+        .host
+        .apply(
+            &workspace,
+            None,
+            &[acyclic_harness::filesystem::WorkspaceMutation::Remove {
+                path: "/z-empty-removed.txt".into(),
+            }],
+            &IdempotencyKey::new("remove-empty")?,
+        )
+        .await?;
+    let expensive_current = fixture.source("expensive.txt").await?.generation;
+    let bounded = pages
+        .page(
+            &fixture.files,
+            volume,
+            (&expensive_base, &expensive_current),
+            &AgentPageRequest::new(128, 2048, None).expect("finite computation credit"),
+        )
+        .await?;
+    assert_eq!(bounded.len(), 3);
+    assert_eq!(bounded[0].omitted_bytes, Some(128));
+    assert!(bounded[0].patch.is_empty());
+    for (file, (path, kind)) in bounded[1..].iter().zip([
+        ("z-empty-added.txt", DiffKind::Added),
+        ("z-empty-removed.txt", DiffKind::Removed),
+    ]) {
+        assert_eq!(file.path, path);
+        assert_eq!(file.kind, kind);
+        assert_eq!(file.omitted_bytes, Some(0));
+        assert!(file.patch.is_empty());
+    }
+
+    // Derive exact scalar credit from real projected wire rows. Shrinking must
+    // fit the first scalar and preserve its accepted prefix when the next
+    // scalar needs more bytes than that prefix did.
+    let scalar_base = expensive_current.clone();
+    fixture
+        .put("scalar.txt", "🙂ab\na🙂\nnext\nlast\n", "scalar")
+        .await?;
+    let scalar_current = fixture.source("scalar.txt").await?.generation;
+    let publication = fixture
+        .files
+        .diff_publication(volume, &scalar_base, &scalar_current)
+        .await?;
+    let mut view = DiffView::new(volume.clone(), scalar_base.clone())?;
+    view.apply(&publication, fixture.files.as_ref(), limits())
+        .await?;
+    let projected = view.page(None, 128, 4096)?.expect("scalar file");
+    for (tail, prefix) in [("🙂ab\n", "🙂"), ("a🙂\n", "a")] {
+        let start = projected.patch.find(tail).expect("Unicode patch");
+        let position = acyclic_harness::client::DiffCursor {
+            publication: projected.publication,
+            path: projected.path.clone(),
+            offset: Some(start),
+        };
+        let mut expected = projected.clone();
+        expected.continued = true;
+        expected.patch = prefix.into();
+        expected.next = Some(acyclic_harness::client::DiffCursor {
+            offset: Some(start + prefix.len()),
+            ..position.clone()
+        });
+        let encoded = serde_json::to_vec(&AgentReply::Diff {
+            items: vec![expected.clone()],
+        })
+        .expect("scalar envelope");
+        let bytes = u32::try_from(
+            acyclic_harness_client::encoded_agent_reply_size(encoded.len() as u64)
+                .expect("scalar wire credit"),
+        )
+        .expect("page credit");
+        let request = AgentPageRequest::new(
+            2,
+            bytes,
+            Some(serde_json::to_string(&position).expect("scalar cursor")),
+        )
+        .expect("scalar page");
+        let actual = view
+            .agent_page(Some(&position), &request)
+            .expect("a fitting scalar must preserve its accepted prefix and continuation");
+        assert_eq!(actual, vec![expected]);
+    }
+
+    // Negative control: authority over another volume discloses no path.
+    let other = VolumeRef::new(
+        volume.provider().clone(),
+        "other".into(),
+        VolumeClass::SessionShared,
+        VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+        &mut None,
+    )?;
+    let scope = fixture
+        ._issuer
+        .bootstrap_scope(
+            "reader",
+            &Capabilities::new([other.capability(VolumeOperation::Read, &mut None)?]),
+            Some(AgentId::from_bytes([1; 16])),
+            &mut None,
+        )
+        .expect("scope");
+    let unlisted = FilesystemContentVerifier::new(
+        fixture.host.clone(),
+        &fixture._issuer.verifier(&mut None).expect("verifier"),
+        &scope,
+        1 << 20,
+        None,
+    )?;
+    assert!(matches!(
+        pages
+            .page(&unlisted, volume, (&base, &current), &page(128, None))
+            .await,
+        Err(acyclic_harness::Error::Unauthorized(_))
+    ));
+    // Nor does a continuation of a projection retained for an authorized
+    // reader: every page rechecks the requesting reader's authority.
+    let first = pages
+        .page(&fixture.files, volume, (&base, &current), &page(1, None))
+        .await?;
+    let next = first[0]
+        .next
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .expect("cursor");
+    assert!(
+        matches!(
+            pages
+                .page(&unlisted, volume, (&base, &current), &page(1, next))
+                .await,
+            Err(acyclic_harness::Error::Unauthorized(_))
+        ),
+        "retained diff pages require the requesting reader's authority"
+    );
+    Ok(())
+}
+
+/// Range writes can restore identical bytes with a different chunk layout.
+/// Equality must spend the same input allowance as a changed file; otherwise
+/// a small page silently compares arbitrarily large restored files first.
+#[cfg(all(feature = "hosting", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn workspace_diff_admits_range_restoration_before_reading_content() -> Result<()> {
+    use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkspaceError};
+    use acyclic_harness::{client::AgentPageRequest, hosting::DiffPages};
+    let fixture = Fixture::new().await?;
+    let volume = &fixture.root.volume;
+    let cancel = CancellationToken::new();
+    let work = WorkBudget::UNBOUNDED;
+    let reference = acyclic_harness::filesystem::workspace_ref(
+        volume.provider().clone(),
+        &volume.storage_name(&mut None)?,
+    )?;
+    let workspace = fixture
+        .filesystem
+        .open_workspace(volume.storage_name(&mut None)?, work, &cancel)
+        .await
+        .expect("existing workspace")
+        .value;
+    for length in [4096, 65_537] {
+        let text = "x".repeat(length);
+        // A native checkout imports workspace files, without an uploaded
+        // immutable publication descriptor that a range write would stale.
+        fixture
+            .host
+            .apply(
+                &reference,
+                None,
+                &[acyclic_harness::filesystem::WorkspaceMutation::PutFile {
+                    path: "/restored.txt".into(),
+                    bytes: text.as_bytes().to_vec().into(),
+                }],
+                &IdempotencyKey::new(format!("seed-{length}"))?,
+            )
+            .await?;
+        let base = fixture.source("restored.txt").await?.generation;
+        let mut transaction = workspace
+            .begin_transaction(acyclic_fs::IdempotencyKey::new(), work, &cancel)
+            .await
+            .expect("range transaction")
+            .value;
+        transaction
+            .write_range(
+                "/restored.txt",
+                1,
+                text.as_bytes()[1..length - 1].to_vec(),
+                work,
+                &cancel,
+            )
+            .await
+            .expect("original range write");
+        transaction
+            .commit::<WorkspaceError, _, _>(
+                None,
+                PublicationPermit::Unrestricted,
+                work,
+                &cancel,
+                |_| async {
+                    Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: Default::default(),
+                    })
+                },
+            )
+            .await
+            .expect("range publication");
+        let current = fixture.source("restored.txt").await?.generation;
+        let pages = DiffPages::default();
+        let omitted = pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &current),
+                &AgentPageRequest::new(128, 2048, None).expect("small page"),
+            )
+            .await?;
+        assert_eq!(
+            omitted.len(),
+            1,
+            "content equality bypassed the page allowance"
+        );
+        assert_eq!(omitted[0].omitted_bytes, Some(length as u64));
+        assert!(omitted[0].patch.is_empty());
+        let funded = pages
+            .page(
+                &fixture.files,
+                volume,
+                (&base, &current),
+                &AgentPageRequest::new(128, 64 * 1024, None).expect("funded page"),
+            )
+            .await?;
+        if length <= 64 * 1024 {
+            assert!(
+                funded.is_empty(),
+                "funded equality must ignore chunk layout"
+            );
+        } else {
+            assert_eq!(funded.len(), 1, "file read cap must precede equality");
+            assert_eq!(funded[0].omitted_bytes, Some(length as u64));
+        }
+    }
+    Ok(())
 }
 
 struct Reader<'a> {

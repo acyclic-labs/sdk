@@ -130,6 +130,36 @@ pub enum AgentCommand {
     },
     /// Discover the root admitted by this session's credential.
     Root {},
+    /// Snapshot explicit paths in a named client session; wait on its original
+    /// filesystem publication producer when `after` is still current.
+    ClientFiles {
+        /// Agent selected within the authenticated tree.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable UI-session identity within that agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        session: acyclic_harness_core::OperationId,
+        /// Distinct relative file paths; no directory scan is performed.
+        paths: Vec<String>,
+        /// Wait for a generation different from this committed snapshot.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        after: Option<acyclic_harness_core::resources::GenerationRef>,
+    },
+    /// Atomic conditional publication to that same session volume.
+    PublishClientFiles {
+        /// Agent selected within the authenticated tree.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable UI-session identity within that agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        session: acyclic_harness_core::OperationId,
+        /// Caller-retained identity of this conditional publication.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        operation: acyclic_harness_core::OperationId,
+        /// Distinct paths with their original source preconditions.
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown[]"))]
+        changes: Vec<acyclic_harness_core::client_files::ClientFileChange>,
+    },
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
         /// Exact recipient; selection changes cannot retarget a prepared command.
@@ -416,6 +446,44 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
+            Self::ClientFiles { paths, .. } => {
+                if paths.is_empty() {
+                    return Err(CommandError::Invalid);
+                }
+                let mut unique = std::collections::BTreeSet::new();
+                for path in paths {
+                    if !unique.insert(path) {
+                        return Err(CommandError::Invalid);
+                    }
+                    acyclic_harness_core::conversation::validate_content_path(path, &mut None)
+                        .map_err(|_| CommandError::Invalid)?;
+                }
+                Ok(())
+            }
+            Self::PublishClientFiles { changes, .. } => {
+                if changes.is_empty() {
+                    return Err(CommandError::Invalid);
+                }
+                let mut unique = std::collections::BTreeSet::new();
+                for change in changes {
+                    if !unique.insert(&change.path) {
+                        return Err(CommandError::Invalid);
+                    }
+                    acyclic_harness_core::conversation::validate_content_path(
+                        &change.path,
+                        &mut None,
+                    )
+                    .map_err(|_| CommandError::Invalid)?;
+                    if change
+                        .expected
+                        .as_ref()
+                        .is_some_and(|file| file.path() != change.path)
+                    {
+                        return Err(CommandError::Invalid);
+                    }
+                }
+                Ok(())
+            }
             Self::Spawn { role, .. } | Self::Fork { role, .. } if role.is_empty() => {
                 Err(CommandError::Invalid)
             }
@@ -483,6 +551,8 @@ impl AgentCommand {
             | Self::Settlement { agent }
             | Self::Usage { agent, .. }
             | Self::Events { agent, .. }
+            | Self::ClientFiles { agent, .. }
+            | Self::PublishClientFiles { agent, .. }
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
@@ -495,6 +565,8 @@ impl AgentCommand {
         match self {
             Self::Bind { .. } => "bind",
             Self::Root {} => "root",
+            Self::ClientFiles { .. } => "client_files",
+            Self::PublishClientFiles { .. } => "publish_client_files",
             Self::Prompt { .. } => "prompt",
             Self::Cancel { .. } => "cancel",
             Self::Compact { .. } => "compact",
@@ -757,7 +829,8 @@ mod tests {
             AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
         // Escapes expand text up to sixfold, and multibyte characters must
         // never split: each part is cut on the encoded, escaped length.
-        let text = "line \"quoted\" \u{1} é 🦀\n".repeat(400_000);
+        let sample = "line \"quoted\" \u{1} é 🦀\n";
+        let text = sample.repeat(MAX_COMMAND_BYTES / sample.len() + 1);
         let command = AgentCommand::Prompt {
             agent: agent.clone(),
             id: IntentId::try_from("prompt-1")?,
@@ -790,14 +863,16 @@ mod tests {
         assert_eq!(parts as usize, frames.len() - 1);
         assert_eq!(bytes as usize, assembled.len());
         assert_eq!(digest, blake3::hash(assembled.as_bytes()).to_hex().as_str());
-        let AgentCommand::Prompt { body, .. } =
+        let AgentCommand::Prompt { id, body, .. } =
             PreparedCommand::decode_whole(assembled.as_bytes())?
         else {
             return Err("expected the prompt".into());
         };
+        assert_eq!(id.as_str(), "prompt-1");
         assert_eq!(body, ModelContent::Text(text.clone()));
         assert!(
-            matches!(prepared.decoded()?, AgentCommand::Prompt { body, .. } if body == ModelContent::Text(text))
+            matches!(prepared.decoded()?, AgentCommand::Prompt { id, body, .. }
+                if id.as_str() == "prompt-1" && body == ModelContent::Text(text))
         );
         // Negative controls: one frame stays bounded, and a command that fits
         // one frame is sent as itself.
@@ -807,24 +882,6 @@ mod tests {
         ));
         let small = PreparedCommand::new(&AgentCommand::Settlement { agent })?;
         assert!(small.frames().eq([small.command()]));
-        Ok(())
-    }
-
-    #[test]
-    fn prepared_prompt_preserves_the_intent_and_body() -> Result<(), Box<dyn std::error::Error>> {
-        let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from(
-                "harness/agents/00000000000000000000000000000001".to_owned(),
-            )?,
-            id: IntentId::try_from("prompt-1")?,
-            body: ModelContent::Text("exact input".into()),
-        };
-        let prepared = PreparedCommand::new(&command)?;
-        let AgentCommand::Prompt { id, body, .. } = prepared.decoded()? else {
-            return Err("expected prompt command".into());
-        };
-        assert_eq!(id.as_str(), "prompt-1");
-        assert_eq!(body, ModelContent::Text("exact input".into()));
         Ok(())
     }
 }

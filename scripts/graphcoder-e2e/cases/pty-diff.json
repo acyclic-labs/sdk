@@ -47,6 +47,18 @@
               "○"
             ]
           },
+          "send": "\u001b[200~/diff \u001b[201~\r\u001b[27u"
+        },
+        {
+          "when": {
+            "contains": [
+              "DONE_EDIT",
+              "○"
+            ],
+            "absent": [
+              "diff.txt (added) +1 -0"
+            ]
+          },
           "prompt": "/diff "
         },
         {

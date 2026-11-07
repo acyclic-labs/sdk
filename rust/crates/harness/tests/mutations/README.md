@@ -59,3 +59,49 @@ The scenario edits real home modules and imports after pinning their tree,
 then checks both plugin and agent admission through their production entry
 points. A fresh admission must observe the edits. Reverse the patch with
 `git apply -R`; the same scenario must pass with the shared snapshot restored.
+
+# Retained workspace diff authority control
+
+From the repository root, apply `diff-retained-authority.patch` and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_pages_exact_changes_since_the_fork_base)'
+```
+
+The unchanged test must fail at `retained diff pages require the requesting
+reader's authority`. A compilation failure does not qualify the mutation.
+Reverse the production patch and require the same test to pass.
+
+The same command with `diff-utf8-midpoint.patch` must fail at `a fitting
+four-byte scalar must survive page shrinking`. This plants the former raw
+byte midpoint in the actual collector, while leaving the projected filesystem
+input, cursor and exact canonical wire-credit oracle unchanged. Reverse it
+and require the same test to pass.
+
+`diff-missing-baseline.patch` restores the former production fallback that
+treated an incomplete source import as an empty diff. Apply it and run the
+existing native capture control through the served client:
+
+```sh
+cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --lib local::checkout_tools::capture::tests::unreadable_before_images_remain_optional_until_continuity_is_lost -- --exact --nocapture
+```
+
+The test must fail at `uncertified source was reported as an exact diff`,
+after the real source refuses its before-image and before continuity is
+recovered. Reverse the production patch and require the same test to pass,
+including the exact empty diff after a complete baseline is retained.
+A compilation or setup failure does not qualify the mutation.
+
+`diff-eager-content-comparison.patch` restores the former unbounded content
+comparison before the consumer's input allowance. Apply it and run:
+
+```sh
+cargo nextest run --locked -p acyclic-harness --features hosting,test-support --test main -E 'test(workspace_diff_admits_range_restoration_before_reading_content)'
+```
+
+The unchanged test must fail at `content equality bypassed the page allowance`.
+The original filesystem range-write entry point restores equal bytes with a
+different payload layout. Insufficient credit must retain an explicit omission;
+sufficient credit establishes equality only below the file read cap. Reverse
+the production patch and require the same test to pass. A compilation or setup
+failure does not qualify the mutation.

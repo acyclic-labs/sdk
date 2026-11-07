@@ -196,7 +196,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(page)
     }
 
-    pub(in crate::filesystem) fn generation_ref_id(
+    /// The canonical reference of one of this provider's generations.
+    pub fn generation_ref_id(
         &self,
         id: GenerationId,
         io: Option<&PreparationIo>,

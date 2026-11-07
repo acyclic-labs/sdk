@@ -227,12 +227,7 @@ mod tests {
                 workspace.volume_config().limits,
             )
         };
-        let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
-        let changes = acyclic_stream::StreamPath::new(
-            crate::publication_changes::changes_path_text([0; 16], volume, &mut text)
-                .ok_or("missing changes path")?
-                .to_owned(),
-        )?;
+        let changes = crate::session::changes_path(&fs, volume)?;
         let from = streams.tail(changes).await?;
         let provider = ChangeProvider::new(fs, streams)?;
         let mut requested = request(from, None)?;

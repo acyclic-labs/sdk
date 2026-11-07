@@ -167,9 +167,10 @@ mod tests {
                     areas = Screen {
                         overlay: &panel.lines,
                         overlay_title: "Query",
+                        overlay_scroll: top,
                         ..Screen::default()
                     }
-                    .render(frame, &input, &mut viewport, top, 0);
+                    .render(frame, &input, &mut viewport, 0, 0);
                 })?;
                 for row in 0..usize::from(areas.overlay_rows(0)) {
                     if top + row >= panel.lines.len() {
@@ -179,8 +180,8 @@ mod tests {
                     let mut column = 0;
                     while column < areas.overlay_columns() {
                         let cell = &painted.buffer[(
-                            areas.transcript.x + 1 + column,
-                            areas.transcript.y + 1 + u16::try_from(row)?,
+                            areas.overlay.x + 1 + column,
+                            areas.overlay.y + 1 + u16::try_from(row)?,
                         )];
                         let symbol = cell.symbol();
                         match symbol {
@@ -205,7 +206,7 @@ mod tests {
                 }
                 if panel.page_boundary(
                     &mut top,
-                    -isize::try_from(areas.transcript.height)?,
+                    -isize::try_from(areas.overlay.height)?,
                     areas.overlay_rows(0),
                 ) {
                     break;
@@ -222,7 +223,7 @@ mod tests {
             while top != 0 {
                 assert!(!panel.page_boundary(
                     &mut top,
-                    isize::try_from(areas.transcript.height)?,
+                    isize::try_from(areas.overlay.height)?,
                     areas.overlay_rows(0)
                 ));
             }

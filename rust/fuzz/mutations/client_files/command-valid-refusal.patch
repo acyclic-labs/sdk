@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-client/src/command.rs b/rust/crates/harness-client/src/command.rs
+--- a/rust/crates/harness-client/src/command.rs
++++ b/rust/crates/harness-client/src/command.rs
+@@ -745,6 +745,9 @@ impl PreparedCommand {
+         let command: AgentCommand =
+             serde_json::from_slice(bytes).map_err(|_| CommandError::Invalid)?;
+         command.validate()?;
++        if matches!(command, AgentCommand::ClientFiles { .. }) {
++            return Err(CommandError::Invalid);
++        }
+         if matches!(
+             command,
+             AgentCommand::Stage { .. } | AgentCommand::Staged { .. }
