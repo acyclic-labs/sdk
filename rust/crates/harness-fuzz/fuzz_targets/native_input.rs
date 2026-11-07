@@ -71,6 +71,62 @@ fn check(bytes: &[u8]) {
     {
         assert_eq!(task.as_str(), text, "selected task identity changed");
     }
+    if let Ok(original) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        check_agy_hooks(&original);
+    }
+}
+
+fn check_agy_hooks(original: &serde_json::Value) {
+    use serde_json::{Value, json};
+    for workspace in [None, Some("selected native workspace")] {
+        for (event, mapped) in [
+            ("SessionStart", "SessionStart"),
+            ("PreInvocation", "SessionStart"),
+            ("PostToolUse", "ToolBoundary"),
+            ("Stop", "Stop"),
+            ("unknown", ""),
+        ] {
+            let mut actual = original.clone();
+            let result = input::agy_hook(event, &mut actual, workspace);
+            if event == "Stop" && original.get("fullyIdle").and_then(Value::as_bool) == Some(false)
+            {
+                assert_eq!(result.unwrap(), None, "running native work was retired");
+                assert_eq!(&actual, original);
+                continue;
+            }
+            let id = original
+                .get("conversationId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let cwd = workspace.or_else(|| {
+                let paths = original.get("workspacePaths")?.as_array()?;
+                if paths.len() != 1 {
+                    return None;
+                }
+                paths.first()?.as_str().filter(|path| !path.is_empty())
+            });
+            if !mapped.is_empty()
+                && (event != "Stop"
+                    || original.get("fullyIdle").and_then(Value::as_bool) == Some(true))
+                && let (Some(id), Some(cwd)) = (id, cwd)
+            {
+                assert_eq!(result.unwrap(), Some(mapped));
+                let mut expected = original.clone();
+                expected["cwd"] = json!(cwd);
+                expected["session_id"] = json!(id);
+                assert_eq!(
+                    actual, expected,
+                    "native identity or unrelated input changed"
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "ambiguous native identity or retirement admitted"
+                );
+                assert_eq!(&actual, original, "refusal changed the original input");
+            }
+        }
+    }
 }
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {

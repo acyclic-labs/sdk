@@ -53,7 +53,8 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 const assets = {};
-for (const relativePath of ["pi/index.ts", "pi/README.md", "shared/mcp-client.mjs"]) {
+for (const relativePath of ["pi/index.ts", "pi/README.md", "shared/mcp-client.mjs",
+  "shared/workspace.mjs", "opencode/index.mjs", "agy/hooks.json", "agy/mcp_config.json"]) {
   const path = join(plugin, relativePath);
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
 }
@@ -63,12 +64,13 @@ for (const path of [
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
   join(plugin, "claude", ".claude-plugin", "plugin.json"),
+  join(plugin, "agy", "plugin.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
 for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json"),
-  join(plugin, "claude", ".claude-plugin", "plugin.json")]) {
+  join(plugin, "claude", ".claude-plugin", "plugin.json"), join(plugin, "agy", "plugin.json")]) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }

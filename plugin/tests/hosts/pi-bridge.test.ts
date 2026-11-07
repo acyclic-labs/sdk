@@ -3,6 +3,7 @@ import * as childProcess from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { PassThrough } from "node:stream";
 import { mock, test } from "bun:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import {hostFixtureDirectory} from '../../../scripts/graphcoder-e2e/fixture-directory.mjs';
@@ -44,7 +45,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     const refusedInstall = install();
     assert.equal(refusedInstall.error, undefined, `step=launch Pi installer; recovery=${recovery}`);
     assert.notEqual(refusedInstall.status, 0);
-    assert.match(refusedInstall.stderr, /step=admit Pi coordination asset/);
+    assert.match(refusedInstall.stderr, /step=admit native coordination asset/);
     assert.equal(readFileSync(path, "utf8"), previous);
     writeFileSync(client, clientBytes);
     const installed = install();
@@ -55,7 +56,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
     mock.module("node:child_process", () => ({ ...native,
       execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
         queueMicrotask(() => callback(null, JSON.stringify({ task: "fixture-task", cwd: directory })));
-        return { stdin: { end() {} } };
+        return { stdin: new PassThrough() };
       },
       spawn: () => {
         spawns++;
@@ -65,7 +66,7 @@ test("installed Pi failed spawn closes custody and shutdown without adjacent ass
         return child;
       },
     }));
-      const { default: acyclic } = await import(pathToFileURL(path).href);
+    const { default: acyclic } = await import(pathToFileURL(path).href);
     acyclic({ events, on: (name: string, handler: (...args: any[]) => Promise<void>) => hooks.set(name, handler),
       registerTool: (tool: any) => tools.set(tool.name, tool) });
     const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
@@ -113,16 +114,18 @@ test("Pi boundaries leave managed capture to the physical process owner", async 
   const previous = process.env.ACYCLIC_TASK;
   process.env.ACYCLIC_TASK = "managed-child";
   mock.module("node:child_process", () => ({ ...native,
-    execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => ({
-      stdin: { end(input: string) {
-        const action = JSON.parse(input);
+    execFile: (_program: string, _args: string[], _options: unknown, callback: Function) => {
+      const stdin = new PassThrough();
+      stdin.on("data", input => {
+        const action = JSON.parse(input.toString());
         actions.push(action);
         // This boundary models the shared owner's live custody refusal.
         // The harness contract also exercises the real exclusive lease.
         queueMicrotask(() => callback(action.kind === "capture"
           ? new Error("native process custody is live") : null, "{}"));
-      } },
-    }),
+      });
+      return { stdin };
+    },
   }));
   try {
     const path = await stagePiExtension(directory);

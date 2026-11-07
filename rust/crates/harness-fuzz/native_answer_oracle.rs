@@ -12,6 +12,8 @@ fn copy(answer: &NativeAnswer) -> NativeAnswer {
         pending: answer.pending.clone(),
         outcome: answer.outcome.clone(),
         omitted: answer.omitted,
+        last_part: answer.last_part.clone(),
+        truncated: answer.truncated,
     }
 }
 
@@ -19,6 +21,8 @@ fn same(left: &NativeAnswer, right: &NativeAnswer) {
     assert_eq!(left.pending, right.pending);
     assert_eq!(left.outcome, right.outcome);
     assert_eq!(left.omitted, right.omitted);
+    assert_eq!(left.last_part, right.last_part);
+    assert_eq!(left.truncated, right.truncated);
 }
 
 fn prefix(original: &str, retained: &str) {
@@ -69,8 +73,13 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
         current.record(&event);
         same(&current, &after);
 
-        match event.get("type").and_then(Value::as_str) {
-            Some("turn.started") => same(&current, &NativeAnswer::default()),
+        let agy_result = event.get("event").and_then(Value::as_str) == Some("result");
+        match event
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|_| !agy_result)
+        {
+            Some("turn.started" | "step_start") => same(&current, &NativeAnswer::default()),
             Some("item.completed") => {
                 assert_eq!(current.outcome, before.outcome, "preview completed a turn");
                 if before.outcome.is_none()
@@ -92,11 +101,55 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                         .or_else(|| before.pending.map(Outcome::Succeeded))
                 );
             }
+            Some("text") => {
+                assert_eq!(
+                    current.outcome, before.outcome,
+                    "text completed a native turn"
+                );
+                let id = event
+                    .pointer("/part/id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+                let text = event.pointer("/part/text").and_then(Value::as_str);
+                if before.outcome.is_none()
+                    && !before.truncated
+                    && event
+                        .pointer("/part/time/end")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|end| end > 0)
+                    && let (Some(id), Some(text)) = (id, text)
+                    && before.last_part.as_deref() != Some(id)
+                {
+                    let joined = before.pending.as_deref().unwrap_or_default().to_owned() + text;
+                    prefix(
+                        &joined,
+                        current.pending.as_deref().expect("lost native text"),
+                    );
+                    assert_eq!(
+                        current.truncated,
+                        joined.len() > current.pending.as_ref().expect("native text").len()
+                    );
+                    assert_eq!(current.last_part.as_deref(), Some(id));
+                } else {
+                    same(&current, &before);
+                }
+            }
+            Some("step_finish") => {
+                if before.outcome.is_none()
+                    && event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
+                {
+                    assert_eq!(current.outcome, before.pending.map(Outcome::Succeeded));
+                    assert!(current.pending.is_none());
+                } else {
+                    same(&current, &before);
+                }
+            }
             Some("turn.failed" | "error") => {
                 assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
                 assert!(current.pending.is_none());
                 if let Some(message) = event
                     .pointer("/error/message")
+                    .or_else(|| event.pointer("/error/data/message"))
                     .or_else(|| event.get("message"))
                     .and_then(Value::as_str)
                 {
@@ -167,6 +220,39 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                     }
                     Some("aborted") => assert_eq!(current.outcome, Some(Outcome::Cancelled)),
                     _ => assert!(current.outcome.is_none()),
+                }
+            }
+            _ if agy_result => {
+                let result = &event["result"];
+                assert!(current.pending.is_none());
+                match result.get("status").and_then(Value::as_str) {
+                    Some("SUCCESS")
+                        if result.get("error").is_none()
+                            && result.get("finished_reason").is_none() =>
+                    {
+                        if let Some(text) = result.get("response").and_then(Value::as_str) {
+                            match &current.outcome {
+                                Some(Outcome::Succeeded(retained)) => prefix(text, retained),
+                                _ => panic!("successful native result lost"),
+                            }
+                        } else {
+                            assert!(current.outcome.is_none());
+                        }
+                    }
+                    Some("CANCELED" | "INTERRUPTED") => {
+                        assert_eq!(current.outcome, Some(Outcome::Cancelled))
+                    }
+                    _ => {
+                        assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+                        if let Some(message) = result.get("error").and_then(Value::as_str) {
+                            assert_eq!(
+                                current.outcome,
+                                Some(Outcome::Failed {
+                                    message: message.into()
+                                })
+                            );
+                        }
+                    }
                 }
             }
             _ => same(&current, &before),

@@ -29,14 +29,16 @@ fn paths(host: &str, flags: &[String], cwd: &Path, non_unicode: &Path, value: &s
     let options: &[&str] = match host {
         "codex" => &["--add-dir"],
         "claude-code" => &["--plugin-dir", "--add-dir", "--settings"],
-        _ => &["--session-dir", "--extension"],
+        "agy" => &["--add-dir", "--settings"],
+        "pi" => &["--session-dir", "--extension"],
+        _ => &[],
     };
     let relative = format!("configuration/{value}");
     let absolute = cwd.join(&relative);
     for option in options {
         for value in [relative.as_str(), absolute.to_str().expect("Unicode root")] {
             let mut supplied = flags.to_vec();
-            if *option == "--settings" {
+            if host == "claude-code" && *option == "--settings" {
                 // Replace the required inline settings, retaining its cardinality.
                 supplied[1] = value.into();
             } else {
@@ -44,7 +46,7 @@ fn paths(host: &str, flags: &[String], cwd: &Path, non_unicode: &Path, value: &s
             }
             let inherited = launch::parent_flags(host, &supplied, cwd)
                 .expect("admitted path policy was refused");
-            let index = if *option == "--settings" {
+            let index = if host == "claude-code" && *option == "--settings" {
                 1
             } else {
                 flags.len() + 1
@@ -128,12 +130,23 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
                 &["-p", "--output-format", "stream-json", "--verbose"],
                 vec![],
             ),
+            "opencode" => (&["run", "--format", "json", "--dir"], vec![]),
+            "agy" => (
+                &[
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                ],
+                vec![],
+            ),
             _ => (&["--mode", "json", "-p"], vec![]),
         };
         let mut expected = prefix
             .iter()
             .copied()
             .map(OsString::from)
+            .chain((host == "opencode").then(|| OsString::from(cwd)))
             .chain(inherited.iter().map(OsString::from))
             .chain(suffix)
             .collect::<Vec<_>>();
@@ -141,6 +154,7 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
             let option = match host {
                 "codex" => "resume",
                 "claude-code" => "--resume",
+                "agy" => "--conversation",
                 _ => "--session",
             };
             expected.extend([option, reference].into_iter().map(OsString::from));
@@ -193,21 +207,24 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
     });
     let reference = format!("native-{encoded}");
     let non_unicode = non_unicode_root(input);
-    for (host, required) in [
+    for (host, required_groups) in [
         (
             "codex",
             &[
-                "--sandbox",
-                "workspace-write",
-                "--ask-for-approval",
-                "never",
+                &["--sandbox", "workspace-write"][..],
+                &["--ask-for-approval", "never"][..],
             ][..],
         ),
         (
             "claude-code",
-            &["--settings", "{}", "--permission-mode", "default"][..],
+            &[
+                &["--settings", "{}"][..],
+                &["--permission-mode", "default"][..],
+            ][..],
         ),
         ("pi", &[][..]),
+        ("opencode", &[][..]),
+        ("agy", &[&["--sandbox"][..], &["--mode", "auto"][..]][..]),
     ] {
         if let Some(flags) = &decoded {
             match launch::validate(host, flags) {
@@ -226,9 +243,9 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
             }
         }
         // Authored valid policy requests are a positive control, not a parser.
-        let mut flags = required
+        let mut flags = required_groups
             .iter()
-            .copied()
+            .flat_map(|group| group.iter().copied())
             .map(str::to_owned)
             .collect::<Vec<_>>();
         flags.extend(["--model".into(), encoded.into()]);
@@ -244,7 +261,7 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
         );
         policy(host, &flags, cwd, &reference);
         paths(host, &flags, cwd, &non_unicode, encoded);
-        if host != "pi" {
+        if matches!(host, "codex" | "claude-code" | "agy") {
             assert!(
                 matches!(
                     launch::parent_flags(host, &flags, &non_unicode),
@@ -253,19 +270,21 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
                 "native launch accepted a non-Unicode workspace root"
             );
         }
-        for (index, pair) in required.chunks_exact(2).enumerate() {
+        let mut start = 0;
+        for group in required_groups {
             let mut missing = flags.clone();
-            missing.drain(2 * index..2 * index + 2);
+            missing.drain(start..start + group.len());
             assert!(
                 matches!(launch::validate(host, &missing), Err(Error::Invalid(_))),
                 "native launch admitted a missing required policy"
             );
             let mut repeated = flags.clone();
-            repeated.extend(pair.iter().copied().map(str::to_owned));
+            repeated.extend(group.iter().copied().map(str::to_owned));
             assert!(
                 matches!(launch::validate(host, &repeated), Err(Error::Invalid(_))),
                 "native launch admitted duplicate required policy"
             );
+            start += group.len();
         }
         flags.push("--model".into());
         assert!(
