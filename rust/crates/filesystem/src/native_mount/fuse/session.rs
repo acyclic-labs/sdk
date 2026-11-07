@@ -257,7 +257,7 @@ impl FuseSession {
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
-            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
+            started.worker = Some(session.start(std::thread::Builder::new())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
             started.identity = Some(identity);

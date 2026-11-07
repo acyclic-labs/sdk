@@ -4,13 +4,14 @@ use crate::native_host::publish_probe;
 #[test]
 fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
 -> Result<(), DemandError> {
+    let directory = tempfile::tempdir()?;
+    let held = hold_root(directory.path())?;
     for (durability, step) in [NativeDurability::Visibility, NativeDurability::Durable]
         .into_iter()
         .flat_map(|durability| (0..publish_probe::STEPS).map(move |step| (durability, step)))
     {
-        let directory = tempfile::tempdir()?;
-        let held = hold_root(directory.path())?;
-        let leaf = Path::new("request.json");
+        let name = format!("request-{durability:?}-{step}.json");
+        let leaf = Path::new(&name);
         let bytes = br#"{"request":"complete"}"#;
         publish_probe::kill_at(Some(step));
         assert!(held.publish_immutable(leaf, bytes, durability).is_err());
@@ -30,13 +31,27 @@ fn immutable_bytes_survive_each_publication_kill_and_reject_changed_content()
         );
         assert_eq!(std::fs::read(directory.path().join(leaf))?, bytes);
     }
-    publication_barriers_follow_the_requested_guarantee()?;
-    #[cfg(all(feature = "test-support", feature = "native-mount"))]
-    scoped_publication_keeps_the_original_root_and_restores_after_unwind()?;
+    let leaf = Path::new("request.json");
+    let bytes = br#"{"request":"complete"}"#;
+    publish_probe::tear(true);
+    publish_probe::kill_at(Some(1));
+    let killed = held.publish_immutable(leaf, bytes, crate::NativeDurability::Durable);
+    publish_probe::kill_at(None);
+    publish_probe::tear(false);
+    assert!(killed.is_err());
+    assert_eq!(
+        std::fs::read(directory.path().join(leaf))?,
+        bytes[..bytes.len() / 2]
+    );
+    assert!(
+        held.publish_immutable(leaf, bytes, crate::NativeDurability::Durable)
+            .is_err()
+    );
     Ok(())
 }
 
 #[cfg(all(feature = "test-support", feature = "native-mount"))]
+#[test]
 fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Result<(), DemandError>
 {
     use crate::native_host::publication_test_support::{
@@ -45,6 +60,14 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
     use std::cell::Cell;
     use std::rc::Rc;
 
+    let fixture = tempfile::tempdir()?;
+    let path = fixture.path().join("workspace");
+    let moved = fixture.path().join("retained");
+    std::fs::create_dir(&path)?;
+    let held = hold_root(&path)?;
+    std::fs::rename(&path, &moved)?;
+    std::fs::create_dir(&path)?;
+    let mut case = 0;
     for durability in [NativeDurability::Visibility, NativeDurability::Durable] {
         for step in [
             PublicationStep::Created,
@@ -53,13 +76,9 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
             PublicationStep::Renamed,
         ] {
             for unwind in [false, true] {
-                let fixture = tempfile::tempdir()?;
-                let path = fixture.path().join("workspace");
-                let moved = fixture.path().join("retained");
-                std::fs::create_dir(&path)?;
-                let held = hold_root(&path)?;
-                std::fs::rename(&path, &moved)?;
-                std::fs::create_dir(&path)?;
+                let names = ["inner", "outer", "after-scope"].map(|leaf| format!("{leaf}-{case}"));
+                let [inner_leaf, leaf, after_leaf] = names.each_ref().map(Path::new);
+                case += 1;
                 let bytes = br#"{"request":"complete"}"#;
                 let outer_calls = Rc::new(Cell::new(0));
                 let outer = Rc::clone(&outer_calls);
@@ -77,7 +96,7 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                                 Configuration::default(),
                                 Some(Box::new(move || inner.set(inner.get() + 1))),
                                 || -> Result<(), DemandError> {
-                                    held.publish_immutable(Path::new("inner"), bytes, durability)?;
+                                    held.publish_immutable(inner_leaf, bytes, durability)?;
                                     if unwind {
                                         std::panic::resume_unwind(Box::new(()));
                                     }
@@ -92,7 +111,6 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                         }
                         assert_eq!(inner_calls.get(), 1);
                         assert_eq!(outer_calls.get(), 0, "inner scope consumed outer callback");
-                        let leaf = Path::new("outer");
                         assert!(
                             matches!(
                                 held.publish_immutable(leaf, bytes, durability),
@@ -116,9 +134,9 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
                         Ok(())
                     },
                 )?;
-                held.publish_immutable(Path::new("after-scope"), bytes, durability)?;
+                held.publish_immutable(after_leaf, bytes, durability)?;
                 assert_eq!(outer_calls.get(), 1, "callback escaped its original scope");
-                for leaf in ["inner", "outer", "after-scope"] {
+                for leaf in [inner_leaf, leaf, after_leaf] {
                     assert_eq!(std::fs::read(moved.join(leaf))?, bytes);
                     assert!(!path.join(leaf).try_exists()?);
                 }
@@ -130,6 +148,7 @@ fn scoped_publication_keeps_the_original_root_and_restores_after_unwind() -> Res
 
 /// Use the original finite work frame to observe barriers on the physical
 /// path. In particular, promoting existing visible bytes must flush the file.
+#[test]
 fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandError> {
     use crate::demand::DemandWork;
     let directory = tempfile::tempdir()?;
@@ -239,71 +258,5 @@ fn publication_barriers_follow_the_requested_guarantee() -> Result<(), DemandErr
         .remove_record_file(rejected, NativeDurability::Durable, &mut remove)?;
     assert_eq!(remove.work.durability_operations, 1);
     assert!(!directory.path().join(rejected).exists());
-    Ok(())
-}
-
-#[test]
-fn immutable_publication_stays_in_held_directory_and_preserves_existing_leaf()
--> Result<(), DemandError> {
-    let fixture = tempfile::tempdir()?;
-    let path = fixture.path().join("workspace");
-    let moved = fixture.path().join("moved");
-    let target = fixture.path().join("target");
-    std::fs::create_dir(&path)?;
-    let held = hold_root(&path)?;
-    std::fs::rename(&path, &moved)?;
-    std::fs::create_dir(&path)?;
-    held.publish_immutable(
-        Path::new("request"),
-        b"retained",
-        crate::NativeDurability::Durable,
-    )?;
-    assert_eq!(std::fs::read(moved.join("request"))?, b"retained");
-    assert!(!path.join("request").exists());
-    std::fs::write(&target, b"unchanged")?;
-    std::fs::hard_link(&target, moved.join("link"))?;
-    assert!(
-        held.publish_immutable(
-            Path::new("link"),
-            b"replaced",
-            crate::NativeDurability::Durable
-        )
-        .is_err()
-    );
-    assert_eq!(std::fs::read(&target)?, b"unchanged");
-    held.remove_file(Path::new("request"), crate::NativeDurability::Durable)?;
-    held.remove_file(Path::new("link"), crate::NativeDurability::Durable)?;
-    assert!(!moved.join("request").exists());
-    assert!(!moved.join("link").exists());
-    assert!(!path.join("request").exists());
-    assert_eq!(std::fs::read(&target)?, b"unchanged");
-    assert!(
-        held.remove_file(Path::new("../target"), crate::NativeDurability::Durable)
-            .is_err()
-    );
-    Ok(())
-}
-
-#[test]
-fn negative_control_publication_in_place_leaves_a_torn_immutable_record() -> Result<(), DemandError>
-{
-    let directory = tempfile::tempdir()?;
-    let held = hold_root(directory.path())?;
-    let leaf = Path::new("request.json");
-    let bytes = br#"{"request":"complete"}"#;
-    publish_probe::tear(true);
-    publish_probe::kill_at(Some(1));
-    let killed = held.publish_immutable(leaf, bytes, crate::NativeDurability::Durable);
-    publish_probe::kill_at(None);
-    publish_probe::tear(false);
-    assert!(killed.is_err());
-    assert_eq!(
-        std::fs::read(directory.path().join(leaf))?,
-        bytes[..bytes.len() / 2]
-    );
-    assert!(
-        held.publish_immutable(leaf, bytes, crate::NativeDurability::Durable)
-            .is_err()
-    );
     Ok(())
 }

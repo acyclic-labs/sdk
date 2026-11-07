@@ -183,7 +183,13 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     assert_eq!(bytes.as_ref(), b"source");
     drop(bytes);
     assert_eq!(
-        std::fs::read(destination.path().join("authored.txt"))?,
+        std::fs::read(destination.path().join("authored.txt")).inspect_err(|error| {
+            eprintln!("authored projection read failed: {error}");
+            eprintln!(
+                "retained callback failure: {:?}",
+                mount.take_callback_failure()
+            );
+        })?,
         b"authored"
     );
     #[cfg(not(windows))]

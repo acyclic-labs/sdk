@@ -5,8 +5,7 @@ use crate::foundation::VolumeId;
 use crate::kernel::{
     BlobChunkRef, BlobNode, BlobPage, CheckoutDependencies, Dependency, Extent, ExtentPage,
     FileKind, FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName,
-    MetadataField, NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async,
-    encode_extent_page,
+    NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async,
 };
 use crate::memory::MemoryObjectStore;
 use acyclic_stream::OwnedBytes;

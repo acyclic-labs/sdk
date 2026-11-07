@@ -257,35 +257,73 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                     drop(syncer);
                 }
                 "linux_concurrent_truncates_do_not_fence_unrelated_files" => {
-                    let barrier = Arc::new(std::sync::Barrier::new(9));
-                    let mut workers = Vec::new();
-                    for worker in 0..8 {
-                        let path = temporary.path().join(format!("concurrent-{worker}"));
-                        std::fs::write(&path, b"old")?;
-                        let barrier = Arc::clone(&barrier);
-                        workers.push(std::thread::spawn(move || -> std::io::Result<()> {
-                            barrier.wait();
-                            for iteration in 0..8 {
-                                let mut file = std::fs::OpenOptions::new()
-                                    .write(true)
-                                    .truncate(true)
-                                    .open(&path)
-                                    .map_err(|error| {
-                                        std::io::Error::other(format!(
-                                            "concurrent open {worker}/{iteration}: {error}"
-                                        ))
+                    let paths = (0..8)
+                        .map(|worker| {
+                            let path = temporary.path().join(format!("concurrent-{worker}"));
+                            std::fs::write(&path, b"old")?;
+                            Ok(path)
+                        })
+                        .collect::<std::io::Result<Vec<_>>>()?;
+                    let startup = std::sync::RwLock::new(false);
+                    std::thread::scope(|scope| -> Result<(), Box<dyn std::error::Error>> {
+                        let mut start = startup.write().map_err(|_| "writer startup poisoned")?;
+                        let mut workers = Vec::new();
+                        for (worker, path) in paths.into_iter().enumerate() {
+                            let startup = &startup;
+                            workers.push(std::thread::Builder::new().spawn_scoped(
+                                scope,
+                                move || -> std::io::Result<()> {
+                                    let started = startup.read().map_err(|_| {
+                                        std::io::Error::other("writer startup poisoned")
                                     })?;
-                                write!(file, "new-{worker}-{iteration}")?;
-                                file.sync_all()?;
-                            }
-                            assert_eq!(std::fs::read_to_string(&path)?, format!("new-{worker}-7"));
-                            Ok(())
-                        }));
-                    }
-                    barrier.wait();
-                    for worker in workers {
-                        worker.join().map_err(|_| "mounted writer panicked")??;
-                    }
+                                    if !*started {
+                                        return Err(std::io::Error::new(
+                                            std::io::ErrorKind::BrokenPipe,
+                                            "concurrent writer startup producer retired",
+                                        ));
+                                    }
+                                    drop(started);
+                                    for iteration in 0..8 {
+                                        let mut file = std::fs::OpenOptions::new()
+                                            .write(true)
+                                            .truncate(true)
+                                            .open(&path)
+                                            .inspect_err(|error| {
+                                                eprintln!(
+                                                    "concurrent open {worker}/{iteration}: {error}"
+                                                );
+                                            })?;
+                                        write!(file, "new-{worker}-{iteration}").inspect_err(
+                                            |error| {
+                                                eprintln!(
+                                                    "concurrent write {worker}/{iteration}: {error}"
+                                                );
+                                            },
+                                        )?;
+                                        file.sync_all().inspect_err(|error| {
+                                            eprintln!(
+                                                "concurrent sync {worker}/{iteration}: {error}"
+                                            );
+                                        })?;
+                                    }
+                                    assert_eq!(
+                                        std::fs::read_to_string(&path)?,
+                                        format!("new-{worker}-7")
+                                    );
+                                    Ok(())
+                                },
+                            )?);
+                        }
+                        // Release all writers after creation. A failed spawn
+                        // drops the guard with false, so parked writers return
+                        // BrokenPipe before the scope joins them.
+                        *start = true;
+                        drop(start);
+                        for worker in workers {
+                            worker.join().map_err(|_| "mounted writer panicked")??;
+                        }
+                        Ok(())
+                    })?;
                 }
                 "rustc_compiles_inside_a_linux_mount" => {
                     std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
