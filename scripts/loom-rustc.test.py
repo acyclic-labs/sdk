@@ -19,29 +19,31 @@ class CompilerHandoffTests(unittest.TestCase):
             cases.append((-signal.SIGTERM, []))
         for code, arguments in cases:
             with self.subTest(code=code):
-                reader = None
-                if os.name == "posix":
-                    reader, writer = os.pipe()
-                    try:
-                        os.write(writer, b"compiler-credit")
-                    finally:
-                        os.close(writer)
+                reader, writer = os.pipe()
+                try:
+                    os.write(writer, b"compiler-credit")
+                finally:
+                    os.close(writer)
+                inherited = reader
+                if os.name == "nt":
+                    import msvcrt
+                    inherited = msvcrt.get_osfhandle(reader)
+                    os.set_handle_inheritable(inherited, True)
                 try:
                     child = subprocess.Popen(
                         [sys.executable, str(SOURCE), sys.executable, str(Path(__file__).resolve()),
-                         "--compiler", str(reader), str(code), *arguments],
-                        **({"pass_fds": (reader,)} if reader is not None else {}),
+                         "--compiler", str(inherited), str(code), *arguments],
+                        **({"pass_fds": (reader,)} if os.name == "posix" else {"close_fds": False}),
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                         text=True)
                     output, error = child.communicate()
                 finally:
-                    if reader is not None:
-                        os.close(reader)
+                    os.close(reader)
                 self.assertEqual(child.returncode, code, error)
                 observed = json.loads(output)
-                if reader is not None:
+                if os.name == "posix":
                     self.assertEqual(observed["pid"], child.pid)
-                    self.assertEqual(observed["credit"], "compiler-credit")
+                self.assertEqual(observed["credit"], "compiler-credit")
                 expected = [*arguments, "--cfg", "loom"] if "--cfg" in arguments else arguments
                 self.assertEqual(observed["arguments"], expected)
 
@@ -56,8 +58,12 @@ class CompilerHandoffTests(unittest.TestCase):
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--compiler"]:
+        reader = int(sys.argv[2])
+        if os.name == "nt":
+            import msvcrt
+            reader = msvcrt.open_osfhandle(reader, os.O_RDONLY)
         print(json.dumps({"pid": os.getpid(),
-                          "credit": os.read(int(sys.argv[2]), 32).decode() if sys.argv[2] != "None" else None,
+                          "credit": os.read(reader, 32).decode(),
                           "arguments": sys.argv[4:]}), flush=True)
         code = int(sys.argv[3])
         if code < 0:
