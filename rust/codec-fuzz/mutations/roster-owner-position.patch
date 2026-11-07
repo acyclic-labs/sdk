@@ -1,9 +1,11 @@
-diff --git a/rust/crates/harness-core/src/agent/targets.rs b/rust/crates/harness-core/src/agent/targets.rs
 --- a/rust/crates/harness-core/src/agent/targets.rs
 +++ b/rust/crates/harness-core/src/agent/targets.rs
-@@ -47,4 +47,4 @@
-         match named.strip_prefix(USER_PREFIX) {
--            Some(owner) => exact(&self.owners, owner, work),
-+            Some(_owner) => Ok(Some(0)),
-             None => exact(&self.names, named, work),
-         }
+@@ -417,7 +417,7 @@
+             self.admitted
+                 .owners
+                 .get(key, work)
+-                .map(|found| found.copied())
++                .map(|found| found.map(|_| 0))
+         } else {
+             let Some(key) = exact_key(named, work)? else {
+                 return Ok(None);

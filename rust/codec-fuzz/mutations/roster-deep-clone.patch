@@ -1,11 +1,24 @@
-diff --git a/rust/crates/harness-core/src/agent/targets.rs b/rust/crates/harness-core/src/agent/targets.rs
 --- a/rust/crates/harness-core/src/agent/targets.rs
 +++ b/rust/crates/harness-core/src/agent/targets.rs
-@@ -184,5 +184,5 @@
+@@ -162,7 +162,7 @@
+ /// Every target visible to an agent, in attach order, and its home.
+ /// Clones retain this same immutable admission in constant time, without
+ /// allocating or copying records or canonical announcement bytes.
+-#[derive(Clone, Serialize, Deserialize)]
++#[derive(Serialize, Deserialize)]
+ #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+ #[serde(try_from = "RosterWire")]
  pub struct Roster {
--    home: Arc<str>,
--    targets: Arc<[TargetRecord]>,
-+    home: String,
-+    targets: Vec<TargetRecord>,
-     #[serde(skip)]
-     home_position: usize,
+@@ -172,6 +172,12 @@
+         tsify(type = "{ home: string; targets: TargetRecord[] }")
+     )]
+     admitted: std::sync::Arc<AdmittedRoster>,
++}
++
++impl Clone for Roster {
++    fn clone(&self) -> Self {
++        Self::new(self.home_name(), self.targets().to_vec()).expect("original roster admission")
++    }
+ }
+ 
+ impl fmt::Debug for Roster {
