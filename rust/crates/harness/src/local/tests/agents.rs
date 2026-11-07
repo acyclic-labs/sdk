@@ -436,6 +436,19 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
     let mut events = client.observe(Some(0)).await?;
     let inbox = client.send("lost-producer", "hello").await?;
     entering.await.map_err(agent)?;
+    // Same canonical agent, different original authenticated Session. Refusal
+    // must precede even the reply query, without consuming the other follow.
+    let other = conversation(&harness).await?;
+    let mut unrelated = other.observe(Some(0)).await?;
+    {
+        let invalid = client.settle("lost-producer", inbox, &mut unrelated);
+        tokio::pin!(invalid);
+        let observed = futures::poll!(&mut invalid);
+        assert!(
+            matches!(&observed, std::task::Poll::Ready(Err(Error::Invalid(reason))) if reason.contains("observer from the original connection")),
+            "settlement admitted an unrelated progress producer or performed I/O before refusal: {observed:?}"
+        );
+    }
     let root = connection.root().clone();
     let settling = settled(&harness, &root);
     tokio::pin!(settling);

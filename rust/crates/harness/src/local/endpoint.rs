@@ -21,7 +21,8 @@ pub(super) const CREDENTIAL: u32 = 0;
 /// A session bound to one served agent tree.
 #[derive(Clone)]
 pub struct Connection {
-    pub(super) controls: AgentControls,
+    // One immutable authenticated selection, shared by commands and follows.
+    pub(super) controls: Arc<AgentControls>,
     pub(super) root: AgentPath,
     /// The `fs:/` resource announcing the root's tool output.
     pub(super) tools: String,
@@ -100,7 +101,7 @@ impl Connection {
             .await
             .map_err(exchange)?;
         Ok(Self {
-            controls,
+            controls: Arc::new(controls),
             root: agent,
             tools,
             _host: self._host.clone(),
@@ -179,7 +180,7 @@ impl Connection {
             return Err(Error::Conflict("the endpoint named no root".into()));
         };
         Ok(Self {
-            controls,
+            controls: Arc::new(controls),
             root,
             tools,
             _host: host,
@@ -259,7 +260,7 @@ impl LocalHarness {
             .await
             .map_err(exchange)?;
         Ok(Connection {
-            controls,
+            controls: Arc::new(controls),
             root: agent,
             tools,
             _host: connection._host,

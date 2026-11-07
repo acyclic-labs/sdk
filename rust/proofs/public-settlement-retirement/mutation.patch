@@ -1,10 +1,10 @@
 diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/harness/src/local/agent_conversation.rs
 --- a/rust/crates/harness/src/local/agent_conversation.rs
 +++ b/rust/crates/harness/src/local/agent_conversation.rs
-@@ -537,29 +537,36 @@
-         inbox: u64,
-         events: &mut super::Observer,
-     ) -> Result<Settlement> {
+@@ -544,29 +544,36 @@
+                 "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+             ));
+         }
 -        let mut status: Option<StatusRecord> = None;
 -        loop {
 -            match self.reply(id, inbox).await? {
