@@ -109,7 +109,7 @@ pub use storage_accelerations::{
 #[cfg(target_os = "macos")]
 mod darwin_mount;
 #[cfg(target_os = "macos")]
-pub use darwin_mount::DarwinTeardownFailure;
+pub use darwin_mount::{DarwinRetirementFailure, DarwinTeardownFailure};
 #[cfg(target_os = "linux")]
 mod fuse;
 

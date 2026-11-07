@@ -99,8 +99,8 @@ fn arbitration_unmount(destination: &CStr) -> std::io::Result<()> {
     let status = unsafe { acyclic_fs_darwin_retire_mount(destination.as_ptr(), &raw mut dissent) };
     if dissent != 0 {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("Darwin mount retirement denied: {dissent:#x}"),
+            std::io::Error::from_raw_os_error(status).kind(),
+            DarwinRetirementFailure(dissent),
         ));
     }
     if status != 0 {

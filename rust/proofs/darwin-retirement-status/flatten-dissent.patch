@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/native_mount/darwin_mount_retirement.c b/rust/crates/filesystem/src/native_mount/darwin_mount_retirement.c
+--- a/rust/crates/filesystem/src/native_mount/darwin_mount_retirement.c
++++ b/rust/crates/filesystem/src/native_mount/darwin_mount_retirement.c
+@@ -58,7 +58,7 @@ int acyclic_fs_darwin_retire_mount(const char *destination, int *dissent) {
+       DADiskUnmount(disk, kDADiskUnmountOptionForce, retirement_completed, &result);
+       while (!result.completed) CFRunLoopRunInMode(mode, DBL_MAX, true);
+       *dissent = result.dissent;
+-      error = retirement_error(result.dissent);
++      error = result.dissent == 0 ? 0 : retirement_error(kDAReturnNotPermitted);
+     }
+     DASessionUnscheduleFromRunLoop(session, loop, mode);
+     CFRelease(disk);
