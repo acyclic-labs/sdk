@@ -12,10 +12,20 @@ const temporary = mkdtempSync(join(root, "target-descriptors-"));
 let step = "select descriptor families";
 try {
   for (const family of families) {
+    if (!compatibilityArtifacts[family]?.descriptorDigest) throw new Error(`unknown descriptor family: ${family}`);
+  }
+  // The Rust producer owns the complete descriptor set. A full capture needs
+  // one generation; explicit selections keep their existing narrow inputs.
+  if (selected.length === 0) {
+    step = "compile Rust descriptors";
+    generate(["descriptors", root, temporary], { stdio: "inherit" });
+  }
+  for (const family of families) {
     const artifacts = compatibilityArtifacts[family];
-    if (!artifacts?.descriptorDigest) throw new Error(`unknown descriptor family: ${family}`);
-    step = `compile ${family} Rust descriptor`;
-    generate(["descriptors", root, temporary, family === "filesystem" ? "filesystem-wire" : family], { stdio: "inherit" });
+    if (selected.length > 0) {
+      step = `compile ${family} Rust descriptor`;
+      generate(["descriptors", root, temporary, family === "filesystem" ? "filesystem-wire" : family], { stdio: "inherit" });
+    }
     const bytes = readFileSync(join(temporary, artifacts.descriptorDigest.split("/").at(-1)));
     if (family === "actors") {
       step = "compile independent Actors Buf descriptor";
