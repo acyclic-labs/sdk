@@ -15,6 +15,16 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "stream-error-admission": [
+    "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
+    "canonical failure writer output was refused", [],
+    { fuzz: { bin: "stream_error", corpus: "fuzz/corpus/stream_error", runs: 1024 } },
+  ],
+  "invocation-header-admission": [
+    "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
+    "captured actor invocation was refused", [],
+    { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
+  ],
   "browser-revision-progress": [
     "rust/crates/stream/src/browser/publication.rs", "acyclic-stream",
     "browser::tests::database_loss_ends_parked_revision_observers",
@@ -614,12 +624,15 @@ if (claim === "--help" && extra.length === 0) {
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : options.patchPath ?? `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
   const target = options.target ?? ["--lib"];
-  const command = instrumented
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+    "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
+    `-artifact_prefix=target/${claim}/`];
+  const command = options.fuzz ? fuzzCommand(1) : instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
     : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
-  const positive = instrumented
+  const positive = options.fuzz ? fuzzCommand(options.fuzz.runs) : instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
@@ -643,6 +656,10 @@ if (claim === "--help" && extra.length === 0) {
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
           ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...(options.fuzz ? {
+            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
+              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+          } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
               `../../scripts/loom-rustc.${process.platform === "win32" ? "cmd" : "sh"}`, import.meta.url)),
@@ -691,7 +708,10 @@ if (claim === "--help" && extra.length === 0) {
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
         const mutated = check(mutation.label, mutation.command ?? command);
-        require(instrumented
+        require(options.fuzz
+          ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
+            && mutated.output.includes("ERROR: libFuzzer:")
+          : instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
           : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
@@ -703,7 +723,7 @@ if (claim === "--help" && extra.length === 0) {
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);
-    const completed = options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
+    const completed = options.fuzz ? ["DONE", `${options.fuzz.runs} runs`, "cov:"] : options.completed ?? [options.positive ? `${options.positive.length} tests run: ${options.positive.length} passed`
       : options.nextest ? "1 test run: 1 passed" : "1 passed; 0 failed"];
     require(restored.status === 0 && !restored.signal && (instrumented
       ? ["DONE", "1000 runs", "cov:"].every(marker => restored.output.includes(marker))

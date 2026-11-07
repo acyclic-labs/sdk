@@ -1,0 +1,11 @@
+--- a/rust/crates/actors/src/domain/invocation.rs
++++ b/rust/crates/actors/src/domain/invocation.rs
+@@ -322,7 +322,7 @@
+ 
+             fn validate_envelope(&self) -> Result<(), DomainError> {
+                 self.deployment_envelope().map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
+-                Ok(())
++                Err(DomainError::Contract(crate::ContractError::InvalidArgument))
+             }
+         }
+     )+ };
