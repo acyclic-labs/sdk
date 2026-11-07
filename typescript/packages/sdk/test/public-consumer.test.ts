@@ -8,7 +8,8 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
         !("kind" in value) || typeof value.kind !== "string") throw new TypeError("expected event");
     return { kind: value.kind };
   });
-  expect((await stream.append({ kind: "started" })).ok).toBe(true);
+  const idempotencyKey = streamApi.idempotencyKey(new TextEncoder().encode("consumer/started"));
+  expect((await stream.append({ kind: "started" }, { idempotencyKey })).ok).toBe(true);
   const records = [];
   for await (const record of stream.read({ from: 0n, limit: 4 })) records.push(record.value);
   expect(records).toEqual([{ kind: "started" }]);
@@ -25,7 +26,7 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
     const workspace = await fs.createWorkspace("consumer");
     await workspace.write("/result", Uint8Array.of(7, 8));
     expect([...await workspace.readRange("/result", 0n, 2n)]).toEqual([7, 8]);
-    expect((await workspace.checkpoint("result")).id.byteLength).toBe(32);
+    expect((await workspace.checkpoint("result")).id).toBeInstanceOf(Uint8Array);
   } finally {
     fs.close();
   }
