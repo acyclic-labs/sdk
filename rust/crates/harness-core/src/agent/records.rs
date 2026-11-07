@@ -37,7 +37,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
 /// Version 13 uses named MessagePack values after a four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 13;
+/// Version 14 scopes status addresses by the agent's complete ancestry.
+pub const RECORD_VERSION: u32 = 14;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

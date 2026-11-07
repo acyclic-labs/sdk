@@ -20,7 +20,10 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
 
     let directory = tempfile::tempdir().map_err(exchange)?;
     let project = volume(directory.path()).await?;
-    let provider = text();
+    let provider = crate::local::tests::scripted([
+        crate::test_support::ScriptedTurn::Text("child output".into()),
+        crate::test_support::ScriptedTurn::Text("grandchild output".into()),
+    ]);
     let config = volume_config(directory.path(), project, provider)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -84,8 +87,8 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .map_err(exchange)?;
             assert_eq!(page.children.len(), 1);
             assert_eq!(page.children[0].path, child.inbox().map_err(exchange)?);
-            // The first status is committed with adoption. No model reply or
-            // scheduler delay is needed to make this follow readable.
+            // Adoption publishes the first status; the turn's own status
+            // event announces its committed conversation entry.
             let mut status = acyclic_stream::records_only(
                 session
                     .follow(FollowRequest::new(child.status().map_err(exchange)?, 0))
@@ -98,12 +101,15 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     .await
                     .ok_or_else(|| Error::Conflict("child status ended".into()))?
                     .map_err(exchange)?;
-                if crate::agent::StatusRecord::decode(&record.value)
-                    .map_err(exchange)?
-                    .conversation
-                    > 0
-                {
+                crate::agent::codec_fuzz::check(&record.value);
+                let status = crate::agent::StatusRecord::decode(&record.value).map_err(exchange)?;
+                if status.conversation > 0 {
                     break;
+                }
+                if let crate::agent::Phase::Done { outcome } = status.phase {
+                    return Err(Error::Conflict(format!(
+                        "child ended before publishing its conversation: {outcome:?}"
+                    )));
                 }
             }
             let selected = connection.select(child.clone()).await?;
@@ -124,6 +130,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                 .await
                 .ok_or_else(|| Error::Conflict("child conversation ended".into()))?
                 .map_err(exchange)?;
+            crate::agent::codec_fuzz::check(&record.value);
             let entry = crate::agent::ConversationEntry::decode(&record.value).map_err(exchange)?;
             assert!(matches!(
                 selected

@@ -457,7 +457,7 @@ where
 
     /// The one credential a client of `root` holds: it invokes `calls`, the
     /// actor resource of the server of this binding's tree, and observes
-    /// `root`'s conversation, status and tool output; with the session
+    /// `root`'s stream subtree, matching status subtree and tool output; with the session
     /// authority admitting it.
     ///
     /// # Errors
