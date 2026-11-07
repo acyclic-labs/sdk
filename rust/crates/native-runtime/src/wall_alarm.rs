@@ -15,6 +15,9 @@ use acyclic_collections::{ExtractedEntries, ExtractedPrefix, FixedIndex};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
+mod wait;
+pub use wait::AlarmWait;
+
 /// Called once on expiry or loss of the original alarm producer. It must
 /// only signal its owner and return. Failure retains the original native cause.
 pub type AlarmCallback = Arc<dyn Fn(Result<(), Arc<io::Error>>) + Send + Sync>;

@@ -167,7 +167,7 @@ async fn clock_schedule(
     let mut retained = clock.sleep_until(130);
     assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
-    assert_eq!(control.advance_to(109), Err(ClockError::Reversed));
+    assert!(matches!(control.advance_to(109), Err(ClockError::Reversed)));
     control.advance_to(110)?;
     assert_eq!(clock.now_unix_ms(), 110);
     assert_eq!(
@@ -235,13 +235,13 @@ async fn clock_schedule(
         "lost producer-close wake"
     );
     if let Some(pending) = pending {
-        assert_eq!(pending.await, Err(ClockError::ProducerDropped));
+        assert!(matches!(pending.await, Err(ClockError::ProducerDropped)));
     }
-    assert_eq!(retained.await, Err(ClockError::ProducerDropped));
-    assert_eq!(
+    assert!(matches!(retained.await, Err(ClockError::ProducerDropped)));
+    assert!(matches!(
         clock.sleep_until(130).await,
         Err(ClockError::ProducerDropped)
-    );
+    ));
     clock.sleep_until(120).await?;
     assert!(matches!(
         serving.await,
@@ -253,5 +253,44 @@ async fn clock_schedule(
     assert_eq!(state.cursor("inbox"), Some(1));
     assert_eq!(state.alarm().deadline_unix_ms, Some(130));
     assert_eq!(state.alarm().delivered_generation, None);
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[test]
+fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestResult {
+    for poll_before_retirement in [true, false] {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let mut wait = SystemClock.sleep_until(u64::MAX);
+        let mut context = Context::from_waker(Waker::noop());
+        if poll_before_retirement {
+            let entered = runtime.enter();
+            assert!(wait.as_mut().poll(&mut context).is_pending());
+            drop(entered);
+        }
+        // The SAME future outlives the original Tokio timer producer. The
+        // native absolute alarm owns its event independently of that driver.
+        drop(runtime);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait.as_mut().poll(&mut context)
+        }));
+        assert!(
+            result.is_ok(),
+            "wall clock retained a retired Tokio timer driver"
+        );
+        assert!(
+            result
+                .map_err(|_| "wall clock panicked after runtime retirement")?
+                .is_pending(),
+            "a live native producer must retain the future absolute deadline"
+        );
+        drop(wait);
+        // Exercise the same original native driver delivering an elapsed
+        // deadline with no Tokio runtime, not a virtual time or mock callback.
+        futures::executor::block_on(acyclic_native_runtime::WallAlarm::wait(0)?)?;
+        futures::executor::block_on(SystemClock.sleep_until(0))?;
+    }
     Ok(())
 }

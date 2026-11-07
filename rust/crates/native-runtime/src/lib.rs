@@ -149,7 +149,7 @@ pub use wake::NativeWake;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 mod wall_alarm;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
-pub use wall_alarm::{AlarmCallback, WallAlarm};
+pub use wall_alarm::{AlarmCallback, AlarmWait, WallAlarm};
 mod blocking;
 mod blocking_future;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
