@@ -24,7 +24,7 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
         &mut None,
     )?;
     host.create_volume(&volume).await?;
-    let issuer = crate::core::AuthorityRoot::new(
+    let issuer = crate::core::AuthorityRoot::host_owned(
         "append-cost",
         [81; 32],
         crate::core::Authority {
