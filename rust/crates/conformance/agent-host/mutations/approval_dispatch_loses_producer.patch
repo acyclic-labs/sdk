@@ -1,0 +1,16 @@
+diff --git a/rust/crates/harness-core/src/approvals/agent.rs b/rust/crates/harness-core/src/approvals/agent.rs
+index df0a7340e28..159d44a184b 100644
+--- a/rust/crates/harness-core/src/approvals/agent.rs
++++ b/rust/crates/harness-core/src/approvals/agent.rs
+@@ -219,7 +219,10 @@ impl AgentApprovals {
+             return self.outcome(id, journal, io).await;
+         }
+         let request = request_id(id);
+-        let bytes = self.policy.request(&*self.files, &request).await?;
++        let bytes = match self.policy.request(&*self.files, &request).await {
++            Ok(bytes) => bytes,
++            Err(_) => std::future::pending().await,
++        };
+         let Ok(Interaction::Approval {
+             operation_id,
+             subject,

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/approvals/agent.rs b/rust/crates/harness-core/src/approvals/agent.rs
+index df0a7340e28..2f523c680a9 100644
+--- a/rust/crates/harness-core/src/approvals/agent.rs
++++ b/rust/crates/harness-core/src/approvals/agent.rs
+@@ -424,7 +424,7 @@ impl AgentApprovals {
+                 operation_id,
+                 action_digest,
+                 ..
+-            }) => operation_id == operation && action_digest == digest,
++            }) => true,
+             _ => false,
+         };
+         if !bound {
