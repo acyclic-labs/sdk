@@ -225,10 +225,40 @@ mod tests {
             .await
             .map_err(|failure| failure.error)?
             .value;
-        workspace.write_text("/known", "authored").await?;
-        workspace
+        let mut setup = workspace
+            .begin_transaction(crate::IdempotencyKey::new(), budget, &cancellation)
+            .await
+            .map_err(|failure| failure.error)?
+            .value;
+        setup.write_text("/known", "authored").await?;
+        setup
             .write_text("/zzlater", "unrelated authored child")
             .await?;
+        for index in 0..64 {
+            setup
+                .write_text(
+                    &format!("/unrelated-{index:02}"),
+                    "unrelated authored child",
+                )
+                .await?;
+        }
+        setup
+            .commit(
+                None,
+                crate::PublicationPermit::Unrestricted,
+                budget,
+                &cancellation,
+                |_| async {
+                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: crate::WorkCounters::UNCHARGED,
+                        },
+                    )
+                },
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let generation = workspace
             .head(budget, &cancellation)
             .await
@@ -250,7 +280,7 @@ mod tests {
         let (page, allocation) = generation
             .list_directory("/", None, 1024, &original, &cancellation)
             .await?;
-        assert_eq!(page.entries.len(), 2);
+        assert_eq!(page.entries.len(), 66);
         assert_eq!(
             page.entries[0].name.encoding(),
             crate::kernel::NameEncoding::WindowsUtf16Le
@@ -279,6 +309,11 @@ mod tests {
             NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
         let root = HostRoot::open(directory.path(), &mut &original)?;
         assert!(!host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
+        assert_eq!(
+            original.receipt().items_returned,
+            0,
+            "membership must not enumerate unrelated authored children"
+        );
         assert_eq!(original.receipt().bytes_encoded, "known".len() as u64);
         std::fs::write(directory.path().join("foreign"), "must survive")?;
         assert!(host_directory_holds_unknown_entries(&root, "", &generation, &original).await?);
