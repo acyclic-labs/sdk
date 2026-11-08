@@ -67,7 +67,7 @@ fn prompt_bound(prompt: &str) -> Result<()> {
 }
 
 /// The native resume id an event names: a Codex thread, a Claude Code
-/// session, a Pi session header, an OpenCode session or an Antigravity conversation.
+/// session, a Pi session header, an `OpenCode` session or an Antigravity conversation.
 fn native_session_id(event: &Value) -> Option<&str> {
     event
         .get("thread_id")
