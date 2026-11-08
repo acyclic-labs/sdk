@@ -17,6 +17,27 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "effective-read-selection": [
+    "rust/crates/harness-core/src/tool/files/read.rs", "acyclic-harness-core",
+    "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+    "projection reselected head after its original home probe", ["--features", "filesystem"],
+    {
+      oracle: "rust/crates/harness-core/src/filesystem/memory/tests/layered_reads.rs",
+      mutations: [
+        { source: "rust/crates/harness-core/src/tool/files/executor.rs", patch: "rust/proofs/effective-read-selection/preflight.patch", label: "physical-preflight-before-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { patch: "rust/proofs/effective-read-selection/selection.patch", label: "discarded-original-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { source: "rust/crates/harness-core/src/tool/files/authorization.rs", patch: "rust/proofs/effective-read-selection/token.patch", label: "bypassed-original-content-token-grant", diagnostic: "virtual path lost the original content token grant",
+          command: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "--", "--exact", "--nocapture",
+        "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_across_a_new_home_probe",
+        "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
+        "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
+        "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
+      completed: ["5 passed; 0 failed"],
+    },
+  ],
   "task-binding-selection": [
     "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
     "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
@@ -328,28 +349,30 @@ if (claim === "--help" && extra.length === 0) {
     if (result.error) throw result.error;
     return { ...result, output: log ? readFileSync(log, "utf8") : `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
-  function check(label, selected = command) {
+  function check(label, selected = command, productionPath = sourcePath) {
     if (oracle) require(readFileSync(oraclePath).equals(oracle));
     mkdirSync(directory, { recursive: true });
     const result = run("cargo", selected, new URL(`${label}.log`, directory));
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
-      const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(sourcePath)), oracle_sha256: sha256(oracle) };
+      const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(productionPath)), oracle_sha256: sha256(oracle) };
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
       const count = label === "restored" ? options.positive?.length ?? 1 : 1;
-      require(result.output.includes(`Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary`));
+      require(result.output.includes(options.nextest
+        ? `Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary` : "running "));
     }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
   try {
-    const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
     for (const mutation of mutations) {
+      const mutatedPath = mutation.source ? new URL(mutation.source, new URL("../../", import.meta.url)) : sourcePath;
+      const original = readFileSync(mutatedPath);
       step = `check mutation anchors: ${mutation.patch}`;
       const anchor = run("git", ["apply", "--check", mutation.patch]);
       if (anchor.status !== 0) throw new Error(anchor.output);
@@ -358,17 +381,17 @@ if (claim === "--help" && extra.length === 0) {
         const applied = run("git", ["apply", mutation.patch]);
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
-        const mutated = check(mutation.label);
+        const mutated = check(mutation.label, mutation.command ?? command, mutatedPath);
         require(options.fuzz
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && mutated.output.includes("ERROR: libFuzzer:")
           : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
       } finally {
-        writeFileSync(sourcePath, original);
+        writeFileSync(mutatedPath, original);
       }
       step = "restore exact original source";
-      require(readFileSync(sourcePath).equals(original));
+      require(readFileSync(mutatedPath).equals(original));
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);

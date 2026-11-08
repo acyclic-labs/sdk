@@ -25,6 +25,7 @@ impl Window {
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
+        selected: Option<&crate::conversation::FilePathSelection>,
         range: acyclic_fs::ByteRange,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
@@ -58,10 +59,13 @@ impl Window {
             }
             original => original,
         };
-        let expected = original.as_ref().and_then(|(source, _)| match source {
-            FileReadSource::Authored(file) => Some(file),
-            FileReadSource::Content(_) => None,
-        });
+        let expected = original
+            .as_ref()
+            .and_then(|(source, _)| match source {
+                FileReadSource::Authored(file) => Some(file),
+                FileReadSource::Content(_) => None,
+            })
+            .or(selected);
         let hold;
         let (source, bytes, custody) = context
             .read_tool_path_range(

@@ -894,25 +894,29 @@ impl ToolContext {
         ))
     }
 
-    /// The layer path a read of `path` selects. A path under
-    /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
+    /// The layer path and original selection for a relative effective path.
+    /// The read resolves to the highest layer holding it, the home
     /// over the seed (`sys/` only from the seed), so the read returns that
-    /// layer's own pinned file; other paths are returned unchanged. A home
+    /// layer's own pinned file. A home
     /// file holding only `off: true` hides the seed's. A composed settings
     /// file reads as its highest module; its value is the evaluated fold.
-    pub(crate) async fn effective_tool_path<'a>(
+    pub(crate) async fn effective_tool_path(
         &self,
-        path: &'a str,
+        relative: &str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<std::borrow::Cow<'a, str>> {
+    ) -> Result<(
+        String,
+        Option<(
+            crate::conversation::FilePathSelection,
+            crate::conversation::FileSelectionCustody,
+        )>,
+    )> {
         use crate::layers::{WHY_SUFFIX, is_off, layered};
-        let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
-            return Ok(std::borrow::Cow::Borrowed(path));
-        };
-        let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
+        let missing =
+            || Error::NotFound(format!("{EFFECTIVE_PATH}{relative} is in no layer")).tool_input();
         if relative.ends_with(WHY_SUFFIX) {
             return Err(Error::Unsupported(format!(
-                "{path} is derived; read its modules under {HOME_PATH} and {SEED_PATH}"
+                "{EFFECTIVE_PATH}{relative} is derived; read its modules under {HOME_PATH} and {SEED_PATH}"
             ))
             .tool_input());
         }
@@ -920,7 +924,7 @@ impl ToolContext {
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed, None))
             } else {
                 Err(missing())
             };
@@ -937,19 +941,19 @@ impl ToolContext {
             Err(error) => Err(error),
         };
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let _selection_hold;
+        let selection_hold;
         let Some((selected, bytes, hold)) = mine else {
             return if seeded {
-                Ok(seed.into())
+                Ok((seed, None))
             } else {
                 Err(missing())
             };
         };
-        _selection_hold = hold;
+        selection_hold = hold;
         if selected.byte_length <= probe.length && is_off(&bytes) {
             return Err(missing());
         }
-        Ok(home.into())
+        Ok((home, Some((selected, selection_hold))))
     }
 
     /// Checks original directory authority for the selected mounted path.

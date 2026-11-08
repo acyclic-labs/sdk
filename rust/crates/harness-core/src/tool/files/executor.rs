@@ -23,6 +23,23 @@ pub(super) struct Source {
 }
 
 impl Source {
+    pub(super) async fn selected(
+        context: &ToolContext,
+        path: &str,
+        selected: &crate::conversation::FilePathSelection,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Self> {
+        let source = Self::read(context, path, Some(&selected.generation), io).await?;
+        if !selected.matches_content(&source.file) {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "complete read differs from its original selection",
+            ));
+        }
+        Ok(source)
+    }
+
     pub async fn read(
         context: &ToolContext,
         path: &str,
@@ -189,6 +206,7 @@ impl FileTool {
         context: &ToolContext,
         path: &str,
         version: Option<&str>,
+        selected: Option<&crate::conversation::FilePathSelection>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Source> {
@@ -206,19 +224,14 @@ impl FileTool {
                     });
                 }
                 FileReadSource::Authored(selected) => {
-                    let source =
-                        Source::read(context, path, Some(&selected.generation), io).await?;
-                    if source.file.descriptor().byte_length() != selected.byte_length {
-                        return Err(rejection(
-                            work,
-                            "file version length differs from its selection",
-                        ));
-                    }
-                    return Ok(source);
+                    return Source::selected(context, path, &selected, io).await;
                 }
             }
         }
-        Source::read(context, path, None, io).await
+        match selected {
+            Some(selected) => Source::selected(context, path, selected, io).await,
+            None => Source::read(context, path, None, io).await,
+        }
     }
     async fn edit(
         &self,
@@ -240,7 +253,14 @@ impl FileTool {
             super::edit::validate_edit_bound(maximum)?;
         }
         let selected = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
+            .source(
+                context,
+                &input.0.path,
+                input.0.version.as_deref(),
+                None,
+                work,
+                io,
+            )
             .await?;
         let bytes = match selected.bytes {
             Some(bytes) => bytes,
@@ -320,6 +340,11 @@ impl ToolExecutor for FileTool {
             .ok_or_else(unauthorized)?;
         let context = context.ok_or_else(unauthorized)?;
         if file.is_none() && matches!(self, Self::Read | Self::Edit) {
+            // Preflight validated the public virtual path. The real layer
+            // reader establishes its directory grant before returning bytes.
+            if matches!(self, Self::Read) && path.starts_with(crate::layers::EFFECTIVE_PATH) {
+                return Ok(());
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owned_io = work
                 .map(crate::executor::PreparationIo::from_native_work)

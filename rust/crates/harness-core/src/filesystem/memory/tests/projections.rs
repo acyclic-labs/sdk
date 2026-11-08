@@ -827,6 +827,26 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         available,
         "retired range left its original physical storage credit behind"
     );
+    let refused = runtime.block_on(context.read_tool_path_range(
+        "lines.txt",
+        None,
+        acyclic_fs::ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+        Some(&io),
+    ));
+    let Err(error) = refused else {
+        return Err(Error::Storage(
+            "range past the original file's end was accepted".into(),
+        ));
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        available,
+        "refused range left its original physical storage credit behind"
+    );
     let pages = runtime.block_on(task.list_private_directory(
         &private.volume,
         "",

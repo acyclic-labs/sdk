@@ -129,10 +129,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Err(io.invalid("private directory page limit is invalid"));
         }
         let reference = bounded_io::content_workspace(&self.provider, request.volume, Some(io))?;
-        let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
-        let reference = (reference, reference_hold);
         guard().await?;
-        let workspace = self.open(&reference.0, Some(io)).await?;
+        let workspace = self.open(&reference, Some(io)).await?;
         guard().await?;
         let generation = match request.generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
