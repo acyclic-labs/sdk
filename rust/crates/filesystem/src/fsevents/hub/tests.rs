@@ -334,7 +334,11 @@ fn a_stream_per_watch_hits_the_process_cap() -> TestResult {
         .env(CAP_CHILD, "1")
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{stdout}");
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let cap = stdout
         .lines()
         .find_map(|line| line.split_once("raw fsevents streams: "))
@@ -418,18 +422,43 @@ fn count_raw_streams() -> TestResult {
         // locks, before startup releases the callback producer.
         let hub = hub()?;
         let (failure, received) = std::sync::mpsc::channel();
-        let refused = watch(
-            &roots[0],
-            Arc::new(move |events| {
-                if let Err(error) = events {
-                    let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
-                    let _ = failure.send((error, unlocked));
-                }
-            }),
-        );
+        // Hold the actual callback queue. Startup must reach its funded drain
+        // before returning an error; otherwise its queued failure outlives the
+        // registration's original ownership. Both outcomes publish an event,
+        // so the original broken handoff fails without a readiness timeout.
+        let suspended = Suspended::new(hub.queue());
+        let (observed, observation) = std::sync::mpsc::channel();
+        let root = roots[0].clone();
+        let starter = std::thread::spawn(move || {
+            let draining = observed.clone();
+            BEFORE_DRAIN.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    let _ = draining.send(true);
+                }));
+            });
+            let refused = watch(
+                &root,
+                Arc::new(move |events| {
+                    if let Err(error) = events {
+                        let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
+                        let _ = failure.send((error, unlocked));
+                    }
+                }),
+            )
+            .is_err();
+            BEFORE_DRAIN.with(|hook| drop(hook.borrow_mut().take()));
+            let _ = observed.send(false);
+            refused
+        });
+        let draining = observation.recv()?;
+        drop(suspended);
+        let refused = starter
+            .join()
+            .map_err(|_| "native startup worker panicked")?;
+        assert!(refused, "exhausted native capacity admitted another stream");
         assert!(
-            refused.is_err(),
-            "exhausted native capacity admitted another stream"
+            draining,
+            "refused startup released its queued callback owner"
         );
         let (error, unlocked) = received.recv()?;
         assert!(
