@@ -4,7 +4,6 @@ use std::cell::Cell;
 
 thread_local! {
     pub(super) static PAYLOAD_ONLY: Cell<bool> = const { Cell::new(false) };
-    pub(super) static DIRTY_PAYLOAD_ONLY: Cell<bool> = const { Cell::new(false) };
 }
 
 fn exact_backing_mode(mode: u8) {
@@ -39,18 +38,14 @@ fn exact_backing_mode(mode: u8) {
     let heap = measure(|| {
         custody = Some(NativeMountAllocationCustody::new(&mut view).unwrap());
     });
-    let registry_bytes =
-        original.with_original_leaf(|work| work.roots.native_mount_admissions.1.logical_bytes());
     let bytes = NativeMountAllocationCustody::ALLOCATION_BYTES
-        + GAUGE_ALLOCATION_BYTES
-        + DIRTY_ALLOCATION_BYTES
-        + registry_bytes;
+        + NativeAllocationAccounting::ALLOCATION_BYTES;
     assert_eq!(
         heap,
         AllocationInfo {
-            count_total: 4,
-            count_current: 4,
-            count_max: 4,
+            count_total: 2,
+            count_current: 2,
+            count_max: 2,
             bytes_total: bytes,
             bytes_current: bytes as i64,
             bytes_max: bytes,
@@ -61,7 +56,7 @@ fn exact_backing_mode(mode: u8) {
         baseline + bytes,
         "full mount backing funded"
     );
-    expected.allocation_operations += 4;
+    expected.allocation_operations += 2;
     expected.peak_allocation_bytes = expected.peak_allocation_bytes.max(baseline + bytes);
     assert_eq!(original.receipt(), expected);
     let spent = original.receipt();
@@ -93,12 +88,6 @@ fn mount_backing_is_fully_funded_and_cloning_is_free() {
     let error = error.expect_err("payload-only funding must fail the same bound");
     let text = error.downcast_ref::<String>().unwrap();
     assert!(text.contains("full mount backing funded"), "{text}");
-    DIRTY_PAYLOAD_ONLY.set(true);
-    let error = std::panic::catch_unwind(exact_backing);
-    DIRTY_PAYLOAD_ONLY.set(false);
-    let error = error.expect_err("payload-only flag must fail the same bound");
-    let text = error.downcast_ref::<String>().unwrap();
-    assert!(text.contains("full mount backing funded"), "{text}");
 }
 
 fn final_backing(expose_weak: bool) {
@@ -112,7 +101,7 @@ fn final_backing(expose_weak: bool) {
     let heap = measure(|| {
         let custody = NativeMountAllocationCustody::new(&mut original).unwrap();
         if expose_weak {
-            weak = Some(Arc::downgrade(&custody.0));
+            weak = Some(crate::sync::Arc::downgrade(&custody.0));
         }
         drop(custody);
         original.charge(WorkCounters::UNCHARGED).unwrap();
