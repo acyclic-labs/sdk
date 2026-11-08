@@ -144,10 +144,10 @@ fn wait(child: &AgentPath) -> ScriptedTurn {
 }
 
 fn wait_selected(children: &[&AgentPath]) -> ScriptedTurn {
-    selected(children, None)
+    selected(children, None, None)
 }
 
-fn selected(children: &[&AgentPath], timeout_ms: Option<u64>) -> ScriptedTurn {
+fn selected(children: &[&AgentPath], timeout_ms: Option<u64>, need: Option<u32>) -> ScriptedTurn {
     // Derive this simulation's path from the captured original wait input.
     // The schedule and canonical event wrapper are generated test inputs.
     let (_, mut arguments): (String, serde_json::Value) = serde_json::from_str(include_str!(
@@ -160,6 +160,9 @@ fn selected(children: &[&AgentPath], timeout_ms: Option<u64>) -> ScriptedTurn {
             .map(|child| child.as_str())
             .collect::<Vec<_>>()
     );
+    if let Some(need) = need {
+        arguments["need"] = serde_json::json!(need);
+    }
     if let Some(timeout_ms) = timeout_ms {
         arguments["timeout_ms"] = serde_json::json!(timeout_ms);
     }
@@ -327,6 +330,7 @@ async fn observe(
     );
 
     deadlines(host, probe, model, parent, child, control).await?;
+    admission(host, probe, model, parent, child).await?;
     parallel(stream, host, probe, model, parent, child).await?;
     model.extend([wait(child)]);
 
@@ -406,8 +410,8 @@ async fn deadlines(
     host.send(child, &super::super::user(), &record).await?;
     let requests = model.requests().len();
     model.extend([
-        selected(&[child], Some(10)),
-        selected(&[child], Some(20)),
+        selected(&[child], Some(10), None),
+        selected(&[child], Some(20), None),
         ScriptedTurn::Text("both original deadlines completed".into()),
         ScriptedTurn::Text("child releases deferred wait".into()),
     ]);
@@ -449,6 +453,52 @@ async fn deadlines(
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
     host.drain(child).await?;
     host.drain(parent).await?;
+    Ok(())
+}
+
+async fn admission(
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+) -> Result {
+    // A valid direct-child path is not evidence that an actor was created.
+    let missing = parent.child(&id(251))?;
+    assert!(matches!(
+        host.state(&missing).await,
+        Err(Error::NoSuchAgent)
+    ));
+    for (index, children) in [[child, &missing], [&missing, child]]
+        .into_iter()
+        .enumerate()
+    {
+        model.extend([
+            selected(&children, None, Some(1)),
+            ScriptedTurn::Text("invalid selection corrected".into()),
+        ]);
+        probe.answers.lock().unwrap().clear();
+        let before = model.requests().len();
+        let key = format!("selected-child-admission-{index}");
+        assert_eq!(
+            deliver(host, parent, requested(&key, parent)).await?.phase,
+            Phase::Idle,
+        );
+        assert_eq!(
+            result(model),
+            acyclic_harness_core::tools::rejected_input(acyclic_harness_core::Error::Invalid(
+                format!("{} names no child of this agent", missing.as_str()),
+            ))
+            .value,
+            "a settled sibling hid a nonexistent selected child",
+        );
+        assert!(
+            probe.answers.lock().unwrap().is_empty(),
+            "an invalid selection read a settled answer",
+        );
+        assert_eq!(model.requests().len(), before + 2);
+        probe.reads.store(0, Ordering::SeqCst);
+    }
     Ok(())
 }
 
