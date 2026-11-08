@@ -13,11 +13,11 @@ producer threads cannot change that observation.
 
 `original-registration.patch` is captured from the production diff. It restores
 the complete original production file from
-`c58b37daaab8959ff2e07970fc921d2120515470` while retaining the same property:
+`080831aa99e64eaaf574d1ae8f9872fa1ce3eae3` while retaining the same property:
 
 ```sh
 git apply rust/proofs/process-event-retirement/original-registration.patch
-git diff --exit-code c58b37daaab8959ff2e07970fc921d2120515470 -- rust/crates/native-runtime/src/process_tree/events/mod.rs
+git diff --exit-code 080831aa99e64eaaf574d1ae8f9872fa1ce3eae3 -- rust/crates/native-runtime/src/process_tree/events/mod.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(registration_cancellation_retires_original_waker_outside_registry)'
 git apply -R rust/proofs/process-event-retirement/original-registration.patch
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(registration_cancellation_retires_original_waker_outside_registry)'

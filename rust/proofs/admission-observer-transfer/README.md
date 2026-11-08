@@ -32,11 +32,11 @@ through the real receive path. The shared queue models include the production
 admission, channel, owned jobs and terminal paths.
 
 The complete inverse includes admission, job state and their changed callers
-from `0b80139f6b97e54d40cb7ca2f621189a6f0c7fc4`. The new property remains:
+from `4bc8e89da2e23815b2f3b70833932c88ca15e8c2`. The new property remains:
 
 ```sh
 git apply rust/proofs/admission-observer-transfer/original-observer.patch
-git diff --exit-code 0b80139f6b97e54d40cb7ca2f621189a6f0c7fc4 -- rust/crates/native-runtime/src/workers/admission.rs rust/crates/native-runtime/src/workers/job.rs rust/crates/native-runtime/src/tests/native_allocation.rs rust/crates/native-runtime/src/testing/queue_model.rs
+git diff --exit-code 4bc8e89da2e23815b2f3b70833932c88ca15e8c2 -- rust/crates/native-runtime/src/workers/admission.rs rust/crates/native-runtime/src/workers/job.rs rust/crates/native-runtime/src/tests/native_allocation.rs rust/crates/native-runtime/src/testing/queue_model.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(original_submission_replacement_retires_observer_outside_admission)'
 git apply -R rust/proofs/admission-observer-transfer/original-observer.patch
 ```

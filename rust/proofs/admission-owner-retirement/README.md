@@ -18,12 +18,12 @@ keeps whole-pool occupation from blocking unrelated tests.
 
 The retained inverse restores the complete admission and job implementations
 and their original allocation-control and queue-model callers from
-`9430f6f64442e14d2e25a12d875d6630fd6de404`. The new public-entry property stays
+`20890de854ae6404eb4734a9658169affe3da1bd`. The new public-entry property stays
 unchanged. Compilation failures cannot qualify this negative control:
 
 ```sh
 git apply rust/proofs/admission-owner-retirement/original-owner.patch
-git diff --exit-code 9430f6f64442e14d2e25a12d875d6630fd6de404 -- rust/crates/native-runtime/src/workers/admission.rs rust/crates/native-runtime/src/workers/job.rs rust/crates/native-runtime/src/tests/native_allocation.rs rust/crates/native-runtime/src/testing/queue_model.rs
+git diff --exit-code 20890de854ae6404eb4734a9658169affe3da1bd -- rust/crates/native-runtime/src/workers/admission.rs rust/crates/native-runtime/src/workers/job.rs rust/crates/native-runtime/src/tests/native_allocation.rs rust/crates/native-runtime/src/testing/queue_model.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission)'
 git apply -R rust/proofs/admission-owner-retirement/original-owner.patch
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission) | test(retired_waiter_)'

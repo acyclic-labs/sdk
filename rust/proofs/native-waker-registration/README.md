@@ -13,14 +13,15 @@ producer, both with ordinary retirement and with its own callback panic. The
 replacement must receive that publication, preserve the callback panic and
 release the original allocation after its final owner retires.
 
-The retained inverse is captured from the production diff. It restores the
+The retained inverse is shared with completion-observer retirement and captured
+from the production diff. It restores the
 complete six documented files from
-`84d0090b415965cacada047d4665ce5a2d4e349f`, including the original callers in the
+`a8643c4b2a447b800b215d939d084ec509652b09`, including the original callers in the
 existing terminal-observation controls, while retaining the new property:
 
 ```sh
 git apply rust/proofs/native-waker-registration/original-registration.patch
-git diff --exit-code 84d0090b415965cacada047d4665ce5a2d4e349f -- rust/crates/native-runtime/src/wake.rs rust/crates/native-runtime/src/completion/state.rs rust/crates/native-runtime/src/completion/mod.rs rust/crates/native-runtime/src/completion/fence.rs rust/crates/native-runtime/src/process_tree/events/signal.rs rust/crates/native-runtime/src/workers/job_observation_tests.rs
+git diff --exit-code a8643c4b2a447b800b215d939d084ec509652b09 -- rust/crates/native-runtime/src/wake.rs rust/crates/native-runtime/src/completion/state.rs rust/crates/native-runtime/src/completion/mod.rs rust/crates/native-runtime/src/completion/fence.rs rust/crates/native-runtime/src/process_tree/events/signal.rs rust/crates/native-runtime/src/workers/job_observation_tests.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(original_driver_replacement_preserves_reentrant_publication_and_unwind)'
 git apply -R rust/proofs/native-waker-registration/original-registration.patch
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(original_driver_replacement_preserves_reentrant_publication_and_unwind)'

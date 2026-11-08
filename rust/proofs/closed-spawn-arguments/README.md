@@ -16,13 +16,13 @@ Capacity reconciliation uses the shared guard. A callback unwind cannot bypass
 that guard, and a secondary refund panic cannot replace an examination unwind.
 
 The retained inverse was captured with `git diff -R` against the complete
-production file at `c01987b7b57730c5a8d0e95e8e506690636b8028`; the property and
+production file at `9ba2d099dd157f70bdffff34adfc4218a9ffa03b`; the property and
 shared meter observations remain present. From the repository root on Unix:
 
 ```sh
 git apply --check rust/proofs/closed-spawn-arguments/original-arguments.patch
 git apply rust/proofs/closed-spawn-arguments/original-arguments.patch
-git diff --exit-code c01987b7b57730c5a8d0e95e8e506690636b8028 -- rust/crates/native-runtime/src/process_tree/unix.rs
+git diff --exit-code 9ba2d099dd157f70bdffff34adfc4218a9ffa03b -- rust/crates/native-runtime/src/process_tree/unix.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(closed_spawn_arguments_preserve_original_credit_and_unwind)'
 # Require one selected failure containing original argument examination unwind
 # and closed spawn leaked argument credit. Compilation failure is not a negative.
