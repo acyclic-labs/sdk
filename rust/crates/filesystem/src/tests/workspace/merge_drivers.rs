@@ -439,7 +439,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let rendered = preview.describe_conflict_file(conflict).await?;
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Text);
-        merge_text_default_label_cost(view)?;
+        merge_text_allocation_cost(view)?;
         let mut capacity = view.path.as_ref().ok_or("text path missing")?.capacity() as u64;
         for value in [&view.base, &view.ours, &view.theirs] {
             let ConflictValue::Text(text) = value else {
@@ -773,7 +773,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn merge_text_default_label_cost(view: &crate::ConflictView) -> Result<(), Box<dyn Error>> {
+fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn Error>> {
     let (ConflictValue::Text(base), ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
         (&view.base, &view.ours, &view.theirs)
     else {
@@ -817,6 +817,45 @@ fn merge_text_default_label_cost(view: &crate::ConflictView) -> Result<(), Box<d
             "default marker label performed an identity replacement: {samples:?}"
         );
     }
+    // Identity merges need only the returned String. Exercise all three
+    // identities using the actual selected bodies, including their borrowed
+    // forms without a final newline; normalization must not allocate either.
+    let mut identities = Vec::new();
+    for newline in [true, false] {
+        let (base, ours, theirs) = if newline {
+            (base.as_str(), ours.as_str(), theirs.as_str())
+        } else {
+            (
+                base.strip_suffix('\n').unwrap_or(base),
+                ours.strip_suffix('\n').unwrap_or(ours),
+                theirs.strip_suffix('\n').unwrap_or(theirs),
+            )
+        };
+        for (base, ours, theirs, expected) in [
+            (base, ours, ours, ours),
+            (base, base, theirs, theirs),
+            (base, ours, base, ours),
+        ] {
+            let mut result = None;
+            let work = acyclic_test_support::measure(|| {
+                result = Some(crate::text_merge::merge_text(
+                    base, ours, theirs, "ours", "theirs",
+                ));
+            });
+            let result = result.ok_or("identity merger did not return")?;
+            assert!(result.clean);
+            assert_eq!(result.content, expected);
+            assert_eq!(work.count_current, 1);
+            eprintln!("merge identity newline={newline}: {work:?}");
+            identities.push(work);
+        }
+    }
+    assert!(
+        identities
+            .iter()
+            .all(|work| { work.count_total == 1 && work.bytes_total == work.bytes_current as u64 }),
+        "identity merge allocated beyond its returned content: {identities:?}"
+    );
     Ok(())
 }
 
