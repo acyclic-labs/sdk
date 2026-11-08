@@ -14,3 +14,6 @@ acyclic-fs = { path = "../../rust/crates/filesystem", default-features = false, 
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[lints]
+workspace = true

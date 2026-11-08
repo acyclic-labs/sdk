@@ -36,7 +36,12 @@ required-features = ["grpc", "test-support"]
 [[bin]]
 name = "stream-rpc-inventory"
 path = "src/bin/stream-rpc-inventory.rs"
+test = false
 required-features = ["grpc", "http"]
+
+[[bin]]
+name = "stream-http-contract"
+test = false
 
 [features]
 conformance = ["dep:web-time"]

@@ -344,22 +344,31 @@ fn real_pty_waits_only_until_writable() -> io::Result<()> {
 
 /// Descriptors beyond select(2)'s `FD_SETSIZE` (1024) wait like any other, on
 /// every wait the platform has (Darwin: kqueue and the unlimited select).
-/// Skipped, and reported, when `RLIMIT_NOFILE` cannot reach fd 1500.
+/// Missing descriptor capacity is a typed refusal, never a passing skip.
 #[test]
 fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
     use rustix::process::{Resource, getrlimit, setrlimit};
     const HIGH: u64 = 1500;
+    const RECOVERY: &str = "run `cargo nextest run --locked -p acyclic-harness-tui --features tui --lib -E 'test(=term::tty::tests::high_descriptors_wait_only_until_writable)'` in an environment offering descriptors above 1500";
     let mut limit = getrlimit(Resource::Nofile);
     if limit.maximum.is_some_and(|maximum| maximum <= HIGH) {
-        eprintln!("skipped: RLIMIT_NOFILE maximum {limit:?} cannot reach fd {HIGH}");
-        return Ok(());
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "high-descriptor readiness: RLIMIT_NOFILE maximum {limit:?} cannot reach fd {HIGH}; recovery: {RECOVERY}"
+            ),
+        ));
     }
     if limit.current.is_some_and(|current| current <= HIGH) {
         limit.current = Some(limit.maximum.map_or(2048, |maximum| maximum.min(2048)));
-        if let Err(error) = setrlimit(Resource::Nofile, limit) {
-            eprintln!("skipped: RLIMIT_NOFILE cannot be raised to reach fd {HIGH}: {error}");
-            return Ok(());
-        }
+        setrlimit(Resource::Nofile, limit).map_err(|error| {
+            io::Error::new(
+                io::Error::from(error).kind(),
+                format!(
+                    "high-descriptor readiness: setrlimit({limit:?}) failed: {error}; recovery: {RECOVERY}"
+                ),
+            )
+        })?;
     }
     let bytes = vec![b'x'; FRAME];
     for select in [false, true] {

@@ -1,0 +1,160 @@
+--- a/rust/crates/native-runtime/src/wake.rs
++++ b/rust/crates/native-runtime/src/wake.rs
+@@ -66,21 +66,19 @@
+ /// Registers one observer without invoking its clone or retirement callbacks
+ /// under the owner's lock. Unchanged observers and terminal reads use one
+ /// lock and no clone. A replacement clones outside the lock, then rechecks
+-/// publication under the same lock before installing its wake. Readiness is
+-/// observed without taking the outcome; a returned guard retains its custody
+-/// until every unused incoming observer has retired outside the lock.
+-pub(crate) fn poll_registered<S, G>(
++/// publication under the same lock before installing its wake.
++pub(crate) fn poll_registered<S, T, G>(
+     mut lock: impl FnMut() -> G,
+     waker: &std::task::Waker,
+-    ready: impl Fn(&S) -> bool,
++    mut ready: impl FnMut(&mut S) -> std::task::Poll<T>,
+     slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
+-) -> std::task::Poll<G>
++) -> std::task::Poll<T>
+ where
+     G: std::ops::DerefMut<Target = S>,
+ {
+     let mut state = lock();
+-    if ready(&state) {
+-        return std::task::Poll::Ready(state);
++    if let std::task::Poll::Ready(value) = ready(&mut state) {
++        return std::task::Poll::Ready(value);
+     }
+     if slot(&mut state)
+         .as_ref()
+@@ -91,15 +89,15 @@
+     drop(state);
+     let waker = waker.clone();
+     let mut state = lock();
+-    if ready(&state) {
+-        drop(state);
+-        drop(waker);
+-        return std::task::Poll::Ready(lock());
+-    }
+-    let retired = slot(&mut state).replace(waker);
++    let result = ready(&mut state);
++    let retired = if result.is_pending() {
++        slot(&mut state).replace(waker)
++    } else {
++        Some(waker)
++    };
+     drop(state);
+     drop(retired);
+-    std::task::Poll::Pending
++    result
+ }
+ 
+ #[cfg(all(test, not(loom)))]
+--- a/rust/crates/native-runtime/src/completion/state.rs
++++ b/rust/crates/native-runtime/src/completion/state.rs
+@@ -85,24 +85,26 @@
+         state: &CompletionMutex<Self>,
+         waker: &Waker,
+     ) -> Poll<CompletionOutcome<T>> {
+-        let mut state = std::task::ready!(crate::wake::poll_registered(
++        crate::wake::poll_registered(
+             || {
+                 state
+                     .lock()
+                     .unwrap_or_else(std::sync::PoisonError::into_inner)
+             },
+             waker,
+-            |state| !state.task_pending && (state.panic.is_some() || state.result.is_some()),
++            |state| {
++                if !state.task_pending {
++                    if let Some(panic) = state.panic.take() {
++                        return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
++                    }
++                    if let Some(result) = state.result.take() {
++                        return Poll::Ready(CompletionOutcome::Result(result));
++                    }
++                }
++                Poll::Pending
++            },
+             |state| &mut state.waker,
+-        ));
+-        if let Some(panic) = state.panic.take() {
+-            return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
+-        }
+-        state
+-            .result
+-            .take()
+-            .map(CompletionOutcome::Result)
+-            .map_or(Poll::Pending, Poll::Ready)
++        )
+     }
+ }
+ 
+@@ -123,10 +125,15 @@
+                     .unwrap_or_else(std::sync::PoisonError::into_inner)
+             },
+             waker,
+-            |state| !state.task_pending && (state.result.is_some() || state.panic.is_some()),
++            |state| {
++                if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
++                    Poll::Ready(())
++                } else {
++                    Poll::Pending
++                }
++            },
+             |state| &mut state.waker,
+         )
+-        .map(drop)
+     }
+ 
+     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
+--- a/rust/crates/native-runtime/src/completion/fence.rs
++++ b/rust/crates/native-runtime/src/completion/fence.rs
+@@ -53,11 +53,8 @@
+             drop(state);
+             self.complete();
+         } else {
+-            let retired = state.successor.take();
+-            let skipped = state.skipped_successor.replace(Arc::clone(self));
+-            drop(state);
+-            drop(skipped);
+-            drop(retired);
++            state.successor = None;
++            state.skipped_successor = Some(Arc::clone(self));
+         }
+     }
+ 
+@@ -69,7 +66,13 @@
+                     .unwrap_or_else(std::sync::PoisonError::into_inner)
+             },
+             waker,
+-            |state| state.complete,
++            |state| {
++                if state.complete {
++                    Poll::Ready(())
++                } else {
++                    Poll::Pending
++                }
++            },
+             |state| &mut state.successor,
+         )
+         .is_ready()
+--- a/rust/crates/native-runtime/src/process_tree/events/signal.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/signal.rs
+@@ -33,12 +33,11 @@
+     }
+ 
+     pub(super) fn poll(&self, context: &mut Context<'_>) -> Poll<ProcessWaitOutcome> {
+-        let state = std::task::ready!(crate::wake::poll_registered(
++        crate::wake::poll_registered(
+             || self.0.lock().unwrap_or_else(PoisonError::into_inner),
+             context.waker(),
+-            |state| state.outcome.is_some(),
++            |state| state.outcome.clone().map_or(Poll::Pending, Poll::Ready),
+             |state| &mut state.waker,
+-        ));
+-        state.outcome.clone().map_or(Poll::Pending, Poll::Ready)
++        )
+     }
+ }

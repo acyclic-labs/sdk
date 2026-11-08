@@ -11,6 +11,16 @@ mod prepared;
 thread_local! {
     static VM_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static DEPENDENCY_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_READS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_ROOTS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn read_retained() {
+    RETAINED_READS.set(RETAINED_READS.get().wrapping_add(1));
+}
+
+pub(super) fn root_retained() {
+    RETAINED_ROOTS.set(RETAINED_ROOTS.get().wrapping_add(1));
 }
 
 pub(super) fn entered() {

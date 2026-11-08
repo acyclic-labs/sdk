@@ -107,9 +107,9 @@ async fn evaluate_decision_cached(
     surface: Surface,
     cache: &Cache,
 ) -> Result<Evaluation> {
-    prepared::prepare_inner(path, source, tree)
+    prepared::load(path, source, tree, false)
         .await?
-        .evaluate_cached(base, surface, cache)
+        .evaluate_cached(path, base, surface, cache)
 }
 
 /// Folds the copies of a settings entry point over `layers` (lowest first)

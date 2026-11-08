@@ -411,21 +411,23 @@ pub(super) fn spawn_closed(
         .ok_or(io::ErrorKind::InvalidInput)?;
     let copied = bytes - std::mem::size_of::<*mut libc::c_char>();
     meter.admit_examination((count - 1) as u64, copied as u64)?;
-    meter.allocate(bytes as u64)?;
+    // Storage drops before its original allocation guard, also on a callback unwind.
+    let mut allocation = crate::ReadAllocation::borrowed(meter, bytes)?;
     let mut arguments = Vec::new();
-    if arguments.try_reserve_exact(count).is_err() {
-        meter.release(bytes as u64);
-        return Err(io::ErrorKind::OutOfMemory.into());
-    }
+    arguments
+        .try_reserve_exact(count)
+        .map_err(|error| meter.allocation_failed(error))?;
+    let actual = arguments
+        .capacity()
+        .checked_mul(std::mem::size_of::<*mut libc::c_char>())
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    allocation.reconcile_capacity(actual)?;
     arguments.push(program.as_ptr().cast_mut());
     arguments.extend(args.iter().map(|argument| argument.as_ptr().cast_mut()));
     arguments.push(std::ptr::null_mut());
-    let result = meter
+    meter
         .record_examination((count - 1) as u64, copied as u64)
-        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody));
-    drop(arguments);
-    meter.release(bytes as u64);
-    result
+        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody))
 }
 
 pub(super) fn spawn_closed_with_arguments(

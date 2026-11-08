@@ -133,6 +133,15 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         ),
     ] {
         let observed = tree(files);
+        let reads = RETAINED_READS.get();
+        let roots = RETAINED_ROOTS.get();
+        let plain = plugins::load(&observed, &layers, "original").await;
+        if RETAINED_READS.get() != reads || RETAINED_ROOTS.get() != roots {
+            return Err("plain plugin load retained discarded module evidence".into());
+        }
+        if observed.reads.swap(0, Ordering::Relaxed) != expected_reads {
+            return Err("plain plugin load repeated an original file read".into());
+        }
         let decision = plugins::load_decision(&observed, &layers, "original")
             .await
             .map_err(|error| error.to_string())?;
@@ -144,7 +153,14 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         if observed.reads.load(Ordering::Relaxed) != expected_reads {
             return Err("plugin decision repeated an original file read".into());
         }
-        match decision.into_result() {
+        let decision = decision.into_result();
+        match (&plain, &decision) {
+            (Ok(plain), Ok(retained))
+                if plain.names == retained.names && rules(plain)? == rules(retained)? => {}
+            (Err(plain), Err(retained)) if plain.to_string() == retained.to_string() => {}
+            _ => return Err("plain and retained plugin decisions diverged".into()),
+        }
+        match decision {
             Ok(enabled) if admitted => {
                 if enabled.names != ["p"] {
                     return Err("plugin selection changed its original names".into());

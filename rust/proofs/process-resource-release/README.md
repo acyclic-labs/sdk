@@ -7,6 +7,11 @@ watch's descriptor with `fcntl(F_GETFD)` at the accounting boundary. It requires
 The existing denied-credit branch still requires reservation before native open.
 No substitute resource, timer, polling or model is used.
 
+Each retained patch is generated from production Git revisions. After applying
+it, the source comparison below must pass before running the property. This
+checks the complete original files, including later cleanup changes outside
+the mutation hunk; patch applicability alone does not establish refinement.
+
 The retained patch restores the five production source files exactly to
 `727348691239c7912901b18287b493fb56e9675b`; it keeps the stronger original
 property. That source records cleanup before the native owner is dropped in
@@ -26,6 +31,7 @@ Run from the repository root on Linux or macOS:
 ```sh
 git apply --check rust/proofs/process-resource-release/original-drop-order.patch
 git apply rust/proofs/process-resource-release/original-drop-order.patch
+git diff --exit-code 727348691239c7912901b18287b493fb56e9675b -- rust/crates/native-runtime/src/process_tree/cleanup.rs rust/crates/native-runtime/src/process_tree/exit_wait.rs rust/crates/native-runtime/src/process_tree/windows_event.rs rust/crates/native-runtime/src/process_tree/windows_job_wait.rs rust/crates/native-runtime/src/process_tree/windows_wait.rs
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
 # Require failure: cleanup accounting preceded the original descriptor release.
 git apply -R rust/proofs/process-resource-release/original-drop-order.patch
@@ -48,7 +54,8 @@ property requires cleanup only for objects actually initialized by that cut,
 exact original accounting counts, original child custody and release of the
 original funded preparation frame. There are no timed probes.
 
-The retained `original-spawn-retirement.patch` restores `unix.rs` exactly to
+The retained `original-spawn-retirement.patch` restores the complete `unix.rs`,
+including its original argument-allocation body, exactly to
 `fc6be5bd0676092c38f736f0410d78d532b45c14`, retaining this stronger property.
 That source has no native-object owner during callback unwind. The fixed owner
 uses the existing terminal delivery primitive to finish both cleanup slots.
@@ -68,6 +75,7 @@ obligations; successful system destroys do not qualify those failure branches.
 ```sh
 git apply --check rust/proofs/process-resource-release/original-spawn-retirement.patch
 git apply rust/proofs/process-resource-release/original-spawn-retirement.patch
+git diff --exit-code fc6be5bd0676092c38f736f0410d78d532b45c14 -- rust/crates/native-runtime/src/process_tree/unix.rs
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::tests::closed_spawn_retires_native_objects_at_every_callback_cut -- --exact --nocapture
 # Require failure: closed spawn stranded original native cleanup at cut 2.
 git apply -R rust/proofs/process-resource-release/original-spawn-retirement.patch
@@ -98,6 +106,7 @@ iterator neither retries the callback nor grows with process-tree size.
 ```sh
 git apply --check rust/proofs/process-resource-release/original-accounting-unwind.patch
 git apply rust/proofs/process-resource-release/original-accounting-unwind.patch
+git diff --exit-code 108093b46f0ad0f10d85e801e3bf6e74eb1aa4c5 -- rust/crates/native-runtime/src/process_tree/cleanup.rs
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
 # Require original cleanup callback failure and panic in a destructor during cleanup.
 git apply -R rust/proofs/process-resource-release/original-accounting-unwind.patch
@@ -130,6 +139,7 @@ refund once. This does not qualify other native reservation mechanisms.
 ```sh
 git apply --check rust/proofs/process-resource-release/original-refund-unwind.patch
 git apply rust/proofs/process-resource-release/original-refund-unwind.patch
+git diff --exit-code 1b15b053e3b6088f0faaa3a674a1dfaed3308cae -- rust/crates/native-runtime/src/process_tree/cleanup.rs
 cargo test --locked -p acyclic-native-runtime --all-features --lib process_tree::exit_wait::tests::exit_watch_prepays_and_records_its_descriptor_release -- --exact --nocapture
 # Require original unused cleanup refund failure and panic in a destructor during cleanup.
 git apply -R rust/proofs/process-resource-release/original-refund-unwind.patch

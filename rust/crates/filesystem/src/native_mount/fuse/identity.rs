@@ -302,9 +302,8 @@ impl ProjectionState {
                     work,
                 )?
                 || match binding.verified {
-                    Some(stamp) => source.unchanged_since_with_meter(
+                    Some(stamp) => source.binding_unchanged_since_with_meter(
                         binding.native_path(),
-                        None,
                         stamp,
                         work,
                     )?,

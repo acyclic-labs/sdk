@@ -309,12 +309,9 @@ fn render_authorization(
             .iter()
             .map(|name| format!(
                 "{route:?} => Some(Self::{name}),",
-                route = format!("/{}/{name}", service.full_name())
+                route = format!("/{service}/{name}")
             ))
             .collect::<String>()
     )?;
-    if variants.is_empty() {
-        return Err(invalid("authorization selection has no methods").into());
-    }
     Ok(rust)
 }

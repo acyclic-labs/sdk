@@ -180,14 +180,14 @@ async fn fold(
     // `held` remains the single implementation of precedence and off cuts.
     for (index, layer) in crate::layers::held_indexed(layers) {
         let Some(source) = layer.bytes else { continue };
-        let prepared = prepared::prepare_inner(path, source, tree).await?;
-        let decision = prepared.evaluate(&value, Surface::Compose)?;
+        let loaded = prepared::load(path, source, tree, evidence.is_some()).await?;
+        let decision = loaded.evaluate_cached(path, &value, Surface::Compose, cache())?;
         if let Some(evidence) = evidence.as_deref_mut() {
             evidence.identity.update(&decision.identity());
             evidence.modules.push(ModuleCut {
                 layer: index,
                 identity: decision.identity(),
-                reads: prepared.into_reads(),
+                reads: loaded.into_reads(),
             });
         }
         match decision.into_result() {

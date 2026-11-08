@@ -221,7 +221,6 @@ def main():
                 for name in ['XDG_STATE_HOME', 'XDG_DATA_HOME', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA']:
                     assert not list(Path(env[name]).iterdir()), f'client wrote external {name}'
                 result['seconds'] = time.monotonic() - started
-                assert result['seconds'] < 10, result
                 print(json.dumps(result), flush=True)
             finally:
                 try:

@@ -24,6 +24,11 @@ pub enum NativeOperationKind {
 }
 
 /// Invocation-local accounting shared by bounded native I/O.
+///
+/// Native credit owners return unused reservations and retired allocations once.
+/// A return callback panic propagates normally. During an existing owner unwind,
+/// that secondary panic is contained so it cannot abort the original unwind or
+/// prevent the remaining owners from returning their credit.
 pub trait NativeReadMeter: Send + Sync {
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
@@ -31,6 +36,7 @@ pub trait NativeReadMeter: Send + Sync {
     /// Borrowed Windows process capture requires this owner so accepted input
     /// remains funded through completion after caller cancellation. Retained
     /// `ProcessTreeIo` uses its supplied Arc directly, preserving accounting windows.
+    /// Allocation guards resolve this owner before charging or consuming credit.
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
         None
     }

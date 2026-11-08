@@ -11,9 +11,10 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
 mod custody;
-pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
 #[cfg(feature = "test-support")]
-pub(crate) use custody::{cancelled_error, panic_error};
+pub(crate) use custody::cancelled_error;
+pub(crate) use custody::panic_error;
+pub use custody::{OwnedTask, TaskCompletion, spawn_owned};
 
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
 /// fixed service through [`spawn_persistence`]. Its one blocking slot runs only

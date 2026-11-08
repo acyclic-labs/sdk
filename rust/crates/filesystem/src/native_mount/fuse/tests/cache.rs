@@ -1,6 +1,100 @@
 use super::*;
 
 #[test]
+fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::fuse::invalidation::{KernelCacheNotifier, shared_invalidation_pass};
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct Notifications {
+        inodes: RefCell<Vec<u64>>,
+        entries: RefCell<Vec<(u64, Vec<u8>)>>,
+    }
+    impl KernelCacheNotifier for Notifications {
+        fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+            self.inodes.borrow_mut().push(inode);
+            Ok(())
+        }
+        fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
+            self.entries.borrow_mut().push((parent, name.to_vec()));
+            Ok(())
+        }
+    }
+
+    for directory in [false, true] {
+        let (source, around) = shared_sources(posix_config())?;
+        let path = name("held");
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            if directory {
+                around.create_directory(&path, FileMetadata::default(), work)
+            } else {
+                around.create_file(&path, FileMetadata::default(), None, work)
+            }
+        })?;
+        let source = Arc::new(source);
+        let core = projection_core(
+            source.clone(),
+            FINITE_HANDLER_POLICY,
+            &crate::CancellationToken::new(),
+        )?;
+        let observer: Arc<dyn ViewObserver> = core.clone();
+        source.observe_view(Arc::downgrade(&observer))?;
+        let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
+        let entry = projection.lookup_entry(
+            ROOT_INODE,
+            std::ffi::OsStr::new("held"),
+            &fuse_fixture_work(),
+        )?;
+        if directory {
+            crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                around.create_file(
+                    &path.child(b"child".to_vec()),
+                    FileMetadata::default(),
+                    None,
+                    work,
+                )
+            })?;
+        } else {
+            around.write_range(&path, 0, Bytes::from_static(b"changed"))?;
+        }
+        let notifications = Notifications::default();
+        shared_invalidation_pass(&core, &notifications);
+        assert!(
+            !core
+                .state()
+                .map_err(NativeMountError::from)?
+                .invalidation
+                .denied
+        );
+        assert!(notifications.inodes.borrow().contains(&entry.attr.ino.0));
+        assert!(
+            notifications.entries.borrow().is_empty(),
+            "a node change must not detach its unchanged name: directory={directory}"
+        );
+
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            around.rename(&path, &name("moved"), false, work)
+        })?;
+        shared_invalidation_pass(&core, &notifications);
+        assert!(
+            !core
+                .state()
+                .map_err(NativeMountError::from)?
+                .invalidation
+                .denied
+        );
+        assert!(
+            notifications
+                .entries
+                .borrow()
+                .iter()
+                .any(|(parent, name)| { *parent == ROOT_INODE && name == b"held" })
+        );
+    }
+    Ok(())
+}
+
+#[test]
 pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
 -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Clone, Copy)]

@@ -337,6 +337,7 @@ impl Hub {
         loop {
             let timeout = {
                 let registry = self.registry();
+                #[cfg(not(windows))]
                 if registry.failure.is_some() {
                     return;
                 }
@@ -346,14 +347,32 @@ impl Hub {
                     .map(|(at, _)| at.saturating_duration_since(Instant::now()))
             };
             ready.clear();
-            if let Err(error) = self.poller.wait(timeout, &mut ready) {
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
+            let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.poller.wait(timeout, &mut ready)?;
+                self.dispatch(&mut ready, Instant::now());
+                Ok::<(), io::Error>(())
+            }));
+            match observed {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Ok(Err(error)) => {
+                    self.fail(error);
+                    return;
                 }
-                self.fail(error);
-                return;
+                Err(payload) => {
+                    // Retain the original typed payload before notifying users.
+                    // A second consumer panic cannot end native completion custody.
+                    let error = crate::task::panic_error(payload);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        self.fail(error);
+                    }));
+                    // Windows still owns kernel references for other outstanding
+                    // operations. Its original port continues draining them even
+                    // after observers have received the service failure.
+                    #[cfg(not(windows))]
+                    return;
+                }
             }
-            self.dispatch(&mut ready, Instant::now());
         }
     }
 
@@ -628,7 +647,7 @@ impl Drop for Registration<'_> {
             return;
         }
         let mut registry = self.hub.registry();
-        registry.remove(self.token);
+        let retired = registry.remove(self.token);
         #[cfg(unix)]
         if let Some(source) = self.source
             && let std::collections::hash_map::Entry::Occupied(entry) =
@@ -637,6 +656,10 @@ impl Drop for Registration<'_> {
         {
             entry.remove();
         }
+        // The last signal owner can destroy an arbitrary stored waker. Retire
+        // it after releasing the lifecycle lock, just like native delivery.
+        drop(registry);
+        drop(retired);
         // The guard drops before the native field's destructor. A late native
         // callback can only post its original token, never a borrowed entry.
     }

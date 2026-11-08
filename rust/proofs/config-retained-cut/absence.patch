@@ -1,18 +1,12 @@
 --- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
 +++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
-@@ -188,10 +188,12 @@
+@@ -241,7 +241,9 @@
          }
          let next = next.clone();
          let bytes = tree.read(&next).await?;
--        reads.push(ModuleRead {
--            path: next.clone(),
--            digest: bytes.as_ref().map(|bytes| blake3::hash(bytes).into()),
--        });
+-        observations.observe(&next, bytes.as_deref());
 +        if bytes.is_some() {
-+            reads.push(ModuleRead {
-+                path: next.clone(),
-+                digest: bytes.as_ref().map(|bytes| blake3::hash(bytes).into()),
-+            });
++            observations.observe(&next, bytes.as_deref());
 +        }
          let Some(bytes) = bytes else {
              return Ok(Err(format!(

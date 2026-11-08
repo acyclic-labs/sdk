@@ -1,4 +1,5 @@
 #![no_main]
+//! Exercise production interaction, approval and stream persistence admission.
 use acyclic_stream::{wire, wire_codec};
 use libfuzzer_sys::fuzz_target;
 use prost::Message as _;
@@ -6,11 +7,10 @@ use prost::Message as _;
 fuzz_target!(|bytes: &[u8]| {
     if let Ok(request) = serde_json::from_slice::<acyclic_harness::interaction::Interaction>(bytes)
     {
-        let encoded = serde_json::to_vec(&request).unwrap();
-        assert_eq!(
-            serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded).unwrap(),
-            request
-        );
+        assert!(serde_json::to_vec(&request).is_ok_and(|encoded| {
+            serde_json::from_slice::<acyclic_harness::interaction::Interaction>(&encoded)
+                .is_ok_and(|decoded| decoded == request)
+        }));
     }
     let _ = acyclic_harness::interaction::ApprovalDecisionFile::decode(bytes, bytes.len() as u64);
     if let Ok(request) = wire::CommitRequest::decode(bytes)

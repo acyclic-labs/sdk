@@ -1,0 +1,245 @@
+diff --git b/rust/crates/native-runtime/src/meter/allocation.rs a/rust/crates/native-runtime/src/meter/allocation.rs
+index 4676e205fba..6b4021a7424 100644
+--- b/rust/crates/native-runtime/src/meter/allocation.rs
++++ a/rust/crates/native-runtime/src/meter/allocation.rs
+@@ -21,13 +21,11 @@ impl ReadAllocationReservation {
+     /// Records the accepted allocation and transfers its exact original custody.
+     pub fn allocate(mut self) -> io::Result<ReadAllocation> {
+         let bytes = self.bytes.ok_or(io::ErrorKind::InvalidInput)?;
+-        let owner = ReadAllocation::owner(&self.meter);
+         self.meter.record_reserved_allocation(bytes)?;
+         self.bytes = None;
+-        Ok(ReadAllocation {
+-            meter: owner,
+-            bytes,
+-        })
++        let mut allocation = ReadAllocation::empty(&self.meter);
++        allocation.bytes = bytes;
++        Ok(allocation)
+     }
+ 
+     /// Consumes only a reservation for this exact allocation footprint.
+@@ -57,49 +55,40 @@ pub struct ReadAllocation<M: Deref<Target: NativeReadMeter> = Arc<dyn NativeRead
+ }
+ 
+ impl ReadAllocation {
+-    // Resolve the original ledger owner before an admission can charge it.
+-    fn owner(meter: &Arc<dyn NativeReadMeter>) -> Arc<dyn NativeReadMeter> {
+-        meter
+-            .allocation_owner()
+-            .unwrap_or_else(|| Arc::clone(meter))
+-    }
+-
+     /// Admits one genuine positive allocation attempt before its allocator call.
+     pub fn new(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+-        let owner = Self::owner(meter);
+         let bytes = bytes as u64;
+         if bytes == 0 {
+             meter.check()?;
+         } else {
+             meter.allocate(bytes)?;
+         }
+-        Ok(Self {
+-            meter: owner,
+-            bytes,
+-        })
++        let mut allocation = Self::empty(meter);
++        allocation.bytes = bytes;
++        Ok(allocation)
+     }
+ 
+     /// Borrows the same original meter without an allocation or resource grant.
+     pub fn empty(meter: &Arc<dyn NativeReadMeter>) -> Self {
+         Self {
+-            meter: Self::owner(meter),
++            meter: meter
++                .allocation_owner()
++                .unwrap_or_else(|| Arc::clone(meter)),
+             bytes: 0,
+         }
+     }
+ 
+     /// Admits retention of an existing transferred payload, with zero allocation operations.
+     pub fn adopt(meter: &Arc<dyn NativeReadMeter>, bytes: usize) -> io::Result<Self> {
+-        let owner = Self::owner(meter);
+         let bytes = bytes as u64;
+         if bytes == 0 {
+             meter.check()?;
+         } else {
+             meter.adopt(bytes)?;
+         }
+-        Ok(Self {
+-            meter: owner,
+-            bytes,
+-        })
++        let mut allocation = Self::empty(meter);
++        allocation.bytes = bytes;
++        Ok(allocation)
+     }
+ 
+     /// Admits another genuine positive allocation attempt before it occurs.
+@@ -121,23 +110,15 @@ impl ReadAllocation {
+         let actual = actual as u64;
+         if actual > self.bytes {
+             self.meter.adopt(actual - self.bytes)?;
+-            self.bytes = actual;
+         } else if actual < self.bytes {
+-            self.shrink_to(actual);
++            self.meter.release(self.bytes - actual);
+         }
++        self.bytes = actual;
+         Ok(())
+     }
+ }
+ 
+ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+-    // All callers establish retained <= bytes before returning original credit.
+-    // Commit custody first: a callback unwind must not refund these bytes again.
+-    fn shrink_to(&mut self, retained: u64) {
+-        let released = self.bytes - retained;
+-        self.bytes = retained;
+-        self.meter.release(released);
+-    }
+-
+     /// Records real capacity discovered after a controlled allocation.
+     ///
+     /// # Panics
+@@ -159,7 +140,8 @@ impl<M: Deref<Target: NativeReadMeter>> ReadAllocation<M> {
+                 "successful adoption retains all actual excess"
+             );
+         } else if actual < self.bytes {
+-            self.shrink_to(actual);
++            self.meter.release(self.bytes - actual);
++            self.bytes = actual;
+         }
+         Ok(())
+     }
+@@ -224,14 +206,15 @@ impl ReadAllocation {
+             .bytes
+             .checked_sub(bytes)
+             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+-        self.shrink_to(remaining);
++        self.meter.release(bytes);
++        self.bytes = remaining;
+         Ok(())
+     }
+ }
+ 
+ // Synchronous native preparation retains its caller's borrow until the buffer
+ // is physically gone. It needs no detached Arc or replacement ledger owner.
+-#[cfg(unix)]
++#[cfg(target_os = "linux")]
+ impl<'a> ReadAllocation<&'a dyn NativeReadMeter> {
+     pub(crate) fn borrowed(meter: &'a dyn NativeReadMeter, bytes: usize) -> io::Result<Self> {
+         let bytes = bytes as u64;
+--- a/rust/crates/native-runtime/src/process_tree/apple_group_wait.rs
++++ b/rust/crates/native-runtime/src/process_tree/apple_group_wait.rs
+@@ -135,20 +135,23 @@
+ 
+ struct Members<'a> {
+     ids: Vec<libc::pid_t>,
+-    allocation: Option<crate::ReadAllocation<&'a dyn NativeReadMeter>>,
++    meter: Option<&'a dyn NativeReadMeter>,
++    retained: u64,
+ }
+ 
+ impl<'a> Members<'a> {
+     fn new(count: usize, meter: Option<&'a dyn NativeReadMeter>) -> io::Result<Self> {
+         let bytes = count
+             .checked_mul(std::mem::size_of::<libc::pid_t>())
+-            .ok_or(io::ErrorKind::OutOfMemory)?;
+-        let allocation = meter
+-            .map(|meter| crate::ReadAllocation::borrowed(meter, bytes))
+-            .transpose()?;
++            .and_then(|bytes| u64::try_from(bytes).ok())
++            .ok_or(io::ErrorKind::OutOfMemory)?;
++        if let Some(meter) = meter {
++            meter.allocate(bytes)?;
++        }
+         let mut members = Self {
+             ids: Vec::new(),
+-            allocation,
++            meter,
++            retained: bytes,
+         };
+         members
+             .ids
+@@ -157,16 +160,35 @@
+                 Some(meter) => meter.allocation_failed(error),
+                 None => io::Error::other(error),
+             })?;
+-        let actual = members
+-            .ids
+-            .capacity()
+-            .checked_mul(std::mem::size_of::<libc::pid_t>())
+-            .ok_or(io::ErrorKind::OutOfMemory)?;
+-        if let Some(allocation) = &mut members.allocation {
+-            allocation.reconcile_capacity(actual)?;
++        let actual = u64::try_from(
++            members
++                .ids
++                .capacity()
++                .checked_mul(std::mem::size_of::<libc::pid_t>())
++                .ok_or(io::ErrorKind::OutOfMemory)?,
++        )
++        .map_err(io::Error::other)?;
++        if let Some(meter) = meter {
++            if actual > bytes {
++                let (retained, recorded) = meter.record_completed_adoption(actual - bytes);
++                members.retained += retained;
++                recorded?;
++            } else {
++                meter.release(bytes - actual);
++                members.retained = actual;
++            }
+         }
+         members.ids.resize(count, 0);
+         Ok(members)
++    }
++}
++
++impl Drop for Members<'_> {
++    fn drop(&mut self) {
++        drop(std::mem::take(&mut self.ids));
++        if let Some(meter) = self.meter {
++            meter.release(self.retained);
++        }
+     }
+ }
+ 
+--- a/rust/crates/native-runtime/src/process_tree/unix.rs
++++ b/rust/crates/native-runtime/src/process_tree/unix.rs
+@@ -411,23 +411,21 @@
+         .ok_or(io::ErrorKind::InvalidInput)?;
+     let copied = bytes - std::mem::size_of::<*mut libc::c_char>();
+     meter.admit_examination((count - 1) as u64, copied as u64)?;
+-    // Storage drops before its original allocation guard, also on a callback unwind.
+-    let mut allocation = crate::ReadAllocation::borrowed(meter, bytes)?;
++    meter.allocate(bytes as u64)?;
+     let mut arguments = Vec::new();
+-    arguments
+-        .try_reserve_exact(count)
+-        .map_err(|error| meter.allocation_failed(error))?;
+-    let actual = arguments
+-        .capacity()
+-        .checked_mul(std::mem::size_of::<*mut libc::c_char>())
+-        .ok_or(io::ErrorKind::InvalidInput)?;
+-    allocation.reconcile_capacity(actual)?;
++    if arguments.try_reserve_exact(count).is_err() {
++        meter.release(bytes as u64);
++        return Err(io::ErrorKind::OutOfMemory.into());
++    }
+     arguments.push(program.as_ptr().cast_mut());
+     arguments.extend(args.iter().map(|argument| argument.as_ptr().cast_mut()));
+     arguments.push(std::ptr::null_mut());
+-    meter
++    let result = meter
+         .record_examination((count - 1) as u64, copied as u64)
+-        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody))
++        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody));
++    drop(arguments);
++    meter.release(bytes as u64);
++    result
+ }
+ 
+ pub(super) fn spawn_closed_with_arguments(

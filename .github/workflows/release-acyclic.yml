@@ -323,7 +323,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod 755 "$RUNNER_TEMP/installer-binary/linux-x64-gnu/acyclic"
-          npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+          npm ci --prefix plugin/tests/hosts --no-audit --no-fund
           npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund || {
             printf '%s\n' 'step=prepare pinned installer package managers; recovery: npm ci --prefix plugin/scripts/fixtures --ignore-scripts --no-audit --no-fund' >&2
             exit 1

@@ -14,6 +14,7 @@ readme = "README.md"
 [[bin]]
 name = "actors-rpc-inventory"
 path = "src/bin/actors-rpc-inventory.rs"
+test = false
 
 [features]
 conformance = ["acyclic-stream/conformance"]

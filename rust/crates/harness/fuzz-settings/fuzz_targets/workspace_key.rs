@@ -1,3 +1,4 @@
+//! Check workspace key equivalence through the production platform matchers.
 #![no_main]
 
 #[path = "../../../harness-core/src/native_settings/workspace.rs"]
@@ -6,11 +7,8 @@ mod workspace;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|input: &str| {
-    if input.len() > 4096 {
-        return;
-    }
     let mut paths = input.trim_end_matches('\n').splitn(3, '\n');
-    let left = paths.next().unwrap();
+    let left = paths.next().unwrap_or_default();
     let right = paths.next().unwrap_or(left);
     let third = paths.next().unwrap_or(right);
     // Call the production matcher as well as both platform-specific pure paths.

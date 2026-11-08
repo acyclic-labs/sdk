@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/workers/admission.rs
++++ b/rust/crates/native-runtime/src/workers/admission.rs
+@@ -235,7 +235,7 @@
+                     .lock()
+                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                 job.set_queued(true);
+-                let submission = workers.sender.try_send(job);
++                let submission = Err(mpsc::TrySendError::Full(job));
+                 displaced = if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
+                     admission.register_existing(node, prepared)
+                 } else {

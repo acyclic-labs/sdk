@@ -16,6 +16,10 @@ pub struct ModuleRead {
 /// authorize later use or detect changes to a different tree.
 pub struct Prepared {
     path: String,
+    loaded: Loaded,
+}
+
+pub(super) struct Loaded {
     reads: Vec<ModuleRead>,
     modules: std::result::Result<Vec<(String, Module)>, String>,
     digest: [u8; 32],
@@ -62,34 +66,65 @@ pub fn prepare<'a>(
 }
 
 pub(super) async fn prepare_inner(path: &str, source: &[u8], tree: &dyn Tree) -> Result<Prepared> {
-    let mut reads = Vec::new();
-    let modules = closure(path, source, tree, &mut reads).await?;
-    let mut digest = blake3::Hasher::new_derive_key(VERSION);
-    for read in &reads {
-        digest.update(&(read.path.len() as u64).to_be_bytes());
-        digest.update(read.path.as_bytes());
-        digest.update(&[u8::from(read.digest.is_some())]);
-        if let Some(bytes) = read.digest {
-            digest.update(&bytes);
-        }
-    }
+    let loaded = load(path, source, tree, true).await?;
+    #[cfg(any(test, feature = "test-support"))]
+    model::root_retained();
     Ok(Prepared {
         path: path.to_owned(),
-        reads,
-        modules,
-        digest: digest.finalize().into(),
+        loaded,
     })
+}
+
+pub(super) async fn load(
+    path: &str,
+    source: &[u8],
+    tree: &dyn Tree,
+    retain_reads: bool,
+) -> Result<Loaded> {
+    let mut observations = Observations {
+        reads: retain_reads.then(Vec::new),
+        digest: blake3::Hasher::new_derive_key(VERSION),
+    };
+    let modules = closure(path, source, tree, &mut observations).await?;
+    Ok(Loaded {
+        reads: observations.reads.unwrap_or_default(),
+        modules,
+        digest: observations.digest.finalize().into(),
+    })
+}
+
+// Hash each original observation once. Only reusable or evidence-retaining
+// callers own its path; inline evaluation borrows its caller's root path.
+struct Observations {
+    reads: Option<Vec<ModuleRead>>,
+    digest: blake3::Hasher,
+}
+
+impl Observations {
+    fn observe(&mut self, path: &str, bytes: Option<&[u8]>) {
+        let digest: Option<[u8; 32]> = bytes.map(|bytes| blake3::hash(bytes).into());
+        self.digest.update(&(path.len() as u64).to_be_bytes());
+        self.digest.update(path.as_bytes());
+        self.digest.update(&[u8::from(digest.is_some())]);
+        if let Some(digest) = digest {
+            self.digest.update(&digest);
+        }
+        if let Some(reads) = &mut self.reads {
+            #[cfg(any(test, feature = "test-support"))]
+            model::read_retained();
+            reads.push(ModuleRead {
+                path: path.to_owned(),
+                digest,
+            });
+        }
+    }
 }
 
 impl Prepared {
     /// Original reads in loader order, starting with the supplied root.
     #[must_use]
     pub fn reads(&self) -> &[ModuleRead] {
-        &self.reads
-    }
-
-    pub(super) fn into_reads(self) -> Vec<ModuleRead> {
-        self.reads
+        &self.loaded.reads
     }
 
     /// Evaluate this original cut. A hit in the evaluator's single retained
@@ -100,6 +135,23 @@ impl Prepared {
 
     pub(super) fn evaluate_cached(
         &self,
+        base: &Value,
+        surface: Surface,
+        cache: &Cache,
+    ) -> Result<Evaluation> {
+        self.loaded
+            .evaluate_cached(&self.path, base, surface, cache)
+    }
+}
+
+impl Loaded {
+    pub(super) fn into_reads(self) -> Vec<ModuleRead> {
+        self.reads
+    }
+
+    pub(super) fn evaluate_cached(
+        &self,
+        path: &str,
         base: &Value,
         surface: Surface,
         cache: &Cache,
@@ -141,7 +193,7 @@ impl Prepared {
                     digest: self.digest,
                 }
             })
-            .map_err(|reason| Error::Invalid(format!("{}: {reason}", self.path)));
+            .map_err(|reason| Error::Invalid(format!("{path}: {reason}")));
         Ok(Evaluation {
             identity: key,
             result,
@@ -157,12 +209,9 @@ async fn closure(
     path: &str,
     source: &[u8],
     tree: &dyn Tree,
-    reads: &mut Vec<ModuleRead>,
+    observations: &mut Observations,
 ) -> Result<std::result::Result<Vec<(String, Module)>, String>> {
-    reads.push(ModuleRead {
-        path: path.to_owned(),
-        digest: Some(blake3::hash(source).into()),
-    });
+    observations.observe(path, Some(source));
     let mut modules = BTreeMap::new();
     match strip(path, source) {
         Ok(module) => modules.insert(path.to_owned(), (module, true)),
@@ -192,10 +241,7 @@ async fn closure(
         }
         let next = next.clone();
         let bytes = tree.read(&next).await?;
-        reads.push(ModuleRead {
-            path: next.clone(),
-            digest: bytes.as_ref().map(|bytes| blake3::hash(bytes).into()),
-        });
+        observations.observe(&next, bytes.as_deref());
         let Some(bytes) = bytes else {
             return Ok(Err(format!(
                 "{current} imports {next}, which no layer holds"

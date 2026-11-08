@@ -135,23 +135,20 @@ fn list(
 
 struct Members<'a> {
     ids: Vec<libc::pid_t>,
-    meter: Option<&'a dyn NativeReadMeter>,
-    retained: u64,
+    allocation: Option<crate::ReadAllocation<&'a dyn NativeReadMeter>>,
 }
 
 impl<'a> Members<'a> {
     fn new(count: usize, meter: Option<&'a dyn NativeReadMeter>) -> io::Result<Self> {
         let bytes = count
             .checked_mul(std::mem::size_of::<libc::pid_t>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(io::ErrorKind::OutOfMemory)?;
-        if let Some(meter) = meter {
-            meter.allocate(bytes)?;
-        }
+        let allocation = meter
+            .map(|meter| crate::ReadAllocation::borrowed(meter, bytes))
+            .transpose()?;
         let mut members = Self {
             ids: Vec::new(),
-            meter,
-            retained: bytes,
+            allocation,
         };
         members
             .ids
@@ -160,53 +157,91 @@ impl<'a> Members<'a> {
                 Some(meter) => meter.allocation_failed(error),
                 None => io::Error::other(error),
             })?;
-        let actual = u64::try_from(
-            members
-                .ids
-                .capacity()
-                .checked_mul(std::mem::size_of::<libc::pid_t>())
-                .ok_or(io::ErrorKind::OutOfMemory)?,
-        )
-        .map_err(io::Error::other)?;
-        if let Some(meter) = meter {
-            if actual > bytes {
-                let (retained, recorded) = meter.record_completed_adoption(actual - bytes);
-                members.retained += retained;
-                recorded?;
-            } else {
-                meter.release(bytes - actual);
-                members.retained = actual;
-            }
+        let actual = members
+            .ids
+            .capacity()
+            .checked_mul(std::mem::size_of::<libc::pid_t>())
+            .ok_or(io::ErrorKind::OutOfMemory)?;
+        if let Some(allocation) = &mut members.allocation {
+            allocation.reconcile_capacity(actual)?;
         }
         members.ids.resize(count, 0);
         Ok(members)
     }
 }
 
-impl Drop for Members<'_> {
-    fn drop(&mut self) {
-        drop(std::mem::take(&mut self.ids));
-        if let Some(meter) = self.meter {
-            meter.release(self.retained);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
-    fn member_storage_is_funded_until_the_buffer_is_freed() -> io::Result<()> {
-        let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
-        let members = Members::new(32, Some(&meter))?;
-        assert!(meter.memory.load(Ordering::Acquire) >= 128);
-        drop(members);
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
-        meter.deny_allocations.store(true, Ordering::Release);
-        assert!(Members::new(32, Some(&meter)).is_err());
-        assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    fn member_storage_preserves_original_credit_and_unwind() -> io::Result<()> {
+        if crate::delivery::isolated()? {
+            return Ok(());
+        }
+        let mut violations = Vec::new();
+        for callback_panics in [false, true] {
+            for caller_panics in [false, true] {
+                let returned = Arc::new(AtomicU64::new(0));
+                let armed = Arc::new(AtomicBool::new(false));
+                let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+                meter.on_allocation_returned({
+                    let returned = Arc::clone(&returned);
+                    let armed = Arc::clone(&armed);
+                    move || {
+                        returned.fetch_add(1, Ordering::AcqRel);
+                        if callback_panics && armed.load(Ordering::Acquire) {
+                            std::panic::panic_any("original member credit return failure");
+                        }
+                    }
+                });
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+                        let members = Members::new(32, Some(&meter))?;
+                        assert_eq!(
+                            meter.memory.load(Ordering::Acquire),
+                            (members.ids.capacity() * std::mem::size_of::<libc::pid_t>()) as u64
+                        );
+                        armed.store(true, Ordering::Release);
+                        if caller_panics {
+                            std::panic::panic_any("original member owner unwind");
+                        }
+                        drop(members);
+                        Ok(())
+                    }));
+                let panic = match result {
+                    Ok(result) => {
+                        result?;
+                        None
+                    }
+                    Err(payload) => Some(payload),
+                };
+                assert_eq!(panic.is_some(), caller_panics || callback_panics);
+                if caller_panics {
+                    assert_eq!(
+                        panic.and_then(|payload| payload.downcast::<&str>().ok()),
+                        Some(Box::new("original member owner unwind")),
+                        "member credit return replaced the original caller unwind"
+                    );
+                }
+                let callbacks = returned.load(Ordering::Acquire);
+                if callbacks != 1 {
+                    violations.push((callback_panics, caller_panics, callbacks));
+                }
+                assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+                assert_eq!(meter.used_allocations.load(Ordering::Acquire), 1);
+                meter.deny_allocations.store(true, Ordering::Release);
+                assert!(Members::new(32, Some(&meter)).is_err());
+                assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+                assert_eq!(returned.load(Ordering::Acquire), callbacks);
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "member storage returns only original retained credit: {violations:?}"
+        );
         Ok(())
     }
 

@@ -3,9 +3,9 @@
 @@ -181,7 +181,7 @@
      for (index, layer) in crate::layers::held_indexed(layers) {
          let Some(source) = layer.bytes else { continue };
-         let prepared = prepared::prepare_inner(path, source, tree).await?;
--        let decision = prepared.evaluate(&value, Surface::Compose)?;
-+        let decision = prepared.evaluate(&Value::Null, Surface::Compose)?;
+         let loaded = prepared::load(path, source, tree, evidence.is_some()).await?;
+-        let decision = loaded.evaluate_cached(path, &value, Surface::Compose, cache())?;
++        let decision = loaded.evaluate_cached(path, &Value::Null, Surface::Compose, cache())?;
          if let Some(evidence) = evidence.as_deref_mut() {
              evidence.identity.update(&decision.identity());
              evidence.modules.push(ModuleCut {

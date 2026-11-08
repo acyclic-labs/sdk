@@ -1,6 +1,195 @@
 use super::*;
 
 #[test]
+fn original_submission_replacement_retires_observer_outside_admission() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::admission::original_submission_replacement_retires_observer_outside_admission",
+    )? {
+        return Ok(());
+    }
+    struct Retired {
+        admission: Weak<crate::sync::Mutex<AdmissionState>>,
+        retired: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            panic!("replaced capacity observer was notified");
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+            let original = self.admission.upgrade().expect("original pool remains");
+            let admission = original
+                .try_lock()
+                .expect("replacement retained admission lock");
+            let node = admission
+                .head
+                .as_ref()
+                .expect("original pending submission");
+            assert!(
+                node.state.try_lock().is_ok(),
+                "replacement retained capacity observer lock"
+            );
+            drop(admission);
+            if self.panic {
+                std::panic::panic_any("original capacity replacement panic");
+            }
+        }
+    }
+    let _defer = InlineBlocking::defer();
+    initialize_native_io_services()?;
+    let original = workers(&BLOCKING_WORKERS, true)?;
+    for panic in [false, true] {
+        let saturation = Saturation::new(&BLOCKING_WORKERS)?;
+        let retired = Arc::new(AtomicBool::new(false));
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let mut task = run_blocking_io(|| 37, Some((budget.clone(), true)))?;
+        let first = Waker::from(Arc::new(Retired {
+            admission: Arc::downgrade(&original.admission),
+            retired: retired.clone(),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut task)
+                .poll(&mut Context::from_waker(&first))
+                .is_pending()
+        );
+        drop(first);
+        let next = completion_waker();
+        let replacement = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Pin::new(&mut task).poll(&mut Context::from_waker(&next))
+        }));
+        assert!(
+            original.admission.try_lock().is_ok(),
+            "replacement poisoned admission"
+        );
+        assert!(retired.load(Ordering::Acquire));
+        if panic {
+            let Err(payload) = replacement else {
+                panic!("original capacity replacement panic missing");
+            };
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"original capacity replacement panic")
+            );
+        } else {
+            assert!(matches!(replacement, Ok(Poll::Pending)));
+        }
+        assert!(task.pending.is_some() && task.waiter.is_some());
+        drop(saturation);
+        assert_eq!(complete(task)?, 37);
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_original_submission_retires_waiter_outside_admission() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::admission::cancelled_original_submission_retires_waiter_outside_admission",
+    )? {
+        return Ok(());
+    }
+    struct Retired {
+        admission: Weak<crate::sync::Mutex<crate::workers::AdmissionState>>,
+        retired: Arc<AtomicBool>,
+        woken: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl std::task::Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            self.woken.store(true, Ordering::Release);
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+            let admission = self.admission.upgrade().expect("original pool owner");
+            assert!(
+                admission.try_lock().is_ok(),
+                "original waiter retired under the admission lock"
+            );
+            if self.panic {
+                std::panic::panic_any("original waiter retirement panic");
+            }
+        }
+    }
+    struct Successor(Arc<AtomicBool>);
+    impl Wake for Successor {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _defer = InlineBlocking::defer();
+    initialize_native_io_services()?;
+    let original = workers(&BLOCKING_WORKERS, true)?;
+    for panic in [false, true] {
+        // The configured production workers are physically occupied and their
+        // channel is full before this public submission registers its observer.
+        let saturation = Saturation::new(&BLOCKING_WORKERS)?;
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let retired = Arc::new(AtomicBool::new(false));
+        let woken = Arc::new(AtomicBool::new(false));
+        let body = Arc::new(AtomicBool::new(false));
+        let entered = Arc::clone(&body);
+        let mut task = run_blocking_io(
+            move || entered.store(true, Ordering::Release),
+            Some((budget.clone(), true)),
+        )?;
+        let waker = Waker::from(Arc::new(Retired {
+            admission: Arc::downgrade(&original.admission),
+            retired: Arc::clone(&retired),
+            woken: Arc::clone(&woken),
+            panic,
+        }));
+        assert!(
+            Pin::new(&mut task)
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert!(task.waiter.is_some() && task.pending.is_some());
+        let notified = Arc::new(AtomicBool::new(false));
+        let next = Waker::from(Arc::new(Successor(Arc::clone(&notified))));
+        let mut successor = run_blocking_io(|| 37, None)?;
+        assert!(
+            Pin::new(&mut successor)
+                .poll(&mut Context::from_waker(&next))
+                .is_pending()
+        );
+        drop(waker);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(task)));
+        assert!(
+            original.admission.try_lock().is_ok(),
+            "original waiter retirement poisoned admission"
+        );
+        if panic {
+            let Err(payload) = result else {
+                panic!("original waiter retirement panic missing");
+            };
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"original waiter retirement panic")
+            );
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert!(!woken.load(Ordering::Acquire));
+        assert!(!body.load(Ordering::Acquire));
+        assert!(
+            notified.load(Ordering::Acquire),
+            "retirement lost its successor wake"
+        );
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+        drop(saturation);
+        assert_eq!(complete(successor)?, 37);
+    }
+    Ok(())
+}
+
+#[test]
 fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
     let temporary = tempfile::NamedTempFile::new()?;
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
@@ -149,6 +338,108 @@ fn tally(entered: &mut [usize; 2], fixture: usize) {
     for (slot, count) in entered.iter_mut().enumerate() {
         *count += usize::from(slot == fixture);
     }
+}
+
+#[test]
+fn cancelled_file_successor_links_before_observer_retirement() -> io::Result<()> {
+    struct Release(Gate);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            self.0.open();
+        }
+    }
+    struct Retired {
+        predecessor: Weak<OperationFence>,
+        retired: Arc<AtomicBool>,
+        panic: bool,
+    }
+    impl Wake for Retired {
+        fn wake(self: Arc<Self>) {
+            panic!("unpublished file successor was woken");
+        }
+    }
+    impl Drop for Retired {
+        fn drop(&mut self) {
+            self.retired.store(true, Ordering::Release);
+            let predecessor = self.predecessor.upgrade().expect("original predecessor");
+            assert!(
+                predecessor.state.try_lock().is_ok(),
+                "cancelled file observer retired under predecessor lock"
+            );
+            if self.panic {
+                std::panic::panic_any("cancelled file observer retirement panic");
+            }
+        }
+    }
+    let _defer = InlineBlocking::defer();
+    initialize_native_io_services()?;
+    for panic in [false, true] {
+        let file =
+            NativeFile::from_file(tempfile::tempfile()?, None).map_err(|(error, _)| error)?;
+        let gate = Gate::new();
+        let release = Release(gate.clone());
+        let (started, entered) = mpsc::sync_channel(1);
+        let mut first = file.control_async(
+            move |_, _| {
+                started.send(()).map_err(io::Error::other)?;
+                gate.wait();
+                Ok(())
+            },
+            None,
+        )?;
+        let wake = completion_waker();
+        let mut context = Context::from_waker(&wake);
+        assert!(Pin::new(&mut first).poll(&mut context).is_pending());
+        entered.recv().map_err(io::Error::other)?;
+        let predecessor = first.completion.as_ref().expect("original file fence");
+        let retired = Arc::new(AtomicBool::new(false));
+        let observer = Waker::from(Arc::new(Retired {
+            predecessor: Arc::downgrade(predecessor),
+            retired: retired.clone(),
+            panic,
+        }));
+        let mut second = file.set_len_async(99, None)?;
+        assert!(
+            Pin::new(&mut second)
+                .poll(&mut Context::from_waker(&observer))
+                .is_pending()
+        );
+        let mut third = file.set_len_async(37, None)?;
+        assert!(Pin::new(&mut third).poll(&mut context).is_pending());
+        drop(observer);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(second)));
+        let original = predecessor.state.lock().map_err(|_| {
+            io::Error::other("cancelled file observer poisoned original predecessor")
+        })?;
+        assert!(
+            original.skipped_successor.as_ref().is_some_and(|fence| {
+                third
+                    .predecessor
+                    .as_ref()
+                    .is_some_and(|next| Arc::ptr_eq(fence, next))
+            }),
+            "cancelled file successor lost its original completion link"
+        );
+        drop(original);
+        if panic {
+            let Err(payload) = result else {
+                panic!("cancelled file observer panic missing");
+            };
+            assert_eq!(
+                payload.downcast_ref::<&str>(),
+                Some(&"cancelled file observer retirement panic")
+            );
+        } else {
+            assert!(result.is_ok());
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert_eq!(file.as_file().metadata()?.len(), 0);
+        drop(release);
+        complete(first)?;
+        complete(third)?;
+        assert_eq!(file.as_file().metadata()?.len(), 37);
+    }
+    Ok(())
 }
 
 /// Negative control for the shared-pool hazard that `exclusive_threads`
@@ -484,55 +775,105 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
 }
 
 #[test]
-fn capacity_released_during_notification_revisits_prior_waiters() {
-    use std::sync::atomic::AtomicUsize;
-
-    struct Count(AtomicUsize);
+fn capacity_release_reaches_a_repolled_original_submission() -> io::Result<()> {
+    struct Count(AtomicU64);
     impl Wake for Count {
         fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.0.fetch_add(1, Ordering::AcqRel);
         }
     }
-    struct ReleaseAgain {
-        admission: Arc<crate::sync::Mutex<AdmissionState>>,
-        prior: Arc<Count>,
-        released: AtomicBool,
-    }
-    impl Wake for ReleaseAgain {
+    struct Reenter(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+    impl Wake for Reenter {
         fn wake(self: Arc<Self>) {
-            if !self.released.swap(true, Ordering::SeqCst) {
-                // The earlier waiter has repolled against a full channel.
-                self.prior.0.store(0, Ordering::SeqCst);
-                notify_capacity_released(&self.admission);
+            let action = self.0.lock().expect("original queue owner").take();
+            if let Some(action) = action {
+                action();
             }
         }
     }
-    let (sender, _receiver) = crate::sync::mpsc::sync_channel(2);
-    let workers = NativeWorkers::single(sender, AdmissionState::new());
-    let prior = Arc::new(Count(AtomicUsize::new(0)));
-    let later = Arc::new(ReleaseAgain {
-        admission: workers.admission.clone(),
-        prior: prior.clone(),
-        released: AtomicBool::new(false),
-    });
-    let nodes = {
-        let mut admission = workers.admission.lock().unwrap();
-        admission.queued_jobs = 2;
-        [
-            admission.register(&Waker::from(prior.clone()), None),
-            admission.register(&Waker::from(later), None),
-        ]
-    };
-    notify_capacity_released(&workers.admission);
-    let observed = prior.0.load(Ordering::SeqCst);
-    for node in nodes {
-        remove_capacity_waiter(&workers, Some(node));
-    }
-    assert_ne!(
-        observed, 0,
-        "concurrent capacity release lost its second pass"
+    let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
+    let workers = Arc::new(NativeWorkers::single(sender, AdmissionState::new()));
+    let receiver = Arc::new(crate::sync::Mutex::new(receiver));
+    let mut filler = run_blocking_io(|| (), None)?;
+    assert!(
+        workers
+            .sender
+            .try_send(filler.pending.take().ok_or(io::ErrorKind::BrokenPipe)?)
+            .is_ok()
     );
-    assert_eq!(workers.admission.lock().unwrap().queued_jobs, 0);
+    workers
+        .admission
+        .lock()
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .queued_jobs = 1;
+    let mut prior = run_blocking_io(|| 37, None)?;
+    let mut pending = prior.pending.take();
+    let mut waiter = None;
+    let notified = Arc::new(Count(AtomicU64::new(0)));
+    let waker = Waker::from(notified.clone());
+    let context = Context::from_waker(&waker);
+    assert!(poll_submission_with(&workers, &mut pending, &mut waiter, &context).is_pending());
+    let submission = Arc::new(Mutex::new((pending, waiter)));
+    let reenter = {
+        let workers = workers.clone();
+        let receiver = receiver.clone();
+        let submission = submission.clone();
+        let waker = waker.clone();
+        Waker::from(Arc::new(Reenter(Mutex::new(Some(Box::new(move || {
+            let mut filler = run_blocking_io(|| (), None).expect("original queue owner");
+            assert!(
+                workers
+                    .sender
+                    .try_send(filler.pending.take().expect("original queue owner"))
+                    .is_ok()
+            );
+            workers
+                .admission
+                .lock()
+                .expect("original queue owner")
+                .queued_jobs += 1;
+            let mut submission = submission.lock().expect("original queue owner");
+            let (pending, waiter) = &mut *submission;
+            let context = Context::from_waker(&waker);
+            assert!(poll_submission_with(&workers, pending, waiter, &context).is_pending());
+            drop(submission);
+            // The real owner has reinstalled its consumed observer while the
+            // channel is full. This original receive releases that capacity
+            // during the same broadcast and must revisit that live owner.
+            let filler = crate::workers::receive_job(&receiver, &workers.admission)
+                .expect("original queue owner");
+            wake_capacity_waiter(filler.run());
+        }))))))
+    };
+    let mut later = run_blocking_io(|| (), None)?;
+    let mut pending = later.pending.take();
+    let mut waiter = None;
+    let context = Context::from_waker(&reenter);
+    assert!(poll_submission_with(&workers, &mut pending, &mut waiter, &context).is_pending());
+    let filler = crate::workers::receive_job(&receiver, &workers.admission)
+        .ok_or(io::ErrorKind::BrokenPipe)?;
+    wake_capacity_waiter(filler.run());
+    assert_eq!(
+        notified.0.load(Ordering::Acquire),
+        2,
+        "repolled capacity observer lost its release"
+    );
+    remove_capacity_waiter(&workers, waiter.take());
+    drop(pending);
+    let mut submission = submission
+        .lock()
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let (pending, waiter) = &mut *submission;
+    let context = Context::from_waker(&waker);
+    assert!(matches!(
+        poll_submission_with(&workers, pending, waiter, &context),
+        Poll::Ready(Ok(()))
+    ));
+    let accepted = crate::workers::receive_job(&receiver, &workers.admission)
+        .ok_or(io::ErrorKind::BrokenPipe)?;
+    wake_capacity_waiter(accepted.run());
+    assert_eq!(complete(prior)?, 37);
+    Ok(())
 }
 
 #[test]

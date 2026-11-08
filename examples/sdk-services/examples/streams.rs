@@ -1,3 +1,5 @@
+//! Reads the tail of a stream through the configured Stream HTTP endpoint.
+
 use acyclic_stream::{Stream, http::HttpStream};
 use std::sync::Arc;
 

@@ -20,13 +20,19 @@ pub async fn git_merge_resolution<
     for path in conflicts.keys() {
         paths.insert(path.clone(), true);
     }
-    for renamed in current
-        .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
-        .await?
-        .into_values()
-    {
+    let aliases = current
+        .paths_for_file_ids(
+            conflicts.values().filter_map(|id| *id),
+            u32::MAX,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    for (_, renamed) in aliases.entries() {
         for path in renamed {
-            paths.insert(path, true);
+            paths.insert(path.clone(), true);
         }
     }
     let mut resolved = BTreeSet::new();
