@@ -144,6 +144,10 @@ fn wait(child: &AgentPath) -> ScriptedTurn {
 }
 
 fn wait_selected(children: &[&AgentPath]) -> ScriptedTurn {
+    selected(children, None)
+}
+
+fn selected(children: &[&AgentPath], timeout_ms: Option<u64>) -> ScriptedTurn {
     // Derive this simulation's path from the captured original wait input.
     // The schedule and canonical event wrapper are generated test inputs.
     let (_, mut arguments): (String, serde_json::Value) = serde_json::from_str(include_str!(
@@ -156,6 +160,9 @@ fn wait_selected(children: &[&AgentPath]) -> ScriptedTurn {
             .map(|child| child.as_str())
             .collect::<Vec<_>>()
     );
+    if let Some(timeout_ms) = timeout_ms {
+        arguments["timeout_ms"] = serde_json::json!(timeout_ms);
+    }
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
             "selected-child".into(),
@@ -233,15 +240,19 @@ pub(super) async fn check(
         LIMITS,
         acyclic_harness_core::approvals::ApprovalPolicy::accept_all("owner"),
     );
-    let host = committing(
-        stream,
-        filesystem,
+    let (clock, mut control) = acyclic_actors::local::ControlledClock::new(100);
+    let host = AgentHost::with_spawn_volumes(
+        stream.clone(),
         Driver {
             original: ExecutorDriver::new(turn_host),
             probe: probe.clone(),
         },
+        within(),
+        acyclic_actors::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(clock),
+        Arc::new(acyclic_harness_core::filesystem::FilesystemSpawnVolumes::new(filesystem.clone())),
     )?;
-    observe(stream, &host, &probe, &model, parent, child).await
+    observe(stream, &host, &probe, &model, parent, child, &mut control).await
 }
 
 async fn observe(
@@ -251,6 +262,7 @@ async fn observe(
     model: &ScriptedModelProvider,
     parent: &AgentPath,
     child: &AgentPath,
+    control: &mut acyclic_actors::local::ClockControl,
 ) -> Result {
     let old = settled(stream, &within(), child)
         .await?
@@ -314,6 +326,7 @@ async fn observe(
         "child releases deferred wait"
     );
 
+    deadlines(host, probe, model, parent, child, control).await?;
     parallel(stream, host, probe, model, parent, child).await?;
     model.extend([wait(child)]);
 
@@ -376,6 +389,66 @@ async fn dropped_answer(
         acyclic_actors::guest::GuestError::Handler(message)
     ) if message.contains("original answer producer dropped")));
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+async fn deadlines(
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+    control: &mut acyclic_actors::local::ClockControl,
+) -> Result {
+    let Wake::Inbox { record, .. } = requested("deadline-child-work", child) else {
+        unreachable!()
+    };
+    host.send(child, &super::super::user(), &record).await?;
+    let requests = model.requests().len();
+    model.extend([
+        selected(&[child], Some(10)),
+        selected(&[child], Some(20)),
+        ScriptedTurn::Text("both original deadlines completed".into()),
+        ScriptedTurn::Text("child releases deferred wait".into()),
+    ]);
+    let first = deliver(host, parent, requested("independent-deadlines", parent)).await?;
+    assert_eq!(
+        first.phase,
+        Phase::Waiting {
+            deadline_unix_ms: Some(110),
+        },
+        "first wait lost its original deadline"
+    );
+    assert_eq!(model.requests().len(), requests + 1);
+    control.advance_to(110)?;
+    host.drain(parent).await?;
+    assert_eq!(
+        host.state(parent).await?.phase,
+        Phase::Waiting {
+            deadline_unix_ms: Some(130),
+        },
+        "second wait reused the first deadline release"
+    );
+    assert_eq!(model.requests().len(), requests + 2);
+    assert_eq!(
+        result(model)["running"],
+        serde_json::json!([child.as_str()])
+    );
+    control.advance_to(129)?;
+    host.drain(parent).await?;
+    assert_eq!(model.requests().len(), requests + 2);
+    control.advance_to(130)?;
+    host.drain(parent).await?;
+    assert_eq!(host.state(parent).await?.phase, Phase::Idle);
+    assert_eq!(model.requests().len(), requests + 3);
+    assert_eq!(result(model)["settled"], serde_json::json!([]));
+    assert_eq!(
+        result(model)["running"],
+        serde_json::json!([child.as_str()])
+    );
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
+    host.drain(child).await?;
+    host.drain(parent).await?;
     Ok(())
 }
 
