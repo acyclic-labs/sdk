@@ -260,7 +260,7 @@ impl ProjectionState {
                 continue;
             }
             if let Some(stamp) = binding.verified
-                && source.unchanged_since_with_meter(binding.native_path(), None, stamp, work)?
+                && source.binding_unchanged_since_with_meter(binding.native_path(), stamp, work)?
             {
                 continue;
             }
