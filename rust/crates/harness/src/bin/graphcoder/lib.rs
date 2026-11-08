@@ -542,9 +542,13 @@ async fn drive(
             }
         }
     }
-    let code = result?;
-    if events {
-        headless::completed(output, conversation.task(), &operation, code == 0).await?;
+    if events
+        && (result.is_ok()
+            || result
+                .as_ref()
+                .is_err_and(|error| error.is::<completion::Exit>()))
+    {
+        headless::completed(output, conversation.task(), &operation, result.is_ok()).await?;
     }
-    Ok(code)
+    result
 }
