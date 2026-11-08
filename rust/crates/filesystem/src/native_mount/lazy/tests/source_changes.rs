@@ -162,6 +162,30 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     assert!(empty.entries.is_empty());
     assert!(empty.next_cursor.is_none(), "an empty page continues");
     view.create_file(&mounted(&["b"]), FileMetadata::default(), None, &work)?;
+
+    let first = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+    let first_cursor = first.next_cursor().ok_or("first page must continue")?;
+    let peer_stop = CancellationToken::new();
+    let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
+        .map_err(|(error, _)| error)?;
+    let peer_baseline = peer_work.live_allocation_bytes();
+    let peers = (0..1_024)
+        .map(|_| view.read_directory_with_meter(&MountPath::root(), None, 1, &peer_work))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(peers.iter().all(|page| page.next_cursor().is_some()));
+    let resumed =
+        view.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work)?;
+    assert_eq!(resumed.entries().len(), 1);
+    peer_stop.cancel();
+    drop(peers);
+    assert_eq!(
+        peer_work.live_allocation_bytes(),
+        peer_baseline,
+        "abandoned consumers must release their original credit"
+    );
+    drop(resumed);
+    drop(first);
+
     let mut cursor = None;
     let mut listed = 0;
     loop {
