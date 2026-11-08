@@ -23,7 +23,9 @@ envelope while keeping its category and terminal classification unchanged.
 The adapter decodes the original detail header once and copies each retained
 product metadata value once at the owned boundary. It adds one envelope, one
 metadata array and the bytes they own. It adds no request, connection, wait,
-retry or success-path work. Status and message retain their original strings.
+or retry. Diagnostic decoding runs only on failure; the RPC response observer
+retains the existing raw arrays until completion. Status and message retain
+their original strings.
 The raw Connect cause is released instead of keeping a second diagnostic owner.
 
 The peer's `grpc-status` and `grpc-message` are authoritative even when its
@@ -66,3 +68,10 @@ node typescript/packages/stream/test/grpc-refusal.fuzz.mjs rust/codec-fuzz/corpu
 
 Both metadata mutations must also fail that same decoder property. The corpus
 is the existing Rust ErrorDetail writer corpus, not an invented wire fixture.
+
+The same public-provider control covers unknown and permission-denied statuses.
+The public category remains unavailable or access_denied independently of the
+retained diagnostic. `refusal-category.patch` restores the old unary branch
+that discarded the envelope for known categories; it must fail the status-7
+case's original-status assertion. This removes a conditional and retains the
+already-built envelope, with no additional conversion or allocation.
