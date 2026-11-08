@@ -67,7 +67,7 @@ impl AgentPageRequest {
         if items == 0
             || items > 128
             || bytes == 0
-            || u64::from(bytes) > MAX_COMMAND_BYTES as u64
+            || bytes > MAX_COMMAND_BYTES as u32
             || cursor.as_ref().is_some_and(|cursor| cursor.is_empty())
         {
             return Err(CommandError::Capacity);
@@ -308,7 +308,6 @@ pub enum AgentCommand {
     /// A bounded projection of an original input's committed call admissions and
     /// completions, read through its agent's original private grant.
     Usage {
-        /// Agent whose original private journal is selected.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
         /// Original inbox sequence, initially zero (skips inherited inputs).
@@ -628,12 +627,12 @@ impl PreparedCommand {
         for (index, ch) in text.char_indices() {
             let cost = escaped_len(ch);
             if used + cost > budget {
-                parts.push(text.get(start..index).ok_or(CommandError::Invalid)?);
+                parts.push(&text[start..index]);
                 (start, used) = (index, 0);
             }
             used += cost;
         }
-        parts.push(text.get(start..).ok_or(CommandError::Invalid)?);
+        parts.push(&text[start..]);
         let parts = parts
             .into_iter()
             .enumerate()

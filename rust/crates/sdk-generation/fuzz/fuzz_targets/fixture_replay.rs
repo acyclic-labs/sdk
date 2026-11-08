@@ -1,4 +1,3 @@
-//! Check source selection, Git layout and relocation through shared oracles.
 #![no_main]
 use sdk_docs::path_identity;
 use sdk_generation::historical;
@@ -91,8 +90,8 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             for windows in [false, true] {
                 if let Some(rebased) = path_identity::rebase(path, old, new, windows) {
                     assert_eq!(
-                        path_identity::rebase(&rebased, new, new, windows).as_deref(),
-                        Some(rebased.as_str())
+                        path_identity::rebase(&rebased, new, new, windows),
+                        Some(rebased)
                     );
                     let before = path_identity::stable_filename(path, old);
                     let root_is_windows = old.as_bytes().get(1) == Some(&b':')
@@ -105,7 +104,13 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                         && windows == root_is_windows
                         && windows == new_is_windows
                     {
-                        assert_eq!(path_identity::stable_filename(&rebased, new), before);
+                        assert_eq!(
+                            path_identity::stable_filename(
+                                &path_identity::rebase(path, old, new, windows).unwrap(),
+                                new
+                            ),
+                            before
+                        );
                     }
                 }
             }

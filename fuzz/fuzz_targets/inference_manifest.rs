@@ -1,4 +1,3 @@
-//! Check recorded and arbitrary inference manifest provenance.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 

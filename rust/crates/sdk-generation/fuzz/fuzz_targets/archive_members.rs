@@ -1,4 +1,3 @@
-//! Compare admitted archive inventory and bodies with the original input.
 #![no_main]
 use sdk_generation::historical;
 #[path = "../archive_members.rs"]

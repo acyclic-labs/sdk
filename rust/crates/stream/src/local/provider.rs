@@ -451,13 +451,18 @@ impl crate::NativeStreamProvider for LocalStream {
             ),
         }
     }
-    fn native_commit_guarded(
+    fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        before: crate::NativeCommitGuard,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, crate::NativeCommitError> {
+        before: F,
+    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
         LocalStream::guarded_commit(
             self,
             request,

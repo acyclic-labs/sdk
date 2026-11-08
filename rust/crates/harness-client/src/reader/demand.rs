@@ -9,7 +9,7 @@ use std::{
 #[derive(Default)]
 pub(super) struct Demands {
     entries: BTreeMap<OpKey, Entry>,
-    order: Ready,
+    order: [BTreeSet<(u64, OpKey)>; 2],
     mark: bool,
     #[cfg(test)]
     visits: std::cell::Cell<usize>,
@@ -34,18 +34,10 @@ pub(super) struct Ordered<'a> {
     visits: &'a std::cell::Cell<usize>,
 }
 
-#[derive(Default)]
-struct Ready {
-    visible: BTreeSet<(u64, OpKey)>,
-    prefetch: BTreeSet<(u64, OpKey)>,
-}
-
-impl Ready {
-    fn for_priority(&mut self, priority: Priority) -> &mut BTreeSet<(u64, OpKey)> {
-        match priority {
-            Priority::Visible => &mut self.visible,
-            Priority::Prefetch => &mut self.prefetch,
-        }
+const fn class(priority: Priority) -> usize {
+    match priority {
+        Priority::Visible => 0,
+        Priority::Prefetch => 1,
     }
 }
 
@@ -113,12 +105,9 @@ impl Demands {
             if entry.demand.priority != priority {
                 reclassify(&key, priority);
                 if entry.ready {
-                    self.order
-                        .for_priority(entry.demand.priority)
+                    self.order[class(entry.demand.priority)]
                         .remove(&(entry.demand.ticket, key.clone()));
-                    self.order
-                        .for_priority(priority)
-                        .insert((entry.demand.ticket, key));
+                    self.order[class(priority)].insert((entry.demand.ticket, key));
                 }
                 entry.demand.priority = priority;
             }
@@ -149,9 +138,7 @@ impl Demands {
             .extract_if(.., move |_, entry| entry.mark != mark)
             .map(move |(key, entry)| {
                 if entry.ready {
-                    order
-                        .for_priority(entry.demand.priority)
-                        .remove(&(entry.demand.ticket, key.clone()));
+                    order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
                 }
                 key
             })
@@ -165,9 +152,7 @@ impl Demands {
 
     fn insert_entry(&mut self, key: OpKey, demand: Demand, ready: bool) {
         if ready {
-            self.order
-                .for_priority(demand.priority)
-                .insert((demand.ticket, key.clone()));
+            self.order[class(demand.priority)].insert((demand.ticket, key.clone()));
         }
         self.entries.insert(
             key,
@@ -183,9 +168,7 @@ impl Demands {
         if let Some(entry) = self.entries.remove(key)
             && entry.ready
         {
-            self.order
-                .for_priority(entry.demand.priority)
-                .remove(&(entry.demand.ticket, key.clone()));
+            self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key.clone()));
         }
     }
 
@@ -216,9 +199,7 @@ impl Demands {
                 self.invalidation_visits += 1;
             }
             if entry.ready {
-                self.order
-                    .for_priority(entry.demand.priority)
-                    .remove(&(entry.demand.ticket, key));
+                self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
             }
         }
     }
@@ -230,24 +211,21 @@ impl Demands {
                 self.invalidation_visits += 1;
             }
             if entry.ready {
-                self.order
-                    .for_priority(entry.demand.priority)
-                    .remove(&(entry.demand.ticket, key));
+                self.order[class(entry.demand.priority)].remove(&(entry.demand.ticket, key));
             }
         }
     }
 
     pub(super) fn clear(&mut self) {
         self.entries.clear();
-        self.order.visible.clear();
-        self.order.prefetch.clear();
+        self.order.iter_mut().for_each(BTreeSet::clear);
     }
 
     pub(super) fn ordered(&self) -> Ordered<'_> {
         Ordered {
             entries: &self.entries,
-            visible: self.order.visible.iter().peekable(),
-            prefetch: self.order.prefetch.iter().peekable(),
+            visible: self.order[0].iter().peekable(),
+            prefetch: self.order[1].iter().peekable(),
             #[cfg(test)]
             visits: &self.visits,
         }
@@ -277,9 +255,9 @@ impl Demands {
 }
 
 impl Entry {
-    fn set_ready(&mut self, key: &OpKey, order: &mut Ready, ready: bool) {
+    fn set_ready(&mut self, key: &OpKey, order: &mut [BTreeSet<(u64, OpKey)>; 2], ready: bool) {
         if self.ready != ready {
-            let order = order.for_priority(self.demand.priority);
+            let order = &mut order[class(self.demand.priority)];
             let aged = (self.demand.ticket, key.clone());
             if ready {
                 order.insert(aged);

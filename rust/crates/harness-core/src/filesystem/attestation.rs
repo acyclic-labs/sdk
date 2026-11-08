@@ -279,13 +279,19 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_guarded(
+    fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline_unix_millis: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
-        before: acyclic_stream::NativeCommitGuard,
-    ) -> NativeProviderFuture<'_, CommitOutcome, acyclic_stream::NativeCommitError> {
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&meter, async move {
             match self.target(|| commit_digest(&request)).await {
@@ -294,7 +300,7 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
                         .native_commit_guarded(request, deadline_unix_millis, original, before)
                         .await
                 }
-                Err(error) => Ok(Err(acyclic_stream::NativeCommitError::from(error))),
+                Err(error) => Ok(Err(E::from(error))),
             }
         })
     }
@@ -478,16 +484,21 @@ mod tests {
             let result = digest.map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
         }
-        fn native_commit_guarded(
+        fn native_commit_guarded<E, F, Fut>(
             &self,
             request: super::CommitRequest,
             _: Option<u64>,
             _: std::sync::Arc<dyn super::NativeReadMeter>,
-            _before: acyclic_stream::NativeCommitGuard,
-        ) -> super::NativeProviderFuture<'_, super::CommitOutcome, acyclic_stream::NativeCommitError>
+            _before: F,
+        ) -> super::NativeProviderFuture<'_, super::CommitOutcome, E>
+        where
+            Self: Sized,
+            E: From<super::StreamError> + Send + 'static,
+            F: FnMut() -> Fut + Send + 'static,
+            Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
         {
             let result = super::commit_digest(&request).map(|digest| self.write(digest));
-            super::NativeProviderFuture::ready(Ok(Err(acyclic_stream::NativeCommitError::from(
+            super::NativeProviderFuture::ready(Ok(Err(E::from(
                 result.unwrap_or_else(|error| error),
             ))))
         }

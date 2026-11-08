@@ -1,4 +1,3 @@
-//! Compare completion transitions with semantic and full-parse oracles.
 #![no_main]
 
 #[path = "../../tests/support/completion_deltas.rs"]

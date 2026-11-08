@@ -201,15 +201,14 @@ fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
 // different local service. Resolved addresses are checked again before connect.
 fn validate_redirect_host(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
     let unsafe_host = match endpoint.host_str() {
-        Some(host) => {
-            if let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
-                !public_address(ip)
-            } else {
+        Some(host) => match host.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+            Ok(ip) => !public_address(ip),
+            Err(_) => {
                 let host = host.trim_end_matches('.');
                 host.eq_ignore_ascii_case("localhost")
                     || host.to_ascii_lowercase().ends_with(".localhost")
             }
-        }
+        },
         None => true,
     };
     if unsafe_host {

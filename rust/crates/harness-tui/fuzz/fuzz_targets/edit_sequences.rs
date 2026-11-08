@@ -1,4 +1,3 @@
-//! Exercise editor operations against grapheme, history and undo invariants.
 #![no_main]
 
 #[path = "../../tests/support/sequences.rs"]

@@ -1,4 +1,3 @@
-//! Check canonical object manifest encoding.
 #![no_main]
 use acyclic_objects::Manifest;
 use libfuzzer_sys::fuzz_target;

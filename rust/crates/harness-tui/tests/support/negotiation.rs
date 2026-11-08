@@ -75,10 +75,6 @@ fn environment(mux: Multiplexer) -> Environment {
     Environment([(key.into(), "session".into())].into())
 }
 
-/// Check production negotiation against independently ordered protocol replies.
-///
-/// # Panics
-/// Panics if negotiation loses replies or input bytes, or fails to cancel a partial send.
 pub fn run(
     mux: Multiplexer,
     ordering: &[u8],
@@ -177,7 +173,6 @@ pub fn run(
     wire.sent
 }
 
-/// Number of bytes in the production startup query batch for this multiplexer.
 pub fn batch_len(mux: Multiplexer) -> usize {
     Probe::batch(mux).len()
 }

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { fixtureAuthorization } from "./credential-fixture";
 import { create, toJsonString } from "@bufbuild/protobuf";
 import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
 import {
@@ -278,7 +277,7 @@ test.each([false, true].flatMap(final =>
       try { await Promise.race([release.promise, cancelled.promise]); }
       finally { signal?.removeEventListener("abort", abort); }
     }
-    return { authorization: fixtureAuthorization };
+    return { authorization: "Bearer result-recovery" };
   }, async (input, init) => {
     if (selected() && cut !== "credential") {
       original = init?.signal;

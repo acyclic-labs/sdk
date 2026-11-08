@@ -112,7 +112,7 @@ fn caller_writer_keeps_its_ceiling_and_wire_refuses_before_output() -> Result<()
         Err(Error::Json)
     );
     assert!(short.bytes.len() <= short.maximum);
-    assert!(expected.starts_with(&short.bytes));
+    assert_eq!(short.bytes, expected[..short.bytes.len()]);
 
     let mut untouched = BoundedJson {
         bytes: vec![42],

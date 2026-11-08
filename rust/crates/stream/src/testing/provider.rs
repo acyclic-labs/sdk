@@ -3,7 +3,7 @@
 use super::{Counted, RequestClass};
 use crate::*;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -122,13 +122,19 @@ impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Cou
         self.inner().native_write(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_guarded(
+    fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline_unix_millis: Option<u64>,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        before: crate::NativeCommitGuard,
-    ) -> NativeProviderFuture<'_, CommitOutcome, crate::NativeCommitError> {
+        before: F,
+    ) -> NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), E>> + Send + 'static,
+    {
         self.record(RequestClass::Data);
         self.inner()
             .native_commit_guarded(request, deadline_unix_millis, _meter, before)

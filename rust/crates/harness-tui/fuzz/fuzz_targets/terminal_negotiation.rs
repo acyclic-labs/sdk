@@ -1,4 +1,3 @@
-//! Exercise terminal negotiation ordering, partial reads and cancellation.
 #![no_main]
 
 use acyclic_harness_tui::term::Multiplexer;
