@@ -932,18 +932,20 @@ impl ToolContext {
             length: 32,
         };
         let held = |result: Result<_>| match result {
-            Ok((selected, bytes, _)) => Ok(Some((selected, bytes))),
+            Ok(range) => Ok(Some(range)),
             Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         };
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let Some((selected, bytes)) = mine else {
+        let _selection_hold;
+        let Some((selected, bytes, hold)) = mine else {
             return if seeded {
                 Ok(seed.into())
             } else {
                 Err(missing())
             };
         };
+        _selection_hold = hold;
         if selected.byte_length <= probe.length && is_off(&bytes) {
             return Err(missing());
         }
@@ -1019,9 +1021,10 @@ impl ToolContext {
     ) -> Result<(
         crate::conversation::FilePathSelection,
         acyclic_stream::OwnedBytes,
-        u64,
+        crate::conversation::FileSelectionCustody,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let mut retained;
         let (selected, bytes, hold) = self
             .task()
             .content_binding(Some(volume))
@@ -1039,6 +1042,7 @@ impl ToolContext {
                 },
             )?
             .await?;
+        retained = hold;
         crate::executor::with_history_io(io, |history| {
             selected.validate(history)?;
             if &selected.volume != volume
@@ -1059,17 +1063,16 @@ impl ToolContext {
             Ok(())
         })?;
         #[cfg(feature = "filesystem")]
-        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
+        let custody = retained
+            .as_mut()
+            .map(|hold| hold.take_custody())
+            .transpose()?;
         #[cfg(not(feature = "filesystem"))]
-        let retained = {
-            let _ = hold;
-            0
+        let custody = {
+            let _ = &mut retained;
+            None
         };
-        Ok((selected, bytes, retained))
+        Ok((selected, bytes, custody))
     }
 
     /// Resolves a write destination through the original admitted publisher.
