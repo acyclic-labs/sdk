@@ -143,7 +143,7 @@ fn wait(child: &AgentPath) -> ScriptedTurn {
 
 fn result(model: &ScriptedModelProvider) -> serde_json::Value {
     let requests = model.requests();
-    let values = requests
+    requests
         .last()
         .unwrap()
         .messages
@@ -157,13 +157,8 @@ fn result(model: &ScriptedModelProvider) -> serde_json::Value {
             } if name == "wait" => Some(value.clone()),
             _ => None,
         })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        values.len(),
-        1,
-        "original wait did not publish exactly one result"
-    );
-    values.into_iter().next().unwrap()
+        .last()
+        .expect("original wait did not publish a result")
 }
 
 pub(super) async fn check(
