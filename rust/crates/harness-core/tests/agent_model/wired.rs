@@ -1527,7 +1527,11 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     };
     let (_, child) = requested_child(&parent, inbox)?;
     root_host.drain(&parent).await?;
-    assert_eq!(settled(&stream, &within(), &child).await?, None);
+    assert_eq!(
+        settled(&stream, &within(), &child).await?,
+        None,
+        "an unconsumed child inbox was reported settled"
+    );
     root_host.drain(&child).await?;
     let observed = settled(&stream, &within(), &child)
         .await?
