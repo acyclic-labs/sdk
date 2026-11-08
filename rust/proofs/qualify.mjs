@@ -1754,7 +1754,7 @@ if (claim === "--help" && extra.length === 0) {
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
-      options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
+      options.positive.map(name => `test(=${name})`).join(" | "), ...(options.nextest ?? ["--no-tests=fail"])]
     : command);
   const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
   const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}${instrumented ? " --instrumented" : from === undefined ? "" : ` --from ${from}`}`;
@@ -1815,8 +1815,10 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
+      const count = label === "restored" ? options.positive?.length ?? 1 : 1;
       const started = invocation[0] === "cargo" && invocation[1] === "nextest"
-        ? "Starting 1 test across 1 binary" : "running 1 test";
+        ? `Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary`
+        : `running ${count} ${count === 1 ? "test" : "tests"}`;
       require(result.output.includes(started));
     }
     return result;
