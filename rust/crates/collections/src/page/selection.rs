@@ -198,8 +198,9 @@ mod tests {
                 || "invalid",
             ).expect("ordered original keys") {
                 prop_assert_eq!(range.start, offset + consumed);
-                let expected = keys[consumed..].iter()
-                    .take_while(|key| **key == keys[consumed]).count();
+                let remaining = keys.get(consumed..).ok_or_else(|| TestCaseError::fail("group starts past original keys"))?;
+                let first = remaining.first().ok_or_else(|| TestCaseError::fail("selected group has no original key"))?;
+                let expected = remaining.iter().take_while(|key| *key == first).count();
                 prop_assert_eq!(range.len(), expected);
                 consumed += expected;
             }
@@ -229,7 +230,7 @@ mod tests {
         // The former name deduplication compared every preceding mutation.
         let mut prior_comparisons = 0;
         for (position, key) in keys.iter().enumerate() {
-            for prior in &keys[..position] {
+            for prior in keys.iter().take(position) {
                 prior_comparisons += 1;
                 if prior == key {
                     break;
@@ -277,7 +278,7 @@ mod tests {
                 },
                 || "invalid",
             );
-            if keys[0] == keys[1] {
+            if matches!(keys, [first, second, ..] if first == second) {
                 assert_eq!(result, Err("admission"));
             } else {
                 assert_eq!(result, Ok(Some(0..1)));
