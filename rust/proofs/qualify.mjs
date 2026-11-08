@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "allocation-first-event": [
+    "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
+    "tests::accounting_matches_complete_allocation_lifetimes",
+    "first allocation event differs from physical trace", [],
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
