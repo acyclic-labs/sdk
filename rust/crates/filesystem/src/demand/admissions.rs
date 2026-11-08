@@ -49,12 +49,22 @@ impl Admissions {
 }
 impl DemandWork {
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
+        let owners = self
+            .roots
+            .allocation_accounting
+            .as_ref()
+            .map_or(0, Arc::strong_count);
+        self.reconcile_native_controls_for_owners(owners)
+    }
+    fn reconcile_native_controls_for_owners(
+        &mut self,
+        owners: usize,
+    ) -> Result<(), crate::WorkError> {
         let Some(shared) = &self.roots.allocation_accounting else {
             return Ok(());
         };
         // Observe the publisher set before draining either completion class.
         // A last publisher leaving after this observation is drained next time.
-        let owners = Arc::strong_count(shared);
         if owners == 1 {
             fence(Ordering::Acquire);
         }
