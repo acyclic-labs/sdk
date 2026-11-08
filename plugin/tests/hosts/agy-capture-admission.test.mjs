@@ -144,7 +144,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const coordinationAnswer = "native-agy-coordination-completed";
       const childCommand = process.platform === "win32"
         ? "Set-Content -NoNewline -LiteralPath native-command.txt -Value native-agy-command-write"
-        : "printf native-agy-command-write > native-command.txt";
+        : "pwd; cat /proc/self/mountinfo; printf native-agy-command-write > native-command.txt";
       const coordinate = (id, name, Arguments) => ({ id, name: "call_mcp_tool",
         arguments: { ServerName: "acyclic_sessions", ToolName: name, Arguments } });
       const script = join(root, "model.json"), recorded = join(root, "model-requests.jsonl");
