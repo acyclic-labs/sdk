@@ -83,7 +83,11 @@ for (const host of ["claude-code", "pi", "opencode"]) for (const selection of ["
         const document = JSON.parse(installed);
         assert.deepEqual(document.permissions, foreign.permissions);
         assert.equal(document.fixtureMarker, foreign.fixtureMarker);
-        assert.deepEqual(Object.keys(document.hooks).sort(), ["PermissionRequest", "SessionEnd", "SessionStart", "Stop"]);
+        assert.deepEqual(Object.keys(document.hooks).sort(), ["PermissionRequest", "PreToolUse", "SessionEnd", "SessionStart", "Stop"]);
+        assert.deepEqual(document.hooks.PreToolUse.map(group => group.matcher), ["^(Agent|Task)$"]);
+        assert.equal(document.hooks.PreToolUse[0].hooks.length, 1);
+        assert.equal(document.hooks.PreToolUse[0].hooks[0].type, "command");
+        assert.match(document.hooks.PreToolUse[0].hooks[0].command, / __hook claude-code PreToolUse$/);
         assert.deepEqual(document.hooks.Stop[0], foreign.hooks.Stop[0]);
       }
       await invoke("install");
