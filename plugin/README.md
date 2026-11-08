@@ -24,7 +24,7 @@ through its native plugin manager into the launching HOME profile.
 accepts AGY's `--settings` file or inline JSON.
 Both adapters share the workspace owner and native process supervision; the
 host continues to own its tools, model loop and permissions. The retained native
-controls target OpenCode 1.19.5 and Antigravity 1.5.2.
+controls target OpenCode 1.19.5 and Antigravity 1.5.3.
 
 Without `--settings`, installation follows `CLAUDE_CONFIG_DIR` or
 `PI_CODING_AGENT_DIR`, falling back to the native default when the selector is
@@ -39,7 +39,7 @@ OpenCode children use `opencode run --format json --dir VIEW`; AGY children use
 stream-JSON input and output in that view. Both inherit the launching environment,
 including provider credentials and endpoint selectors, without an environment
 allowlist. Native configuration and session storage remain owned by the host.
-Native built-in subagents keep their host behavior and **are not harness forks**.
+The plugin disables native built-in delegation so children use harness forks.
 
 Codex and Claude permission hooks consult the harness approval chain only for
 the plugin's exact `spawn` tool. Other tools retain the host's permission
@@ -71,6 +71,8 @@ acyclic host opencode -- --model provider/model
 ```
 
 Use a versioned native archive instead of a latest-only installation script.
+The qualified Linux x86_64 release is [Antigravity 1.5.3](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.3-6604829099950080/linux-x64/cli_linux_x64.tar.gz),
+with SHA-512 `e363e1b17daaac2589f18e6973429c039fd5a5e5c15e9c0852fa349836f3992b10fe84732bc8d8c8208e149f0304f15aba9dec696d12efeed03917492c0580eb`.
 The publisher's [release manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
 names the versioned URL and SHA-512 digest. Verify the downloaded archive before
 execution. Plugin installation checks the requested `--host-version`, records
