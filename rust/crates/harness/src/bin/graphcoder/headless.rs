@@ -29,7 +29,7 @@ fn id_error(line: &Value, error: &Value) -> String {
 }
 use acyclic_harness::client::ExecutionPosition;
 
-mod input;
+pub(crate) mod input;
 use input::Request;
 
 /// The original invocation, with a generated operation made explicit for replay.

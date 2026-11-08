@@ -1,8 +1,6 @@
 #![no_main]
 
-// The same decoder is called by the stdin owner before conversation dispatch.
-#[path = "../../harness/src/bin/graphcoder/headless/input.rs"]
-mod input;
+use graphcoder::test_support as input;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(text) = std::str::from_utf8(bytes) else {

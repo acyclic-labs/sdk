@@ -1,5 +1,5 @@
 use super::*;
-mod media_type;
+pub(crate) mod media_type;
 #[cfg(all(
     test,
     feature = "filesystem-local",

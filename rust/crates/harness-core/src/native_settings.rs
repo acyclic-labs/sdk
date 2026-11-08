@@ -17,6 +17,29 @@ mod model;
 mod model_selection;
 mod workspace;
 
+/// Production native settings boundaries for decoder conformance.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    /// Admits the same model and provider fields as the configured-model loader.
+    pub fn parse_model_selection(bytes: &[u8]) -> Result<Option<String>, String> {
+        super::model_selection::parse(bytes)
+    }
+
+    /// Compares project keys with the production native path rules.
+    pub fn workspace_equivalent(left: &str, right: &str, windows: bool) -> bool {
+        super::workspace::equivalent(left, right, windows)
+    }
+
+    /// Selects a project by either its configured or canonical path.
+    pub fn workspace_matches(
+        key: &str,
+        configured: &std::path::Path,
+        canonical: &std::path::Path,
+    ) -> bool {
+        super::workspace::matches(key, configured, canonical)
+    }
+}
+
 /// Native user locations and independent trust for repository-supplied commands.
 pub struct SettingsConfig {
     workspace: PathBuf,

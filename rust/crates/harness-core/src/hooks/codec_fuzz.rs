@@ -1,4 +1,4 @@
-//! Codec properties run against the library's original hook implementation.
+//! Decoder and bounded-ledger properties over the production hook implementation.
 use super::{HookEvent, HookFailure, HookInput, HookOutput, budget, spec};
 use crate::{Result, tool};
 use serde_json::Value;
@@ -15,10 +15,20 @@ fn apply(
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
-
-/// Checks arbitrary hook output, input envelopes, rules and bounded decisions.
+/// Checks arbitrary hook bytes against the production decoder and ledger.
+///
+/// # Panics
+/// Panics if decoder, event-site, round-trip or bounded-ledger invariants fail.
 pub fn check(bytes: &[u8]) {
-    futures::executor::block_on(super::chain_model::check(bytes)).unwrap();
+    crate::native_settings::codec_fuzz::check(bytes).unwrap();
+    futures::executor::block_on(crate::hooks::chain_model::check(bytes)).unwrap();
+    check_input(bytes);
+    check_decisions(bytes);
+    check_budget(bytes);
+    check_rule(bytes);
+}
+
+fn check_input(bytes: &[u8]) {
     if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
         let invocation = tool::ToolInvocation {
             operation_id: crate::OperationId::from_bytes([1; 16]),
@@ -72,6 +82,9 @@ pub fn check(bytes: &[u8]) {
         let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(output, decoded);
     }
+}
+
+fn check_decisions(bytes: &[u8]) {
     for event in HookEvent::ALL {
         // Each event is fired by exactly one site, and a single-event site names it.
         assert_eq!(
@@ -150,6 +163,9 @@ pub fn check(bytes: &[u8]) {
             }
         }
     }
+}
+
+fn check_budget(bytes: &[u8]) {
     // All event-specific deltas, including replacement arguments, must obey
     // the retained file bound and keep folding a following explicit denial.
     for event in HookEvent::ALL {
@@ -173,6 +189,9 @@ pub fn check(bytes: &[u8]) {
         assert!(outcome.blocks());
         assert!(serde_json::to_vec(&outcome).unwrap().len() <= 4096);
     }
+}
+
+fn check_rule(bytes: &[u8]) {
     if let Ok(rule) = serde_json::from_slice::<spec::HookRule>(bytes) {
         let encoded = serde_json::to_vec(&rule).unwrap();
         let decoded: spec::HookRule = serde_json::from_slice(&encoded).unwrap();

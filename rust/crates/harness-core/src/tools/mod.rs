@@ -20,7 +20,7 @@ pub(crate) mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use bounds::prefix as json_string_prefix;
 mod command;
-mod fs_command;
+pub(crate) mod fs_command;
 /// Pinned public tool contracts for each model family's native tool surface.
 #[cfg(feature = "filesystem")]
 pub mod native;

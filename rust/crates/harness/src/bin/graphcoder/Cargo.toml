@@ -19,6 +19,9 @@ path = "../graphcoder.rs"
 name = "embedded"
 path = "examples/embedded.rs"
 
+[features]
+test-support = []
+
 [dependencies]
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers", features = ["local"] }

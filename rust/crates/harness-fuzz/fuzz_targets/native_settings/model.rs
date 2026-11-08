@@ -1,8 +1,7 @@
 //! File admission through the public configured-model entrance.
 
 use super::{Files, SettingsConfig, write};
-#[path = "../../../harness-core/src/native_settings/model_selection.rs"]
-mod selection;
+use acyclic_harness_core::native_settings::test_support::parse_model_selection;
 
 fn config(files: &Files, maximum: u64) -> SettingsConfig {
     SettingsConfig::new(&files.workspace, &files.home)
@@ -14,7 +13,7 @@ fn replay(files: &Files, bytes: &[u8]) {
     write(&files.codex.join("config.toml"), bytes);
     match (
         config(files, u32::MAX.into()).configured_model(),
-        selection::parse(bytes),
+        parse_model_selection(bytes),
     ) {
         (Ok(actual), Ok(expected)) => {
             assert_eq!(actual, expected, "model file must preserve parser identity")
