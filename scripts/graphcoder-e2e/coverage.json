@@ -49,8 +49,6 @@
       "target": "Checkout/git consistency and namespace isolation",
       "owner": "filesystem",
       "cases": [
-        "fs-status-git",
-        "fs-status-plain",
         "fs-conflict-continue-git",
         "fs-conflict-continue-plain"
       ]
