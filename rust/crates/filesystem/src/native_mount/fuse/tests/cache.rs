@@ -237,7 +237,8 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                 .denied
         );
         assert!(notifications.entries.borrow().iter().any(|(parent, name)| {
-            *parent == ROOT_INODE && *name == *path.components().last().expect("named binding")
+            *parent == ROOT_INODE
+                && name.as_slice() == path.components().last().expect("named binding").as_slice()
         }));
     }
     Ok(())

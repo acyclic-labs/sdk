@@ -182,7 +182,7 @@ impl ProjectionState {
         spelled: &MountPath,
         parent_inode: u64,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
+    ) -> Result<impl FnOnce(&mut Self, ViewStamp) + use<>, NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         let mut paths = HashMap::new();
         let mut copied = 0u64;
@@ -239,7 +239,7 @@ impl ProjectionState {
             work,
         )?;
         work.charge(Copy.delta(copied))?;
-        Ok(move |state: &mut Self| {
+        Ok(move |state: &mut Self, stamp: ViewStamp| {
             streams(&mut state.streams);
             for (inode, index, replacement) in replacements.drain(..) {
                 let Some(entry) = state.by_inode.get_mut(&inode) else {
@@ -252,6 +252,8 @@ impl ProjectionState {
                         };
                         binding.path = path;
                         binding.spelled = native;
+                        binding.verified = Some(stamp);
+                        binding.kernel = binding.kernel.map(|_| stamp);
                     }
                     None => {
                         entry.bindings.remove(index);

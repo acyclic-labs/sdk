@@ -15,6 +15,12 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-rename-binding-completion": [
+    "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
+    "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
+    "a node change must not detach its unchanged name: RenamedFile",
+    ["--no-default-features", "--features", "memory,native-mount"],
+  ],
   "native-hard-link-detached-facts": [
     "rust/crates/filesystem/src/native_mount/lazy/mutations.rs", "acyclic-fs",
     "native_mount::lazy::tests::publication::source_hard_link_open_unlink_write_preserves_surviving_alias",
