@@ -61,5 +61,5 @@ fn shared_namespace() -> std::io::Result<()> {
 #[test]
 #[should_panic(expected = "runtime latency workloads collided")]
 fn negative_control_reuses_one_runtime_namespace() {
-    super::completed(shared_namespace());
+    super::completed(&shared_namespace());
 }

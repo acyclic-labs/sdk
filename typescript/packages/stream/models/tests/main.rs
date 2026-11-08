@@ -6,7 +6,7 @@ mod latency;
 #[path = "../session_model.rs"]
 mod session_model;
 
-fn completed(result: std::io::Result<()>) {
+fn completed(result: &std::io::Result<()>) {
     assert!(result.is_ok(), "real TypeScript model failed: {result:?}");
 }
 

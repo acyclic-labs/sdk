@@ -135,11 +135,11 @@ fn owner_exit_ends_its_model(fault: &str, kill: bool) -> std::io::Result<()> {
 }
 #[test]
 fn a_parked_model_process_exits_when_its_owner_is_killed() {
-    super::completed(owner_exit_ends_its_model("", true));
+    super::completed(&owner_exit_ends_its_model("", true));
 }
 #[test]
 fn a_parked_model_process_exits_when_its_original_control_producer_is_lost() {
-    super::completed(owner_exit_ends_its_model("", false));
+    super::completed(&owner_exit_ends_its_model("", false));
 }
 #[test]
 fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
@@ -252,12 +252,12 @@ fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() -> std::io:
 }
 #[test]
 fn default_follow_selection_and_cancellation_are_independent() {
-    super::completed(follow_selection(""));
+    super::completed(&follow_selection(""));
 }
 #[test]
 #[should_panic(expected = "follow cancellation must not wait for provider selection")]
 fn follow_selection_negative_control_omits_the_selection_signal() {
-    super::completed(follow_selection("followSelect"));
+    super::completed(&follow_selection("followSelect"));
 }
 
 fn rejected_subscription(fault: &str) -> std::io::Result<()> {
@@ -283,12 +283,12 @@ fn rejected_subscription(fault: &str) -> std::io::Result<()> {
 }
 #[test]
 fn wasm_rejected_resubscription_is_terminal() {
-    super::completed(rejected_subscription(""));
+    super::completed(&rejected_subscription(""));
 }
 #[test]
 #[should_panic(expected = "a rejected resubscription must settle its real WASM cursor")]
 fn negative_control_discards_the_io_rejection() {
-    super::completed(rejected_subscription("rejection"));
+    super::completed(&rejected_subscription("rejection"));
 }
 
 fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result<()> {
@@ -356,11 +356,10 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
             1,
             "the shared session must survive its sibling's deadline"
         );
-        assert_eq!(
+        assert!(
             field(&state, "outstanding")?
                 .as_u64()
                 .is_some_and(|frames| frames <= 2),
-            true,
             "batched aggregate credit must stay bounded by delivered frames"
         );
         let stopped = driver.call(&json!({"action":"stop"}))?;
@@ -371,19 +370,19 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result
 }
 #[test]
 fn raw_follow_deadline_races_delivery() {
-    super::completed(deadline_run("", &["deliver"]));
+    super::completed(&deadline_run("", &["deliver"]));
 }
 #[test]
 fn raw_follow_deadline_races_reconnection() {
-    super::completed(deadline_run("", &["reconnect", "releaseReconnect"]));
+    super::completed(&deadline_run("", &["reconnect", "releaseReconnect"]));
 }
 #[test]
 fn raw_follow_deadline_races_cleanup() {
-    super::completed(deadline_run("", &["cleanup"]));
+    super::completed(&deadline_run("", &["cleanup"]));
 }
 #[test]
 fn raw_follow_deadline_races_delivery_reconnect_and_cleanup() {
-    super::completed(deadline_run(
+    super::completed(&deadline_run(
         "",
         &["deliver", "reconnect", "releaseReconnect", "cleanup"],
     ));
@@ -391,7 +390,7 @@ fn raw_follow_deadline_races_delivery_reconnect_and_cleanup() {
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_deadline_negative_control_drops_timeout_forwarding() {
-    super::completed(deadline_run(
+    super::completed(&deadline_run(
         "deadline",
         &["deliver", "reconnect", "releaseReconnect", "cleanup"],
     ));
@@ -400,17 +399,20 @@ fn raw_follow_deadline_negative_control_drops_timeout_forwarding() {
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_delivery_negative_control_drops_timeout_forwarding() {
-    super::completed(deadline_run("deadline", &["deliver"]));
+    super::completed(&deadline_run("deadline", &["deliver"]));
 }
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_reconnect_negative_control_drops_timeout_forwarding() {
-    super::completed(deadline_run("deadline", &["reconnect", "releaseReconnect"]));
+    super::completed(&deadline_run(
+        "deadline",
+        &["reconnect", "releaseReconnect"],
+    ));
 }
 #[test]
 #[should_panic(expected = "only the logical deadline owns a timer")]
 fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
-    super::completed(deadline_run("deadline", &["cleanup"]));
+    super::completed(&deadline_run("deadline", &["cleanup"]));
 }
 
 fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
@@ -480,27 +482,27 @@ fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
 }
 #[test]
 fn deadline_cancels_a_blocked_subscription_write() {
-    super::completed(blocked_deadline("deadline-subscription", ""));
+    super::completed(&blocked_deadline("deadline-subscription", ""));
 }
 #[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_subscription_negative_control_awaits_the_write() {
-    super::completed(blocked_deadline("deadline-subscription", "write"));
+    super::completed(&blocked_deadline("deadline-subscription", "write"));
 }
 #[test]
 fn deadline_cancels_a_blocked_acknowledgement_write() {
-    super::completed(blocked_deadline("deadline-ack", ""));
+    super::completed(&blocked_deadline("deadline-ack", ""));
 }
 #[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_acknowledgement_negative_control_awaits_the_write() {
-    super::completed(blocked_deadline("deadline-ack", "write"));
+    super::completed(&blocked_deadline("deadline-ack", "write"));
 }
 
 #[test]
 #[should_panic(expected = "cancelling a blocked write must preserve the sibling")]
 fn blocked_subscription_negative_control_drops_the_platform_write_signal() {
-    super::completed(blocked_deadline("deadline-subscription", "writeSignal"));
+    super::completed(&blocked_deadline("deadline-subscription", "writeSignal"));
 }
 
 fn queue_cancellation(fault: &str) -> std::io::Result<()> {
@@ -560,18 +562,18 @@ fn queue_cancellation(fault: &str) -> std::io::Result<()> {
 }
 #[test]
 fn queued_cancellation_races_admission_without_leaks_or_reordering() {
-    super::completed(queue_cancellation(""));
+    super::completed(&queue_cancellation(""));
 }
 #[test]
 #[should_panic(expected = "abort must settle a blocked queue producer")]
 fn queue_negative_control_drops_the_write_signal() {
-    super::completed(queue_cancellation("queue"));
+    super::completed(&queue_cancellation("queue"));
 }
 
 #[test]
 #[should_panic(expected = "older waiting writes must precede a fresh producer")]
 fn queue_negative_control_allows_fresh_writes_to_overtake_waiters() {
-    super::completed(queue_cancellation("order"));
+    super::completed(&queue_cancellation("order"));
 }
 
 proptest::proptest! {
