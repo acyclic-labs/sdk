@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/approvals/agent.rs b/rust/crates/harness-core/src/approvals/agent.rs
+index df0a7340e28..e6cf7ba281b 100644
+--- a/rust/crates/harness-core/src/approvals/agent.rs
++++ b/rust/crates/harness-core/src/approvals/agent.rs
+@@ -240,8 +240,7 @@ impl AgentApprovals {
+         }
+         // The decision precedes the hold: a wait is decided once before it
+         // starts, so no approval pause can re-hold it and restart its timeout.
+-        let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+-        let outcome = self.resolve_outcome(&view, Some((journal, io))).await?;
++        let outcome = self.outcome(id, journal, io).await?;
+         if let (
+             Some(InteractionOutcome::Approved {}),
+             Some(children),

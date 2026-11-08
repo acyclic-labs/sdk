@@ -218,7 +218,8 @@ impl AgentApprovals {
         if self.effects.is_none() && self.children.is_none() {
             return self.outcome(id, journal, io).await;
         }
-        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+        let request = request_id(id);
+        let bytes = self.policy.request(&*self.files, &request).await?;
         let Ok(Interaction::Approval {
             operation_id,
             subject,
@@ -239,7 +240,8 @@ impl AgentApprovals {
         }
         // The decision precedes the hold: a wait is decided once before it
         // starts, so no approval pause can re-hold it and restart its timeout.
-        let outcome = self.outcome(id, journal, io).await?;
+        let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+        let outcome = self.resolve_outcome(&view, Some((journal, io))).await?;
         if let (
             Some(InteractionOutcome::Approved {}),
             Some(children),
@@ -295,12 +297,18 @@ impl AgentApprovals {
         journal: &dyn crate::executor::ExecutionJournal,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<InteractionOutcome>> {
-        self.resolve_outcome(id, Some((journal, io))).await
+        if self.policy.file_refused {
+            return Ok(Some(InteractionOutcome::Denied {}));
+        }
+        let request = request_id(id);
+        let bytes = self.policy.request(&*self.files, &request).await?;
+        let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+        self.resolve_outcome(&view, Some((journal, io))).await
     }
 
     async fn resolve_outcome(
         &self,
-        id: InteractionId,
+        view: &ApprovalRequest<'_>,
         execution: Option<(
             &dyn crate::executor::ExecutionJournal,
             Option<&crate::executor::PreparationIo>,
@@ -310,10 +318,7 @@ impl AgentApprovals {
         if self.policy.file_refused {
             return Ok(Some(InteractionOutcome::Denied {}));
         }
-        let request = request_id(id);
         let policy = &*self.policy;
-        let bytes = policy.request(&*self.files, &request).await?;
-        let view = ApprovalRequest::new(&request, &bytes, policy.limits.file_bytes)?;
         // Each automatic review is durable before the traversal moves past it,
         // so the chain advances at most once per approver.
         for _ in 0..=policy.policy.approvers.len() {
@@ -321,7 +326,7 @@ impl AgentApprovals {
                 &policy.policy,
                 policy.digest,
                 policy.parent.clone(),
-                &view,
+                view,
                 &*self.files,
                 0,
             )
@@ -350,7 +355,7 @@ impl AgentApprovals {
                     execution,
                     &policy.models,
                     &*self.files,
-                    &view,
+                    view,
                     approver,
                     expected,
                     policy.limits,
@@ -358,10 +363,10 @@ impl AgentApprovals {
                 .await?;
                 continue;
             }
-            let path = decision_path(&request, &expected.principal);
+            let path = decision_path(view.id(), &expected.principal);
             let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
                 self.wait(Some((
-                    request,
+                    view.id().to_owned(),
                     matches!(approver, Approver::Parent),
                     binding,
                 )))?;
@@ -412,7 +417,8 @@ impl AgentApprovals {
         operation: crate::OperationId,
         digest: [u8; 32],
     ) -> Result<()> {
-        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+        let request = request_id(id);
+        let bytes = self.policy.request(&*self.files, &request).await?;
         let bound = match serde_json::from_slice::<Interaction>(&bytes) {
             Ok(Interaction::Approval {
                 operation_id,
@@ -427,7 +433,8 @@ impl AgentApprovals {
             ));
         }
         // Authorization observes only settled evidence. It cannot start a review.
-        match self.resolve_outcome(id, None).await? {
+        let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+        match self.resolve_outcome(&view, None).await? {
             Some(InteractionOutcome::Approved {}) => Ok(()),
             _ => Err(Error::Unauthorized(
                 "tool installation lacks a resolved approval".into(),
