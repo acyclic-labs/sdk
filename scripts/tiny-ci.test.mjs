@@ -265,7 +265,7 @@ test('native builds and mount checks overlap qualification and still gate public
  assert.equal(downloaded?.with['run-id'],undefined,'the fixture must come from this exact release run');
  const recovery=installer.steps.find(step=>step.name==='Exercise transactional installer recovery');
  assert.equal(recovery?.env.ACYCLIC_TEST_BINARY,'${{ runner.temp }}/installer-binary/linux-x64-gnu/acyclic');
- assert.equal(recovery?.run,'node --test --test-reporter=tap plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs');
+ assert.equal(recovery?.run,'node --test --test-reporter=tap plugin/scripts/install.test.mjs plugin/scripts/install-certification.test.mjs plugin/scripts/package-certification.test.mjs plugin/scripts/install-durable-rename.test.mjs plugin/scripts/install-custody.test.mjs scripts/assemble-plugin-release.test.mjs');
  assert.equal(assemble.if,undefined);
  const matrix=build.strategy.matrix.include;
  assert.deepEqual(matrix.map(row=>row.target).sort(),['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-arm64','win32-x64']);
