@@ -236,10 +236,11 @@ fn source_stat_preserves_a_denied_synchronize_open() -> Result<(), Box<dyn std::
     let path = temporary.path().join("denied");
     std::fs::write(&path, b"secret")?;
     let root = test_root(temporary.path())?;
+    let acl_path = path.canonicalize()?;
     let acl = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
         let output = acyclic_native_runtime::process_output(
             acyclic_native_runtime::ProcessCommand::new("icacls.exe")
-                .arg(&path)
+                .arg(&acl_path)
                 .args(args),
             std::time::Duration::from_secs(5),
             64 * 1024,

@@ -207,10 +207,11 @@ fn component_opens_keep_each_ancestors_original_access_check()
     std::fs::create_dir(&parent)?;
     std::fs::create_dir(parent.join("child"))?;
     let root = test_root(temporary.path())?;
+    let acl_path = parent.canonicalize()?;
     let acl = |arguments: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
         let output = acyclic_native_runtime::process_output(
             acyclic_native_runtime::ProcessCommand::new("icacls.exe")
-                .arg(&parent)
+                .arg(&acl_path)
                 .args(arguments),
             std::time::Duration::from_secs(5),
             64 * 1024,
