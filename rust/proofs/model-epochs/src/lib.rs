@@ -93,30 +93,109 @@ mod proofs {
     }
 
     #[kani::proof]
-    fn stale_generation_and_exhaustion_leave_ready_state_unchanged() {
+    fn restore_and_swap_preserve_the_exact_prepared_identity() {
         let generation: u64 = kani::any();
-        let expected: u64 = kani::any();
-        kani::assume(expected != generation);
-        let id = [0; 32];
-        let mut state = protocol::State::restore(generation, 0, None, 1).unwrap();
-        assert!(state.prepare(id, 1, 1).is_ok());
-        assert!(state.complete(id, protocol::Completion::Ready).is_ok());
-        let ready = state;
-        assert_eq!(state.swap(id, expected, 1), Err(protocol::Refusal::Stale));
-        assert_eq!(state, ready);
-        if generation == u64::MAX {
-            assert_eq!(
-                state.swap(id, generation, 1),
-                Err(protocol::Refusal::Exhausted)
-            );
-            assert_eq!(state, ready);
+        let cursor: u64 = kani::any();
+        let head: u64 = kani::any();
+        let pending = if kani::any() {
+            Some(protocol::Pending {
+                summary: kani::any(),
+                generation: kani::any(),
+                through: kani::any(),
+                completion: if kani::any() {
+                    Some(if kani::any() {
+                        protocol::Completion::Ready
+                    } else {
+                        protocol::Completion::Failed
+                    })
+                } else {
+                    None
+                },
+            })
         } else {
-            assert!(state.swap(id, generation, 1).is_ok());
-            assert_eq!(state.cursor(), 1);
-            assert_eq!(state.generation(), generation + 1);
+            None
+        };
+        let refusal = if cursor > head {
+            Some(protocol::Refusal::Range)
+        } else {
+            match pending {
+                Some(value) if value.generation != generation => Some(protocol::Refusal::Stale),
+                Some(value) if value.through <= cursor || value.through > head => {
+                    Some(protocol::Refusal::Range)
+                }
+                _ => None,
+            }
+        };
+        let restored = protocol::State::restore(generation, cursor, pending, head);
+        assert_eq!(restored.as_ref().err().copied(), refusal);
+        kani::cover!(refusal == Some(protocol::Refusal::Range));
+        kani::cover!(refusal == Some(protocol::Refusal::Stale));
+        let Ok(mut state) = restored else { return };
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.cursor(), cursor);
+        assert_eq!(state.pending(), pending);
+        let demand = match pending {
+            None => protocol::Demand::Unprepared,
+            Some(value) => match value.completion {
+                None => protocol::Demand::Await(value.summary),
+                Some(protocol::Completion::Ready) => protocol::Demand::Swap(value.summary),
+                Some(protocol::Completion::Failed) => protocol::Demand::Failed(value.summary),
+            },
+        };
+        assert_eq!(state.demand(), demand);
+
+        let summary: protocol::SummaryId = kani::any();
+        let expected: u64 = kani::any();
+        let swap_head: u64 = kani::any();
+        let refusal = match pending {
+            None => Some(protocol::Refusal::Stale),
+            Some(value)
+                if expected != generation
+                    || value.generation != expected
+                    || value.summary != summary =>
+            {
+                Some(protocol::Refusal::Stale)
+            }
+            Some(value) if value.completion != Some(protocol::Completion::Ready) => {
+                Some(protocol::Refusal::NotReady)
+            }
+            Some(value) if value.through > swap_head => Some(protocol::Refusal::Range),
+            Some(_) if generation == u64::MAX => Some(protocol::Refusal::Exhausted),
+            Some(_) => None,
+        };
+        let before = state;
+        let observed = state.swap(summary, expected, swap_head);
+        if let Some(refusal) = refusal {
+            assert_eq!(observed, Err(refusal));
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(observed, Ok(()));
+            assert_eq!(state.generation().checked_sub(1), Some(generation));
+            assert_eq!(
+                state.cursor(),
+                pending.map_or(cursor, |value| value.through)
+            );
+            assert_eq!(state.pending(), None);
+            assert_eq!(state.demand(), protocol::Demand::Unprepared);
         }
-        kani::cover!(generation == u64::MAX);
-        kani::cover!(generation < u64::MAX);
+        kani::cover!(refusal == Some(protocol::Refusal::Stale) && pending.is_none());
+        kani::cover!(
+            refusal == Some(protocol::Refusal::Stale)
+                && pending.is_some_and(|value| value.summary != summary && expected == generation)
+        );
+        kani::cover!(refusal == Some(protocol::Refusal::Stale) && expected != generation);
+        kani::cover!(
+            refusal == Some(protocol::Refusal::NotReady)
+                && pending.is_some_and(|value| value.completion.is_none())
+        );
+        kani::cover!(
+            refusal == Some(protocol::Refusal::NotReady)
+                && pending
+                    .is_some_and(|value| value.completion == Some(protocol::Completion::Failed))
+        );
+        kani::cover!(refusal == Some(protocol::Refusal::Range));
+        kani::cover!(refusal == Some(protocol::Refusal::Exhausted));
+        kani::cover!(refusal.is_none());
     }
 
     #[kani::proof]
