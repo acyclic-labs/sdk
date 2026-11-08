@@ -34,10 +34,15 @@ The fuzz target consumes the same oracle:
 cargo +nightly fuzz run --dev --fuzz-dir rust/crates/harness-fuzz --no-default-features --features core agent_wait_selection -- -runs=256 -seed=1 -max_len=4096 -print_final_stats=1
 ```
 
-With `admit-zero-quorum.patch` applied, pass the retained
-`corpus/agent_wait_selection/derived-zero.json` as the input file. The fuzzer
-must find the same impossible-quorum failure. Reverse the patch before retaining
-the source. Finite campaigns report reached coverage, not complete branch coverage.
+With `admit-zero-quorum.patch` applied, pass the retained input file before `--`:
+
+```sh
+cargo +nightly fuzz run --dev --fuzz-dir rust/crates/harness-fuzz --no-default-features --features core agent_wait_selection rust/crates/harness-fuzz/corpus/agent_wait_selection/derived-zero.json -- -runs=1 -seed=1 -error_exitcode=77
+```
+
+The fuzzer must find the same impossible-quorum failure. Reverse the patch before
+retaining the source. Finite campaigns report reached coverage, not complete
+branch coverage.
 
 ## Corpus provenance
 
