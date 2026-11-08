@@ -339,7 +339,7 @@ fn refused_policies(
     encoded: &str,
     reference: &str,
 ) -> Result<(), String> {
-    for (index, pair) in required.chunks_exact(2).enumerate() {
+    for (index, pair) in required.as_chunks::<2>().0.iter().enumerate() {
         let mut missing = flags.clone();
         missing.drain(2 * index..2 * index + 2);
         assert!(
@@ -355,23 +355,23 @@ fn refused_policies(
     }
     flags.push("--model".into());
     assert!(
-        matches!(launch::validate(host, &flags), Err(Error::Invalid(_))),
+        matches!(launch::validate(host, flags), Err(Error::Invalid(_))),
         "native launch admitted a missing policy value"
     );
     flags.pop();
     flags.push("--no-extensions".into());
     if host == "pi" {
-        policy(host, &flags, cwd, reference)?;
+        policy(host, flags, cwd, reference)?;
     } else {
         assert!(
-            matches!(launch::validate(host, &flags), Err(Error::Invalid(_))),
+            matches!(launch::validate(host, flags), Err(Error::Invalid(_))),
             "native launch admitted another host's policy switch"
         );
     }
     flags.pop();
     flags.extend(["--untrusted-option".into(), encoded.into()]);
     assert!(
-        matches!(launch::validate(host, &flags), Err(Error::Invalid(_))),
+        matches!(launch::validate(host, flags), Err(Error::Invalid(_))),
         "native launch admitted an unknown policy option"
     );
     Ok(())
