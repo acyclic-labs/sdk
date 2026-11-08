@@ -1,6 +1,54 @@
 use super::super::session::NativeSessionControl;
 use super::*;
 
+pub(super) struct CustomerSession {
+    slot: Mutex<Option<NativeMountSession>>,
+    _allocation: NativeAllocation,
+}
+
+impl CustomerSession {
+    pub(super) fn new(
+        session: Option<NativeMountSession>,
+        work: &NativeMaterializationWork,
+    ) -> Result<Arc<Self>, MountLifecycleError> {
+        let allocation = work.claim(
+            acyclic_native_runtime::arc_allocation_bytes::<Self>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        Ok(Arc::new(Self {
+            slot: Mutex::new(session),
+            _allocation: allocation,
+        }))
+    }
+}
+
+impl std::ops::Deref for CustomerSession {
+    type Target = Mutex<Option<NativeMountSession>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.slot
+    }
+}
+
+/// Retains physical retirement independently of the awaiting caller. The
+/// executor remains available to callbacks needed by the blocking operation.
+pub(super) async fn retire_session<T: Send + 'static>(
+    session: Arc<CustomerSession>,
+    operation: impl FnOnce(&mut Option<NativeMountSession>) -> Result<T, MountLifecycleError>
+    + Send
+    + 'static,
+) -> Result<T, MountLifecycleError> {
+    acyclic_native_runtime::spawn_blocking(move || {
+        let mut owner = session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation(&mut owner)
+    })
+    .await
+    .map_err(NativeMountError::from)?
+}
+
 /// Runs one session control on the source's original meter, which its
 /// callbacks share. A control on any other meter cannot run the invalidator,
 /// so it could never see its changes settle.
