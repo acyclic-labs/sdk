@@ -541,6 +541,7 @@ mod tests {
             });
             prop_assert_eq!(&*original, encode(&first));
             prop_assert_eq!(&original_json["value"], &serde_json::json!(first));
+            with_rustdoc_cache(|| assert!(read_rustdoc(&path).is_err()));
             prop_assert!(RECEIPTS.with_borrow(|cache| cache.as_ref().unwrap().files.borrow().is_empty()));
             prop_assert!(CACHE.with_borrow(|cache| cache.is_none()));
         }

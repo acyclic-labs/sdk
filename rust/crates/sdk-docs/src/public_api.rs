@@ -334,7 +334,7 @@ fn remove_known_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::{adapt, exported_path, exported_path_for_item, remove_known_fields};
+    use super::{exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
     use serde_json::json;
 
