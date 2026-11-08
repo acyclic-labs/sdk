@@ -18,10 +18,8 @@ impl std::ops::Deref for Native {
 
 impl Drop for Native {
     fn drop(&mut self) {
-        // Keep callbacks and the destination fence inside the last owner.
-        if let Err(error) = self.mount.abandon() {
-            tracing::error!(?error, "workspace mount retirement failed");
-        }
+        // The mount's session retains callbacks and its destination fence,
+        // including physical retirement accepted by a cancelled caller.
         if let Some((destination, view)) = &self.binding
             && let Err(error) = volumes::unlink_binding(destination, view)
         {
