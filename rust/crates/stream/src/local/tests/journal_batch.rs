@@ -181,13 +181,11 @@ mod cuts {
                 "cut discarded the accepted original prefix"
             );
             assert_eq!(
-                reopened.tail(StreamPath::new("batch")?).await?,
+                reopened.tail(StreamPath::new("batch")?).await,
                 if phase == 3 {
-                    0
-                } else if phase == 2 {
-                    2
+                    Err(StreamError::NotFound)
                 } else {
-                    1
+                    Ok(if phase == 2 { 2 } else { 1 })
                 }
             );
         }
