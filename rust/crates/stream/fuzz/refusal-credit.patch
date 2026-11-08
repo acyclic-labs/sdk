@@ -1,0 +1,11 @@
+--- a/rust/crates/stream/src/session/queue.rs
++++ b/rust/crates/stream/src/session/queue.rs
+@@ -108,7 +108,7 @@
+             Err(error) => {
+                 if channel.revalidate.is_some()
+                     && matches!(
+-                        error.category(),
++                        error,
+                         StreamError::AccessDenied
+                             | StreamError::NotFound
+                             | StreamError::PrefixNotRetained

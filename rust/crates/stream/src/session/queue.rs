@@ -108,7 +108,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Err(error) => {
                 if channel.revalidate.is_some()
                     && matches!(
-                        error,
+                        error.category(),
                         StreamError::AccessDenied
                             | StreamError::NotFound
                             | StreamError::PrefixNotRetained

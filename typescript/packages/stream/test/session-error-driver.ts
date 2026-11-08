@@ -10,11 +10,11 @@ if (process.versions.bun) {
   plugin({ name: "session-error-vocabulary", setup(build) {
     build.onLoad({ filter: /[\\/]src[\\/]grpc\.ts$/ }, async args => {
       const source = await Bun.file(args.path).text();
-      const needle = "throw sessionTransportError(error, interrupted);";
+      const needle = "throw sessionTransportError(error, signal);";
       assert(source.includes(needle), "canonical error probe no longer matches");
       const expression = fault === "aliases" ? 'providerError(error, "session")'
-        : fault === "disposition" ? 'sessionTransportError(error, false)' : "sessionTransportError(error, interrupted)";
-      return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error, interrupted); throw failure;`), loader: "ts" };
+        : fault === "disposition" ? 'sessionTransportError(error, AbortSignal.abort())' : "sessionTransportError(error, signal)";
+      return { contents: source.replace(needle, `const failure = ${expression}; Reflect.get(globalThis, "captureSessionError")(failure); if (Reflect.get(globalThis, "capturePhysicalError")) Reflect.get(globalThis, "capturePhysicalError")(error, (error as PeerError)[peerInterrupted] === true); throw failure;`), loader: "ts" };
     });
   } });
 }
