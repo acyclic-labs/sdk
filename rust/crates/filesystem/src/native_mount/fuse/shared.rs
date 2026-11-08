@@ -95,9 +95,14 @@ pub(super) struct SharedViewEntry {
     views: Arc<SharedViews>,
     view: NamedView<Vec<u8>, FuseProjection>,
     core: Arc<ProjectionCore>,
+    root_inode: u64,
 }
 
 impl SharedViewEntry {
+    pub(super) fn root_inode(&self) -> u64 {
+        self.root_inode
+    }
+
     pub(super) fn core(&self) -> &Arc<ProjectionCore> {
         &self.core
     }
@@ -190,13 +195,15 @@ impl SharedViews {
                     queued: AtomicBool::new(false),
                 }))
                 .map_err(|_| NativeMountError::ControlPending)?;
-            built = Some(Arc::clone(&core));
+            built = Some((Arc::clone(&core), view_root_inode(serial)));
             Ok(FuseProjection { core })
         })?;
+        let (core, root_inode) = built.ok_or(NativeMountError::InvalidDestination)?;
         Ok(SharedViewEntry {
             views: Arc::clone(self),
-            core: built.ok_or(NativeMountError::InvalidDestination)?,
+            core,
             view,
+            root_inode,
         })
     }
 

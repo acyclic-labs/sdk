@@ -1100,6 +1100,7 @@ dependencies = [
  "libc",
  "linux-keyutils",
  "loom",
+ "parking_lot 0.13.0",
  "pin-project-lite",
  "proptest",
  "rustix",
