@@ -227,3 +227,5 @@ independence, malformed-frame/JSON invalidation and refusal custody until the
 original new-turn boundary. Seeds are unchanged copies of the recorded fixtures
 in `../src/local/host_process/fixtures`. Run with
 `cargo fuzz run native_reply --fuzz-dir rust/crates/harness/fuzz-native-journal`.
+
+The retained `mutations/native_launch_current_directory.patch` preserves an otherwise equivalent current-directory component. The original native command control fails EROFS with that spelling; the unchanged fuzzer rejects it before host execution. Parent components remain unresolved so symlink-dependent permission targets keep their native meaning.

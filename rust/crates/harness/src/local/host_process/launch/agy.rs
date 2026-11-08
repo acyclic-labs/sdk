@@ -39,7 +39,16 @@ pub(super) fn settings(value: &str, cwd: &Path) -> Result<OsString> {
                         && !target.starts_with('~')
                         && Path::new(target).is_relative()
                     {
-                        let path = cwd.join(target);
+                        let mut path =
+                            PathBuf::with_capacity(cwd.as_os_str().len() + target.len() + 1);
+                        path.push(cwd);
+                        // Native sandbox grants distinguish a view from view/.
+                        // Retain parent components: resolving them could cross symlinks.
+                        path.extend(
+                            Path::new(target)
+                                .components()
+                                .filter(|component| *component != std::path::Component::CurDir),
+                        );
                         let path = path.to_str().ok_or_else(|| {
                             invalid("step=resolve Antigravity file permission: non-Unicode workspace; recovery: acyclic host agy -- --sandbox --mode accept-edits from a Unicode workspace")
                         })?;
