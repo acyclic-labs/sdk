@@ -4,6 +4,9 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
+#[cfg(all(test, not(loom)))]
+mod tests;
+
 pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
     options: MountOptions,
