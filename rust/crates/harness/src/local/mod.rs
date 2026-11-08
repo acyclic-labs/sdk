@@ -64,6 +64,7 @@ pub use config::LocalHarnessConfig;
 use config::LocalProject;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 pub use config::ModelResolver;
+
 pub use observer::{Event, Observer};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
@@ -146,6 +147,15 @@ impl LocalHarness {
         config: LocalHarnessConfig,
     ) -> acyclic_stream::BoxProviderFuture<'static, Result<Self>> {
         Box::pin(open::open(config))
+    }
+
+    /// Every refusal [`Self::open`] would meet for `config`, each naming what
+    /// is missing and its recovery, from the same checks opening runs. Empty
+    /// means this host opens. Like opening, it may create the state directory.
+    pub fn doctor(
+        config: LocalHarnessConfig,
+    ) -> acyclic_stream::BoxProviderFuture<'static, Vec<Error>> {
+        Box::pin(open::doctor(config))
     }
 
     /// Durable content and project host.

@@ -155,3 +155,80 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
         }
     }
 }
+
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn physical_snapshot_submission_keeps_the_original_executor() {
+    use acyclic_native_runtime::testing::{Schedule, blocking_on};
+
+    let provider = MemoryStream::default();
+    let path = StreamPath::new("physical-snapshot").unwrap();
+    provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"original").into()],
+            if_tail: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
+        })
+        .await
+        .unwrap();
+    let mut follow = crate::records_only(
+        provider
+            .follow(crate::FollowRequest::new(path, 0))
+            .await
+            .unwrap(),
+    )
+    .boxed();
+    let (schedule, mut events) = Schedule::seeded(71);
+    let operation = schedule.scope(async {
+        let held = provider.state.write().await;
+        let (entered, waiting) = futures::channel::oneshot::channel();
+        let completion = acyclic_native_runtime::run_blocking_io(
+            move || {
+                assert!(tokio::runtime::Handle::try_current().is_err());
+                let (pending, observed) =
+                    crate::snapshot::observe(crate::snapshot::Cut::Pending, || {
+                        follow
+                            .as_mut()
+                            .poll_next(&mut Context::from_waker(Waker::noop()))
+                            .is_pending()
+                    });
+                assert!(pending, "the original writer must hold the snapshot lock");
+                entered.send(observed).unwrap();
+                blocking_on(follow.next())
+            },
+            None,
+        )
+        .unwrap();
+        let (record, ()) = futures::future::join(completion, async {
+            waiting
+                .await
+                .expect("physical producer ended before snapshot submission")
+                .await
+                .expect("snapshot producer ended before its original lock wait");
+            drop(held);
+        })
+        .await;
+        let record = record.unwrap().unwrap().unwrap();
+        assert_eq!(record.sequence, 0);
+        assert_eq!(record.value.as_slice(), b"original");
+        schedule.drained().await;
+    });
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            biased;
+            event = events.recv() => event.expect("lost original submission boundary").release(),
+            () = &mut operation => break,
+        }
+    }
+    assert_eq!(
+        schedule
+            .trace()
+            .iter()
+            .filter(|event| event.starts_with("task:"))
+            .count(),
+        1,
+        "the original snapshot worker escaped its seeded executor",
+    );
+}

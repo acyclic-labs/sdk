@@ -28,10 +28,10 @@ use crate::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
+pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use events::ExecutionQuery;
 pub use history::HistoryPage;
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
@@ -116,6 +116,15 @@ impl Conversation {
     #[must_use]
     pub fn open(connection: Connection) -> Arc<Self> {
         Arc::new(Self { connection })
+    }
+
+    /// The same conversation over [`Connection::observation`]: its committed
+    /// records stay readable after a failure stopped the agents' runtime.
+    ///
+    /// # Errors
+    /// Fails when the observation cannot be bound.
+    pub async fn observation(&self) -> Result<Arc<Self>> {
+        Ok(Self::open(self.connection.observation().await?))
     }
 
     fn agent(&self) -> &AgentPath {

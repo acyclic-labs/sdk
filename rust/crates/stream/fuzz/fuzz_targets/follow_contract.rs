@@ -1,3 +1,4 @@
+//! Checks production follow-wire contracts with the shared independent oracle.
 #![no_main]
 
 mod checks {
@@ -18,5 +19,5 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
     ] {
         assert!(checks::check(&cursor, fault).is_err());
     }
-    checks::check(input, checks::Fault::None).expect("follow wire contract");
+    assert_eq!(checks::check(input, checks::Fault::None), Ok(()));
 });

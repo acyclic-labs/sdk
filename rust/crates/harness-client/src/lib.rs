@@ -57,7 +57,7 @@ mod event_projection;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use event_projection::{
     ApprovalPayloadEvent, EventCursor, EventDrain, EventProjection, ExecutionPayloadEvent,
-    ExecutionPosition, ExecutionStreamEvent, StreamEvent,
+    ExecutionPosition, ExecutionQuery, ExecutionStreamEvent, StreamEvent,
 };
 pub mod reader;
 pub use reader::{Reader, ReaderPolicy};

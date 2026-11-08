@@ -13,3 +13,7 @@ linker = "rust-lld"
 # triples keep their platform linker and flags.
 [target.x86_64-unknown-linux-gnu]
 linker = "scripts/mold-linker.sh"
+
+[target.'cfg(all())']
+# Replay must also seed Tokio's selection order in downstream futures.
+rustflags = ["--cfg", "tokio_unstable"]

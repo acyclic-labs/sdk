@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/tool/recorded_invocation.rs b/rust/crates/harness-core/src/tool/recorded_invocation.rs
+--- a/rust/crates/harness-core/src/tool/recorded_invocation.rs
++++ b/rust/crates/harness-core/src/tool/recorded_invocation.rs
+@@ -13,6 +13,7 @@
+     /// Selected execution target, when the admission names one.
+     pub target: Option<String>,
+     /// Filesystem authority retained by the original admission, when present.
++    #[serde(skip_serializing)]
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub filesystem: Option<[u8; 32]>,
+ }

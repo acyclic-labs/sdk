@@ -1,0 +1,22 @@
+diff --git a/rust/crates/harness-fuzz/fuzz_targets/recorded_invocation_input.rs b/rust/crates/harness-fuzz/fuzz_targets/recorded_invocation_input.rs
+--- a/rust/crates/harness-fuzz/fuzz_targets/recorded_invocation_input.rs
++++ b/rust/crates/harness-fuzz/fuzz_targets/recorded_invocation_input.rs
+@@ -198,17 +198,5 @@
+     // Retain every field when reading an already bound durable envelope.
+     let encoded = serde_json::to_vec(record).unwrap();
+-    let decoded: Record = json_from_slice_bounded(
+-        PhantomData,
+-        &encoded,
+-        JsonBounds {
+-            maximum_bytes: encoded.len() as u64,
+-            maximum_items: 4096,
+-            maximum_depth: 256,
+-        },
+-        None,
+-        Some(JsonValueSchema::Root),
+-        &mut |_| Ok(()),
+-    )
+-    .unwrap();
++    let decoded: Record = serde_json::from_slice(&encoded).unwrap();
+     assert_eq!(decoded.invocation, record.invocation);
+     assert_eq!(
