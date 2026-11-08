@@ -51,7 +51,7 @@ async fn publish_command(
         .await?;
     let mount = Mount {
         source: working.source.clone(),
-        session: Mutex::new(None),
+        session: CustomerSession::new(None, &work)?,
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
         retiring: std::sync::atomic::AtomicBool::new(false),
@@ -170,7 +170,18 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         driver.prepare_destination_cleanup(completed.path(), &work)?;
         assert!(completed.path().exists());
     }
-    completed.complete_command(true).await?;
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let completion = schedule.scope(completed.complete_command(true));
+    tokio::pin!(completion);
+    loop {
+        tokio::select! {
+            result = &mut completion => { result?; break; }
+            boundary = events.recv() => {
+                boundary.ok_or("retirement boundary producer dropped")?.release();
+            }
+        }
+    }
+    schedule.drained().await;
     assert!(!completed.path().exists());
     assert_eq!(
         workspace
@@ -187,7 +198,7 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let abandoned = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), abandoned.path().parent());
     std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
-    abandoned.abandon_command()?;
+    abandoned.abandon_command().await?;
     assert!(!abandoned.path().exists());
     assert_eq!(
         workspace
@@ -205,7 +216,7 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     assert!(unmounted.path().is_dir());
     unmounted.unmount().await?;
     assert!(!unmounted.path().exists());
-    retained.abandon_command()?;
+    retained.abandon_command().await?;
     assert!(!retained.path().exists());
     Ok(())
 }

@@ -170,7 +170,7 @@ impl MountedVolume {
         let mut slot = self.native().await;
         if let Some(native) = slot.as_ref() {
             if native.discard {
-                native.abandon_command()?;
+                native.abandon_command().await?;
             } else if native.is_retiring() {
                 native.complete_command(true).await?;
             } else {
@@ -192,7 +192,7 @@ impl MountedVolume {
                 // Retain this decision if physical retirement fails. A later
                 // entry must retry abandonment before exposing this projection.
                 native.discard = true;
-                native.abandon_command()?;
+                native.abandon_command().await?;
             }
             *slot = None;
             Ok(())
@@ -220,7 +220,7 @@ impl MountedVolume {
     async fn publish_locked(&self, slot: &mut Option<Native>, retire: bool) -> Result<()> {
         if let Some(native) = slot.as_ref() {
             if native.discard {
-                native.abandon_command()?;
+                native.abandon_command().await?;
             } else {
                 native.complete_command(retire).await?;
             }

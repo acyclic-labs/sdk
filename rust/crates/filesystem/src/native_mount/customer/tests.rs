@@ -124,7 +124,7 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
     assert!(session.take_retired_failures().is_none());
     let mount = LazyMount {
         source,
-        session: Mutex::new(Some(session)),
+        session: CustomerSession::new(Some(session), &work)?,
         destination: root.path().join("retired-mount"),
         _destination_custody: work.path(root.path(), None)?.1,
     };
