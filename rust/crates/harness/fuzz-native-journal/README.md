@@ -113,6 +113,16 @@ This checks the in-process format and policy boundary; it does not qualify the
 OS environment handoff, native CLI parsing, credential inheritance, physical
 processes, concurrency or all platforms.
 
+The same target checks AGY's relative inline file-permission resolution through
+the production child argument builder: allow, ask and deny keep their native
+lists; relative read/write targets name the admitted cwd; absolute paths,
+wildcard/home references, provider settings and unrelated fields are preserved.
+Arbitrary external filenames are not opened by the in-memory target. The shared
+launch property covers actual selected settings files and both root and child
+invocations. `mutations/native_launch_relative_permissions.patch` disables
+production relative-path resolution and must fail at `relative permissions
+changed authority or workspace` in this target, or at the shared launch property.
+
 The same target supplies relative and absolute configuration paths and requires
 their inherited targets to remain rooted at the original workspace. It also
 constructs native non-Unicode working directories from arbitrary input bytes

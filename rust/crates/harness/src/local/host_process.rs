@@ -32,6 +32,7 @@ pub fn run_root_session(
     arguments: &[String],
 ) -> Result<std::process::ExitStatus> {
     use super::host_owner::HostAction;
+    let native_arguments = launch::policy_arguments(host, arguments, cwd)?;
     let location = super::host_files::request(
         cwd,
         HostAction::Open {
@@ -48,7 +49,7 @@ pub fn run_root_session(
     .map_err(storage)?;
     let status = acyclic_native_runtime::host_command(program)
         .map_err(storage)?
-        .args(arguments)
+        .args(native_arguments)
         .current_dir(cwd)
         .env(
             "ACYCLIC_HOST_ARGS",

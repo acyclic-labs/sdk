@@ -4,6 +4,7 @@
 use super::*;
 use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
 use std::ffi::{OsStr, OsString};
+mod agy;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
@@ -217,12 +218,11 @@ pub fn child_arguments(
         "agy" => 4,
         _ => 3,
     };
-    let policy = args.iter().map(Into::into);
     let mut arguments =
         Vec::with_capacity(args.len() + native_arguments + 2 * usize::from(session.is_some()));
     match host {
         "codex" => {
-            arguments.extend(policy);
+            extend_policy(&mut arguments, host, args, cwd)?;
             arguments.extend(["exec", "--json", "--cd"].into_iter().map(OsString::from));
             arguments.push(cwd.into());
             if let Some(id) = session {
@@ -236,14 +236,14 @@ pub fn child_arguments(
                     .into_iter()
                     .map(OsString::from),
             );
-            arguments.extend(policy);
+            extend_policy(&mut arguments, host, args, cwd)?;
             if let Some(id) = session {
                 arguments.extend(["--resume", id].into_iter().map(OsString::from));
             }
         }
         "pi" => {
             arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
-            arguments.extend(policy);
+            extend_policy(&mut arguments, host, args, cwd)?;
             // Each turn runs in a fresh view directory and the previous one
             // is retired, so Pi refuses to reopen a session bound to it.
             // A fork carries the whole conversation into this turn's cwd.
@@ -258,7 +258,7 @@ pub fn child_arguments(
                     .map(OsString::from),
             );
             arguments.push(cwd.into());
-            arguments.extend(policy);
+            extend_policy(&mut arguments, host, args, cwd)?;
             if let Some(id) = session {
                 arguments.extend(["--session", id].into_iter().map(OsString::from));
             }
@@ -274,7 +274,7 @@ pub fn child_arguments(
                 .into_iter()
                 .map(OsString::from),
             );
-            arguments.extend(policy);
+            extend_policy(&mut arguments, host, args, cwd)?;
             if let Some(id) = session {
                 arguments.extend(["--conversation", id].into_iter().map(OsString::from));
             }
@@ -282,6 +282,39 @@ pub fn child_arguments(
         _ => return Err(invalid("unsupported native host")),
     }
     Ok(arguments)
+}
+
+fn extend_policy(
+    output: &mut Vec<OsString>,
+    host: &str,
+    args: &[String],
+    cwd: &Path,
+) -> Result<()> {
+    if host != "agy" {
+        output.extend(args.iter().map(OsString::from));
+        return Ok(());
+    }
+    let mut arguments = args.iter();
+    while let Some(name) = arguments.next() {
+        output.push(name.into());
+        if !is_switch(host, name) {
+            let value = arguments.next().ok_or_else(|| invalid("step=resolve native policy: option requires a value; recovery: acyclic host agy -- --sandbox --mode accept-edits"))?;
+            output.push(if name == "--settings" {
+                agy::settings(value, cwd)?
+            } else {
+                value.into()
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Resolve native file permissions against this invocation's admitted workspace.
+/// The serialized parent policy retains relative targets for later child views.
+pub(super) fn policy_arguments(host: &str, args: &[String], cwd: &Path) -> Result<Vec<OsString>> {
+    let mut output = Vec::with_capacity(args.len());
+    extend_policy(&mut output, host, args, cwd)?;
+    Ok(output)
 }
 
 /// One prompt on the native host's stdin. Antigravity consumes a framed user
@@ -309,7 +342,8 @@ pub(super) fn child_input(host: &str, prompt: &str) -> Result<Vec<u8>> {
 }
 
 /// Runs `acyclic host HOST -- POLICY_ARGS`: the interactive native root under
-/// its validated policy, which every managed child inherits unchanged.
+/// its validated policy. Each invocation resolves native relative file rules
+/// in its own admitted view; children otherwise inherit the selected policy.
 pub fn launch(args: &[String]) -> Result<()> {
     let host = args
         .first()
