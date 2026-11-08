@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs b/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
+--- a/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
++++ b/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
+@@ -42,7 +42,7 @@
+                     journal,
+                     identity,
+                     &invocation.call_id,
+-                    true,
++                    false,
+                     None,
+                     preparation,
+                 )

@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs b/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
+--- a/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
++++ b/rust/crates/harness-core/src/executor/tool_execution/dispatch.rs
+@@ -199,8 +199,8 @@
+         let composed: Option<Result<Option<ToolResult>>> = None;
+         let execution = if let Some(result) = replayed {
+             Ok(Some(result))
+-        } else if let Some(result) = prepared {
+-            Ok(Some(result))
++        } else if let Some(_result) = prepared {
++            self.call_tool_executor(tool, context, invocation, claimed).await
+         } else if let Some(result) = composed {
+             result
+         } else {

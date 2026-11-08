@@ -49,7 +49,6 @@ type ToolReceipt<'a> = (ToolResult, Option<crate::conversation::ContentHold<'a>>
 /// A settled call can be shown to the model; an interrupted effect ends the turn.
 enum ToolInvocationOutcome<'a> {
     Settled(crate::model::ToolResultContent, Option<ToolReceipt<'a>>),
-    #[cfg(not(target_arch = "wasm32"))]
     Pending(OperationId),
     Interrupted,
 }
@@ -280,6 +279,29 @@ impl<'io> StockExecution<'io> {
                     Err(error) => return Err(error),
                 };
                 let target = target.as_ref().map(|target| &target.record);
+                if !started
+                    && let Some(barrier) = journal.tool_barrier(invocation.operation_id, self.io)
+                {
+                    match cancel_call(barrier?, journal.model_cancellation(), None).await? {
+                        Some(Ok(true)) => {}
+                        Some(Ok(false)) => {
+                            return Ok(ExecutionProgress::Pending(invocation.operation_id));
+                        }
+                        Some(Err(error)) => return Err(error),
+                        None => {
+                            self.reject_tool_call(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation.call_id,
+                                ToolFailureKind::Interrupted,
+                                Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+                            )
+                            .await?;
+                            return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+                        }
+                    }
+                }
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(prompt) = hook_approval
                     && let Some(stop) = self
@@ -371,7 +393,6 @@ impl<'io> StockExecution<'io> {
                     ToolInvocationOutcome::Interrupted => {
                         return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
                     ToolInvocationOutcome::Pending(operation) => {
                         return Ok(ExecutionProgress::Pending(operation));
                     }

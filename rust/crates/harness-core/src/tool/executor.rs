@@ -10,8 +10,41 @@ pub struct Dispatch {
     pub activation: (acyclic_stream::StreamPath, acyclic_stream::OwnedBytes),
 }
 
+/// Read-only preparation of one authorized invocation, before its claim.
+/// A ready result belongs only to that invocation and is published through its
+/// original claim. A deferred call commits the primitive condition and releases
+/// its delivery; no executor future remains responsible for waking it.
+pub enum ToolPreparation {
+    /// The result selected under the original invocation's authority.
+    Ready(ToolResult),
+    /// The actor condition that must resume this invocation.
+    Deferred(crate::agent::Until),
+}
+
+/// One admitted preparation future and its retained native result ownership.
+pub type ToolPreparationFuture<'a> =
+    crate::conversation::BoundedContentFuture<'a, (ToolPreparation, crate::NativeCustody)>;
+
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Observes a read-only call once, after canonical authorization and policy.
+    /// Preparation cannot execute an effect. The caller retains the complete
+    /// invocation, metadata, target and context through the same claim, and
+    /// consumes a ready result instead of invoking `execute` again. A restart
+    /// prepares again from the original invocation; there is no retained cache.
+    /// The original content IO admits the future before allocation. Native
+    /// producers must return the custody of every retained result allocation;
+    /// the caller refuses missing custody. Other tools return `None`, without
+    /// constructing a future.
+    fn prepare<'a>(
+        &'a self,
+        _invocation: &'a ToolInvocation,
+        _context: Option<&'a crate::runtime::ToolContext>,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<Option<ToolPreparationFuture<'a>>> {
+        Ok(None)
+    }
+
     /// Runs a JavaScript composition through the stock caller. The interpreter
     /// receives no executor or host authority; each inner call is admitted again.
     fn is_code_mode(&self) -> bool {

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/tools/agents.rs b/rust/crates/harness-core/src/tools/agents.rs
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -383,7 +383,7 @@
+                 unsettled.insert(child.clone());
+             }
+         }
+-        if !released && need != 0 {
++        if false && !released && need != 0 {
+             return Ok(ToolPreparation::Deferred(
+                 crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
+             ));

@@ -1,6 +1,5 @@
 //! Standard coding tools and shared host executors.
 mod agents;
-pub(crate) use agents::awaited;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub use agents::check_agent_wait_selection;
