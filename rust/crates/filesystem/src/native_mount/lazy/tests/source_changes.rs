@@ -157,7 +157,17 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(source.path().join("empty"))?;
     std::fs::write(source.path().join("a"), b"a")?;
     let runtime = shared_runtime()?;
-    let view = runtime.block_on(mounted_view(source.path(), "empty-pages"))?;
+    let demand = Arc::new(runtime.block_on(native_source(
+        source.path(),
+        crate::model::FilesystemProfile::Portable,
+    ))?);
+    let view = runtime.block_on(mounted_view_of_with_authored_work(
+        demand,
+        "empty-pages",
+        crate::MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        Some(&work),
+    ))?;
     let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
     assert!(empty.entries.is_empty());
     assert!(empty.next_cursor.is_none(), "an empty page continues");

@@ -399,7 +399,7 @@ pub struct MountDirectoryPage {
     pub(super) entries: Vec<MountDirectoryEntry>,
     /// Opaque continuation owned by this open directory handle.
     pub(super) next_cursor: Option<MountDirectoryCursor>,
-    pub(super) ownership: crate::demand::SourcePayloadOwnership,
+    pub(super) _ownership: crate::demand::SourcePayloadOwnership,
 }
 
 impl MountDirectoryPage {
@@ -417,7 +417,7 @@ impl MountDirectoryPage {
         Self {
             entries,
             next_cursor,
-            ownership,
+            _ownership: ownership,
         }
     }
 
@@ -434,6 +434,7 @@ impl MountDirectoryPage {
     }
 
     /// Internal physical projections transfer data and its exact custody together, splitting that custody only for actual escaping payloads.
+    #[cfg(windows)]
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -441,7 +442,7 @@ impl MountDirectoryPage {
         Option<MountDirectoryCursor>,
         crate::demand::SourcePayloadOwnership,
     ) {
-        (self.entries, self.next_cursor, self.ownership)
+        (self.entries, self.next_cursor, self._ownership)
     }
 
     /// Known owned capacities of this exact page, excluding borrowed metadata and opaque allocator overhead.

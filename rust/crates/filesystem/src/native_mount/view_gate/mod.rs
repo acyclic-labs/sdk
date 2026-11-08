@@ -31,20 +31,11 @@ struct ViewState {
     waiting_writers: usize,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-enum ViewReaderId {
-    Callback(CallbackOwner),
-    #[cfg(test)]
-    Independent(u64),
-}
-
 /// Pins a coherent mount view across a native callback or authored mutation.
 pub(super) struct ViewGate {
     state: RankedMutex<ViewState, GATE>,
     changed: Notify,
     generation: AtomicU64,
-    #[cfg(test)]
-    next_reader: AtomicU64,
     // The gate's readers and wake state drop before its original custody.
     _native_allocation: Option<crate::NativeAllocation>,
 }
@@ -57,8 +48,6 @@ impl ViewGate {
             state: RankedMutex::new(ViewState::default()),
             changed: Notify::new(),
             generation: AtomicU64::new(Self::INITIAL_GENERATION),
-            #[cfg(test)]
-            next_reader: AtomicU64::new(1),
             _native_allocation: None,
         }
     }
@@ -78,23 +67,11 @@ impl ViewGate {
         Ok(Arc::new(value))
     }
 
-    #[cfg(test)]
-    pub(super) async fn read(
-        self: &Arc<Self>,
-        expected: Option<u64>,
-    ) -> Result<ViewReadLease, MountSourceError> {
-        let owner = ViewReaderId::Independent(self.next_reader.fetch_add(1, Ordering::Relaxed));
-        self.read_as(owner, expected).await
-    }
-
     /// Whether `owner`'s callback already holds a read of the view, which a
     /// writer it waited for would never see released.
     pub(super) fn reads_for_callback(&self, owner: CallbackOwner) -> bool {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        match state
-            .owners
-            .get(ViewReaderId::Callback(owner).key(), &mut reads::OwnerLookup)
-        {
+        match state.owners.get(owner.key(), &mut reads::OwnerLookup) {
             Ok(owner) => owner.is_some(),
             Err(impossible) => match impossible {},
         }
@@ -118,12 +95,12 @@ impl ViewGate {
         owner: CallbackOwner,
         expected: Option<u64>,
     ) -> Result<ViewReadLease, MountSourceError> {
-        self.read_as(ViewReaderId::Callback(owner), expected).await
+        self.read_as(owner, expected).await
     }
 
     async fn read_as(
         self: &Arc<Self>,
-        owner: ViewReaderId,
+        owner: CallbackOwner,
         expected: Option<u64>,
     ) -> Result<ViewReadLease, MountSourceError> {
         let cancellation = crate::CancellationToken::new();
@@ -161,7 +138,7 @@ impl ViewGate {
             let notified = self.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let admitted = self.try_read_as(ViewReaderId::Callback(owner), expected, carrier)?;
+            let admitted = self.try_read_as(owner, expected, carrier)?;
             if let Some(lease) = admitted {
                 return Ok(lease);
             }
