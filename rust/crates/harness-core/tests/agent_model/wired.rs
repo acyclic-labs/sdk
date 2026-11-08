@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 #[path = "wired/spawn_names.rs"]
 mod spawn_names;
+#[path = "wired/settlement.rs"]
 mod settlement;
 
 const LIMITS: TurnLimits = TurnLimits {
