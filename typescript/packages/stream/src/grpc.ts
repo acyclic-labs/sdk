@@ -9,6 +9,7 @@ import { connect as connectTls, rootCertificates } from "node:tls";
 import type { Http2Session, IncomingHttpHeaders } from "node:http2";
 import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
+import { findTrailerError } from "@connectrpc/connect/protocol-grpc";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
@@ -266,9 +267,10 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const reason = error.rawMessage;
+  const status = grpcStatus(error);
+  const reason = status.rawMessage;
   let code: StreamFailureCode = "unavailable";
-  switch (error.code) {
+  switch (status.code) {
     case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
@@ -281,19 +283,26 @@ function providerError(error: unknown, operation: string): Error {
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason, undefined, code === "unavailable" ? grpcRefusal(error) : undefined);
+  return new StreamError(code, reason, undefined, code === "unavailable" ? grpcRefusal(error, status) : undefined);
+}
+
+/** The peer's details are opaque; they need not encode Google's Status message. */
+function grpcStatus(error: ConnectError): ConnectError {
+  const code = error.metadata.get("grpc-status");
+  if (code === null) return error;
+  return findTrailerError(new Headers({ "grpc-status": code,
+    "grpc-message": error.metadata.get("grpc-message") ?? "" })) ?? error;
 }
 
 /** Retain the original status bytes; Connect's decoded Any values are projections. */
-function grpcRefusal(error: ConnectError): StreamRefusal {
-  const encoder = new TextEncoder();
+function grpcRefusal(error: ConnectError, status: ConnectError): StreamRefusal {
   const metadata: Array<readonly [string, Uint8Array]> = [];
   for (const [name, value] of error.metadata) {
-    if (name.startsWith("acyclic-")) metadata.push([name, encoder.encode(value)]);
+    if (name.startsWith("acyclic-")) metadata.push([name, Buffer.from(value)]);
   }
   return {
-    status: error.code,
-    message: error.rawMessage,
+    status: status.code,
+    message: status.rawMessage,
     details: Buffer.from(error.metadata.get("grpc-status-details-bin") ?? "", "base64"),
     metadata,
   };
@@ -302,7 +311,8 @@ function grpcRefusal(error: ConnectError): StreamRefusal {
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown, transient: boolean): unknown {
   if (!(error instanceof ConnectError)) return error;
-  return Object.assign(new Error(error.rawMessage), {
-    code: grpcErrorCode(error.code, error.rawMessage), transient, refusal: grpcRefusal(error),
+  const status = grpcStatus(error);
+  return Object.assign(new Error(status.rawMessage), {
+    code: grpcErrorCode(status.code, status.rawMessage), transient, refusal: grpcRefusal(error, status),
   });
 }

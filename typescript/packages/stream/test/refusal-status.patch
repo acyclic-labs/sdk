@@ -1,0 +1,13 @@
+diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
+--- a/typescript/packages/stream/src/grpc.ts
++++ b/typescript/packages/stream/src/grpc.ts
+@@ -290,8 +290,7 @@
+ function grpcStatus(error: ConnectError): ConnectError {
+   const code = error.metadata.get("grpc-status");
+   if (code === null) return error;
+-  return findTrailerError(new Headers({ "grpc-status": code,
+-    "grpc-message": error.metadata.get("grpc-message") ?? "" })) ?? error;
++  return error;
+ }
+ 
+ /** Retain the original status bytes; Connect's decoded Any values are projections. */
