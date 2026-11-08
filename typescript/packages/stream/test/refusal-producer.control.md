@@ -37,3 +37,32 @@ Apply `typescript/packages/stream/test/refusal-status.patch` and repeat the same
 command. It must fail the original-status assertion while still supplying the
 envelope. Reverse the patch and require the unchanged test to pass. This second
 mutation substitutes Connect's detail-derived status for the actual peer status.
+
+The shared `@acyclic-labs/auth/grpc-refusal` decoder receives the original
+HTTP/2 header pairs. One AsyncLocalStorage scope binds each RPC to its original
+response events; it has no registry, scan or history. The two event callbacks
+retain the existing raw arrays without encoding success responses. Session and
+unary calls share the same transport and decoder. This replaces the prior
+per-Session transport allocation. A failure encodes each product header value
+once using Latin-1, retaining repeated values separately.
+
+Run the additional original-metadata control:
+
+```sh
+bun test typescript/packages/stream/test/native-session-pool.test.ts --test-name-pattern 'gRPC Session and unary refusals retain repeated original metadata bytes'
+```
+
+The TLS fixture passes repeated derived operands directly to Node's real
+HTTP/2 trailer writer. `refusal-metadata.patch` substitutes the old Headers
+projection and must fail the repeated-value assertion. `refusal-octets.patch`
+substitutes the old UTF-8 encoding and must fail the original-octet assertion.
+Rebuild Auth after each mutation and restoration. The decoder fuzzer captures
+its seed pairs from Node's real HTTP/2 writer/parser using the original Rust
+Objects diagnostic, then varies diagnostic octets and the header/trailer split:
+
+```sh
+node typescript/packages/stream/test/grpc-refusal.fuzz.mjs rust/codec-fuzz/corpus/protobuf/acyclic.objects.v1.ErrorDetail
+```
+
+Both metadata mutations must also fail that same decoder property. The corpus
+is the existing Rust ErrorDetail writer corpus, not an invented wire fixture.

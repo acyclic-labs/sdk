@@ -1,13 +1,9 @@
-diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
---- a/typescript/packages/stream/src/grpc.ts
-+++ b/typescript/packages/stream/src/grpc.ts
-@@ -290,8 +290,7 @@
- function grpcStatus(error: ConnectError): ConnectError {
-   const code = error.metadata.get("grpc-status");
-   if (code === null) return error;
--  return findTrailerError(new Headers({ "grpc-status": code,
--    "grpc-message": error.metadata.get("grpc-message") ?? "" })) ?? error;
-+  return error;
+diff --git a/typescript/packages/auth/src/grpc-refusal.ts b/typescript/packages/auth/src/grpc-refusal.ts
+--- a/typescript/packages/auth/src/grpc-refusal.ts
++++ b/typescript/packages/auth/src/grpc-refusal.ts
+@@ -19,4 +19,4 @@
+   }
+-  const status = findTrailerError(statusHeaders) ?? error;
++  const status = error;
+   return { status: status.code, message: status.rawMessage, details: Buffer.from(details, "base64"), metadata };
  }
- 
- /** Retain the original status bytes; Connect's decoded Any values are projections. */

@@ -1,12 +1,10 @@
 diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
-index 345f4f8b85a..658378e8191 100644
 --- a/typescript/packages/stream/src/grpc.ts
 +++ b/typescript/packages/stream/src/grpc.ts
-@@ -314,6 +314,6 @@ function sessionTransportError(error: unknown, transient: boolean): unknown {
-   if (!(error instanceof ConnectError)) return error;
-   const status = grpcStatus(error);
-   return Object.assign(new Error(status.rawMessage), {
--    code: grpcErrorCode(status.code, status.rawMessage), transient, refusal: grpcRefusal(error, status),
-+    code: grpcErrorCode(status.code, status.rawMessage), transient,
+@@ -337,5 +337,5 @@
+   return Object.assign(new Error(refusal.message), {
+     code: grpcErrorCode(refusal.status, refusal.message),
+-    transient: !signal.aborted && (error as PeerError)[peerInterrupted] === true, refusal,
++    transient: !signal.aborted && (error as PeerError)[peerInterrupted] === true,
    });
  }
