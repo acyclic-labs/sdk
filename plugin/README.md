@@ -190,7 +190,7 @@ denial for Pi must be verified under the user's external sandbox.
 The no-model command contract uses fixture profiles and the real native tool:
 
 ```sh
-python3 plugin/tests/hosts/sandbox-commands.py --host codex \
+node plugin/tests/hosts/sandbox-commands.mjs --host codex \
   --binary /path/to/package/plugin/bin/acyclic --graphcoder /path/to/graphcoder \
   --native /path/to/codex --package /path/to/package/plugin --scratch /path/to/scratch
 ```
@@ -212,7 +212,7 @@ The probe-only resource check exercises each production host adapter with
 stand-in native sessions held alive at the N/2N samples:
 
 ```sh
-python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
+node plugin/tests/hosts/shared-mount-scale.mjs ACYCLIC GRAPHCODER codex
 ```
 
 Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
@@ -293,7 +293,7 @@ The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
 ```sh
-python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
+node plugin/tests/hosts/mcp-framing.mjs ACYCLIC
 ```
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input

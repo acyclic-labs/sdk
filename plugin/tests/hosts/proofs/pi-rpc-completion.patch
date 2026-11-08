@@ -1,0 +1,12 @@
+diff --git a/plugin/tests/hosts/sandbox-commands.mjs b/plugin/tests/hosts/sandbox-commands.mjs
+--- a/plugin/tests/hosts/sandbox-commands.mjs
++++ b/plugin/tests/hosts/sandbox-commands.mjs
+@@ -13,7 +13,7 @@
+ export async function piCommand(binary,command,{cwd,env,prefix=[]}){
+  const [executable,...args]=[...prefix,binary,'--mode','rpc','--no-session','--no-skills','--no-prompt-templates','--no-themes'];
+  const native=start(executable,args,{cwd,env});
+- const output=new Spool(native.child.stdout,native.closed,{key:message=>message.id==='sandbox'&&message.type==='response'?['completed']:[],unique:true});
++ const output=new Spool(native.child.stdout,native.closed,{key:message=>message.type!=='response'?['completed']:[],unique:true});
+  try{
+   native.child.stdin.write(JSON.stringify({id:'sandbox',type:'bash',command})+'\n');
+   const response=await output.keyed('completed');
