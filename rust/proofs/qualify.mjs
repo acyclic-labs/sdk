@@ -65,6 +65,7 @@ const claims = {
       mutations: [
         { patch: "rust/proofs/merge-text-admission/refusal.patch", label: "text-proposal-refused", diagnostic: "captured public merge resolution was refused" },
         { patch: "rust/proofs/merge-text-admission/markers.patch", label: "unresolved-markers-admitted", diagnostic: "captured public merge refusal changed" },
+        { source: "rust/crates/filesystem/src/merge_driver.rs", patch: "rust/proofs/merge-text-admission/wire.patch", label: "text-wire-type-substituted", diagnostic: "captured public text encoding changed" },
       ],
     },
   ],

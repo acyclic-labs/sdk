@@ -62,7 +62,8 @@ pub(super) async fn read_selected<
         &mut accounting,
         cancellation,
     )
-    .await;
+    .await
+    .map(|read| read.bytes);
     work.finish(result, &accounting)
 }
 
@@ -76,7 +77,7 @@ pub(super) async fn read_selected_with_accounting<
     maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
+) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
@@ -113,7 +114,10 @@ pub(super) async fn read_selected_with_accounting<
             .await?;
         path.retire(&mut scope)?;
         checkout.retire(&mut scope)?;
-        Ok::<_, WorkspaceError>(read.bytes)
+        Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(
+            read.bytes,
+            read.logical_owned_bytes,
+        ))
     }
     .await;
     let result = authorize(workspace, result, &mut scope, cancellation).await;

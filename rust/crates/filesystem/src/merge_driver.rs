@@ -152,8 +152,9 @@ pub enum ConflictSide {
 pub enum MergeResolution {
     /// Select one exact immutable side.
     Select(ConflictSide),
-    /// Install synthesized UTF-8 content.
-    Text(String),
+    /// Install synthesized UTF-8 content. Clones retain the same backing and
+    /// original allocation owner. Filesystem admission validates UTF-8.
+    Text(#[serde(with = "resolution_text")] acyclic_stream::OwnedBytes),
     /// Install synthesized opaque content.
     Binary(Vec<u8>),
     /// Install canonical serialized metadata.
@@ -162,6 +163,26 @@ pub enum MergeResolution {
     Binding(Option<FileId>),
     /// Leave the conflict for a later caller or human.
     Unresolved,
+}
+
+// Text remains a JSON string; byte ownership is an in-memory concern.
+mod resolution_text {
+    use acyclic_stream::OwnedBytes;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        bytes: &OwnedBytes,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let text = std::str::from_utf8(bytes).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(text)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        decoder: D,
+    ) -> Result<OwnedBytes, D::Error> {
+        String::deserialize(decoder).map(Into::into)
+    }
 }
 
 /// Content-addressed key for safe resolution reuse.
@@ -590,7 +611,7 @@ impl MergeDriver for DefaultTextMergeDriver {
         } else if merged.clean && merged.content == *theirs {
             Ok(MergeResolution::Select(ConflictSide::Theirs))
         } else {
-            Ok(MergeResolution::Text(merged.content))
+            Ok(MergeResolution::Text(merged.content.into()))
         }
     }
 }
@@ -644,8 +665,8 @@ mod tests {
             driver.resolve(&conflict).expect("resolve"),
             MergeResolution::Text(text)
                 if crate::text_merge::has_conflict_markers(&text)
-                    && text.contains("<<<<<<< ours")
-                    && text.contains(">>>>>>> theirs")
+                    && std::str::from_utf8(&text).unwrap().contains("<<<<<<< ours")
+                    && std::str::from_utf8(&text).unwrap().contains(">>>>>>> theirs")
         ));
     }
 

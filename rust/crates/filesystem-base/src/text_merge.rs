@@ -216,14 +216,16 @@ pub fn merge_text(
 
 /// Returns whether text contains a complete generated conflict block.
 #[must_use]
-pub fn has_conflict_markers(content: &str) -> bool {
+pub fn has_conflict_markers(content: impl AsRef<[u8]>) -> bool {
+    let content = content.as_ref();
     let opens = content
-        .split_inclusive('\n')
-        .any(|line| line.starts_with("<<<<<<< ") || line.starts_with("<<<<<<<\t"));
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.starts_with(b"<<<<<<< ") || line.starts_with(b"<<<<<<<\t"));
     opens
-        && content
-            .lines()
-            .any(|line| line == "=======" || line == "=======\r")
+        && content.split(|byte| *byte == b'\n').any(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            line == b"=======" || line == b"=======\r"
+        })
 }
 
 /// Counts complete opening conflict markers without overflowing.
