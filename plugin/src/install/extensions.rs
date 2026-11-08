@@ -139,13 +139,12 @@ pub(super) fn install_agy(
         )
         .into());
     }
-    if let Some(expected) = args
-        .windows(2)
-        .find_map(|pair| (pair[0] == "--host-version").then_some(pair[1].as_str()))
+    if let Some(expected) = args.windows(2).find_map(|pair| match pair {
+        [name, value] if name == "--host-version" => Some(value.as_str()),
+        _ => None,
+    }) && version != expected
     {
-        if version != expected {
-            return Err(format!("step=admit Antigravity release: installed={version}, required={expected}; recovery=install the requested native release, then repeat the original acyclic install command").into());
-        }
+        return Err(format!("step=admit Antigravity release: installed={version}, required={expected}; recovery=install the requested native release, then repeat the original acyclic install command").into());
     }
     // The native manager copies this complete immutable closure into its own
     // profile. Only installation needs staging; no product operation pays it.

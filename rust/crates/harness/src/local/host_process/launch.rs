@@ -220,9 +220,8 @@ pub fn child_arguments(
     }
     let native_arguments = match host {
         "codex" => 9,
-        "claude-code" => 6,
+        "claude-code" | "agy" => 6,
         "opencode" => 5,
-        "agy" => 6,
         _ => 3,
     };
     let mut arguments =
@@ -334,7 +333,7 @@ fn extend_policy(
             .map(OsString::from),
         ),
         "claude-code" if !denied => {
-            output.extend(["--disallowedTools", "Agent,Task"].map(OsString::from))
+            output.extend(["--disallowedTools", "Agent,Task"].map(OsString::from));
         }
         _ => {}
     }
