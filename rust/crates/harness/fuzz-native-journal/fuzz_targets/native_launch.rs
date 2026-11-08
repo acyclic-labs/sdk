@@ -141,7 +141,7 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
             let option = match host {
                 "codex" => "resume",
                 "claude-code" => "--resume",
-                _ => "--session",
+                _ => "--fork",
             };
             expected.extend([option, reference].into_iter().map(OsString::from));
         }

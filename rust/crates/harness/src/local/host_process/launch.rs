@@ -216,8 +216,11 @@ pub fn child_arguments(
         _ => {
             arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
             arguments.extend(policy);
+            // Each turn runs in a fresh view directory and the previous one
+            // is retired, so Pi refuses to reopen a session bound to it.
+            // A fork carries the whole conversation into this turn's cwd.
             if let Some(file) = session {
-                arguments.extend(["--session", file].into_iter().map(OsString::from));
+                arguments.extend(["--fork", file].into_iter().map(OsString::from));
             }
         }
     }
