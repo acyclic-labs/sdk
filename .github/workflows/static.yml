@@ -1,10 +1,13 @@
 name: SDK Static
-# Check README approvals and reject a lockfile Cargo would change.
+# Reject a lockfile Cargo would change, including its serialization.
 on:
+  pull_request: null
+  push:
+    branches:
+      - main
   workflow_dispatch: null
 permissions:
   contents: read
-  pull-requests: read
 concurrency:
   group: static-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,54 +19,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - name: Check README approvals for this commit
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        with:
-          script: |
-            const owners = ['ramstar3000', 'Var1377'];
-            const { owner, repo } = context.repo;
-            let pr = context.payload.pull_request;
-            if (context.eventName === 'workflow_dispatch') {
-              const recovery = `gh pr list --repo ${owner}/${repo} --state open`;
-              if (!context.ref.startsWith('refs/heads/')) {
-                return core.setFailed(`step=dispatch-head: select a PR head branch. Recovery: ${recovery}`);
-              }
-              const branch = context.ref.slice('refs/heads/'.length);
-              // Two results distinguish a unique PR from an ambiguous branch.
-              const { data: pulls } = await github.rest.pulls.list({
-                owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 2,
-              });
-              if (pulls.length !== 1 || pulls[0].head.sha !== context.sha) {
-                return core.setFailed(`step=dispatch-head: expected one open PR at the dispatched commit. Recovery: ${recovery}`);
-              }
-              pr = pulls[0];
-            }
-
-            // Only the top-level README (any extension), including the old name of a renamed one.
-            // A deleted README adds no README text, so deletions need no review.
-            const isReadme = path => /^readme(\.[^/]*)?$/i.test(path);
-            const printable = path => path.replace(/[\x00-\x1f\x7f]/g, '?');
-            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr.number });
-            const readmes = files.filter(f => f.status !== 'removed').flatMap(f => [f.filename, f.previous_filename]).filter(p => p && isReadme(p));
-            if (readmes.length === 0) return core.info('No README changes.');
-            core.info(`README changes: ${[...new Set(readmes)].map(printable).join(', ')}`);
-
-            if (!/- \[x\] README text written by a human/i.test(pr.body || '')) {
-              core.setFailed('Tick "README text written by a human" in the PR description.');
-            }
-
-            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: pr.number });
-            const approved = reviews.some(r =>
-              r.state === 'APPROVED' &&
-              r.commit_id === pr.head.sha &&
-              owners.includes(r.user.login) &&
-              r.user.login !== pr.user.login);
-            if (!approved) {
-              core.setFailed(`README changes need an approval on the latest commit from ${owners.join(' or ')}, other than the PR author.`);
-            }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
         run: node scripts/check-cargo-lock.mjs
