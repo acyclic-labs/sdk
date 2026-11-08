@@ -72,9 +72,10 @@ impl futures::Stream for Input {
             return std::task::Poll::Ready(None);
         }
         loop {
-            if let Some((_, check)) = &mut self.admission {
+            if let Some((frame, check)) = &mut self.admission {
                 let result = futures::ready!(std::pin::Pin::new(check).poll(cx));
-                let (frame, _) = self.admission.take().expect("admission owns frame");
+                let frame = std::mem::take(frame);
+                self.admission = None;
                 if result.is_ok() {
                     return std::task::Poll::Ready(Some(frame));
                 }
