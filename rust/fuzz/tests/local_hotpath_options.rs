@@ -4,8 +4,7 @@ mod oracle;
 
 #[test]
 fn original_parser_admits_and_refuses_the_retained_argument_corpus() {
-    let corpus =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/local_hotpath_options");
+    let corpus = acyclic_test_support::crate_path!("corpus/local_hotpath_options");
     for entry in std::fs::read_dir(corpus).expect("argument corpus") {
         let entry = entry.expect("corpus entry");
         let name = entry.file_name();
