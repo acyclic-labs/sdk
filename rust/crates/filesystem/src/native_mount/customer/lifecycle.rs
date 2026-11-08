@@ -40,6 +40,7 @@ pub(super) async fn retire_session<T: Send + 'static>(
     + 'static,
 ) -> Result<T, MountLifecycleError> {
     acyclic_native_runtime::spawn_blocking(move || {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
         let mut owner = session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
