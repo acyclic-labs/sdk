@@ -698,7 +698,11 @@ proptest! {
         let mut policy = super::policy(vec![rule("read", Effect::Allow, &[Action::Read], "**")]);
         if history { policy.layers.first_mut().and_then(|layer| layer.first_mut()).ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?.actions.insert(Action::ReadHistory); }
         if restricted { policy.layers.first_mut().and_then(|layer| layer.first_mut()).ok_or(acyclic_fs::access::InvalidPolicy("missing fixture rule"))?.resource.generations = Generations::Head; }
+        let mut deny = rule("expired-deny", Effect::Deny, &[Action::Read], "**");
+        deny.conditions.expires_at = Some(100);
+        policy.layers.first_mut().ok_or(acyclic_fs::access::InvalidPolicy("missing fixture layer"))?.push(deny);
         let mut cap = capability();
+        cap.expires_at = Some(110);
         for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
         let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([byte; 32]));
         let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId { storage: None,
@@ -707,6 +711,17 @@ proptest! {
         let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)
             .map(|view| view.with_policy_revision(generation(1), revision(origin)));
         let first = compile()?;
+        let fence = first.publication_fence().ok_or(acyclic_fs::access::InvalidPolicy("missing policy fence"))?;
+        prop_assert_eq!(fence.interval(), (100, Some(110)));
+        for now in [99, 100, 109, 110] {
+            let expected = decide(&policy, &caller, Action::Read,
+                Resource { head: 1, ..resource(&caller.lineage, "file", 1) },
+                Context { now, approvals: 0 }, &cap);
+            prop_assert_eq!(first.decide(Action::Read, "file", now).allowed, expected.allowed,
+                "saved view must reject a revived deny or expired capability");
+            prop_assert_eq!(fence.valid_at(now), expected.allowed,
+                "publication fence must reject a revived deny or expired capability");
+        }
         prop_assert_eq!(first.matches_policy_revision(generation(if generation_changed { 2 } else { 1 }), revision(next)),
             origin == next && (!(restricted || !history) || !generation_changed));
         let cancel = acyclic_fs::CancellationToken::new();

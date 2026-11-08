@@ -35,6 +35,7 @@ pub struct PathTrie {
     rules: Vec<String>,
     version: u64,
     head: u64,
+    valid_from: u64,
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
     volume: String,
@@ -255,6 +256,7 @@ impl PathTrie {
                 generation,
                 revision,
                 generation_sensitive: self.generation_sensitive,
+                valid_from: self.valid_from,
                 valid_until: self.valid_until,
             })
     }
@@ -508,6 +510,7 @@ impl PathTrie {
                 rules: rule_ids,
                 version: policy.version,
                 head: resource.head,
+                valid_from: context.now,
                 valid_until,
                 config: resource.config,
                 volume: resource.volume.to_owned(),
@@ -683,9 +686,8 @@ impl PathTrie {
         }
     }
 
-    /// See [`super::PolicyFence::valid_at`]: only an expiry bounds a view.
     pub(crate) fn valid_at(&self, now: u64) -> bool {
-        self.valid_until.is_none_or(|expiry| now < expiry)
+        now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
     }
 
     fn state_at(&self, state: usize, now: u64) -> Option<&State> {

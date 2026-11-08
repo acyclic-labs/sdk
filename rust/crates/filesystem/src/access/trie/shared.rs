@@ -783,6 +783,7 @@ impl CompiledPolicy {
                 rules: vec![],
                 version: self.version,
                 head: resource.head,
+                valid_from: context.now,
                 valid_until: capability.expires_at.filter(|expiry| *expiry > context.now),
                 config: resource.config,
                 volume: resource.volume.to_owned(),

@@ -1,11 +1,12 @@
-/// Persisted policy identity and expiry captured by an authorized view.
-/// A transaction observes this identity before staging, and checks its expiry
+/// Persisted policy identity and time interval captured by an authorized view.
+/// A transaction observes this identity before staging, and checks its interval
 /// again at publication. Unrelated data changes can then rebase normally.
 #[derive(Clone, Copy)]
 pub struct PolicyFence {
     pub(super) generation: crate::GenerationId,
     pub(super) revision: crate::kernel::MetadataField<crate::ObjectId>,
     pub(super) generation_sensitive: bool,
+    pub(super) valid_from: u64,
     pub(super) valid_until: Option<u64>,
 }
 
@@ -23,19 +24,17 @@ impl PolicyFence {
         self.generation_sensitive
     }
 
-    /// The captured decision's validity interval in Unix seconds. Conditions
-    /// only expire, so an admitted decision has no lower time bound.
+    /// The captured decision's validity interval in Unix seconds: from, and
+    /// until when bounded.
     #[must_use]
     pub const fn interval(self) -> (u64, Option<u64>) {
-        (0, self.valid_until)
+        (self.valid_from, self.valid_until)
     }
 
-    /// Whether the captured decision has not expired. Every time condition is
-    /// an expiry, so a decision valid when made stays valid at any earlier
-    /// reading: a wall clock stepped back never revokes live authority.
+    /// Whether the captured decision is still within its original time interval.
     #[must_use]
     pub fn valid_at(self, now: u64) -> bool {
-        self.valid_until.is_none_or(|expiry| now < expiry)
+        now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
     }
 
     pub(crate) fn matches(

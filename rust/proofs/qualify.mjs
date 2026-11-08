@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "policy-time-interval": [
+    "rust/crates/filesystem/src/access/trie.rs", "acyclic-fs",
+    "access::review::policy_fence_and_native_custody_preserve_pinned_views",
+    "saved view must reject a revived deny or expired capability", ["--no-default-features", "--features", "local,memory,test-support"],
+    { target: ["--test", "main"], oracle: "rust/crates/filesystem/tests/access_review.rs", mutations: [
+      { patch: "rust/proofs/policy-time-interval/view.patch", label: "revived-deny-view", diagnostic: "saved view must reject a revived deny or expired capability" },
+      { source: "rust/crates/filesystem/src/access/policy_fence.rs", patch: "rust/proofs/policy-time-interval/fence.patch", label: "revived-deny-fence", diagnostic: "publication fence must reject a revived deny or expired capability" },
+    ] },
+  ],
   "exact-extraction-custody": [
     "rust/crates/collections/src/lib.rs", "acyclic-collections",
     "tests::prefix::prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work",
