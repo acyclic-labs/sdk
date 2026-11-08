@@ -51,6 +51,7 @@ mod settings;
 pub mod study;
 #[cfg(test)]
 mod tests;
+#[cfg(any(test, feature = "native-execution"))]
 mod tool_metadata;
 mod tool_output;
 mod verifier;
@@ -137,6 +138,7 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
+    #[cfg(any(test, feature = "native-execution"))]
     fn agent(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
         self.agent.as_ref().ok_or_else(|| {
             Error::Unsupported("native hosts own their agent loop and tool execution".into())
