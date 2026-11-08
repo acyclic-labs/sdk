@@ -252,7 +252,9 @@ impl Conversation {
     pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
         match self.deliver(id, prompt).await? {
             Sent::Accepted(inbox) => Ok(inbox),
-            Sent::Refused(reason) => Err(Error::Storage(reason)),
+            // A refusal committed nothing: it keeps the host's own class,
+            // never a storage failure the caller would treat as a fault.
+            Sent::Refused(reason) => Err(Error::Refused(reason)),
             // The session retains the terminal cause that left the outcome
             // undecided; report it with the outcome instead of dropping it.
             Sent::Unknown => Err(self

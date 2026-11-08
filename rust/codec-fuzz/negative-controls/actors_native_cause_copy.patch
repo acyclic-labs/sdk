@@ -1,0 +1,8 @@
+diff --git a/rust/crates/actors-napi/src/lib.rs b/rust/crates/actors-napi/src/lib.rs
+--- a/rust/crates/actors-napi/src/lib.rs
++++ b/rust/crates/actors-napi/src/lib.rs
+@@ -209,3 +209,3 @@
+         cause: metadata.cause.map(|cause| NativeActorsCause {
+-            component: cause.component,
++            component: cause.component.clone(),
+             reason: cause.reason,

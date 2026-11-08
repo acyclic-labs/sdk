@@ -72,7 +72,11 @@ test("WebSocket lease custody covers queued bytes, writes and producer loss", as
             expect(outcome).toHaveProperty("value.value", encoded);
             if ("value" in outcome) expect(outcome.value.value?.buffer).toBe(receivedBytes);
           }
-          else expect(outcome).toHaveProperty("error.code", change === "cancel" || operation === "disconnect" ? "unavailable" : "access_denied");
+          else {
+            expect(outcome).toHaveProperty("error.code", change === "cancel" || operation === "disconnect" ? "unavailable" : "access_denied");
+            if (operation === "disconnect") expect(outcome).toHaveProperty("error.transient", true);
+            else expect(outcome).not.toHaveProperty("error.transient", true);
+          }
         }
         transport.close();
         revision = "account/audience/1"; now = 1;

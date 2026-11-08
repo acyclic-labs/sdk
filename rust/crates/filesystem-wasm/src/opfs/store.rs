@@ -169,9 +169,12 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                 peak_allocation_bytes: vector_bytes,
                 ..WorkCounters::default()
             };
-            total
-                .verify(budget)
-                .map_err(|error| ObjectFailure::before_work(error.into()))?;
+            WorkCounters {
+                items_returned: requests.len() as u64,
+                ..total
+            }
+            .verify(budget)
+            .map_err(|error| ObjectFailure::before_work(error.into()))?;
             let mut values = Vec::new();
             values.try_reserve_exact(requests.len()).map_err(|_| {
                 ObjectFailure::new(
@@ -318,6 +321,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
                     ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
                 })?;
             }
+            total.items_returned = requests.len() as u64;
             Ok(acyclic_fs::OperationReceipt {
                 value: values,
                 work: total,

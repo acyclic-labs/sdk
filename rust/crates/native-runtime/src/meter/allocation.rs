@@ -231,7 +231,7 @@ impl ReadAllocation {
 
 // Synchronous native preparation retains its caller's borrow until the buffer
 // is physically gone. It needs no detached Arc or replacement ledger owner.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl<'a> ReadAllocation<&'a dyn NativeReadMeter> {
     pub(crate) fn borrowed(meter: &'a dyn NativeReadMeter, bytes: usize) -> io::Result<Self> {
         let bytes = bytes as u64;

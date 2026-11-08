@@ -1,5 +1,6 @@
-use super::*;
 use acyclic_fs::native_mount::MountOptions;
+
+type Failure = Box<dyn std::error::Error + Send + Sync>;
 
 pub(super) async fn options<A, O>(
     workspace: &acyclic_fs::Workspace<A, O>,
@@ -19,6 +20,7 @@ where
 mod tests {
     use super::*;
     use acyclic_fs::access::{Action, ActionSet};
+    use acyclic_fs::{CancellationToken, Lifecycle, MaterializeOptions, OperationId, VolumeConfig};
 
     #[tokio::test]
     async fn benchmark_mounts_bind_real_volume_policy() -> Result<(), Failure> {

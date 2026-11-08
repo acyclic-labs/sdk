@@ -18,6 +18,8 @@ export interface SessionTransport {
   send(frame: Uint8Array<ArrayBuffer>, signal?: AbortSignal): Promise<void>;
   close(): void;
 }
+// Callback failures may carry `transient: true` only when the I/O owner observed
+// a physical interruption. A peer's error code never requests reconnection.
 export type SessionConnect = (node: wire.SessionNode | undefined, signal: AbortSignal) => Promise<SessionTransport>;
 
 /** A requested filter is intersected with the selected credential by the node. */

@@ -168,7 +168,8 @@ pub trait AsyncObjectStore: ProviderPlatform {
             Ok(None)
         }
     }
-    /// Reads one object up to its byte limit.
+    /// Reads one object up to its byte limit. Scalar reads do not charge
+    /// `items_returned`; their caller may assemble them into one batch.
     fn read(
         &self,
         object_id: crate::storage::ObjectId,
@@ -188,6 +189,9 @@ pub trait AsyncObjectStore: ProviderPlatform {
         }
     }
     /// Reads a batch and retains its native vector allocation.
+    /// A successful batch charges exactly one `items_returned` per request,
+    /// including duplicates. Forwarders preserve this charge; a composing store
+    /// charges only results not already returned by its provider's batch.
     fn read_many(
         &self,
         requests: &[crate::storage::ObjectReadRequest],

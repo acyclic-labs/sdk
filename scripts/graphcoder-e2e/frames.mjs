@@ -56,11 +56,11 @@ export function queryFailure(visible) {
 }
 function* failures(visible) {
   const notice = queryFailure(visible), status = visible.lastIndexOf("\n") + 1;
-  for (const failure of visible.matchAll(/task [0-9a-f-]{36} failed: ([^\n]*)|✗ ([^\n]*)/g)) {
+  for (const failure of visible.matchAll(/(task [0-9a-f-]{36}) failed: ([^\n]*)|✗ ([^\n]*)/g)) {
     if (notice && failure.index >= status) continue;
     yield failure[1] !== undefined
-      ? { text: failure[0], reason: failure[1], kind: "task_failure" }
-      : { text: failure[0], reason: failure[2], kind: "action_refusal" };
+      ? { text: failure[0], reason: failure[2], kind: "task_failure", identity: failure[1] }
+      : { text: failure[0], reason: failure[3], kind: "action_refusal" };
   }
   if (notice) yield { text: visible.slice(status), reason: notice, kind: "query_failure" };
 }
@@ -68,13 +68,27 @@ const expected = (failure, condition) => failure.kind === "action_refusal"
   ? (condition?.contains ?? []).some(text => text.length > 0 && failure.reason.includes(text))
   : typeof condition?.[failure.kind] === "string" && condition[failure.kind].length > 0
     && failure.reason.startsWith(condition[failure.kind]);
+export function expectedTaskFailure(visible, condition) {
+  for (const failure of failures(visible)) {
+    if (failure.kind === "task_failure" && expected(failure, condition)) return true;
+  }
+  return false;
+}
 export class FailureHistory {
-  #handled = new Set();
+  #handled = new Map();
   unexpected(visible, condition) {
     for (const failure of failures(visible)) if (!expected(failure, condition)
-      && !this.#handled.has(failure.text)) return failure.text;
+      && !expected(failure, this.#handled.get(failure.identity ?? failure.text))) return failure.text;
   }
   accept(visible, condition) {
-    for (const failure of failures(visible)) if (expected(failure, condition)) this.#handled.add(failure.text);
+    const handled = new Map();
+    for (const failure of failures(visible)) {
+      const key = failure.identity ?? failure.text, previous = this.#handled.get(key);
+      // The task and explicitly admitted prefix survive clipping/reflow. Other
+      // notices retain exact text identity. Retain only this frame's failures.
+      if (expected(failure, condition)) handled.set(key, condition);
+      else if (expected(failure, previous)) handled.set(key, previous);
+    }
+    this.#handled = handled;
   }
 }

@@ -29,6 +29,7 @@ targets = [
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["native-javascript"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["grpc"] }
 napi = { workspace = true, features = ["tokio_rt"] }
 napi-derive.workspace = true

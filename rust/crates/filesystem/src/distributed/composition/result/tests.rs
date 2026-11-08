@@ -33,7 +33,10 @@ async fn native_result_custody_survives_semantic_confirmation_and_retirement() -
                 kind: crate::distributed::state_record::CompanionKind::OperationOutcome,
                 payload: OwnedBytes::from_static(b"original result"),
             },
-            collection.unswept().await.into_hold(),
+            collection
+                .unswept(&mut work.accounting())
+                .await?
+                .into_hold(),
             &mut work,
         )?;
 

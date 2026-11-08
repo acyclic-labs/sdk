@@ -2,6 +2,98 @@ use super::{CaptureSchedule, ProcessTree};
 
 use std::io;
 
+#[cfg(unix)]
+#[test]
+fn closed_spawn_arguments_preserve_original_credit_and_unwind() -> io::Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    if crate::delivery::isolated()? {
+        return Ok(());
+    }
+    for cut in 0..3 {
+        for callback_panics in [false, true] {
+            let returned = Arc::new(AtomicU64::new(0));
+            let recorded = Arc::new(AtomicU64::new(0));
+            let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+            meter.examination_recorded = Some(Box::new({
+                let recorded = Arc::clone(&recorded);
+                move || {
+                    recorded.fetch_add(1, Ordering::AcqRel);
+                    match cut {
+                        1 => Err(io::ErrorKind::PermissionDenied.into()),
+                        2 => std::panic::panic_any("original argument examination unwind"),
+                        _ => Ok(()),
+                    }
+                }
+            }));
+            meter.on_allocation_returned({
+                let returned = Arc::clone(&returned);
+                move || {
+                    returned.fetch_add(1, Ordering::AcqRel);
+                    if callback_panics {
+                        std::panic::panic_any("original argument credit return failure");
+                    }
+                }
+            });
+            let mut custody = None;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                ProcessTree::spawn_closed_measured(
+                    c"/bin/true",
+                    &[c"argument"],
+                    &meter,
+                    &mut custody,
+                )
+            }));
+            if let Some(mut tree) = custody.take() {
+                tree.terminate(None)?;
+                assert!(tree.is_reaped());
+            }
+            match result {
+                Err(payload) => {
+                    let expected = if cut == 2 {
+                        "original argument examination unwind"
+                    } else {
+                        assert!(callback_panics);
+                        "original argument credit return failure"
+                    };
+                    assert_eq!(payload.downcast::<&str>().ok(), Some(Box::new(expected)));
+                }
+                Ok(Err(error)) => {
+                    assert_eq!(cut, 1);
+                    assert!(!callback_panics);
+                    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                }
+                Ok(Ok(())) => {
+                    assert_eq!(cut, 0);
+                    assert!(!callback_panics);
+                }
+            }
+            assert_eq!(
+                meter.memory.load(Ordering::Acquire),
+                0,
+                "closed spawn leaked argument credit at examination cut {cut}"
+            );
+            assert_eq!(returned.load(Ordering::Acquire), 1);
+            assert_eq!(recorded.load(Ordering::Acquire), 1);
+            assert_eq!(meter.used_allocations.load(Ordering::Acquire), 1);
+            if cut != 0 {
+                assert_eq!(meter.write_attempts.load(Ordering::Acquire), 0);
+            }
+            meter.deny_allocations.store(true, Ordering::Release);
+            assert!(
+                ProcessTree::spawn_closed_measured(c"/bin/true", &[], &meter, &mut custody)
+                    .is_err()
+            );
+            assert!(custody.is_none());
+            assert_eq!(returned.load(Ordering::Acquire), 1);
+            assert_eq!(recorded.load(Ordering::Acquire), 1);
+            assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange() {
     use super::ProcessStdio;

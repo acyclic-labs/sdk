@@ -3,12 +3,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
+import { Terminal, screenText, screenSnapshot } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
+import { matches } from "./pty.mjs";
+import { OutputWatch } from "./process.mjs";
 
 const corpus = JSON.parse(readFileSync(new URL("./fixtures/terminal-frames.json", import.meta.url), "utf8"));
 const bytes = Buffer.concat([Buffer.from(corpus.refused.stdout), Buffer.from(corpus.idle.stdout)]);
 const query = JSON.parse(readFileSync(new URL("./fixtures/live-terminal-query-refusal.json", import.meta.url), "utf8"));
+const interrupted = JSON.parse(readFileSync(new URL("./fixtures/interrupted-terminal.json", import.meta.url), "utf8"));
 // Refine the retained capture with the current native renderer's exact marker.
 // This is a source-derived mutation, not a newly captured native journey.
 const nativeView = readFileSync(new URL("../../rust/crates/harness/src/bin/graphcoder/view.rs", import.meta.url), "utf8");
@@ -37,7 +40,9 @@ function admission(visible, text, kind, reason, schedule) {
   history.accept(visible, expected);
   assert.equal(history.unexpected(visible), undefined, "the exact admitted failure survives subsequent actions");
   // Derived mutations vary identity; retained native capture bytes stay intact.
-  const changed = text + " changed" + Buffer.from(schedule).toString("hex");
+  const changed = kind === "task_failure"
+    ? text.replace(reason, "changed " + reason + Buffer.from(schedule).toString("hex"))
+    : text + " changed" + Buffer.from(schedule).toString("hex");
   assert.equal(history.unexpected(visible.replace(text, changed)), changed,
     "another reason is not an accepted replay");
   if (kind === "task_failure") {
@@ -46,9 +51,52 @@ function admission(visible, text, kind, reason, schedule) {
     assert.equal(history.unexpected(visible.replace(text, next)), next,
       "another task with the same reason is not an accepted replay");
   }
+  history.accept("", {});
+  assert.equal(history.unexpected(visible), text,
+    "a later accepted frame evicts absent failures instead of growing a task history");
+}
+
+async function recovery(schedule) {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const history = new FailureHistory(), raw = OutputWatch.of("", []);
+  let admitted = false, refusal;
+  const frames = new TerminalFrames(screen, () => {
+    const { visible, diagnostic } = screenSnapshot(screen, { completeLines: true });
+    refusal ??= history.unexpected(diagnostic, admitted ? undefined : interrupted.condition);
+    if (!admitted && matches(screen, raw, interrupted.condition, visible, diagnostic)) {
+      assert.equal(visible, interrupted.accepted, "admit the original captured status transaction");
+      history.accept(diagnostic, interrupted.condition);
+      admitted = true;
+      assert.ok(!matches(screen, raw, interrupted.condition, visible.replace("RECOVERED_E2E", ""), diagnostic),
+        "a diagnostic without the retained partial transcript cannot settle recovery");
+      assert.ok(!matches(screen, raw, interrupted.condition, visible,
+        diagnostic.replace(interrupted.condition.task_failure, "another failure")),
+      "another reason cannot settle recovery");
+    }
+  });
+  try {
+    const bytes = Buffer.from(interrupted.stdout), marker = Buffer.from("\x1b[?2026l");
+    const end = bytes.lastIndexOf(marker) + marker.length;
+    await frames.write(bytes.subarray(0, end));
+    for (let offset = end, index = 0; offset < bytes.length; index++) {
+      const width = schedule.length ? 1 + schedule[index % schedule.length] : bytes.length;
+      // Complete each original pipe fragment so partial diagnostics really are
+      // observed; queuing all writes would only exercise their final callback.
+      await frames.write(bytes.subarray(offset, offset + width));
+      offset += width;
+    }
+    assert.ok(admitted, "the native recovery transaction was observed before teardown");
+    assert.equal(refusal, undefined, "the admitted task survives raw diagnostic fragmentation and reflow");
+    const final = screenSnapshot(screen).diagnostic;
+    assert.match(final, /model provider unavailable \(connection interrupted\)/);
+    assert.equal(history.unexpected(final), undefined);
+    admission(final, /task [0-9a-f-]{36} failed: [^\n]*/.exec(final)[0],
+      "task_failure", "model provider unavailable (connection interrupted)", schedule);
+  } finally { frames.dispose(); screen.dispose(); }
 }
 
 export async function fuzz(schedule) {
+  await recovery(schedule);
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory();
   let refusal, refusedScreen, observations = 0, available = 0, reused = 0;

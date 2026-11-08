@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
-import { TerminalFrames, FailureHistory, queryFailure } from "./frames.mjs";
+import { Terminal, screenText, screenSnapshot } from "../graphcoder-pty/screen.mjs";
+import { TerminalFrames, FailureHistory, queryFailure, expectedTaskFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
 import { executionSucceeded } from "./assertions.mjs";
 
@@ -28,20 +28,15 @@ export function rawNeedles(actions) {
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
-export function matches(screen, raw, condition, visible = screenText(screen)) {
+export function matches(screen, raw, condition, visible, diagnostic = visible) {
+  if (visible === undefined) ({ visible, diagnostic } = screenSnapshot(screen));
   return (condition.contains ?? []).every(text => visible.includes(text))
-    && (!condition.task_failure || expectedTaskFailure(visible, condition))
-    && (!condition.query_failure || queryFailure(visible)?.startsWith(condition.query_failure))
+    && (!condition.task_failure || expectedTaskFailure(diagnostic, condition))
+    && (!condition.query_failure || queryFailure(diagnostic)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
     && (condition.raw ?? []).every(text => raw.has(text))
     && (!condition.cursor || raw.later(SHOW_CURSOR, HIDE_CURSOR));
-}
-
-function expectedTaskFailure(visible, condition) {
-  const message = /task [0-9a-f-]{36} failed: ([^\n]*)/.exec(visible)?.[1];
-  return typeof condition.task_failure === "string" && condition.task_failure.length > 0
-    && message?.startsWith(condition.task_failure);
 }
 
 export async function pty(processes, binary, fixture, input, capture) {
@@ -56,18 +51,18 @@ export async function pty(processes, binary, fixture, input, capture) {
     const raw = new OutputWatch(rawNeedles(input.actions));
     let index = 0, command, failure, errors;
     const snapshots = [];
-    function frame() {
+    function frame(settled = false) {
       if (failure || !frames.ready()) return;
       try {
-        const visible = screenText(screen);
+        const { visible, diagnostic } = screenSnapshot(screen, { completeLines: !settled });
         const action = input.actions[index];
-        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(visible, action?.when);
+        const refusal = raw.has(OVERFLOW) ? OVERFLOW : failures.unexpected(diagnostic, action?.when);
         if (refusal) {
           const error = new Error(`step=admit terminal frame: shipping executable failed before terminal completion: ${refusal}\n${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
           error.code = "terminal_frame_failed";
           throw error;
         }
-        if (!action) return;
+        if (!action || settled) return;
         const unavailable = command && `${command} is not available in this view`;
         if (unavailable && visible.includes(unavailable)
             && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
@@ -77,10 +72,10 @@ export async function pty(processes, binary, fixture, input, capture) {
         }
         if (!frames.available()) return;
         if (action.after_request && !fixture.requested(action.after_request)) return;
-        if (!matches(screen, raw, action.when, visible)) return;
-        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible),
+        if (!matches(screen, raw, action.when, visible, diagnostic)) return;
+        if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic),
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
-        failures.accept(visible, action.when);
+        failures.accept(diagnostic, action.when);
         if (unavailable && visible.includes(unavailable)) command = undefined;
         snapshots.push({ action: index, visible });
         index++;
@@ -93,7 +88,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         if (action.kill) running.killExecutable();
       } catch (error) { failure = error; running.killExecutable(); }
     }
-    unsubscribe = fixture.onRequest(frame);
+    unsubscribe = fixture.onRequest(() => frame());
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
       frames.write(bytes);
@@ -105,6 +100,7 @@ export async function pty(processes, binary, fixture, input, capture) {
       unsubscribe();
       unsubscribe = undefined;
       await new Promise(resolve => screen.write("", resolve));
+      frame(true);
     }
     const visible = screenText(screen);
     if (result) {

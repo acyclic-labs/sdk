@@ -13,6 +13,7 @@ use std::{
     },
 };
 
+use acyclic_auth::refusal::native::NativeRefusal;
 use acyclic_stream::{StreamError, StreamPath, StreamProvider, grpc, wire, wire_codec};
 use futures::StreamExt;
 use napi::Env;
@@ -29,12 +30,15 @@ const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
 #[napi(object)]
-#[derive(Clone, Default, Serialize)]
+#[derive(Default, Serialize)]
 pub struct NativeStreamErrorMetadata {
     /// Stable Stream error code.
     pub code: String,
     /// Rust-owned diagnostic message.
     pub message: String,
+    /// Original member status and raw diagnostic bytes, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<NativeRefusal>,
 }
 
 /// Typed unary operation result. Exactly one of `value` and `error` is set.
@@ -152,6 +156,10 @@ fn stream_error(error: &StreamError) -> NativeStreamErrorMetadata {
     NativeStreamErrorMetadata {
         code: error.code().to_owned(),
         message: error.to_string(),
+        refusal: match error {
+            StreamError::Refused(refusal) => refusal.original().map(NativeRefusal::from_parts),
+            _ => None,
+        },
     }
 }
 
@@ -169,6 +177,7 @@ fn connect_error(error: &grpc::ConnectError) -> NativeStreamErrorMetadata {
         } else {
             error.to_string()
         },
+        ..Default::default()
     }
 }
 
@@ -189,6 +198,7 @@ fn decode<T: Message + Default>(
     T::decode(request.as_ref()).map_err(|error| NativeStreamErrorMetadata {
         code: "invalid_argument".to_owned(),
         message: format!("{operation} request is not valid Stream protobuf: {error}"),
+        ..Default::default()
     })
 }
 
@@ -202,6 +212,7 @@ fn encode<T: Message>(
         .map_err(|error| NativeStreamErrorMetadata {
             code: "unavailable".to_owned(),
             message: format!("{operation} response could not be encoded: {error}"),
+            ..Default::default()
         })?;
     Ok(Buffer::from(bytes))
 }
@@ -224,6 +235,7 @@ where
         return Err(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
+            ..Default::default()
         });
     }
     tokio::select! {
@@ -231,6 +243,7 @@ where
         _ = cancellation.cancelled() => Err(NativeStreamErrorMetadata {
             code: "cancelled".to_owned(),
             message: "Stream operation cancelled".to_owned(),
+            ..Default::default()
         }),
         result = operation => result,
     }

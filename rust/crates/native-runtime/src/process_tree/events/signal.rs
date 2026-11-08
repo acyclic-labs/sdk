@@ -33,18 +33,12 @@ impl Signal {
     }
 
     pub(super) fn poll(&self, context: &mut Context<'_>) -> Poll<ProcessWaitOutcome> {
-        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(outcome) = &state.outcome {
-            Poll::Ready(outcome.clone())
-        } else {
-            if state
-                .waker
-                .as_ref()
-                .is_none_or(|waker| !waker.will_wake(context.waker()))
-            {
-                state.waker = Some(context.waker().clone());
-            }
-            Poll::Pending
-        }
+        let state = std::task::ready!(crate::wake::poll_registered(
+            || self.0.lock().unwrap_or_else(PoisonError::into_inner),
+            context.waker(),
+            |state| state.outcome.is_some(),
+            |state| &mut state.waker,
+        ));
+        state.outcome.clone().map_or(Poll::Pending, Poll::Ready)
     }
 }

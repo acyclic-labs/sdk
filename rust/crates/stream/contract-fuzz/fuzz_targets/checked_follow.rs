@@ -1,4 +1,6 @@
 #![no_main]
+//! Check original session frames and checked-follow confirmations at every input size.
+
 use acyclic_stream::{
     wire,
     wire_codec::session::{confirm_follow, preceding_follow},
@@ -7,9 +9,6 @@ use libfuzzer_sys::fuzz_target;
 use prost::Message;
 
 fuzz_target!(|input: &[u8]| {
-    if input.len() > 4096 {
-        return;
-    }
     let Ok(frame) = wire::SessionFrame::decode(input) else {
         return;
     };

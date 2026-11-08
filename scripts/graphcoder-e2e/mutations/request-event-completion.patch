@@ -1,0 +1,12 @@
+diff --git a/scripts/graphcoder-e2e/pty.mjs b/scripts/graphcoder-e2e/pty.mjs
+--- a/scripts/graphcoder-e2e/pty.mjs
++++ b/scripts/graphcoder-e2e/pty.mjs
+@@ -84,7 +84,7 @@
+         if (action.kill) running.killExecutable();
+       } catch (error) { failure = error; running.killExecutable(); }
+     }
+-    unsubscribe = fixture.onRequest(() => frame());
++    unsubscribe = fixture.onRequest(frame);
+     running.child.stdout.on("data", bytes => {
+       raw.write(bytes);
+       frames.write(bytes);

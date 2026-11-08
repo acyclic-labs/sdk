@@ -72,9 +72,9 @@ impl NativeJob {
         }
         None
     }
-    pub(crate) fn restore_unqueued(&mut self) {
+    pub(crate) fn set_queued(&mut self, transferred: bool) {
         if let Self::Task { queued, .. } = self {
-            *queued = false;
+            *queued = transferred;
         }
     }
     pub(crate) fn stage(&self, stage: u64) {

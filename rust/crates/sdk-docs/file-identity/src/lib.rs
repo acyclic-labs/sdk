@@ -1,3 +1,5 @@
+//! Native file observations and observation-checked caches for documentation inputs.
+
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -38,6 +40,11 @@ pub fn reject_linked_ancestors<E>(
     Ok(())
 }
 
+/// Returns a cached value when its saved observation matches the current one.
+/// Otherwise loads the value and caches it only if a second observation agrees.
+/// Observation or load failures leave the cache unchanged; differing observations
+/// return the caller's `changed` error. This does not lock the observed resource
+/// against changes after an observation.
 pub fn cached<K: Ord, S: Clone + Eq, V: Clone, E>(
     values: &std::cell::RefCell<std::collections::BTreeMap<K, (S, V)>>,
     key: K,
@@ -62,6 +69,8 @@ pub fn cached<K: Ord, S: Clone + Eq, V: Clone, E>(
     Ok(value)
 }
 
+/// File identity and metadata used to detect replacement or modification.
+/// Equality compares observations; it is not a digest of the file's contents.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Stamp {
     length: u64,
@@ -73,6 +82,8 @@ pub struct Stamp {
     native: (u64, [u8; 16], i64),
 }
 
+/// Observes a regular file's identity, length and timestamps, following links.
+/// Returns an error if the path cannot be observed or is not a regular file.
 pub fn stamp(path: &Path) -> io::Result<Stamp> {
     #[cfg(windows)]
     let file = {
@@ -111,27 +122,29 @@ pub fn stamp(path: &Path) -> io::Result<Stamp> {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Windows file identity requires querying the owned handle through Win32"
+)]
 fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
-    };
-    let mut basic = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
-    let mut id = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+    use windows_sys::Win32::Storage::FileSystem as file_info;
+    let mut basic = std::mem::MaybeUninit::<file_info::FILE_BASIC_INFO>::uninit();
+    let mut id = std::mem::MaybeUninit::<file_info::FILE_ID_INFO>::uninit();
     // SAFETY: both buffers have the API's exact type/size and outlive the calls;
     // the file owns the live handle. Read the buffers only after both succeed.
     unsafe {
-        if GetFileInformationByHandleEx(
+        if file_info::GetFileInformationByHandleEx(
             file.as_raw_handle(),
-            FileBasicInfo,
+            file_info::FileBasicInfo,
             basic.as_mut_ptr().cast(),
-            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            std::mem::size_of::<file_info::FILE_BASIC_INFO>() as u32,
         ) == 0
-            || GetFileInformationByHandleEx(
+            || file_info::GetFileInformationByHandleEx(
                 file.as_raw_handle(),
-                FileIdInfo,
+                file_info::FileIdInfo,
                 id.as_mut_ptr().cast(),
-                std::mem::size_of::<FILE_ID_INFO>() as u32,
+                std::mem::size_of::<file_info::FILE_ID_INFO>() as u32,
             ) == 0
         {
             return Err(std::io::Error::last_os_error());

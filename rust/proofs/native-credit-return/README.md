@@ -23,19 +23,28 @@ The retained patch restores all three production files byte-for-byte to
 `604d8449f8848b9edd5fcab77cc35560691f63cc`, retaining the property. Every one of
 the five original paths must fail with its credit-return marker and a destructor
 cleanup abort. A patch or compilation failure is not negative-control evidence.
+The inverse also restores that revision's Darwin production dependency, retaining
+the current tests. This keeps the original Linux-only borrowed constructor and
+member storage consistent. Owner selection and shrinking also return to that
+revision; select only the five destructor properties below.
 
 Run from the repository root:
+
+The inverse also restores the documented pin's original closed-spawn argument
+body, keeping its Unix dependency consistent with the original Linux-only
+borrowed constructor. Current tests remain present; a missing constructor cannot
+qualify a destructor failure.
 
 ```sh
 git apply --check rust/proofs/native-credit-return/original-destructors.patch
 git apply rust/proofs/native-credit-return/original-destructors.patch
 git diff --exit-code 604d8449f8848b9edd5fcab77cc35560691f63cc -- rust/crates/native-runtime/src/meter/allocation.rs rust/crates/native-runtime/src/meter/codec.rs rust/crates/native-runtime/src/meter/reservation.rs
-cargo test --locked -p acyclic-native-runtime --all-features --lib tests::reservations:: -- --nocapture
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(/^tests::reservations::(operations|bytes|codec|allocation_reservation|allocation)_preserves?_original_unwind$/)'
 # Require five failures: original credit return failure, then
 # panic in a destructor during cleanup for every original credit owner.
 git apply -R rust/proofs/native-credit-return/original-destructors.patch
-cargo test --locked -p acyclic-native-runtime --all-features --lib tests::reservations:: -- --nocapture
-# Require all five to pass.
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib --no-fail-fast -E 'test(/^tests::reservations::(operations|bytes|codec|allocation_reservation|allocation)_preserves?_original_unwind$/)'
+# Require exactly five selected passes and no selected skips.
 ```
 
 Restore the patch even if a command fails. Each property uses the shared

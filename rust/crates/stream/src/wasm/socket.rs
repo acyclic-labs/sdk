@@ -1,6 +1,6 @@
 //! Browser physical I/O for the same session pool used by native clients.
 use super::*;
-use crate::session::transport::{Requests, Responses, Transport};
+use crate::session::transport::{Failure, Requests, Responses, Transport};
 use futures::{
     channel::oneshot,
     future::{Either, select},
@@ -40,10 +40,10 @@ impl Endpoint {
 
 struct Incoming {
     sender: Option<mpsc::Sender<js_sys::ArrayBuffer>>,
-    terminal: Option<StreamError>,
+    terminal: Option<Failure>,
 }
 impl Incoming {
-    fn fail(&mut self, error: StreamError) {
+    fn fail(&mut self, error: Failure) {
         if self.sender.take().is_some() {
             self.terminal = Some(error);
         }
@@ -70,7 +70,7 @@ impl Transport for Endpoint {
     fn session(
         &self,
         source: Requests,
-    ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
+    ) -> crate::BoxProviderFuture<'_, Result<Responses<Failure>, Failure>> {
         Box::pin(async move {
             use base64::Engine as _;
             let mut changed = self
@@ -88,7 +88,7 @@ impl Transport for Endpoint {
                     .check()
                     .await
                     .map_err(|_| StreamError::AccessDenied)?;
-                Ok(credential)
+                Ok::<_, StreamError>(credential)
             })
             .await??;
             let token =
@@ -136,7 +136,7 @@ impl Transport for Endpoint {
                     }),
                 };
                 if let Some(error) = error {
-                    incoming.fail(error);
+                    incoming.fail(error.into());
                     let _ = message_socket.close();
                 }
             });
@@ -144,8 +144,12 @@ impl Transport for Endpoint {
             let error_ready = ready.clone();
             let error_socket = socket.clone();
             let error = Closure::new(move |_: web_sys::Event| {
-                failure.borrow_mut().fail(StreamError::Unavailable);
-                if let Some(sender) = error_ready.borrow_mut().take() {
+                let opening = error_ready.borrow_mut().take();
+                failure.borrow_mut().fail(Failure {
+                    error: StreamError::Unavailable,
+                    transient: opening.is_none(),
+                });
+                if let Some(sender) = opening {
                     let _ = sender.send(Err(StreamError::Unavailable));
                 }
                 let _ = error_socket.close();
@@ -153,8 +157,12 @@ impl Transport for Endpoint {
             let closed = incoming.clone();
             let close_ready = ready;
             let close = Closure::new(move |_: web_sys::Event| {
-                closed.borrow_mut().fail(StreamError::Unavailable);
-                if let Some(sender) = close_ready.borrow_mut().take() {
+                let opening = close_ready.borrow_mut().take();
+                closed.borrow_mut().fail(Failure {
+                    error: StreamError::Unavailable,
+                    transient: opening.is_none(),
+                });
+                if let Some(sender) = opening {
                     let _ = sender.send(Err(StreamError::Unavailable));
                 }
             });
@@ -196,7 +204,7 @@ impl Transport for Endpoint {
                                     .check()
                                     .await
                                     .map_err(|_| StreamError::AccessDenied)?;
-                                Ok(event)
+                                Ok::<_, StreamError>(event)
                             })
                             .await??;
                         match event {
@@ -210,11 +218,12 @@ impl Transport for Endpoint {
                                 )));
                             }
                             Either::Left(None) => {
-                                return Err(incoming
-                                    .borrow_mut()
-                                    .terminal
-                                    .take()
-                                    .unwrap_or(StreamError::Unavailable));
+                                return Err(incoming.borrow_mut().terminal.take().unwrap_or(
+                                    Failure {
+                                        error: StreamError::Unavailable,
+                                        transient: true,
+                                    },
+                                ));
                             }
                             Either::Right(Some(frame)) => {
                                 let bytes = frame.encode_to_vec();
@@ -222,19 +231,22 @@ impl Transport for Endpoint {
                                     || guard.socket.buffered_amount() as usize + bytes.len()
                                         > MAX_COMMAND_BYTES
                                 {
-                                    return Err(StreamError::Capacity);
+                                    return Err(StreamError::Capacity.into());
                                 }
                                 guard
                                     .socket
                                     .send_with_u8_array(&bytes)
-                                    .map_err(|_| StreamError::Unavailable)?;
+                                    .map_err(|_| Failure {
+                                        error: StreamError::Unavailable,
+                                        transient: true,
+                                    })?;
                             }
                             Either::Right(None) => return Ok(None),
                         }
                     }
                 },
             );
-            Ok(Box::pin(response) as Responses)
+            Ok(Box::pin(response) as Responses<Failure>)
         })
     }
 }

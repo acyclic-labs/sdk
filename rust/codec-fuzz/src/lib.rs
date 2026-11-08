@@ -17,6 +17,8 @@ pub mod object_schedule;
 mod objects_json;
 mod semantic;
 
+/// Canonical Actors contract writers, without invoking other producers.
+pub use semantic::actor_seeds as actor_semantic_seeds;
 /// Original Objects service writer outputs, without invoking other producers.
 pub use semantic::object_seeds as object_semantic_seeds;
 
