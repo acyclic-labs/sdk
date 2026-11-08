@@ -30,6 +30,11 @@ export default async function acyclic({client, directory}) {
   }
   return {
     config: async config => {
+      // Isolated delegation belongs to the shared actor/subtree/volume owner.
+      // Deny the native Task tool even when a project grants other tools.
+      if (typeof config.permission !== "object" || config.permission === null)
+        config.permission = { "*": config.permission ?? "ask" };
+      config.permission.task = "deny";
       config.mcp ??= {};
       if (Object.hasOwn(config.mcp, "acyclic-sessions"))
         throw new Error("step=install OpenCode coordinator: acyclic-sessions already configured; recovery=remove the duplicate native MCP registration");
@@ -38,6 +43,12 @@ export default async function acyclic({client, directory}) {
       };
     },
     "chat.message": async input => { await select(input.sessionID); },
+    "tool.execute.before": async input => {
+      // Commands can bypass OpenCode's Task permission check. Fence the effect
+      // at the native pre-tool boundary as well as removing it from the menu.
+      if (input.tool === "task")
+        throw new Error("step=admit native delegation: use acyclic-sessions_spawn; recovery=call acyclic-sessions_spawn");
+    },
     "tool.execute.after": async input => {
       const location = await select(input.sessionID);
       if (location) await workspace(executable, directory, {

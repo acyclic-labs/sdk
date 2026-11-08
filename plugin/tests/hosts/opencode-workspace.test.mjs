@@ -104,6 +104,7 @@ test("installed native OpenCode records its original session through the shared 
       step = "exercise native MCP spawn with the same isolated provider profile";
       t.diagnostic(JSON.stringify({ role: "native-provider-requests", requests }));
       const toolNames = requests.find(request => request.body.tools?.length)?.body.tools.map(tool => tool.function.name) ?? [];
+      assert.ok(!toolNames.includes("task"), "installed plugin exposed native delegation outside the shared owner");
       const tool = name => {
         const matches = toolNames.filter(tool => tool === `acyclic-sessions_${name}`);
         assert.equal(matches.length, 1, "installed native MCP tool absent: " + name);
