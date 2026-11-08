@@ -23,6 +23,8 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/preparation.rs"]
+mod preparation;
 #[path = "wired/settlement.rs"]
 mod settlement;
 
@@ -1590,6 +1592,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
         "the child's first request lacks its parent's settled turn: {:?}",
         requests[1].messages
     );
+    preparation::check(&stream, &host, &parent, &child).await?;
     Ok(())
 }
 

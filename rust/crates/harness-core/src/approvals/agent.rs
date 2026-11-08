@@ -14,9 +14,7 @@ use crate::{
     Error, InteractionId, Result,
     agent::AgentId,
     conversation::Limits,
-    interaction::{
-        ApprovalBinding, ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome,
-    },
+    interaction::{ApprovalBinding, ApprovalDecisionFile, Interaction, InteractionOutcome},
 };
 use std::sync::{
     Arc, Mutex,
@@ -139,11 +137,6 @@ pub struct AgentApprovals {
     effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// Whether the call the turn last stopped at waits on those effects.
     yielded: AtomicBool,
-    /// The turn's children, which a `wait` call dispatches only once settled.
-    children: Option<Arc<dyn crate::agent::TurnChildren>>,
-    /// The turn resumed because its wait's timeout passed: the first `wait`
-    /// call it reaches takes this release and dispatches.
-    released: AtomicBool,
     /// The condition the call the turn last stopped at waits for.
     awaiting: Mutex<Option<crate::agent::Until>>,
 }
@@ -158,26 +151,8 @@ impl AgentApprovals {
             pending: Mutex::new(None),
             effects: None,
             yielded: AtomicBool::new(false),
-            children: None,
-            released: AtomicBool::new(false),
             awaiting: Mutex::new(None),
         }
-    }
-
-    /// Holds each `wait` call of the turn until enough of the children it
-    /// names settle (see [`crate::tools::awaited`]); the turn commits that
-    /// wait instead of holding its delivery. `released` is whether the turn
-    /// resumes from a wait whose timeout passed (its agent still in
-    /// [`crate::agent::Phase::Waiting`]): that wait's call then dispatches.
-    #[must_use]
-    pub fn awaiting(
-        mut self,
-        children: Arc<dyn crate::agent::TurnChildren>,
-        released: bool,
-    ) -> Self {
-        self.children = Some(children);
-        self.released = AtomicBool::new(released);
-        self
     }
 
     /// The condition the turn stopped on: its driver commits
@@ -191,7 +166,7 @@ impl AgentApprovals {
     }
 
     /// Holds each call of the turn until `effects` recorded by its earlier
-    /// calls commit (see [`Self::dispatch`]).
+    /// calls commit (see [`Self::ready`]).
     #[must_use]
     pub fn yielding(mut self, effects: Arc<dyn crate::agent::TurnEffects>) -> Self {
         self.effects = Some(effects);
@@ -205,58 +180,25 @@ impl AgentApprovals {
         self.yielded.load(Ordering::Acquire)
     }
 
-    /// The outcome call `id` dispatches on: none yet while an earlier call of
-    /// the turn holds agent effects that have not committed, so the call
-    /// reaches every child, message and archive they make; else
-    /// [`Self::outcome`].
-    pub async fn dispatch(
-        &self,
-        id: InteractionId,
-        journal: &dyn crate::executor::ExecutionJournal,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Option<InteractionOutcome>> {
-        if self.effects.is_none() && self.children.is_none() {
-            return self.outcome(id, journal, io).await;
-        }
-        let request = request_id(id);
-        let bytes = self.policy.request(&*self.files, &request).await?;
-        let Ok(Interaction::Approval {
-            operation_id,
-            subject,
-            ..
-        }) = serde_json::from_slice::<Interaction>(&bytes)
-        else {
-            return Err(Error::Conflict(
-                "approval request is not an approval".into(),
-            ));
+    /// Whether this call can reach the effects its earlier calls recorded.
+    /// The driver commits a held barrier before continuing the same turn.
+    pub async fn ready(&self, operation: crate::OperationId) -> Result<bool> {
+        let held = match &self.effects {
+            Some(effects) => effects.holds(operation).await?,
+            None => false,
         };
-        if let Some(effects) = &self.effects {
-            let held = effects.holds(operation_id).await?;
-            self.yielded.store(held, Ordering::Release);
-            if held {
-                self.wait(None)?;
-                return Ok(None);
-            }
-        }
-        // The decision precedes the hold: a wait is decided once before it
-        // starts, so no approval pause can re-hold it and restart its timeout.
-        let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
-        let outcome = self.resolve_outcome(&view, Some((journal, io))).await?;
-        if let (
-            Some(InteractionOutcome::Approved {}),
-            Some(children),
-            ApprovalSubject::Tool {
-                tool, arguments, ..
-            },
-        ) = (&outcome, &self.children, &subject)
-            && let Some(awaited) =
-                crate::tools::awaited(&**children, tool, arguments, &self.released).await?
-        {
+        self.yielded.store(held, Ordering::Release);
+        if held {
             self.wait(None)?;
-            *locked(&self.awaiting)? = Some(awaited);
-            return Ok(None);
         }
-        Ok(outcome)
+        Ok(!held)
+    }
+
+    /// Hands this call's condition to the turn driver without waiting here.
+    pub fn defer(&self, until: crate::agent::Until) -> Result<()> {
+        self.wait(None)?;
+        *locked(&self.awaiting)? = Some(until);
+        Ok(())
     }
 
     /// The request the turn now waits on, its original action binding, and

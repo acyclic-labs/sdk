@@ -1850,12 +1850,7 @@ where
                 // calls committed, so it reaches what they created, and a `wait`
                 // only once its children settled.
                 let approvals = Arc::new(
-                    AgentApprovals::new(files, Arc::new(policy))
-                        .yielding(Arc::clone(&effects))
-                        .awaiting(
-                            Arc::clone(&children),
-                            matches!(agent.phase, crate::agent::Phase::Waiting { .. }),
-                        ),
+                    AgentApprovals::new(files, Arc::new(policy)).yielding(Arc::clone(&effects)),
                 );
                 let journal = journal
                     .with_model_boundary(Arc::new(boundary))

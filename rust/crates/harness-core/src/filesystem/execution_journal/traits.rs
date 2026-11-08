@@ -515,6 +515,29 @@ where
         })
     }
 
+    fn tool_barrier<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Option<Result<crate::conversation::BoundedContentFuture<'a, bool>>> {
+        let approvals = self.agent_approvals.as_ref()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
+            return Some(Err(canonical_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "agent effect barrier has no native observation producer",
+            )));
+        }
+        Some(crate::conversation::BoundedContentFuture::new(io, || {
+            approvals.ready(operation)
+        }))
+    }
+
+    fn defer_tool(&self, until: crate::agent::Until, io: Option<&PreparationIo>) -> Result<()> {
+        self.approvals(io)?.defer(until)
+    }
+
     fn interaction_outcome<'a>(
         &'a self,
         id: InteractionId,
