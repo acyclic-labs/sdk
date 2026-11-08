@@ -72,6 +72,9 @@ pub struct LocalWorkspace {
     // owner; the real cfg shim and its negative controls model it.
     pub(super) state: StateArc<AsyncMutex<super::checkout_tools::State>>,
     pub(super) mounts: Arc<Mounts>,
+    /// Original auxiliary binding, retained while this view or its selections
+    /// can still execute against its shared physical projections.
+    pub(super) binding: Option<Arc<Mounts>>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
     /// binding, whose state directory has no exclusive owner to fence it.
@@ -425,6 +428,7 @@ pub(super) async fn open(
         state,
         context_line,
         mounts,
+        binding: None,
         processes,
     })
 }

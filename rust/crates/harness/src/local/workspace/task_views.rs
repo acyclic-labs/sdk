@@ -27,7 +27,7 @@ impl LocalWorkspace {
         scratch: VolumeRef,
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
-    ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
+    ) -> Result<Arc<LocalWorkspace>> {
         let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
         let key = project.storage_name(&mut None)?;
         let mounts = if let Some(mounts) = state
@@ -44,10 +44,9 @@ impl LocalWorkspace {
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
         };
-        let workspace = self
-            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), authority)
-            .await?;
-        Ok((workspace, mounts))
+        drop(state);
+        self.mount_task_view(view, owner, Some(mounts), authority)
+            .await
     }
 
     /// All task views enter the filesystem's shared instance. The host may
@@ -83,6 +82,7 @@ impl LocalWorkspace {
                     view.workspace().id(),
                     Arc::clone(&self.mounts),
                 ))),
+                binding: mounts.clone(),
                 mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
                 context_line: self.context_line().into(),
                 processes: self.processes.clone(),
@@ -188,6 +188,7 @@ impl LocalWorkspace {
             context_line: mounts.context_line(),
             processes: self.processes.clone(),
             mounts: Arc::clone(&mounts),
+            binding: self.binding.clone(),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(
                 view.workspace().id(),

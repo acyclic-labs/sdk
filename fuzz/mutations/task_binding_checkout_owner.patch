@@ -1,0 +1,14 @@
+--- a/rust/crates/harness/src/local/workspace/task_views.rs
++++ b/rust/crates/harness/src/local/workspace/task_views.rs
+@@ -44,9 +44,9 @@
+             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
+             mounts
+         };
++        let mounted = self.mount_task_view(view, owner, Some(mounts), authority).await;
+         drop(state);
+-        self.mount_task_view(view, owner, Some(mounts), authority)
+-            .await
++        mounted
+     }
+ 
+     /// All task views enter the filesystem's shared instance. The host may

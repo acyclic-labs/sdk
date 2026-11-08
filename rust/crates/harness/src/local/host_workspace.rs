@@ -43,7 +43,6 @@ pub struct HostWorkspace {
     signed: Scope,
     scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
-    _allocation: Option<Arc<workspace::Mounts>>,
 }
 
 impl HostWorkspace {
@@ -92,7 +91,6 @@ impl HostWorkspace {
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
-            _allocation: None,
         };
         result.verify().await?;
         result.activate_volumes().await?;
@@ -296,7 +294,7 @@ impl HostWorkspace {
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
             .for_scope(&signed)?;
-        let (workspace, mounts) = self
+        let workspace = self
             .workspace
             .bound_task_view(view, &project, scratch, &*child_owner, &authority)
             .await?;
@@ -313,7 +311,6 @@ impl HostWorkspace {
             )?,
             signed,
             _native_volumes: Vec::new(),
-            _allocation: Some(mounts),
         };
         result.verify().await?;
         result.activate_volumes().await?;

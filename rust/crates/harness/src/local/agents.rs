@@ -224,7 +224,7 @@ impl LocalHarness {
                     verifier.clone(),
                     authority.scope.copy(&mut None)?,
                 );
-                let (workspace, _) = workspace
+                let workspace = workspace
                     .bound_task_view(view, project, scratch.clone(), &owner, &mount_authority)
                     .await?;
                 let (tools, writer) = workspace
