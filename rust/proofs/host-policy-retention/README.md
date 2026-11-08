@@ -7,15 +7,29 @@ Its task scope explicitly authorizes shell calls. It resets both files before
 each child, then checks read-only and outside-root denial and wrong-workspace refusal.
 Unsupported enforcement fails this control; it cannot qualify zero native work.
 
-On Linux with Landlock, capture only policy syscalls from that control:
+On Linux with Landlock and native FUSE mounting, build the control first:
 
 ```sh
-strace -f -qq -e trace=landlock_create_ruleset,landlock_add_rule,landlock_restrict_self \
-  -o retained.trace cargo test --locked -p acyclic-harness \
+cargo test --locked -p acyclic-harness \
   --lib --features filesystem-local,native-execution \
-  local::checkout_tools::publisher::tests::granted::host_executor_grants_reach_shells_and_hooks_without_erasing_refusals \
-  -- --exact --nocapture
+  --no-run --message-format=json
 ```
+
+Set `TEST_EXECUTABLE` to the `executable` field of Cargo's harness library test
+artifact. Trace that executable as the ordinary user, with a privileged tracer
+so the native mount helper retains its required setuid privileges:
+
+```sh
+sudo strace --user="$(id -un)" -f -qq \
+  -e trace=landlock_create_ruleset,landlock_add_rule,landlock_restrict_self \
+  -o retained.trace "$TEST_EXECUTABLE" \
+  local::checkout_tools::publisher::tests::granted::host_executor_grants_reach_shells_and_hooks_without_erasing_refusals \
+  --exact --nocapture
+```
+
+An unprivileged tracer suppresses the helper's setuid elevation and can refuse
+mount startup before the policy control runs. Running the test itself as root
+also changes the authority being qualified; `--user` preserves its user and groups.
 
 Separate ABI queries (`landlock_create_ruleset(NULL, 0, ...)`) from successful
 ruleset creations. Six installed grants require six rulesets. The eight valid
