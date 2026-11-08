@@ -32,7 +32,11 @@ control in `approval-request.md`.
 
 An already settled selected child previously needed a readiness observation and
 an execution observation; preparation needs one. Exact answer reads remain one
-per selected answer. There are no added durability barriers or transport rounds.
+per selected answer. Preparation adds no durability barrier. Calls that already
+crossed the approval owner's effects barrier retain that check. Explicit Allow
+now crosses the same barrier too: its generation selection and directory read
+buy ordering after earlier agent effects, instead of silently bypassing them.
+Their physical request and allocation costs depend on the selected adapter.
 Selection and result construction remain proportional to selected children and
 answer bytes, with temporary observation storage proportional to the selection.
 The per-turn effects barrier and configured approval traversal are separate
