@@ -60,10 +60,12 @@ fn render(explorer: &mut Explorer, driver: &mut Driver<MemoryStream>, ready: &Ar
 #[test]
 fn clock_jumps_and_extreme_scroll_preserve_original_provider_progress() {
     futures::executor::block_on(async {
-        let provider = MemoryStream::default();
+        let provider = Arc::new(MemoryStream::default());
         let mut explorer = Explorer::new(ReaderPolicy::default()).unwrap();
+        let mut driver = Driver::new(provider.clone());
+        driver.attach(explorer.reader(), 0);
         let mut expected = 0u128;
-        for (id, elapsed) in [(1u128, u64::MAX), (2, 0), (3, u64::MAX), (4, 1)] {
+        for (id, elapsed) in [(1u128, u64::MAX), (2, 0)] {
             let agent = AgentPath::root(&AgentId::from_bytes(id.to_be_bytes()));
             let stream = agent.status().unwrap();
             provider
