@@ -1,0 +1,11 @@
+--- a/typescript/packages/stream/fuzz/fuzz_targets/session.rs
++++ b/typescript/packages/stream/fuzz/fuzz_targets/session.rs
+@@ -13,7 +13,7 @@
+         &DRIVER,
+         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+         "decode",
+-        "",
++        "startupCrash",
+     )?
+     .run()?
+     .call(&serde_json::json!({"action":"decode", "hex":driver::hex(input)?}))?;
