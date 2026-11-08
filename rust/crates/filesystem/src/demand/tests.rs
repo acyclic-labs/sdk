@@ -787,10 +787,50 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     let cursor = first.value.next.ok_or("second root entry missing")?;
     assert!(matches!(
         source
-            .list_page(reference, &path("/directory")?, Some(cursor), 1, WorkBudget::UNBOUNDED, &cancellation)
+            .list_page(reference, &path("/directory")?, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleCursor)
     ));
+    // Each consumer retains its own continuation. Opening unrelated consumers
+    // must neither evict this position nor make its next page replay the prefix.
+    let directory = path("/")?;
+    let mut peers = Vec::new();
+    for _ in 0..1024 {
+        let mut peer = source
+            .list_page(
+                reference,
+                &directory,
+                None,
+                1,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        peer.value
+            .publication
+            .as_mut()
+            .ok_or("peer publication absent")?
+            .accept(&mut crate::kernel::KernelAccounting::standalone(
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ))?;
+        peers.push(peer.value.next.ok_or("peer continuation absent")?);
+    }
+    let resumed = source
+        .list_page(
+            reference,
+            &directory,
+            Some(cursor),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(resumed.value.entries.len(), 1);
+    assert_eq!(resumed.work.source_entries_visited, 0);
+    assert!(resumed.value.next.is_none());
+    drop(resumed);
+    drop(peers);
     source.invalidate();
     assert!(matches!(
         source
