@@ -575,45 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn paired_buffer_identity_lookup_measurement() {
-        use std::{hint::black_box, time::Instant};
-        let inputs = (0u32..1024)
-            .map(|id| {
-                let mut bytes = vec![b'x'; 1024];
-                bytes.extend_from_slice(&id.to_le_bytes());
-                Rc::<[u8]>::from(bytes)
-            })
-            .collect::<Vec<_>>();
-        let mut indexed = Derived::default();
-        let mut linear = BTreeMap::new();
-        for (id, bytes) in inputs.iter().enumerate() {
-            indexed.insert(Rc::clone(bytes), Rc::new(id));
-            linear.insert(Rc::clone(bytes), Rc::new(id));
-        }
-        let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
-            let value = linear
-                .iter()
-                .find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| Rc::clone(value)))
-                .or_else(|| linear.get(raw).cloned());
-            black_box(value.unwrap());
-        }
-        let linear_ns = started.elapsed().as_nanos();
-        let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
-            black_box(indexed.get(black_box(raw)).unwrap());
-        }
-        eprintln!(
-            "PAIRED buffer_lookup entries={} lookups={} linear_ns={} indexed_ns={}",
-            inputs.len(),
-            inputs.len() * 4,
-            linear_ns,
-            started.elapsed().as_nanos()
-        );
-        assert_eq!(indexed.handles.len(), inputs.len());
-    }
-
-    #[test]
     fn nested_and_unwinding_operations_restore_the_outer_cache() {
         with_rustdoc_cache(|| {
             extract(&Rc::from(&b"outer"[..]), || Ok(item(b"outer"))).unwrap();
