@@ -586,6 +586,6 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
             native_test_path("shared-seed.bin").components()[0].clone(),
         ]
     );
-    assert_eq!(page.next_cursor, None);
+    assert!(page.next_cursor.is_none());
     Ok(())
 }

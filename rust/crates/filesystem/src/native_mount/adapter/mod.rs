@@ -152,6 +152,7 @@ pub use runtime::initialize_native_mount_services;
 use runtime::invoke;
 pub(super) use runtime::{CallbackRuntime, PreparedCallbackWait};
 mod source_io;
+pub(super) use source_io::CaptureProducer;
 pub use source_io::NativeSourceIoLease;
 include!("file_callbacks.rs");
 include!("detached.rs");

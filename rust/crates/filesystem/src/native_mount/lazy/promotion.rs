@@ -226,11 +226,7 @@ where
             loop {
                 let page = self.directory_page(
                     &directory,
-                    cursor.as_ref().map(
-                        |(bytes, _): &(Vec<u8>, crate::demand::SourcePayloadOwnership)| {
-                            bytes.as_slice()
-                        },
-                    ),
+                    cursor.as_ref(),
                     DIRECTORY_PROMOTION_PAGE,
                     work,
                 )?;
@@ -253,8 +249,7 @@ where
                         ));
                     }
                 }
-                let (_, next, ownership) = page.into_parts();
-                cursor = next.map(|bytes| (bytes, ownership));
+                cursor = page.next_cursor;
                 if cursor.is_none() {
                     break;
                 }
