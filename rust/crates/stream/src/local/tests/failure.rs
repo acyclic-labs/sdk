@@ -330,14 +330,27 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
             Ok::<_, Box<dyn std::error::Error>>(())
         });
         tokio::pin!(operation);
+        let mut parked = false;
         loop {
             tokio::select! {
-                result = &mut operation => { result?; break; }
+                result = futures::future::poll_fn(|cx| {
+                    if parked {
+                        return Poll::Pending;
+                    }
+                    let result = operation.as_mut().poll(cx);
+                    // Freeze this observer before the worker publishes failure,
+                    // then drive the worker solely through its real boundaries.
+                    if result.is_pending() && failing.load(Ordering::Acquire) {
+                        parked = true;
+                    }
+                    result
+                }) => { result?; break; }
                 boundary = boundaries.recv() => {
                     let boundary = boundary.ok_or("native failure boundary producer ended")?;
-                    if failing.load(Ordering::Acquire) && boundary.name == "task:completed" {
+                    if parked && stream.failure().is_some() && boundary.name == "task:completed" {
                         let pending = futures::poll!(operation.as_mut()).is_pending();
                         boundary.release();
+                        parked = false;
                         assert!(pending, "failure watch replaced the original native I/O error");
                     } else {
                         boundary.release();
