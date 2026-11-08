@@ -348,7 +348,7 @@ export function qualifyNativeSignalMutationsLoom(run = runCommand) {
     name: "NativeSignal", recovery,
     source: "../rust/crates/native-runtime/src/wake.rs",
     model: "../rust/crates/native-runtime/tests/process_signal_loom.rs",
-    mutations: [["let result = ready(&mut state);", "let result = std::task::Poll::Pending;",
+    mutations: [["    if ready(&state) {\n        drop(state);", "    if false {\n        drop(state);",
       "original terminal passed observer registration without a wake"]],
     qualify: (run, expectedFailure) => qualifyLoom("acyclic-native-runtime", "process_signal_loom", [], run, {
       expectedFailure, recovery, filter: "settlement_cannot_pass_waker_registration",

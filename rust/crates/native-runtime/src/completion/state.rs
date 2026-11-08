@@ -85,26 +85,24 @@ impl<T> CompletionState<T> {
         state: &CompletionMutex<Self>,
         waker: &Waker,
     ) -> Poll<CompletionOutcome<T>> {
-        crate::wake::poll_registered(
+        let mut state = std::task::ready!(crate::wake::poll_registered(
             || {
                 state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
             },
             waker,
-            |state| {
-                if !state.task_pending {
-                    if let Some(panic) = state.panic.take() {
-                        return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
-                    }
-                    if let Some(result) = state.result.take() {
-                        return Poll::Ready(CompletionOutcome::Result(result));
-                    }
-                }
-                Poll::Pending
-            },
+            |state| !state.task_pending && (state.panic.is_some() || state.result.is_some()),
             |state| &mut state.waker,
-        )
+        ));
+        if let Some(panic) = state.panic.take() {
+            return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
+        }
+        state
+            .result
+            .take()
+            .map(CompletionOutcome::Result)
+            .map_or(Poll::Pending, Poll::Ready)
     }
 }
 
@@ -125,15 +123,10 @@ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
             },
             waker,
-            |state| {
-                if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            },
+            |state| !state.task_pending && (state.result.is_some() || state.panic.is_some()),
             |state| &mut state.waker,
         )
+        .map(drop)
     }
 
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {

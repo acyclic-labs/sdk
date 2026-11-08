@@ -1,25 +1,27 @@
 --- a/rust/crates/native-runtime/src/wake.rs
 +++ b/rust/crates/native-runtime/src/wake.rs
-@@ -63,43 +63,6 @@
+@@ -63,45 +63,6 @@
      }
  }
  
 -/// Registers one observer without invoking its clone or retirement callbacks
 -/// under the owner's lock. Unchanged observers and terminal reads use one
 -/// lock and no clone. A replacement clones outside the lock, then rechecks
--/// publication under the same lock before installing its wake.
--pub(crate) fn poll_registered<S, T, G>(
+-/// publication under the same lock before installing its wake. Readiness is
+-/// observed without taking the outcome; a returned guard retains its custody
+-/// until every unused incoming observer has retired outside the lock.
+-pub(crate) fn poll_registered<S, G>(
 -    mut lock: impl FnMut() -> G,
 -    waker: &std::task::Waker,
--    mut ready: impl FnMut(&mut S) -> std::task::Poll<T>,
+-    ready: impl Fn(&S) -> bool,
 -    slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
--) -> std::task::Poll<T>
+-) -> std::task::Poll<G>
 -where
 -    G: std::ops::DerefMut<Target = S>,
 -{
 -    let mut state = lock();
--    if let std::task::Poll::Ready(value) = ready(&mut state) {
--        return std::task::Poll::Ready(value);
+-    if ready(&state) {
+-        return std::task::Poll::Ready(state);
 -    }
 -    if slot(&mut state)
 -        .as_ref()
@@ -30,15 +32,15 @@
 -    drop(state);
 -    let waker = waker.clone();
 -    let mut state = lock();
--    let result = ready(&mut state);
--    let retired = if result.is_pending() {
--        slot(&mut state).replace(waker)
--    } else {
--        Some(waker)
--    };
+-    if ready(&state) {
+-        drop(state);
+-        drop(waker);
+-        return std::task::Poll::Ready(lock());
+-    }
+-    let retired = slot(&mut state).replace(waker);
 -    drop(state);
 -    drop(retired);
--    result
+-    std::task::Poll::Pending
 -}
 -
  #[cfg(all(test, not(loom)))]
@@ -46,7 +48,7 @@
      use super::*;
 --- a/rust/crates/native-runtime/src/completion/state.rs
 +++ b/rust/crates/native-runtime/src/completion/state.rs
-@@ -75,36 +75,21 @@
+@@ -75,34 +75,21 @@
      }
  }
  
@@ -60,32 +62,29 @@
 -        state: &CompletionMutex<Self>,
 -        waker: &Waker,
 -    ) -> Poll<CompletionOutcome<T>> {
--        crate::wake::poll_registered(
+-        let mut state = std::task::ready!(crate::wake::poll_registered(
 -            || {
 -                state
 -                    .lock()
 -                    .unwrap_or_else(std::sync::PoisonError::into_inner)
 -            },
 -            waker,
--            |state| {
--                if !state.task_pending {
--                    if let Some(panic) = state.panic.take() {
--                        return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
--                    }
--                    if let Some(result) = state.result.take() {
--                        return Poll::Ready(CompletionOutcome::Result(result));
--                    }
--                }
--                Poll::Pending
--            },
+-            |state| !state.task_pending && (state.panic.is_some() || state.result.is_some()),
 -            |state| &mut state.waker,
--        )
+-        ));
+-        if let Some(panic) = state.panic.take() {
+-            return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
 +    pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
 +        if !self.task_pending
 +            && let Some(result) = self.result.take()
 +        {
 +            return Poll::Ready(result);
-+        }
+         }
+-        state
+-            .result
+-            .take()
+-            .map(CompletionOutcome::Result)
+-            .map_or(Poll::Pending, Poll::Ready)
 +        if !self
 +            .waker
 +            .as_ref()
@@ -97,7 +96,7 @@
      }
  }
  
-@@ -119,21 +104,15 @@
+@@ -117,16 +104,15 @@
  impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
      #[cfg(feature = "test-support")]
      fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
@@ -107,15 +106,10 @@
 -                    .unwrap_or_else(std::sync::PoisonError::into_inner)
 -            },
 -            waker,
--            |state| {
--                if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
--                    Poll::Ready(())
--                } else {
--                    Poll::Pending
--                }
--            },
+-            |state| !state.task_pending && (state.result.is_some() || state.panic.is_some()),
 -            |state| &mut state.waker,
 -        )
+-        .map(drop)
 +        let mut state = self
 +            .lock()
 +            .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -187,7 +181,7 @@
              return;
 --- a/rust/crates/native-runtime/src/completion/fence.rs
 +++ b/rust/crates/native-runtime/src/completion/fence.rs
-@@ -53,32 +53,22 @@
+@@ -53,26 +53,22 @@
              drop(state);
              self.complete();
          } else {
@@ -209,13 +203,7 @@
 -                    .unwrap_or_else(std::sync::PoisonError::into_inner)
 -            },
 -            waker,
--            |state| {
--                if state.complete {
--                    Poll::Ready(())
--                } else {
--                    Poll::Pending
--                }
--            },
+-            |state| state.complete,
 -            |state| &mut state.successor,
 -        )
 -        .is_ready()
@@ -234,16 +222,17 @@
      pub(crate) fn complete(&self) {
 --- a/rust/crates/native-runtime/src/process_tree/events/signal.rs
 +++ b/rust/crates/native-runtime/src/process_tree/events/signal.rs
-@@ -33,11 +33,18 @@
+@@ -33,12 +33,18 @@
      }
  
      pub(super) fn poll(&self, context: &mut Context<'_>) -> Poll<ProcessWaitOutcome> {
--        crate::wake::poll_registered(
+-        let state = std::task::ready!(crate::wake::poll_registered(
 -            || self.0.lock().unwrap_or_else(PoisonError::into_inner),
 -            context.waker(),
--            |state| state.outcome.clone().map_or(Poll::Pending, Poll::Ready),
+-            |state| state.outcome.is_some(),
 -            |state| &mut state.waker,
--        )
+-        ));
+-        state.outcome.clone().map_or(Poll::Pending, Poll::Ready)
 +        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
 +        if let Some(outcome) = &state.outcome {
 +            Poll::Ready(outcome.clone())

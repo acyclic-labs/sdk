@@ -6,6 +6,34 @@ and final installation share the original state lock. Incoming waker cloning
 and replaced-waker destruction run outside that lock. Unchanged-waker polls
 retain their original one-lock, zero-clone path.
 
+Readiness observes the outcome without removing it. If a clone callback
+publishes a terminal outcome, the unused incoming waker retires before the
+caller takes that outcome. An unwind therefore leaves the original result
+available to the next poll. This applies to successful results, typed errors
+and a dropped original producer.
+
+`original_driver_keeps_publication_when_unused_observer_retirement_unwinds`
+uses the public completion and its original producer for all three outcomes.
+The shared test-support waker publishes during clone and unwinds during that
+clone's retirement, while the caller's waker remains alive. After catching the
+original panic, the next poll must immediately return the original outcome and
+retire its original allocation credit. No readiness wait or timer is involved.
+
+`original-terminal-custody.patch` restores the complete six original production
+files from `02c110ba13adfa7b4f67eca19415587f972ec798`, retaining this property:
+
+```sh
+git apply rust/proofs/native-waker-registration/original-terminal-custody.patch
+git diff --exit-code 02c110ba13adfa7b4f67eca19415587f972ec798 -- rust/crates/native-runtime/src/wake.rs rust/crates/native-runtime/src/completion/state.rs rust/crates/native-runtime/src/completion/mod.rs rust/crates/native-runtime/src/completion/fence.rs rust/crates/native-runtime/src/process_tree/events/signal.rs rust/crates/native-runtime/src/workers/job_observation_tests.rs
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(original_driver_keeps_publication_when_unused_observer_retirement_unwinds)'
+git apply -R rust/proofs/native-waker-registration/original-terminal-custody.patch
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(original_driver_keeps_publication_when_unused_observer_retirement_unwinds)'
+```
+
+Require the original semantic failure `unused observer retirement discarded
+the original publication`. A compiler failure does not qualify this control.
+Restore the patch even if qualification fails.
+
 `original_driver_replacement_preserves_reentrant_publication_and_unwind`
 replaces an observer through public `NativeCompletion::from_driver`. The
 retiring observer checks the original lock and publishes through the original
@@ -58,9 +86,12 @@ dependencies in their ordinary production mode.
 
 The helper has no loop, scan, wait, allocation, payload copy, syscall,
 durability barrier or round trip. A terminal read or unchanged observer takes
-one lock. A new or replaced observer takes two locks instead of one: the
-second checks publication after arbitrary clone callbacks and retains exactly
-one incoming clone. Fence and controlled-terminal unchanged-waker clones fall
+one lock. A new or replaced pending observer takes two locks instead of one:
+the second checks publication after arbitrary clone callbacks and retains
+exactly one incoming clone. If that clone publishes a terminal outcome, a
+third lock reacquires its original state after unused-waker retirement;
+the original two-lock path could discard the outcome during retirement unwind.
+Fence and controlled-terminal unchanged-waker clones fall
 from one to zero; completion and signal unchanged-waker clones remain zero.
 These are bounded core bookkeeping counts, independent of history or agents;
 they do not bound user callback work or certify worker-queue admission.

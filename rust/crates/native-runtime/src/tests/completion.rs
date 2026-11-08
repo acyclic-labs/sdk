@@ -34,8 +34,13 @@ fn original_driver_keeps_publication_when_unused_observer_retirement_unwinds() -
         let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Pin::new(&mut observation).poll(&mut Context::from_waker(&waker))
         }));
+        let Err(payload) = retired else {
+            return Err(io::Error::other(
+                "original observer retirement did not unwind",
+            ));
+        };
         assert_eq!(
-            retired.unwrap_err().downcast_ref::<&str>(),
+            payload.downcast_ref::<&str>(),
             Some(&"original unused observer retirement")
         );
         let Poll::Ready(result) =
@@ -45,8 +50,14 @@ fn original_driver_keeps_publication_when_unused_observer_retirement_unwinds() -
         };
         match terminal {
             0 => assert_eq!(result?, 37),
-            1 => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied),
-            _ => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe),
+            1 => assert_eq!(
+                result.err().map(|error| error.kind()),
+                Some(io::ErrorKind::PermissionDenied)
+            ),
+            _ => assert_eq!(
+                result.err().map(|error| error.kind()),
+                Some(io::ErrorKind::BrokenPipe)
+            ),
         }
         drop(observation);
         drop(waker);

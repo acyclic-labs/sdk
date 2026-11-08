@@ -1,13 +1,11 @@
-diff --git a/rust/crates/native-runtime/src/wake.rs b/rust/crates/native-runtime/src/wake.rs
-index 703162b61a3..96fb8abef37 100644
 --- a/rust/crates/native-runtime/src/wake.rs
 +++ b/rust/crates/native-runtime/src/wake.rs
-@@ -89,7 +89,7 @@ where
+@@ -91,7 +91,7 @@
      drop(state);
      let waker = waker.clone();
      let mut state = lock();
--    let result = ready(&mut state);
-+    let result = std::task::Poll::Pending;
-     let retired = if result.is_pending() {
-         slot(&mut state).replace(waker)
-     } else {
+-    if ready(&state) {
++    if false {
+         drop(state);
+         drop(waker);
+         return std::task::Poll::Ready(lock());

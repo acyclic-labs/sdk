@@ -69,13 +69,7 @@ impl OperationFence {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
             },
             waker,
-            |state| {
-                if state.complete {
-                    Poll::Ready(())
-                } else {
-                    Poll::Pending
-                }
-            },
+            |state| state.complete,
             |state| &mut state.successor,
         )
         .is_ready()

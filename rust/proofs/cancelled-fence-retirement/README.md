@@ -16,12 +16,13 @@ original link before releasing the first operation, then completes the same
 third operation and reads its actual file length. Its gate owner releases on
 unwind, so an assertion failure cannot strand a worker.
 
-The retained inverse restores the complete production fence implementation
+The retained inverse restores the complete production fence implementation and
+its shared registration dependencies
 from `ef364fd00a3973e2d7afaff1fc981fccc4c3e941`, keeping that same property:
 
 ```sh
 git apply rust/proofs/cancelled-fence-retirement/original-fence.patch
-git diff --exit-code ef364fd00a3973e2d7afaff1fc981fccc4c3e941 -- rust/crates/native-runtime/src/completion/fence.rs
+git diff --exit-code ef364fd00a3973e2d7afaff1fc981fccc4c3e941 -- rust/crates/native-runtime/src/wake.rs rust/crates/native-runtime/src/completion/state.rs rust/crates/native-runtime/src/completion/mod.rs rust/crates/native-runtime/src/completion/fence.rs rust/crates/native-runtime/src/process_tree/events/signal.rs rust/crates/native-runtime/src/workers/job_observation_tests.rs
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_file_successor_links_before_observer_retirement)'
 git apply -R rust/proofs/cancelled-fence-retirement/original-fence.patch
 ```

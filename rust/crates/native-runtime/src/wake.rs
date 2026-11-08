@@ -66,19 +66,21 @@ impl std::task::Wake for NativeWake {
 /// Registers one observer without invoking its clone or retirement callbacks
 /// under the owner's lock. Unchanged observers and terminal reads use one
 /// lock and no clone. A replacement clones outside the lock, then rechecks
-/// publication under the same lock before installing its wake.
-pub(crate) fn poll_registered<S, T, G>(
+/// publication under the same lock before installing its wake. Readiness is
+/// observed without taking the outcome; a returned guard retains its custody
+/// until every unused incoming observer has retired outside the lock.
+pub(crate) fn poll_registered<S, G>(
     mut lock: impl FnMut() -> G,
     waker: &std::task::Waker,
-    mut ready: impl FnMut(&mut S) -> std::task::Poll<T>,
+    ready: impl Fn(&S) -> bool,
     slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
-) -> std::task::Poll<T>
+) -> std::task::Poll<G>
 where
     G: std::ops::DerefMut<Target = S>,
 {
     let mut state = lock();
-    if let std::task::Poll::Ready(value) = ready(&mut state) {
-        return std::task::Poll::Ready(value);
+    if ready(&state) {
+        return std::task::Poll::Ready(state);
     }
     if slot(&mut state)
         .as_ref()
@@ -89,15 +91,15 @@ where
     drop(state);
     let waker = waker.clone();
     let mut state = lock();
-    let result = ready(&mut state);
-    let retired = if result.is_pending() {
-        slot(&mut state).replace(waker)
-    } else {
-        Some(waker)
-    };
+    if ready(&state) {
+        drop(state);
+        drop(waker);
+        return std::task::Poll::Ready(lock());
+    }
+    let retired = slot(&mut state).replace(waker);
     drop(state);
     drop(retired);
-    result
+    std::task::Poll::Pending
 }
 
 #[cfg(all(test, not(loom)))]
