@@ -577,10 +577,18 @@ async fn selected_discovery_survives_a_serving_process_restart() {
         // Join actual physical exit and pipe retirement before reopening the
         // SAME durable home. A live client must terminate when its owner dies.
         server.kill().await;
-        assert!(matches!(
-            selected.select(agent).await,
-            Err(AgentExchangeError::Session(StreamError::Unavailable))
-        ));
+        let failure = match selected.select(agent).await {
+            Err(failure) => failure,
+            Ok(_) => panic!("a retired serving process must terminate discovery"),
+        };
+        assert!(
+            matches!(
+                &failure,
+                AgentExchangeError::Session(error)
+                    if error.code() == StreamError::Unavailable.code()
+            ),
+            "retired serving process returned {failure:?}"
+        );
     }
     assert!(model.steps.lock().unwrap().is_empty());
 }

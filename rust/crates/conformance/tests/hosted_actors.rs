@@ -543,10 +543,9 @@ async fn run(producer: Producer) -> Outcome {
         let failure = result.expect_err("closed producer must fail the waiting client");
         assert!(
             matches!(
-                failure.cause,
-                Some(acyclic_conformance::client::Cause::Stream(
-                    StreamError::Unavailable
-                ))
+                &failure.cause,
+                Some(acyclic_conformance::client::Cause::Stream(error))
+                    if error.code() == StreamError::Unavailable.code()
             ),
             "closed producer returned {failure:?}"
         );
