@@ -116,7 +116,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, LazyWorkspaceError> {
                 )?;
                 let phase = match phase_tag {
                     0 => LazyDirectoryPhase::Source(None),
-                    1 => LazyDirectoryPhase::Source(Some(SourceCursor { source, token: 11 })),
+                    1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(source, 11))),
                     2 => LazyDirectoryPhase::Authored(None),
                     _ => {
                         let encoding = crate::kernel::NameEncoding::native_for_profile(profile);
