@@ -3,7 +3,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { serve, spend } from "./model-driver.js";
-import { SessionNode, checkpoint } from "./session-node.js";
+import { SessionNode, checkpoint, sessionInterest } from "./session-node.js";
 
 // Only the transport factory is substituted: the public raw-follow wrapper,
 // StreamSessions, and Connect's deadline/link helpers run unchanged. The clock
@@ -60,7 +60,7 @@ const sessions = new StreamSessions(async (node, signal) => {
     }
   } }, async send(bytes, writeSignal) {
     const input = fromBinary(wire.SessionFrameSchema, bytes);
-    const subscription = input.body.case === "interest" && input.body.value.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events");
+    const subscription = sessionInterest(input)?.upsert.some(value => value.kind.case === "follow" && value.kind.value.resource === "streams:/events");
     const acknowledgement = input.body.case === "ack";
     if (!writesReleased && ((scenario === "deadline-subscription" && subscription) || (scenario === "deadline-ack" && acknowledgement))) {
       blocked = true;

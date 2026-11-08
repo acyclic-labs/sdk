@@ -11,6 +11,8 @@ type Route = { id: bigint; generation: bigint; path: string; next: bigint; end?:
 type Connection = { node: string; output: SessionQueue<wire.SessionFrame>; routes: Map<bigint, Route>; credit: Credit; closed: boolean };
 export const frame = (id: bigint, generation: bigint, body: wire.SessionFrame["body"]): wire.SessionFrame => create(wire.SessionFrameSchema, { channelId: id, generation, body });
 export const checkpoint = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+export const sessionInterest = ({ body }: wire.SessionFrame): wire.SessionInterest | undefined =>
+  body.case === "hello" ? body.value.interest : body.case === "interest" ? body.value : undefined;
 
 /** Protocol peer for client tests, with finite aggregate and channel credit. */
 export class SessionNode {
