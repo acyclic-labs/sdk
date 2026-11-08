@@ -1,16 +1,18 @@
-use super::driver;
+use super::{driver, field};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::path::Path;
 
-fn verify(state: &Value, warm: u8, samples: u8) {
+fn verify(state: &Value, warm: u8, samples: u8) -> std::io::Result<()> {
     let records = u64::from(1 + warm + samples);
     assert_eq!(
-        state["isolated"], true,
+        *field(state, "isolated")?,
+        true,
         "runtime latency workloads collided: {state}"
     );
-    assert_eq!(state["accepted"], 2 * records);
-    assert_eq!(state["tails"], json!([records, records]));
+    assert_eq!(*field(state, "accepted")?, 2 * records);
+    assert_eq!(*field(state, "tails")?, json!([records, records]));
+    Ok(())
 }
 
 proptest! {
@@ -30,7 +32,7 @@ proptest! {
         let state = driver::Driver::shared(&DRIVER, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")?
             .run()?.call(&json!({ "action":"latency", "path":name,
             "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }))?;
-        verify(&state, warm, samples);
+        verify(&state, warm, samples)?;
     }
 }
 
@@ -43,13 +45,16 @@ fn shared_namespace() -> std::io::Result<()> {
     let state = real.call(&json!({ "action":"latency", "path":"before",
         "work": { "warm":1, "samples":2, "reverse":false, "shared":true } }))?;
     assert!(
-        state["rejection"]
+        field(&state, "rejection")?
             .as_str()
-            .unwrap()
+            .ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("latency rejection is not a string: {state}"),
+            ))?
             .contains("initial latency append failed")
     );
-    assert_eq!(state["accepted"], 4);
-    verify(&state, 1, 2);
+    assert_eq!(*field(&state, "accepted")?, 4);
+    verify(&state, 1, 2)?;
     Ok(())
 }
 

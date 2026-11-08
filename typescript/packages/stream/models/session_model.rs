@@ -1,7 +1,7 @@
 //! JavaScript runs atomically between awaits. Enumerate all bounded external
 //! transport-event orders with loom, then replay each distinct order against
 //! the real TypeScript module, including paused transport writes.
-use super::driver;
+use super::{driver, field};
 use serde_json::json;
 use std::path::Path;
 
@@ -16,22 +16,23 @@ use schedules::traces;
 // remaining models exercise JavaScript provider selection and platform I/O.
 fn follow_selection(fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    for trace in traces(&["releaseSelection"], &["abort"]) {
+    for trace in traces(&["releaseSelection"], &["abort"])? {
         let mut driver = driver::Driver::configured(&root, "followSelect", fault)?;
         driver.call(&json!({"action":"ready"}))?;
         for action in trace {
             let state = driver.call(&json!({"action":action}))?;
             if action == "abort" {
                 assert_eq!(
-                    state["settled"], true,
+                    *field(&state, "settled")?,
+                    true,
                     "follow cancellation must not wait for provider selection"
                 );
-                assert_eq!(state["active"], 0);
+                assert_eq!(*field(&state, "active")?, 0);
             }
         }
         let state = driver.call(&json!({"action":"drop"}))?;
-        assert_eq!(state["active"], 0);
-        assert_eq!(state["outstanding"], 0);
+        assert_eq!(*field(&state, "active")?, 0);
+        assert_eq!(*field(&state, "outstanding")?, 0);
     }
     Ok(())
 }
@@ -68,7 +69,7 @@ fn parked_model_owner_process() -> std::io::Result<()> {
             "model exited before parking",
         )
     })?;
-    assert_eq!(ack["ack"], "parked", "{ack}");
+    assert_eq!(*field(&ack, "ack")?, "parked", "{ack}");
     std::io::Write::write_all(&mut std::io::stderr(), b"parked\n")?;
     let mut release = [0];
     std::io::Read::read_exact(&mut std::io::stdin(), &mut release)?;
@@ -79,10 +80,10 @@ fn parked_model_owner_process() -> std::io::Result<()> {
 }
 /// Ends a real owner by forced exit or loss of its original control producer.
 /// Shared stderr reaches EOF only once its model process has exited too.
-fn owner_exit_ends_its_model(fault: &str, kill: bool) -> Result<(), String> {
+fn owner_exit_ends_its_model(fault: &str, kill: bool) -> std::io::Result<()> {
     use std::io::{BufRead, Read};
     let name = concat!(module_path!(), "::parked_model_owner_process");
-    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut owner = std::process::Command::new(std::env::current_exe()?)
         .args([
             "--exact",
             name.split_once("::").map_or(name, |(_, test)| test),
@@ -93,49 +94,63 @@ fn owner_exit_ends_its_model(fault: &str, kill: bool) -> Result<(), String> {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut shared = std::io::BufReader::new(owner.stderr.take().unwrap());
-    let mut line = String::new();
-    let parked = loop {
-        line.clear();
-        if shared.read_line(&mut line).unwrap() == 0 {
-            break false;
+        .spawn()?;
+    let acknowledged = (|| -> std::io::Result<_> {
+        let mut shared = std::io::BufReader::new(owner.stderr.take().ok_or_else(|| {
+            std::io::Error::other("model owner has no piped stderr acknowledgement")
+        })?);
+        let mut line = String::new();
+        let parked = loop {
+            line.clear();
+            if shared.read_line(&mut line)? == 0 {
+                break false;
+            }
+            if line == "parked\n" {
+                break true;
+            }
+        };
+        if parked && kill {
+            owner.kill()?;
         }
-        if line == "parked\n" {
-            break true;
-        }
-    };
-    if parked {
-        if kill {
-            owner.kill().unwrap();
-        } else {
-            drop(owner.stdin.take());
-        }
-    }
-    let status = owner.wait().unwrap();
+        Ok((parked, shared))
+    })();
+    // Every acknowledgement/error path closes the original producer before waiting.
+    drop(owner.stdin.take());
+    let stopped = owner.wait();
+    let (parked, mut shared) = acknowledged?;
+    let status = stopped?;
     if !parked {
-        return Err("the owner never saw its model park".into());
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the owner never saw its model park",
+        ));
     }
     assert!(
         !status.success(),
         "the parked owner cannot complete successfully"
     );
     // Returns only when every holder of the pipe, the parked model included, has exited.
-    shared.read_to_end(&mut Vec::new()).unwrap();
+    shared.read_to_end(&mut Vec::new())?;
     Ok(())
 }
 #[test]
 fn a_parked_model_process_exits_when_its_owner_is_killed() {
-    owner_exit_ends_its_model("", true).unwrap();
+    super::completed(owner_exit_ends_its_model("", true));
 }
 #[test]
 fn a_parked_model_process_exits_when_its_original_control_producer_is_lost() {
-    owner_exit_ends_its_model("", false).unwrap();
+    super::completed(owner_exit_ends_its_model("", false));
 }
 #[test]
 fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
-    assert!(owner_exit_ends_its_model("startupCrash", true).is_err());
+    let result = owner_exit_ends_its_model("startupCrash", true);
+    assert!(
+        result.as_ref().is_err_and(|error| {
+            error.kind() == std::io::ErrorKind::UnexpectedEof
+                && error.to_string() == "the owner never saw its model park"
+        }),
+        "startup crash must lose the real parking acknowledgement: {result:?}"
+    );
 }
 
 /// Connects exactly `connections` times in one command against a budget of `steps`: the command itself is one step
@@ -150,7 +165,10 @@ fn connect_at_budget(
     Ok(match driver.answer()? {
         Some(answer) => {
             assert!(answer.get("error").is_none(), "{answer}");
-            assert_eq!(answer["result"]["connections"], connections);
+            assert_eq!(
+                *field(field(&answer, "result")?, "connections")?,
+                connections
+            );
             Ok(driver.remaining)
         }
         None => Err(driver.exit_code()?),
@@ -223,7 +241,10 @@ fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() -> std::io:
     driver.run()?;
     assert_eq!(driver.remaining, 16);
     assert_eq!(
-        driver.call(&json!({"action":"connect", "count":1}))?["connections"],
+        *field(
+            &driver.call(&json!({"action":"connect", "count":1}))?,
+            "connections"
+        )?,
         1
     );
     assert_eq!(driver.remaining, 14);
@@ -244,15 +265,20 @@ fn rejected_subscription(fault: &str) -> std::io::Result<()> {
     let mut driver = driver::Driver::configured(&root, "rejection", fault)?;
     let state = driver.call(&json!({"action":"ready"}))?;
     assert_eq!(
-        state["settled"], true,
+        *field(&state, "settled")?,
+        true,
         "a rejected resubscription must settle its real WASM cursor"
     );
-    assert_eq!(state["code"], "unavailable");
+    assert_eq!(*field(&state, "code")?, "unavailable");
     assert_eq!(
-        state["failedSends"], 2,
+        *field(&state, "failedSends")?,
+        2,
         "a failed transport send must retry before a wire refusal settles its cursor"
     );
-    assert_eq!(driver.call(&json!({"action":"drop"}))?["active"], 0);
+    assert_eq!(
+        *field(&driver.call(&json!({"action":"drop"}))?, "active")?,
+        0
+    );
     Ok(())
 }
 #[test]
@@ -267,71 +293,79 @@ fn negative_control_discards_the_io_rejection() {
 
 fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    for trace in traces(&["expire"], events) {
+    for trace in traces(&["expire"], events)? {
         let mut driver = driver::Driver::configured(&root, "deadline", fault)?;
         let ready = driver.call(&json!({"action":"ready"}))?;
-        assert_eq!(ready["active"], 2);
+        assert_eq!(*field(&ready, "active")?, 2);
         let mut terminal = None;
         for action in trace {
             let state = driver.call(&json!({"action":action}))?;
             if action == "expire" || action == "cleanup" {
                 let expected = *terminal.get_or_insert(if action == "expire" { 4 } else { 1 });
                 assert_eq!(
-                    state["settled"], true,
+                    *field(&state, "settled")?,
+                    true,
                     "deadline or cleanup must settle the real raw follow: {action}"
                 );
                 assert_eq!(
-                    state["code"], expected,
+                    *field(&state, "code")?,
+                    expected,
                     "the first terminal event must retain its status"
                 );
-                assert_eq!(state["timerActive"], false);
+                assert_eq!(*field(&state, "timerActive")?, false);
             }
             if terminal.is_some() {
                 assert_eq!(
-                    state["seen"], state["stoppedAt"],
+                    *field(&state, "seen")?,
+                    *field(&state, "stoppedAt")?,
                     "no delivery may cross the terminal boundary"
                 );
             }
             if action == "reconnect" {
                 assert_eq!(
-                    state["connecting"], true,
+                    *field(&state, "connecting")?,
+                    true,
                     "the model must pause the real reconnection await"
                 );
             }
         }
         let state = driver.call(&json!({"action":"finish"}))?;
-        assert_eq!(state["settled"], true);
+        assert_eq!(*field(&state, "settled")?, true);
         assert_eq!(
-            state["connections"],
+            *field(&state, "connections")?,
             if events.contains(&"reconnect") { 2 } else { 1 },
             "a logical deadline must not close the shared connection"
         );
         assert_eq!(
-            state["timerCreated"], 1,
+            *field(&state, "timerCreated")?,
+            1,
             "only the logical deadline owns a timer"
         );
         assert_eq!(
-            state["timerCleaned"], 1,
+            *field(&state, "timerCleaned")?,
+            1,
             "wrapper cleanup must release its timer once"
         );
         assert_eq!(
-            state["active"], 1,
+            *field(&state, "active")?,
+            1,
             "deadline must remove only its own interest"
         );
         assert_eq!(
-            state["siblingSeen"], 1,
+            *field(&state, "siblingSeen")?,
+            1,
             "the shared session must survive its sibling's deadline"
         );
         assert_eq!(
-            state["outstanding"]
+            field(&state, "outstanding")?
                 .as_u64()
                 .is_some_and(|frames| frames <= 2),
             true,
             "batched aggregate credit must stay bounded by delivered frames"
         );
         let stopped = driver.call(&json!({"action":"stop"}))?;
-        assert_eq!(stopped["active"], 0);
-        assert_eq!(stopped["outstanding"], 0);
+        assert_eq!(*field(&stopped, "active")?, 0);
+        assert_eq!(*field(&stopped, "outstanding")?, 0);
     }
     Ok(())
 }
@@ -382,18 +416,21 @@ fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
 fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     // All six orders of expiry, return(), and completion of the parked write.
-    let mut orders = traces(&["expire"], &["return", "releaseWrite"]);
-    orders.extend(traces(&["expire"], &["releaseWrite", "return"]));
+    let mut orders = traces(&["expire"], &["return", "releaseWrite"])?;
+    orders.extend(traces(&["expire"], &["releaseWrite", "return"])?);
     assert_eq!(orders.len(), 6);
     for trace in orders {
         let mut driver = driver::Driver::configured(&root, scenario, fault)?;
-        assert_eq!(driver.call(&json!({"action":"ready"}))?["blocked"], true);
+        assert_eq!(
+            *field(&driver.call(&json!({"action":"ready"}))?, "blocked")?,
+            true
+        );
         let mut expired = false;
         let mut returning = false;
         for action in trace {
             let state = driver.call(&json!({"action":action}))?;
             assert_eq!(
-                state["siblingError"],
+                *field(&state, "siblingError")?,
                 serde_json::Value::Null,
                 "cancelling a blocked write must preserve the sibling"
             );
@@ -401,40 +438,43 @@ fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
             returning |= action == "return";
             if expired {
                 assert_eq!(
-                    state["settled"], true,
+                    *field(&state, "settled")?,
+                    true,
                     "deadline must settle next without releasing the blocked write"
                 );
-                assert_eq!(state["code"], 4);
-                assert_eq!(state["timerCleaned"], 1);
-                assert_eq!(state["timerActive"], false);
+                assert_eq!(*field(&state, "code")?, 4);
+                assert_eq!(*field(&state, "timerCleaned")?, 1);
+                assert_eq!(*field(&state, "timerActive")?, false);
                 if returning {
                     assert_eq!(
-                        state["returned"], true,
+                        *field(&state, "returned")?,
+                        true,
                         "deadline must also settle a queued return"
                     );
                 }
                 assert_eq!(
-                    state["active"], 1,
+                    *field(&state, "active")?,
+                    1,
                     "no cancelled subscription may arrive late"
                 );
             }
         }
         let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(
-            state["siblingError"],
+            *field(&state, "siblingError")?,
             serde_json::Value::Null,
             "cancelling a blocked write must preserve the sibling"
         );
-        assert_eq!(state["siblingSeen"], 1);
-        assert_eq!(state["connections"], 1);
+        assert_eq!(*field(&state, "siblingSeen")?, 1);
+        assert_eq!(*field(&state, "connections")?, 1);
         assert!(
-            state["outstanding"]
+            field(&state, "outstanding")?
                 .as_u64()
                 .is_some_and(|frames| frames <= 4)
         );
         let stopped = driver.call(&json!({"action":"stop"}))?;
-        assert_eq!(stopped["active"], 0);
-        assert_eq!(stopped["outstanding"], 0);
+        assert_eq!(*field(&stopped, "active")?, 0);
+        assert_eq!(*field(&stopped, "outstanding")?, 0);
     }
     Ok(())
 }
@@ -465,7 +505,7 @@ fn blocked_subscription_negative_control_drops_the_platform_write_signal() {
 
 fn queue_cancellation(fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    for trace in traces(&["abort"], &["drain"]) {
+    for trace in traces(&["abort"], &["drain"])? {
         let mut driver = driver::Driver::configured(&root, "queue", fault)?;
         driver.call(&json!({"action":"ready"}))?;
         let mut aborted = false;
@@ -473,19 +513,23 @@ fn queue_cancellation(fault: &str) -> std::io::Result<()> {
             let state = driver.call(&json!({"action":action}))?;
             if action == "drain" && !aborted {
                 assert_eq!(
-                    state["accepted"], true,
+                    *field(&state, "accepted")?,
+                    true,
                     "older waiting writes must precede a fresh producer"
                 );
             }
             if action == "abort" {
                 aborted = true;
                 assert_eq!(
-                    state["settled"], true,
+                    *field(&state, "settled")?,
+                    true,
                     "abort must settle a blocked queue producer"
                 );
                 assert_eq!(
-                    state["waiting"],
-                    if state["healthySettled"] == true || state["seen"] == json!([]) {
+                    *field(&state, "waiting")?,
+                    if *field(&state, "healthySettled")? == true
+                        || *field(&state, "seen")? == json!([])
+                    {
                         0
                     } else {
                         1
@@ -495,21 +539,22 @@ fn queue_cancellation(fault: &str) -> std::io::Result<()> {
         }
         let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(
-            state["accepted"], state["acceptedAtAbort"],
+            *field(&state, "accepted")?,
+            *field(&state, "acceptedAtAbort")?,
             "an unaccepted cancelled frame must never enter the transport"
         );
         assert_eq!(
-            state["seen"],
-            if state["accepted"] == true {
+            *field(&state, "seen")?,
+            if *field(&state, "accepted")? == true {
                 json!([0, 1, 2])
             } else {
                 json!([0, 2])
             },
             "queued writes must keep their wire order"
         );
-        assert_eq!(state["healthySettled"], true);
-        assert_eq!(state["waiting"], 0);
-        assert_eq!(state["available"], 1);
+        assert_eq!(*field(&state, "healthySettled")?, true);
+        assert_eq!(*field(&state, "waiting")?, 0);
+        assert_eq!(*field(&state, "available")?, 1);
     }
     Ok(())
 }
@@ -555,7 +600,7 @@ proptest::proptest! {
         static DRIVER: driver::Shared = driver::Shared::new();
         let mut shared = driver::Driver::shared(&DRIVER, &repository(), "decode", "")?;
         // SessionFrame(channel=1,generation=1,closed(code)): stable fields 1,2,18.
-        let mut bytes = vec![8, 1, 16, 1, 146, 1, u8::try_from(code.len() + 2).unwrap(), 10, u8::try_from(code.len()).unwrap()];
+        let mut bytes = vec![8, 1, 16, 1, 146, 1, u8::try_from(code.len() + 2)?, 10, u8::try_from(code.len())?];
         bytes.extend_from_slice(code.as_bytes());
         let hex = driver::hex(&bytes)?;
         shared.run()?.call(&json!({"action":"decode", "hex":hex}))?;
