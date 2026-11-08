@@ -15,6 +15,14 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "exact-extraction-custody": [
+    "rust/crates/collections/src/lib.rs", "acyclic-collections",
+    "tests::prefix::prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work",
+    "exact extraction retired original backing", [],
+    { oracle: "rust/crates/collections/src/tests/prefix.rs", mutations: [
+      { patch: "rust/crates/collections/src/tests/early_exact_retirement.patch", label: "early-retirement", diagnostic: "exact extraction retired original backing" },
+    ] },
+  ],
   "recovered-metadata-custody": [
     "rust/crates/filesystem/src/kernel/serde_decode/original.rs", "acyclic-fs",
     "core_state::codec_fuzz::production_metadata_corpus_preserves_original_decode_custody",
@@ -1104,7 +1112,9 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
-      require(result.output.includes("Starting 1 test across 1 binary"));
+      const started = invocation[0] === "cargo" && invocation[1] === "nextest"
+        ? "Starting 1 test across 1 binary" : "running 1 test";
+      require(result.output.includes(started));
     }
     console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
