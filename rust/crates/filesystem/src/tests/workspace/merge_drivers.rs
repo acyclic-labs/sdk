@@ -439,6 +439,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let rendered = preview.describe_conflict_file(conflict).await?;
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Text);
+        merge_text_default_label_cost(view)?;
         let mut capacity = view.path.as_ref().ok_or("text path missing")?.capacity() as u64;
         for value in [&view.base, &view.ours, &view.theirs] {
             let ConflictValue::Text(text) = value else {
@@ -768,6 +769,54 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ));
     assert_eq!(unbounded!(main, head())?.id(), published);
     merge_directory_opaque_bindings().await?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn merge_text_default_label_cost(view: &crate::ConflictView) -> Result<(), Box<dyn Error>> {
+    let (ConflictValue::Text(base), ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
+        (&view.base, &view.ours, &view.theirs)
+    else {
+        return Err("public text conflict lost its input bodies".into());
+    };
+    let mut samples = Vec::new();
+    // Equal-length labels leave the actual diff and output size unchanged.
+    // Each extra custom label therefore isolates one required replacement.
+    for (ours_label, theirs_label) in [
+        ("ours", "theirs"),
+        ("fork", "theirs"),
+        ("ours", "source"),
+        ("fork", "source"),
+    ] {
+        let mut result = None;
+        let work = acyclic_test_support::measure(|| {
+            result = Some(crate::text_merge::merge_text(
+                base,
+                ours,
+                theirs,
+                ours_label,
+                theirs_label,
+            ));
+        });
+        let result = result.ok_or("text merger did not return")?;
+        assert!(!result.clean);
+        assert!(result.content.contains(&format!("<<<<<<< {ours_label}\n")));
+        assert!(
+            result
+                .content
+                .contains(&format!(">>>>>>> {theirs_label}\n"))
+        );
+        assert_eq!(work.count_current, 1, "only the returned text stays live");
+        eprintln!("merge labels {ours_label}/{theirs_label}: {work:?}");
+        samples.push(work);
+    }
+    for (fewer, more) in [(0, 1), (0, 2), (1, 3), (2, 3)] {
+        assert!(
+            samples[fewer].count_total < samples[more].count_total
+                && samples[fewer].bytes_total < samples[more].bytes_total,
+            "default marker label performed an identity replacement: {samples:?}"
+        );
+    }
     Ok(())
 }
 
