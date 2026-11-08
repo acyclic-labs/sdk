@@ -2,3 +2,5 @@
 #![cfg(loom)]
 #[path = "../src/device_flush.rs"]
 mod device_flush;
+#[path = "../src/sync.rs"]
+mod sync;

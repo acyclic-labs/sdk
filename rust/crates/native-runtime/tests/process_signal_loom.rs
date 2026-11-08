@@ -2,6 +2,8 @@
 #![cfg(loom)]
 #[path = "../src/process_tree/events/outcome.rs"]
 mod outcome;
+#[path = "../src/sync.rs"]
+mod sync;
 use outcome::ProcessWaitOutcome;
 #[path = "../src/process_tree/events/signal.rs"]
 mod signal;
