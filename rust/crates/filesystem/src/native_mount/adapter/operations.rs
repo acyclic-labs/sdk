@@ -112,7 +112,7 @@ where
     fn read_directory_with_meter(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
@@ -478,7 +478,7 @@ where
     fn read_directory(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError> {
         boundary(&self.cancellation, |work| {

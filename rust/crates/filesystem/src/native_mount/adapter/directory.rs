@@ -8,7 +8,7 @@ where
     pub(super) fn directory_page(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
@@ -20,11 +20,7 @@ where
             let view = self.access_snapshot(work).await?;
             let (access, now) = access::require_list(&view, &path, &self.runtime.clock)?;
             self.disclose(&view, work, async {
-                let cursor = cursor
-                    .map(|bytes| {
-                        native_name(bytes, self.config.profile, self.config.limits, &mut inputs)
-                    })
-                    .transpose()?;
+                let cursor = cursor.map(crate::native_mount::MountDirectoryCursor::authored).transpose()?;
                 let observation = self
                     .checkout
                     .observe(
@@ -49,7 +45,6 @@ where
                     .list_directory_records(
                         &path,
                         cursor
-                            .as_ref()
                             .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                         maximum_entries,
                         work,
@@ -84,7 +79,15 @@ where
                 let next_cursor = if page.has_more {
                     page.entries
                         .last()
-                        .map(|entry| inputs.mount_name(&entry.name))
+                        .map(|entry| {
+                            let (name, allocation) = entry.name.clone_with_accounting(
+                                &mut crate::kernel::KernelAccounting::native(work, cancellation), cancellation,
+                            )?;
+                            Ok::<_, MountSourceError>(crate::native_mount::MountDirectoryCursor {
+                                position: crate::native_mount::directory_cursor::DirectoryPosition::Authored(name),
+                                _allocation: allocation,
+                            })
+                        })
                         .transpose()?
                 } else {
                     None
@@ -92,12 +95,8 @@ where
                 drop(page);
                 drop(source_allocation);
                 drop(checkout);
-                let bytes = path.retained_bytes()
-                    + cursor
-                        .as_ref()
-                        .map_or(0, |name| name.retained_bytes() as u64);
+                let bytes = path.retained_bytes();
                 drop(path);
-                drop(cursor);
                 inputs.release(bytes)?;
                 inputs
                     .carrier

@@ -18,30 +18,17 @@ use crate::kernel::{
     FileKind, FileMetadata, FileMutation, FilePayload, FileRecord, MetadataField, Mutation,
 };
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, FileId, IdempotencyKey, LazyDirectoryCursor, LazyLookup,
-    LazyWorkspace, LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
+    AsyncAuthorityStore, AsyncObjectStore, FileId, IdempotencyKey, LazyLookup, LazyWorkspace,
+    LazyWorkspaceError, LazyWorkspaceStore, NativeRootIdentity, WorkspaceMetadata,
 };
 use crate::{CancellationToken, WorkBudget};
 use acyclic_stream::OwnedBytes;
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
-
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
-
-struct CursorEntry<T> {
-    generation: (u64, u64),
-    cursor: T,
-}
-
-struct CursorTable<T> {
-    entries: Mutex<BTreeMap<u64, CursorEntry<T>>>,
-    next: AtomicU64,
-}
 
 enum Resolution {
     Authored(MountLookup),
@@ -116,7 +103,6 @@ pub struct LazyMountSource<A: 'static, O: 'static, D, S> {
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
-    cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<ViewGate>,
     removals: Mutex<MountedRemovals>,
     detached: DetachedIdentities<A, O>,
@@ -155,7 +141,6 @@ struct ViewBoundOpenFile<A: 'static, O: 'static> {
 mod budget;
 mod callbacks;
 mod content;
-mod cursors;
 mod directory;
 mod handles;
 mod identities;

@@ -642,28 +642,3 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
     }
     Ok(())
 }
-
-#[test]
-fn abandoned_directory_cursors_are_bounded_and_cleared() {
-    let cursors = CursorTable::new();
-    let tokens = (0..=MAXIMUM_LAZY_DIRECTORY_CURSORS)
-        .map(|cursor| cursors.remember((2, 1), cursor).expect("cursor"))
-        .collect::<Vec<_>>();
-    let retained = tokens
-        .iter()
-        .filter_map(|token| cursors.take((2, 1), Some(token)).ok().flatten())
-        .count();
-    assert_eq!(retained, MAXIMUM_LAZY_DIRECTORY_CURSORS);
-
-    let stale = cursors.remember((2, 1), 0).expect("stale cursor");
-    assert!(matches!(
-        cursors.take((3, 1), Some(&stale)),
-        Err(MountSourceError::Stale)
-    ));
-    let token = cursors.remember((2, 1), 0).expect("retained cursor");
-    cursors.clear();
-    assert!(matches!(
-        cursors.take((2, 1), Some(&token)),
-        Err(MountSourceError::Stale)
-    ));
-}

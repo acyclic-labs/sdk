@@ -80,7 +80,6 @@ where
             );
         }
         if !effect.is_empty() {
-            self.cursors.clear();
             self.authored.record_projection_change(
                 &ViewChange::Effect(&effect),
                 &mut adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(

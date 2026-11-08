@@ -10,7 +10,7 @@ where
     pub(super) fn directory_page(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
@@ -46,7 +46,10 @@ where
                         return Err(MountSourceError::NotFound);
                     }
                     let generation = (lease.generation, epoch);
-                    let (stamp, cursor) = match self.cursors.take(generation, cursor)? {
+                    let (stamp, cursor) = match cursor
+                        .map(|cursor| cursor.take_lazy(&self.source_view, generation))
+                        .transpose()?
+                    {
                         Some((stamp, cursor)) => (stamp, Some(cursor)),
                         None => (ViewStamp::current(), None),
                     };
@@ -81,7 +84,7 @@ where
                         })?
                         .await
                         .map_err(lazy_error)?;
-                    let (entries, mut output_allocation) = self
+                    let (entries, output_allocation) = self
                         .runtime
                         .prepare_future(work, || {
                             self.directory_entries(
@@ -95,13 +98,8 @@ where
                         })?
                         .await?;
                     self.check_directory_cut(path, stamp, Some((&text, epoch)), work)?;
-                    let next_cursor = self.next_directory_cursor(
-                        &mut page,
-                        generation,
-                        stamp,
-                        &mut output_allocation,
-                        work,
-                    )?;
+                    let next_cursor =
+                        self.next_directory_cursor(&mut page, generation, stamp, work)?;
                     Ok(MountDirectoryPage::new(
                         entries,
                         next_cursor,
@@ -139,15 +137,34 @@ where
         page: &mut crate::LazyDirectoryPage,
         generation: (u64, u64),
         stamp: ViewStamp,
-        output_allocation: &mut crate::NativeAllocation,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<Vec<u8>>, MountSourceError> {
+    ) -> Result<Option<crate::native_mount::MountDirectoryCursor>, MountSourceError> {
         let next_cursor = page
             .next
             .take()
             .map(|cursor| {
-                let token = self.cursors.remember(generation, (stamp, cursor))?;
-                cursor_bytes(&token, output_allocation, work)
+                use crate::native_mount::directory_cursor::{
+                    DirectoryPosition, LazyDirectoryPosition,
+                };
+                let allocation = work
+                    .claim(
+                        std::mem::size_of::<LazyDirectoryPosition>() as u64,
+                        1,
+                        crate::WorkCounters::UNCHARGED,
+                    )
+                    .map_err(MountSourceError::NativeWork)?;
+                let credit = self.authored.reserve_capture_poll()?;
+                let producer = self.authored.capture_producer(credit)?;
+                Ok::<_, MountSourceError>(crate::native_mount::MountDirectoryCursor {
+                    position: DirectoryPosition::Lazy(Box::new(LazyDirectoryPosition {
+                        source: Arc::clone(&self.source_view),
+                        generation,
+                        stamp,
+                        cursor: Mutex::new(Some(cursor)),
+                        _producer: producer,
+                    })),
+                    _allocation: crate::kernel::KernelOwnedAllocation::NativeOriginal(allocation),
+                })
             })
             .transpose()?;
         Ok(next_cursor)
@@ -232,22 +249,4 @@ where
         }
         Ok((entries, output_allocation))
     }
-}
-
-fn cursor_bytes(
-    token: &[u8],
-    allocation: &mut crate::NativeAllocation,
-    work: &crate::NativeMaterializationWork,
-) -> Result<Vec<u8>, MountSourceError> {
-    let mut carrier = adapter::NativeDemandCarrier::Native(work);
-    let mut continuation = adapter::InputBuffers::new(&mut carrier)?;
-    let mut bytes = continuation.vec(8)?;
-    let mut cursor_allocation = continuation
-        .retain()
-        .ok_or(MountSourceError::NativeUnsupported)?;
-    allocation
-        .absorb(&mut cursor_allocation)
-        .map_err(MountSourceError::NativeWork)?;
-    bytes.extend_from_slice(token);
-    Ok(bytes)
 }

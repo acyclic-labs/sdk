@@ -27,7 +27,7 @@ impl MountFilesystem for NoContent {
         read_pinned_with_meter(path: &MountPath, pin: MountContentPin, range: crate::ByteRange, piece: u32, sink: &mut NativeMountContentSink<'_>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         read_link(path: &MountPath, work: &NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
         read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
-        read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32, work: &NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
+        read_directory_with_meter(path: &MountPath, cursor: Option<&crate::native_mount::MountDirectoryCursor>, maximum_entries: u32, work: &NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
         remove(path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         rename(source: &MountPath, destination: &MountPath, replace: bool, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
@@ -59,7 +59,7 @@ impl MountFilesystem for NoContent {
         detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
         read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
         seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
-        read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
+        read_directory(path: &MountPath, cursor: Option<&crate::native_mount::MountDirectoryCursor>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
         list_attributes(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
         write_range(path: &MountPath, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
         resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;

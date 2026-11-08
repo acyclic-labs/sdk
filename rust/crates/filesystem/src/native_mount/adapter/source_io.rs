@@ -81,7 +81,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         Ok(Arc::new(producer))
     }
 
-    pub(super) fn capture_producer(
+    pub(in crate::native_mount) fn capture_producer(
         &self,
         mut credit: Option<crate::materializer::NativeWorkReservation>,
     ) -> Result<CaptureProducer, MountSourceError> {
@@ -122,7 +122,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         })
     }
 
-    pub(super) fn reserve_capture_poll(
+    pub(in crate::native_mount) fn reserve_capture_poll(
         &self,
     ) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError> {
         self.native_original

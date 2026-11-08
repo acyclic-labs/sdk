@@ -34,7 +34,7 @@ proptest::proptest! {
         let cancellation = CancellationToken::new();
         let mut original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .map_err(|(error, _)| error).unwrap();
-        let mut foreign = NativeMaterializationWork::new(BUDGET, &CancellationToken::new()).unwrap();
+        let foreign = NativeMaterializationWork::new(BUDGET, &CancellationToken::new()).unwrap();
         let baseline = original.live_allocation_bytes();
         let mut owners: Vec<Option<(Arc<NativeMountAllocationCustody>, u64)>> = vec![None; 4];
         for (index, action, bytes) in actions {

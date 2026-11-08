@@ -195,12 +195,7 @@ pub(super) fn source_listing(
         .source
         .as_ref()
         .acquire_binding_lease_with_meter(None, projection.work)?;
-    let mut cursors = (
-        Vec::<(Vec<u8>, crate::demand::SourcePayloadOwnership)>::new(),
-        projection
-            .work
-            .claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-    );
+    let mut cursor = None;
     let mut entries = (
         Vec::<ProjectedEntry>::new(),
         projection
@@ -214,7 +209,7 @@ pub(super) fn source_listing(
             .as_ref()
             .read_directory_with_meter(
                 path,
-                cursors.0.last().map(|(cursor, _)| cursor.as_slice()),
+                cursor.as_ref(),
                 DIRECTORY_PAGE_SIZE,
                 projection.work,
             )?;
@@ -244,22 +239,10 @@ pub(super) fn source_listing(
                 insert_projected_entry(&mut entries.0, projected, projection.work)?;
             }
         }
-        let Some(next) = next_cursor else {
+        cursor = next_cursor;
+        if cursor.is_none() {
             break;
-        };
-        let next_ownership = ownership.split_owned_payload(next.capacity() as u64)?;
-        for (previous, _) in &cursors.0 {
-            projection
-                .work
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))?;
-            if previous == &next {
-                return Err(MountSourceError::Invalid(
-                    "directory listing repeated a cursor".to_owned().into(),
-                ));
-            }
         }
-        reserve(&mut cursors.0, 1, &mut cursors.1, projection.work)?;
-        cursors.0.push((next, next_ownership));
     }
     drop(lease);
     Ok(entries)
