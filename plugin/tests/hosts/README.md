@@ -1,5 +1,28 @@
 # Native host pairs
 
+Concurrent MCP session programs reuse the native process fixture and its captured
+completion records, without a live model:
+
+```sh
+python3 plugin/tests/hosts/concurrent-spawn.py ACYCLIC GRAPHCODER claude-code 0eaa80
+```
+
+`native_calls.fuzz(bytes, client)` directs the real initialized MCP client. Bytes
+choose the interleaving of two child call chains, up to two queued sends, spawn
+replay, duplicate waits and forward/reverse reply reads. All calls are submitted
+before responses are consumed. Each native turn holds its physical view until
+its peer reaches that turn's pipe; there are no clock waits. The oracle checks
+original task/prompt identities, turn counts and shared wait results, then rejects
+three mutations of those actual replies. The fixture emits the original call and
+reply trace in its result, retained by the scripted runner. Its selector exposes
+`concurrent:codex` and `concurrent:claude-code`; other hosts require captured
+completion records before qualification.
+
+After joining the children, a producer-loss control waits for the kernel to stop
+the original MCP server, submits one more wait, then kills and joins that server.
+The unanswered call must end in the client's typed EOF error. This uses process
+events rather than a deadline; the original error is retained with the trace.
+
 The native pair collector uses the same pinned package, shipping plugin install,
 workspace owner and native permission path as the installed acceptance cases.
 It observes the original process writer, transcript sink, exit and close.

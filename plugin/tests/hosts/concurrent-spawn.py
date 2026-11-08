@@ -1,7 +1,7 @@
 """Concurrent spawns from a managed child, through the production MCP adapter.
 
-Run on Linux or macOS: python3 concurrent-spawn.py ACYCLIC GRAPHCODER HOST.
-HOST is codex, claude-code or pi. Native sessions are stand-ins that run the
+Run on Linux or macOS: python3 concurrent-spawn.py ACYCLIC GRAPHCODER HOST [HEX].
+HOST is codex or claude-code. Native sessions are stand-ins that run the
 host's session-start hook the way the native CLI does. A depth-1 child sends
 two spawn calls before reading either reply, as a host that runs one
 message's tool calls concurrently does; both replies must arrive, name
@@ -11,27 +11,28 @@ or sleep: every step waits on a reply, a process exit or a pipe.
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
 from native_fixture import fixture_environment, start_workspace_owner, stop_workspace_owner
 from native_mcp import McpClient
+from native_calls import CORPUS
 
-RECOVERY = 'python3 plugin/tests/hosts/concurrent-spawn.py ACYCLIC GRAPHCODER HOST'
 POLICIES = {
     'codex': ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
     'claude-code': ['--settings', '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false}}',
                     '--permission-mode', 'default', '--model', 'claude-haiku-5-5'],
-    'pi': ['--tools', 'read,write,bash'],
 }
 STAND_IN = r'''#!/usr/bin/env python3
 import json,os,pathlib,subprocess,sys
 sys.path.insert(0,os.environ['FIXTURE_HOST_SUPPORT'])
 from native_mcp import McpClient
+from native_calls import fuzz,lost_producer
 args=sys.argv[1:];host=os.environ['FIXTURE_HOST'];cwd=pathlib.Path.cwd()
 acyclic=os.environ['FIXTURE_ACYCLIC']
-if {'codex':'exec','claude-code':'-p','pi':'--mode'}[host] not in args:
+if {'codex':'exec','claude-code':'-p'}[host] not in args:
  (cwd/'root.json').write_text(json.dumps({'task':os.environ['ACYCLIC_TASK'],
                                          'flags':json.loads(os.environ['ACYCLIC_HOST_ARGS'])}))
  sys.exit(0)
@@ -46,32 +47,36 @@ if prompt=='parent':
  nested=subprocess.Popen([acyclic,'__mcp',host],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
  try:
   mcp=McpClient(nested,os.environ['FIXTURE_RECOVERY'])
-  # Both calls are on the wire before either reply is read.
-  calls=[mcp.submit('spawn',name,name) for name in ('left','right')]
-  spawned=[mcp.result(call) for call in calls]
-  assert len({row['task'] for row in spawned})==2,spawned
-  assert len({row['cwd'] for row in spawned})==2,spawned
-  for name,row in zip(('left','right'),spawned):
-   finished=mcp.call('wait',name)
-   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
+  trace=fuzz(bytes.fromhex(os.environ['FIXTURE_CALL_PROGRAM']),mcp)
+  trace['lost_producer']=lost_producer(mcp)
+  pathlib.Path(os.environ['FIXTURE_TRACE']).write_text(json.dumps(trace))
  finally:
   try:nested.stdin.close()
-  finally:assert nested.wait()==0
+  finally:nested.wait()
 else:
  # Left stays live, holding a file open in its view, until right started:
  # the second spawn is admitted while the first grandchild runs.
- assert prompt in ('left','right'),prompt
- with (cwd/(prompt+'.txt')).open('w') as held:
+ side,turn=prompt.split(':')
+ assert side in ('left','right'),prompt
+ with (cwd/(side+'.txt')).open('w') as held:
   held.write(prompt);held.flush()
-  with open(os.environ['FIXTURE_RENDEZVOUS'],'r' if prompt=='left' else 'w') as meet:
-   assert meet.read()=='right' if prompt=='left' else meet.write('right')
+  rendezvous=pathlib.Path(os.environ['FIXTURE_RENDEZVOUS'])/turn
+  with rendezvous.open('r' if side=='left' else 'w') as meet:
+   assert meet.read()==turn if side=='left' else meet.write(turn)
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 '''
 
 
 def main():
+    recovery = shlex.join([sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
     binary, graphcoder = (str(pathlib.Path(p).resolve()) for p in sys.argv[1:3])
     host = sys.argv[3]
+    try:
+        data = bytes.fromhex(sys.argv[4]) if len(sys.argv) == 5 else CORPUS[0]
+    except ValueError as error:
+        raise RuntimeError(f'step=decode concurrent call program: {error}; recovery: {recovery}') from error
+    if host not in POLICIES:
+        raise RuntimeError(f'step=admit captured host completion: unsupported host {host}; recovery: {recovery}')
     flags = POLICIES[host]
     here = pathlib.Path(__file__).resolve().parent
     completion = next(record for record in json.loads((here / 'fixtures/native-completion.json').read_text())['records']
@@ -86,12 +91,15 @@ def main():
         events = root / 'native-events.jsonl'
         events.write_text(completion['stdout'])
         rendezvous = root / 'rendezvous'
-        os.mkfifo(rendezvous)
+        rendezvous.mkdir()
+        for turn in range(1 + (data[0] if data else 0) % 3):
+            os.mkfifo(rendezvous / str(turn))
         env = fixture_environment(root, {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                'FIXTURE_EVENTS': str(events), 'FIXTURE_HOST': host, 'FIXTURE_ACYCLIC': binary,
                'FIXTURE_WORKSPACE': str(workspace), 'FIXTURE_HOST_SUPPORT': str(here),
-               'FIXTURE_RECOVERY': RECOVERY, 'FIXTURE_RENDEZVOUS': str(rendezvous)})
-        executable = bins / {'codex': 'codex', 'claude-code': 'claude', 'pi': 'pi'}[host]
+               'FIXTURE_RECOVERY': recovery, 'FIXTURE_RENDEZVOUS': str(rendezvous),
+               'FIXTURE_CALL_PROGRAM': data.hex(), 'FIXTURE_TRACE': str(root / 'concurrent-calls.json')})
+        executable = bins / {'codex': 'codex', 'claude-code': 'claude'}[host]
         executable.write_text(STAND_IN)
         executable.chmod(0o755)
         with (root / 'owner.log').open('w+') as owner_log, (root / 'bridge.log').open('w+') as bridge_log:
@@ -107,11 +115,12 @@ def main():
                                                'ACYCLIC_WORKSPACE': str(workspace),
                                                'ACYCLIC_TASK': parent['task']},
                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=bridge_log)
-                mcp = McpClient(bridge, RECOVERY)
+                mcp = McpClient(bridge, recovery)
                 mcp.call('spawn', 'parent', 'parent')
                 finished = mcp.call('wait', 'parent')
                 assert finished['reply']['kind'] == 'answered', finished
                 assert finished['reply']['outcome'].get('Succeeded') is not None, finished
+                trace = json.loads((root / 'concurrent-calls.json').read_text())
                 bridge.stdin.close()
                 assert bridge.wait() == 0
                 bridge = None
@@ -131,10 +140,11 @@ def main():
                     if owner is not None:
                         stop_workspace_owner(owner)
         print(json.dumps({'suite': 'concurrent-spawn-' + host, 'model_calls': 0,
-                          'concurrent_spawns_settled': True, 'seconds': time.monotonic() - started}))
+                          'concurrent_spawns_settled': True, 'trace': trace,
+                          'seconds': time.monotonic() - started}))
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4:
+    if len(sys.argv) not in (4, 5):
         raise SystemExit(__doc__)
     main()
