@@ -63,14 +63,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 }
                 Admission::Failed(identity, error) => {
                     self.remove(identity.channel_id)?;
-                    self.controls.push_back(frame(
-                        identity.channel_id,
-                        identity.generation,
-                        Body::Closed(wire::SessionClosed {
-                            code: error.code().into(),
-                            message: String::new(),
-                        }),
-                    ));
+                    self.controls.push_back(Frame::closed(identity, error));
                     continue;
                 }
             };
@@ -93,13 +86,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             }
         }
         self.revision = interest.revision;
-        self.controls.push_back(frame(
-            0,
-            0,
-            Body::InterestApplied(wire::SessionInterestApplied {
-                revision: self.revision,
-            }),
-        ));
+        self.controls.push_back(
+            frame(
+                0,
+                0,
+                Body::InterestApplied(wire::SessionInterestApplied {
+                    revision: self.revision,
+                }),
+            )
+            .into(),
+        );
         Ok(())
     }
 

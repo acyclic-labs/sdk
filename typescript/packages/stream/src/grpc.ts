@@ -15,7 +15,7 @@ import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
@@ -281,13 +281,26 @@ function providerError(error: unknown, operation: string): Error {
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason);
+  return new StreamError(code, reason, undefined, code === "unavailable" ? grpcRefusal(error) : undefined);
+}
+
+/** Retain the original status bytes; Connect's decoded Any values are projections. */
+function grpcRefusal(error: ConnectError): StreamRefusal {
+  const encoder = new TextEncoder();
+  return {
+    status: error.code,
+    message: error.rawMessage,
+    details: Buffer.from(error.metadata.get("grpc-status-details-bin") ?? "", "base64"),
+    metadata: Array.from(error.metadata)
+      .filter(([name]) => name.startsWith("acyclic-"))
+      .map(([name, value]) => [name, encoder.encode(value)] as const),
+  };
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown, transient: boolean): unknown {
   if (!(error instanceof ConnectError)) return error;
   return Object.assign(new Error(error.rawMessage, { cause: error }), {
-    code: grpcErrorCode(error.code, error.rawMessage), transient,
+    code: grpcErrorCode(error.code, error.rawMessage), transient, refusal: grpcRefusal(error),
   });
 }
