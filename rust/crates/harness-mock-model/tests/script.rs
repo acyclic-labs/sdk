@@ -33,17 +33,24 @@ proptest! {
     }
 
     #[test]
-    fn request_templates_preserve_types_and_freeform_bytes(value in json_value(), text in ".{0,128}") {
+    fn request_templates_preserve_types_and_freeform_bytes(value in json_value(), text in ".{0,128}", line in "[^\\r\\n]{0,128}") {
         let step: Step = serde_json::from_value(json!({
             "text":["echo {{request:/mount~1path}}"],
             "tools":[{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{"value":{"$request":"/value"}}}],
             "custom_tools":[{"id":"patch","name":"apply_patch","input":"{{request:/mount~1path}}"}],
-            "json":{"echo":{"$request":"/value"}}
+            "json":{"echo":{"$request":"/value"}, "line":{"$request_line":{"pointer":"/context", "prefix":"Path: ", "suffix":"/file"}}}
         })).unwrap();
-        let body = json!({"value":value,"mount/path":text});
+        let body = json!({"value":value,"mount/path":text,"context":format!("header\r\nPath: {line}\r\nfooter\n")});
         let bound = bind_result(&step,&body).unwrap();
         prop_assert_eq!(&bound.tools[0].arguments["value"],&value);
-        prop_assert_eq!(bound.json.as_ref().unwrap(),&json!({"echo":value}));
+        prop_assert_eq!(bound.json.as_ref().unwrap(),&json!({"echo":value,"line":format!("{line}/file")}));
+        for context in [json!(line), json!(format!("Path: {line}\nPath: {line}")), value.clone()] {
+            let selected: Step = serde_json::from_value(json!({"json":{"$request_line":{"pointer":"", "prefix":"Path: ", "suffix":"/file"}}})).unwrap();
+            let actual = bind_result(&selected,&context);
+            let expected: Vec<_> = context.as_str().into_iter().flat_map(str::lines).filter_map(|text|text.strip_prefix("Path: ")).collect();
+            prop_assert_eq!(actual.is_ok(),expected.len()==1);
+            if expected.len()==1 { prop_assert_eq!(actual.unwrap().json,Some(json!(format!("{}/file",expected[0])))); }
+        }
         prop_assert_eq!(&bound.text[0],&format!("echo {text}"));
         prop_assert_eq!(&bound.custom_tools[0].input,&text);
         let roundtrip: Step = serde_json::from_slice(&serde_json::to_vec(&step).unwrap()).unwrap();
@@ -65,6 +72,8 @@ fn templates_reject_missing_invalid_and_unterminated_pointers_without_reexpandin
     for value in [
         json!({"$request":"/missing"}),
         json!({"$request":7}),
+        json!({"$request_line":{"pointer":"/id", "prefix":"child", "suffix":"", "unknown":true}}),
+        json!({"$request_line":{"pointer":"/id", "prefix":7, "suffix":""}}),
         json!("{{request:/missing}}"),
         json!("{{request:/id"),
     ] {

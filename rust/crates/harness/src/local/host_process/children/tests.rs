@@ -423,6 +423,21 @@ fn exercise(host: &str, cwd: &Path) -> Result {
     let mut command = native_fixture(&view, events, exit);
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
+    let lease = running
+        .process
+        .lease
+        .as_ref()
+        .ok_or("started native lease absent")?;
+    let mut log = lease.root.open_file(&event_log(claim), false)?;
+    let mut context = String::new();
+    std::io::Read::read_to_string(&mut log, &mut context)?;
+    let first: serde_json::Value =
+        serde_json::from_str(context.lines().next().ok_or("native context absent")?)?;
+    assert_eq!(
+        first,
+        serde_json::json!({"type":"acyclic.host_context", "version":1, "task":lease.task, "cwd":view}),
+        "the original native transcript must identify its admitted view before child output"
+    );
     let pid = shell_pid(&mut running)?;
     // A real duplicate writer held by this test process, outside child custody.
     let writer = fs::OpenOptions::new()

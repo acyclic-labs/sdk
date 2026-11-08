@@ -1,0 +1,13 @@
+diff --git a/plugin/pi/index.ts b/plugin/pi/index.ts
+--- a/plugin/pi/index.ts
++++ b/plugin/pi/index.ts
+@@ -36,8 +36,7 @@ export default function acyclic(pi: ExtensionAPI) {
+ 
+   pi.on("session_start", async (_event, ctx) => {
+     selected = await nativeSession(executable, "pi", ctx.cwd,
+-      ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile() ?? null,
+-      (location: Location) => pi.appendEntry("acyclic.agent.v1", {task: location.task}));
++      ctx.sessionManager.getSessionId(), ctx.sessionManager.getSessionFile() ?? null);
+   });
+   pi.on("agent_end", async (_event, ctx) => {
+     if (selected) await workspace(executable, ctx.cwd, {kind: "hook", host: "pi", event: "Stop",

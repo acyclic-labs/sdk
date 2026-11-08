@@ -49,3 +49,33 @@ python3 rust/crates/harness-fuzz/graphcoder-args-control.py native_stdin_binary
 This named integration test uses the Cargo-built binary in its original source
 snapshot. Relocated artifact selection, installed host loops, other lifecycle
 branches and platform acceptance require their own evidence.
+
+The recorded Antigravity `PreInvocation` input must select `ToolBoundary`, the
+same shared capture operation used after tools. Its awaited native admission
+can therefore refuse a failed capture even when the host ignored an earlier
+`PostToolUse` failure. `native-input-agy-admission.patch` restores the former
+attach-only mapping; the unchanged `native_input` oracle must reject it.
+This checks routing and input preservation. Successful capture and native
+termination after a capture failure require the installed-host control too.
+
+The external AGY composition uses that same admitted-directory replacement,
+the shipping plugin installer, the original workspace owner and AGY 1.5.2's
+native `PreInvocation`. It requires zero provider requests after failed capture.
+Restoring the original directory must admit one request, answered with HTTP 401
+without purchasing a model. It uses the shared process owner and exclusive
+fixture profiles, including a profile path containing spaces:
+
+```
+ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_GRAPHCODER=/absolute/graphcoder E2E_AGY=/absolute/agy E2E_MOCK_MODEL=/absolute/harness-mock-model node --test --test-concurrency=1 plugin/tests/hosts/agy-capture-admission.test.mjs
+```
+
+Windows also requires the shared `E2E_PROCESS_HOST` and `E2E_SCRATCH_ROOT`.
+The native host produces the callback inputs and its terminal. This control
+checks admission and refusal, then uses the shared deterministic model producer
+to exercise native writes and model-issued MCP coordination to a writing child.
+It does not qualify background process retirement at a tool boundary, ADC
+authentication, resume or reusable cwd across generations.
+Repeated native error steps fail this control immediately and retire its
+process before restoring the directory. This distinguishes refusal from a
+Stop response that continually re-enters the same failed admission. That
+native Stop progress contract remains unqualified until this control runs.

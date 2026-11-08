@@ -148,7 +148,19 @@ fn claude_installation_preserves_foreign_hooks_permissions_and_unrelated_setting
             .and_then(Value::as_array)
             .ok_or("fixture hook missing")?
             .len(),
-        1
+        2
+    );
+    assert_eq!(
+        document["hooks"]["PreToolUse"][0],
+        original["hooks"]["PreToolUse"][0]
+    );
+    assert_eq!(
+        document["hooks"]["PreToolUse"][1]["matcher"],
+        "^(Agent|Task)$"
+    );
+    assert_eq!(
+        hook("claude-code", "PreToolUse", json!({}))["hookSpecificOutput"]["permissionDecision"],
+        "deny"
     );
     assert_eq!(document.get("permissions"), original.get("permissions"));
     assert_eq!(document.get("theme"), Some(&json!("dark")));

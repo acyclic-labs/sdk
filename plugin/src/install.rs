@@ -3,6 +3,7 @@ use super::*;
 use acyclic_native_runtime::host_command;
 use std::fs;
 
+mod extensions;
 mod marketplace;
 
 pub(super) fn run(args: &[String]) -> Result<()> {
@@ -13,14 +14,18 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     let host = args
         .get(1)
         .map(String::as_str)
-        .ok_or("specify codex, claude-code or pi")?;
-    if !matches!(host, "codex" | "claude-code" | "pi") {
+        .ok_or("specify codex, claude-code, pi, opencode or agy")?;
+    if !matches!(host, "codex" | "claude-code" | "pi" | "opencode" | "agy") {
         return Err("unknown native host".into());
     }
     for pair in args.get(2..).unwrap_or_default().chunks(2) {
-        if !matches!(pair, [name, _] if matches!(name.as_str(), "--plugin-root" | "--settings")) {
-            return Err("installer options: --plugin-root PATH, --settings PATH".into());
+        if !matches!(pair, [name, _] if matches!(name.as_str(), "--plugin-root" | "--settings" | "--host-version"))
+        {
+            return Err("installer options: --plugin-root PATH, --settings PATH, --host-version VERSION (agy)".into());
         }
+    }
+    if host != "agy" && option(args, "--host-version").is_some() {
+        return Err("step=select native release: --host-version requires agy; recovery=acyclic install agy --host-version VERSION --plugin-root PATH".into());
     }
     if host == "codex" {
         check_codex()?;
@@ -28,6 +33,10 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     if command == "doctor" {
         let plugins = if host == "codex" {
             Some(codex_plugin_exchange(None)?)
+        } else if host == "agy" {
+            Some(serde_json::from_slice::<Value>(
+                &native_output("agy", &["plugin", "list", "--json"])?.stdout,
+            )?)
         } else {
             None
         };
@@ -72,6 +81,8 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         }
         "claude-code" => install_claude(args, &executable, install)?,
         "pi" => install_pi(args, &package, &executable, install)?,
+        "opencode" => extensions::install_opencode(args, &package, &executable, install)?,
+        "agy" => extensions::install_agy(args, &package, &executable, install)?,
         _ => unreachable!(),
     }
     println!(
@@ -114,45 +125,7 @@ fn install_pi(args: &[String], package: &Path, executable: &Path, install: bool)
         },
         Ok,
     )?;
-    let original = optional(&path)?;
-    if original
-        .as_ref()
-        .is_some_and(|bytes| !bytes.starts_with(b"// Acyclic native workspace shim"))
-    {
-        return Err("refusing to replace an extension not owned by Acyclic".into());
-    }
-    if install {
-        let recovery = serde_json::to_string(&(
-            executable,
-            "install",
-            "pi",
-            "--plugin-root",
-            package,
-            "--settings",
-            &path,
-        ))?;
-        let source = fs::read_to_string(package.join("pi/index.ts")).map_err(|error| {
-            format!("step=admit Pi extension asset: {error}; recovery argv: {recovery}")
-        })?;
-        let client =
-            fs::read_to_string(package.join("shared/mcp-client.mjs")).map_err(|error| {
-                format!("step=admit Pi coordination asset: {error}; recovery argv: {recovery}")
-            })?;
-        let (before, after) = source
-            .split_once("import { McpClient } from \"../shared/mcp-client.mjs\";")
-            .ok_or_else(|| format!("step=compose Pi extension: missing coordination import; recovery argv: {recovery}"))?;
-        // Pi loads one owned extension. Embed the canonical transport before
-        // the original atomic publication, without installing another path.
-        let source = format!("{before}{client}{after}");
-        let source = source.replace(
-            "\"__ACYCLIC_EXECUTABLE__\"",
-            &serde_json::to_string(&executable)?,
-        );
-        write_config("pi", &path, source.as_bytes(), original.as_deref())?;
-    } else if original.is_some() {
-        fs::remove_file(&path)?;
-    }
-    Ok(())
+    extensions::install_extension("pi", &path, package, executable, "pi/index.ts", install)
 }
 
 fn option(args: &[String], name: &str) -> Option<PathBuf> {
@@ -190,18 +163,22 @@ fn codex(args: &[&str]) -> Result<()> {
 }
 
 fn codex_output(args: &[&str]) -> Result<std::process::Output> {
+    native_output("codex", args)
+}
+
+fn native_output(host: &str, args: &[&str]) -> Result<std::process::Output> {
     use acyclic_native_runtime::{
         CaptureSchedule, ProcessCommand, ProcessInput, ProcessStdio as Stdio, ProcessTree,
     };
     let recovery = format!(
         "recovery argv: {}",
         serde_json::to_string(
-            &std::iter::once("codex")
+            &std::iter::once(host)
                 .chain(args.iter().copied())
                 .collect::<Vec<_>>()
         )?
     );
-    let resolved = host_command("codex")?;
+    let resolved = host_command(host)?;
     let mut command = ProcessCommand::new(resolved.get_program());
     command.args(resolved.get_args());
     command
@@ -210,7 +187,7 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = ProcessTree::spawn(&mut command)
-        .map_err(|error| format!("step=start Codex native command: {error}; {recovery}"))?;
+        .map_err(|error| format!("step=start {host} native command: {error}; {recovery}"))?;
     let output = child
         .wait_with_output(
             CaptureSchedule::Unbounded,
@@ -224,13 +201,13 @@ fn codex_output(args: &[&str]) -> Result<std::process::Output> {
         )
         .map_err(|failure| {
             format!(
-                "step=complete Codex native command: {}; physical_cleanup_completed={}; {recovery}",
+                "step=complete {host} native command: {}; physical_cleanup_completed={}; {recovery}",
                 failure.error, failure.cleanup_completed
             )
         })?;
     if !output.status.success() {
         return Err(format!(
-            "step=Codex native command: {}; stdout={}; stderr={}; {recovery}",
+            "step={host} native command: {}; stdout={}; stderr={}; {recovery}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -348,10 +325,12 @@ fn codex_plugin_exchange(package: Option<&Path>) -> Result<Value> {
                     }
                     3 => {
                         let trust = codex_hook_trust(&result).map_err(io::Error::other)?;
-                        if trust.is_empty() {committed = true;} else {
-                            next.extend(codex_frame(4, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
-                            expected = 4;
+                        let mut edits = vec![json!({"keyPath":"agents.enabled", "value":false, "mergeStrategy":"upsert"}), json!({"keyPath":"features.multi_agent_v2", "value":false, "mergeStrategy":"upsert"})];
+                        if !trust.is_empty() {
+                            edits.push(json!({"keyPath":"hooks.state", "value":trust, "mergeStrategy":"upsert"}));
                         }
+                        next.extend(codex_frame(4, "config/batchWrite", json!({"edits":edits})).map_err(io::Error::other)?);
+                        expected = 4;
                     }
                     _ => committed = true,
                 }

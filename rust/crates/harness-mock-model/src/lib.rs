@@ -64,6 +64,10 @@
 //! arguments, freeform input and JSON replies; strings insert raw text, other
 //! values compact JSON. Pointers follow RFC 6901. Missing/malformed templates
 //! fail with HTTP 500; copied data is never evaluated as another template.
+//! `{"$request_line":{"pointer":"/text","prefix":"Path: ","suffix":"/file"}}`
+//! selects exactly one prefixed line from a request string and appends a suffix.
+//! Missing, ambiguous or non-string sources fail. This examines only that string,
+//! once, independent of conversation history or other agents.
 mod bindings;
 mod wire;
 pub use bindings::{bind_result, load_script};

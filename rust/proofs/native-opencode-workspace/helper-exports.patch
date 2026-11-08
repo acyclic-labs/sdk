@@ -1,0 +1,12 @@
+diff --git a/plugin/src/install/extensions.rs b/plugin/src/install/extensions.rs
+--- a/plugin/src/install/extensions.rs
++++ b/plugin/src/install/extensions.rs
+@@ -31,7 +31,7 @@ fn compose(package: &Path, source: &str, executable: &Path, recovery: &str) -> Result
+         // Native loaders interpret exports as extension entry points. Inlined
+         // implementation helpers stay private to the one host adapter.
+         for line in shared.split_inclusive('\n') {
+-            composed.push_str(line.strip_prefix("export ").unwrap_or(line));
++            composed.push_str(line);
+         }
+         composed.push_str(after);
+         source = composed;
