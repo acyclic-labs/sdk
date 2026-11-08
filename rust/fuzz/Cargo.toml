@@ -50,9 +50,6 @@ tokio = { workspace = true, features = ["rt", "net", "io-util", "macros"], optio
 [lints]
 workspace = true
 
-[dev-dependencies]
-acyclic-test-support = { path = "../crates/test-support" }
-
 [[bin]]
 name = "git_argv"
 required-features = ["native"]
