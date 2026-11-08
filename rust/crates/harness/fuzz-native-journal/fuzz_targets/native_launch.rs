@@ -234,8 +234,25 @@ fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) {
     let mut expected = original;
     for list in ["allow", "ask", "deny"] {
         for (index, action) in ["read_file", "write_file"].iter().enumerate() {
-            expected["permissions"][list][index] =
-                format!("{action}({})", cwd.join(&target).display()).into();
+            let rule = actual["permissions"][list][index]
+                .as_str()
+                .expect("native file rule");
+            let path = rule
+                .strip_prefix(&format!("{action}("))
+                .and_then(|rule| rule.strip_suffix(')'))
+                .expect("native file rule syntax");
+            assert_eq!(
+                Path::new(path),
+                cwd.join(&target),
+                "relative permissions changed authority or workspace"
+            );
+            assert!(
+                !path
+                    .split(std::path::MAIN_SEPARATOR)
+                    .any(|component| component == "."),
+                "relative permissions retained a current-directory component"
+            );
+            expected["permissions"][list][index] = actual["permissions"][list][index].clone();
         }
     }
     assert_eq!(

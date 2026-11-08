@@ -132,7 +132,7 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
     let root = fixture.path().join("workspace");
     let child = root.join(".volumes/agents/child");
     let settings_file = fixture.path().join("policy.json");
-    proptest!(|(target in "[a-zA-Z0-9 _/-]{1,32}", mode in prop_oneof![Just("accept-edits"), Just("plan")])| {
+    proptest!(|(target in prop_oneof!["[a-zA-Z0-9 _/-]{1,32}", Just("../linked/../marker".to_owned())], mode in prop_oneof![Just("accept-edits"), Just("plan")])| {
         let mut original = serde_json::json!({
             "modelProvider": "gemini",
             "provider": {"options": {"baseURL": "http://127.0.0.1:1234"}},
@@ -163,8 +163,12 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
                 let mut expected = original.clone();
                 for list in ["allow", "ask", "deny"] {
                     for (index, action) in ["write_file", "read_file"].iter().enumerate() {
-                        expected["permissions"][list][index] = format!("{action}({})", cwd.join(relative).display()).into();
-                        expected["permissions"][list][index + 2] = format!("{action}({})", cwd.join(".").display()).into();
+                        let rule = actual["permissions"][list][index].as_str().expect("native file rule");
+                        let path = rule.strip_prefix(&format!("{action}(")).and_then(|rule| rule.strip_suffix(')')).expect("native rule syntax");
+                        prop_assert_eq!(Path::new(path), cwd.join(relative));
+                        prop_assert!(!path.split(std::path::MAIN_SEPARATOR).any(|component| component == "."));
+                        expected["permissions"][list][index] = actual["permissions"][list][index].clone();
+                        expected["permissions"][list][index + 2] = format!("{action}({})", cwd.display()).into();
                     }
                 }
                 prop_assert_eq!(actual, expected);
