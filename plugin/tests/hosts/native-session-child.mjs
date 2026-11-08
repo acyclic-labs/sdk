@@ -4,10 +4,20 @@
 import assert from 'node:assert/strict';
 import {readFileSync,readSync,writeFileSync,existsSync} from 'node:fs';
 import {join,relative} from 'node:path';
-const {checked,start,coordination,hold}=await import(process.env.FIXTURE_SUPPORT);
+import {createServer} from 'node:net';
+const {checked,start,coordination,hold,Spool}=await import(process.env.FIXTURE_SUPPORT);
 const args=process.argv.slice(2),cwd=process.cwd(),env=process.env;
 try{
- if(env.FIXTURE_SCALE){
+ if(args.length===1&&args[0]==='--descendant'){
+  // An independent OS listener keeps this process alive after its parent
+  // closes stdin. Only process-tree cancellation may retire this child.
+  let input;
+  const server=createServer(socket=>{input.then(()=>socket.end(server.listening?'alive\n':'retired\n'));});
+  input=new Promise(yes=>{process.stdin.once('end',yes);});
+  await new Promise((yes,no)=>{server.once('error',no);server.listen(0,'127.0.0.1',yes);});
+  console.log(JSON.stringify({port:server.address().port}));
+  process.stdin.resume();
+ }else if(env.FIXTURE_SCALE){
   const host=env.FIXTURE_HOST,flags=JSON.parse(env.FIXTURE_FLAGS);
   for(let index=0;index<flags.length;index+=2)assert.equal(args[args.indexOf(flags[index])+1],flags[index+1]);
   const child=args.includes({codex:'exec','claude-code':'-p',pi:'--mode'}[host]);
@@ -64,7 +74,9 @@ try{
     }finally{nested.child.stdin.end();assert.equal((await nested.closed).code,0);}
    }
    if(prompt==='cancelled'){
-    const child=start(process.execPath,['-e',"process.stdin.resume();process.stdin.on('end',()=>{})"],{cwd,env});
+    const child=start(process.execPath,[process.argv[1],'--descendant'],{cwd,env});
+    const events=new Spool(child.child.stdout,child.closed,{key:event=>event.port?['ready']:[],unique:true});
+    await events.keyed('ready');
     writeFileSync('descendant.pid',String(child.child.pid));
     await hold(JSON.stringify({cwd}));
    }

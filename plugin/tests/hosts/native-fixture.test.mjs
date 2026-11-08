@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {rmSync} from 'node:fs';
 import {join,relative,isAbsolute} from 'node:path';
+import {connect} from 'node:net';
+import {once} from 'node:events';
+import {fileURLToPath} from 'node:url';
+import {Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {fixtureEnvironment,checked,start,barrier,ready,socketLine} from './native-fixture.mjs';
 
@@ -25,6 +29,20 @@ test('shared native fixture retains its owner and isolates actual child temporar
   if(original===undefined)delete process.env.PROFILE_BRIDGE_SENTINEL;else process.env.PROFILE_BRIDGE_SENTINEL=original;
   rmSync(root,{recursive:true,force:true});
  }
+});
+
+test('native cancellation descendant survives parent input closure',async()=>{
+ const root=scratchDirectory('plugins-fixture-descendant-');
+ const env=fixtureEnvironment(root,{FIXTURE_SUPPORT:new URL('./native-fixture.mjs',import.meta.url).href});
+ const child=start(process.execPath,[fileURLToPath(new URL('./native-session-child.mjs',import.meta.url)),'--descendant'],{cwd:root,env});
+ const events=new Spool(child.child.stdout,child.closed,{key:event=>event.port?['ready']:[],unique:true});
+ let socket;
+ try{
+  const {port}=await events.keyed('ready');
+  child.child.stdin.end();
+  socket=connect({host:'127.0.0.1',port});await once(socket,'connect');
+  assert.equal(await socketLine(socket),'alive');
+ }finally{socket?.destroy();await child.stop();rmSync(root,{recursive:true,force:true});}
 });
 
 test('native readiness follows the original connection or child settlement',async()=>{
