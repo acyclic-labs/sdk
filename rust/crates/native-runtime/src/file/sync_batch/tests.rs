@@ -1,6 +1,7 @@
 use super::*;
 use crate::tests::{ReadBudgetMeter, complete};
 use std::io::Write as _;
+use std::sync::Condvar;
 use std::sync::atomic::AtomicUsize;
 
 type TestState = Arc<CompletionMutex<CompletionState<()>>>;
