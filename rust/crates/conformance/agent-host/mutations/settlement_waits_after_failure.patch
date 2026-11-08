@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness-core/src/agent/settled.rs b/rust/crates/harness-core/src/agent/settled.rs
+--- a/rust/crates/harness-core/src/agent/settled.rs
++++ b/rust/crates/harness-core/src/agent/settled.rs
+@@ -33,6 +33,8 @@
+     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
+     let agents = super::handler::Agents::new(super::actor_store(provider)?);
+-    let (inbox, (state, cursor)) =
+-        futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
++    let (inbox, checkpoint) =
++        futures::join!(inbox_tail(&**provider, agent), agents.state(&actor, agent));
++    let inbox = inbox?;
++    let (state, cursor) = checkpoint?;
+     if matches!(state.phase, Phase::Done { .. })
+         || state.phase == Phase::Idle && state.settled_before(cursor) >= inbox

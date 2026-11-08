@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 #[path = "wired/spawn_names.rs"]
 mod spawn_names;
+mod settlement;
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
@@ -1540,12 +1541,19 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     // Pause the observer after its actor cut. A reopened host commits another
     // real stock-executor turn before the observer loads the selected output.
     let reopened = committing(&stream, &host, ExecutorDriver::new(turn_host))?;
-    assert_eq!(
-        deliver(&reopened, &child, requested("c2", &child))
-            .await?
-            .phase,
-        Phase::Idle
-    );
+    settlement::check(&stream, &child, &observed, async {
+        let Wake::Inbox { record, .. } = requested("c2", &child) else {
+            return Err("delivery requires an inbox record".into());
+        };
+        assert!(matches!(
+            reopened.send(&child, &super::user(), &record).await?,
+            Delivered::Committed { .. }
+        ));
+        Ok(())
+    })
+    .await?;
+    reopened.drain(&child).await?;
+    assert_eq!(reopened.state(&child).await?.phase, Phase::Idle);
     let counted = acyclic_stream::testing::Counted::new((*stream).clone());
     let ledger = counted.ledger();
     let sample = ledger.start_sample();

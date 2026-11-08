@@ -1,0 +1,10 @@
+diff --git a/rust/crates/harness-core/src/agent/settled.rs b/rust/crates/harness-core/src/agent/settled.rs
+--- a/rust/crates/harness-core/src/agent/settled.rs
++++ b/rust/crates/harness-core/src/agent/settled.rs
+@@ -36,5 +36,5 @@
+         futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
+     if matches!(state.phase, Phase::Done { .. })
+-        || state.phase == Phase::Idle && state.settled_before(cursor) >= inbox
++        || state.phase == Phase::Idle && state.settled_before(cursor) >= inbox.saturating_sub(1)
+     {
+         Ok(Some(Settlement {
