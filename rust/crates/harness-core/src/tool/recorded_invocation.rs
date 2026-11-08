@@ -1,12 +1,18 @@
 use super::*;
 
 /// Durable invocation authority and the model's opaque continuation payload.
+/// Execution readers use this same envelope as persistence and replay, rather
+/// than interpreting the `invocation` member as the entire stored record.
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RecordedInvocation<I = ToolInvocation, M = Value> {
+pub struct RecordedInvocation<I = ToolInvocation, M = Value> {
+    /// Original admitted tool identity and arguments.
     pub invocation: I,
+    /// Original provider continuation data; never synthesized from tool output.
     pub metadata: M,
+    /// Selected execution target, when the admission names one.
     pub target: Option<String>,
+    /// Filesystem authority retained by the original admission, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filesystem: Option<[u8; 32]>,
 }

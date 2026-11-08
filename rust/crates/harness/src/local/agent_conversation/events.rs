@@ -1,42 +1,6 @@
 //! Original execution observations through the conversation's existing session.
 use super::*;
 
-/// A bounded page plus the original input cut and actor settlement fence.
-pub struct ExecutionQuery {
-    /// Exact input, at or after this agent's adoption cut.
-    pub input: u64,
-    /// Admitted inbox cut, for a finite export that later inputs cannot extend.
-    pub inbox_tail: u64,
-    /// Original journal page, or the current inbox tail.
-    pub page: Option<crate::executor::ExecutionEventPage>,
-    /// Original actor has consumed this input and retains no earlier work.
-    pub settled: bool,
-}
-
-impl ExecutionQuery {
-    /// Exclusive position after every observation in this page was flushed.
-    /// Only an original actor settlement retires a journal into the next input.
-    pub fn continuation(&self) -> Result<acyclic_harness_client::ExecutionPosition> {
-        use acyclic_harness_client::ExecutionPosition;
-        match &self.page {
-            Some(page) if self.settled && page.next.is_none() => Ok(ExecutionPosition {
-                input: self.input.checked_add(1).ok_or_else(|| {
-                    Error::Invalid("execution input continuation overflows".into())
-                })?,
-                after: 0,
-            }),
-            Some(page) => Ok(ExecutionPosition {
-                input: self.input,
-                after: page.end,
-            }),
-            None => Ok(ExecutionPosition {
-                input: self.input,
-                after: 0,
-            }),
-        }
-    }
-}
-
 impl Conversation {
     /// Reads a bounded chunk of the immutable approval request named by this
     /// exact original status. This never substitutes today's pending request.
@@ -84,8 +48,7 @@ impl Conversation {
         after: u64,
         wait: bool,
     ) -> Result<ExecutionQuery> {
-        match self
-            .connection
+        self.connection
             .execute(&AgentCommand::Events {
                 agent: self.agent().clone(),
                 input,
@@ -93,20 +56,8 @@ impl Conversation {
                 wait,
             })
             .await?
-        {
-            AgentReply::Events {
-                input,
-                inbox_tail,
-                page,
-                settled,
-            } => Ok(ExecutionQuery {
-                input,
-                inbox_tail,
-                page,
-                settled,
-            }),
-            _ => Err(unexpected()),
-        }
+            .try_into()
+            .map_err(|_| unexpected())
     }
 
     /// Selected identity, shared by follow and execution-query projections.
