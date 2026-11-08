@@ -345,9 +345,7 @@ impl HostWorkspace {
                 ));
             }
         }
-        if acyclic_fs::capture_root_identity(&self.workspace.path).map_err(storage)?
-            != self.workspace.identity
-        {
+        if self.workspace.root_identity()? != self.workspace.identity {
             return Err(Error::Unauthorized(
                 "host workspace root was replaced".into(),
             ));
