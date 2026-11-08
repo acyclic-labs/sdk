@@ -1,10 +1,11 @@
 diff --git a/rust/crates/actors/src/conformance.rs b/rust/crates/actors/src/conformance.rs
+index e1c69a699ef..0774c337c93 100644
 --- a/rust/crates/actors/src/conformance.rs
 +++ b/rust/crates/actors/src/conformance.rs
-@@ -1390,7 +1390,6 @@
-     target.restart().await?;
-     restarted.send("emit").await?;
-     restarted.expect(&["r0", "r2"]).await?;
+@@ -1432,7 +1432,6 @@ pub(crate) async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Res
+     restarted
+         .expect_around(deadline, &["r0", "r2"], &["r0", "r2", "a1"])
+         .await?;
 -    target.advance_to(deadline).await?;
      restarted.expect(&["r0", "r2", "a1"]).await
  }
