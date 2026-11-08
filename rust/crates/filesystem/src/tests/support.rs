@@ -11,8 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_arch = "wasm32"))]
 thread_local! {
-    pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, bool)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
     pub(crate) static JSON_OUTPUT_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
+    pub(crate) static JSON_ERROR_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
 }
 
 /// Observe the shipped serializer; pressure is applied only at its entry so
@@ -24,12 +25,19 @@ pub(crate) fn observe_json_output<T>(
     let Some((original, pressure)) = JSON_OUTPUT_CUT.with_borrow_mut(Option::take) else {
         return serialize();
     };
-    let withheld = if pressure {
+    let withheld = if let Some(allowance) = pressure {
         let remaining = original.remaining().expect("original JSON allowance");
         let permit = original
-            .claim(remaining.peak_allocation_bytes, 0, WorkCounters::UNCHARGED)
+            .claim(
+                remaining.peak_allocation_bytes - allowance,
+                0,
+                WorkCounters::UNCHARGED,
+            )
             .expect("withhold original JSON output capacity");
-        assert_eq!(original.remaining().unwrap().peak_allocation_bytes, 0);
+        assert_eq!(
+            original.remaining().unwrap().peak_allocation_bytes,
+            allowance
+        );
         Some(permit)
     } else {
         None

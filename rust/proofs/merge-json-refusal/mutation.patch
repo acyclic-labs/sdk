@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/workspace/join_directory.rs b/rust/crates/filesystem/src/workspace/join_directory.rs
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -610,6 +610,6 @@
+             accounting,
+             128,
+-            |writer| serde_json::to_writer(writer, value),
+-            json_error,
++            |writer| serde_json::to_writer(writer, value).map_err(json_error),
++            std::convert::identity,
+         )?;
+         let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;

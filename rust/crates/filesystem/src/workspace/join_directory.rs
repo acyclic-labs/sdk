@@ -606,10 +606,12 @@ fn json(
         let accounting = accounting;
         // Keep serde_json's initial output chunk, admitted before entering the
         // serializer so a refused allocation cannot allocate an IO error box.
-        let bytes =
-            crate::kernel::allocation::writer::ImageWriter::produce(accounting, 128, |writer| {
-                serde_json::to_writer(writer, value).map_err(WorkspaceError::engine)
-            })?;
+        let bytes = crate::kernel::allocation::writer::ImageWriter::produce(
+            accounting,
+            128,
+            |writer| serde_json::to_writer(writer, value),
+            json_error,
+        )?;
         let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
         Ok(bytes.into_bytes((), accounting)?.into())
     };
@@ -617,6 +619,20 @@ fn json(
     return crate::test_support::observe_json_output(serialize);
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]
     serialize()
+}
+
+fn json_error(error: serde_json::Error) -> WorkspaceError {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    {
+        let mut result = None;
+        let first = acyclic_test_support::first_allocation(|| {
+            result = Some(WorkspaceError::engine(error));
+        });
+        crate::test_support::JSON_ERROR_FIRST_ALLOCATION.set(Some(first));
+        result.expect("serializer error conversion completed")
+    }
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    WorkspaceError::engine(error)
 }
 
 // Source paths are preserved in descriptors, never expanded into staging

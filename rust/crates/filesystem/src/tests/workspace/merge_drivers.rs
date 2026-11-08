@@ -3,9 +3,11 @@ use super::*;
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(), Box<dyn Error>> {
-    use crate::test_support::{JSON_OUTPUT_CUT, JSON_OUTPUT_FIRST_ALLOCATION};
+    use crate::test_support::{
+        JSON_ERROR_FIRST_ALLOCATION, JSON_OUTPUT_CUT, JSON_OUTPUT_FIRST_ALLOCATION,
+    };
 
-    for pressure in [false, true] {
+    for pressure in [None, Some(0), Some(128)] {
         let fs = Fs::memory();
         let target = unbounded!(fs, create_workspace("json-target"))?;
         target.write_text("/file", "base").await?;
@@ -37,6 +39,7 @@ async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(
         let mut directory =
             preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
         JSON_OUTPUT_FIRST_ALLOCATION.set(None);
+        JSON_ERROR_FIRST_ALLOCATION.set(None);
         JSON_OUTPUT_CUT.with_borrow_mut(|cut| *cut = Some((original.clone(), pressure)));
         let result = directory
             .write_page(
@@ -54,12 +57,25 @@ async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(
             .take()
             .ok_or("missing JSON allocation event")?;
         eprintln!(
-            "JSON producer: pressure={pressure} first_allocation={first:?} result={result:?}"
+            "JSON producer: pressure={pressure:?} first_allocation={first:?} result={result:?}"
         );
-        if pressure {
+        if let Some(allowance) = pressure {
+            if allowance == 0 {
+                assert_eq!(
+                    first, None,
+                    "serializer allocated before original admission"
+                );
+            } else {
+                assert_eq!(
+                    first,
+                    Some(128),
+                    "growth control missed the initial backing"
+                );
+            }
             assert_eq!(
-                first, None,
-                "serializer allocated before original admission"
+                JSON_ERROR_FIRST_ALLOCATION.take(),
+                None,
+                "refused JSON allocated a diagnostic"
             );
             assert!(matches!(
                 result,
