@@ -3,12 +3,13 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { credentialTlsFixture } from "../../../test/credential-tls.js";
 import { NativeStreamProvider } from "../src/native.js";
+import { GrpcStreamProvider } from "../src/grpc.js";
 import { StreamError } from "../src/types.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 import { producer as originalRefusal } from "../../objects/test/refusal.fuzz.mjs";
 
-test("native Session rejection preserves original diagnostic bytes through the public provider", async () => {
+test.each(["native", "gRPC"] as const)("%s Session rejection preserves original diagnostic bytes through the public provider", async transport => {
   const original = (await originalRefusal()).refusal;
   const encoded = Buffer.from(original.details).toString("base64");
   let sessions = 0;
@@ -24,9 +25,11 @@ test("native Session rejection preserves original diagnostic bytes through the p
     } });
   });
   try {
-    const provider = await NativeStreamProvider.connect(host.endpoint, "fixture", Buffer.from(host.certificate));
+    const provider = transport === "native"
+      ? await NativeStreamProvider.connect(host.endpoint, "fixture", Buffer.from(host.certificate))
+      : new GrpcStreamProvider({ endpoint: host.endpoint, token: "fixture", caCertificate: host.certificate });
     let actual: unknown;
-    try { await provider.tail("observed"); }
+    try { await provider.heads({ paths: ["observed"], projection: "tail", limit: 1 }); }
     catch (error) { actual = error; }
     expect(actual).toBeInstanceOf(StreamError);
     if (!(actual instanceof StreamError)) throw new Error("missing native Stream error");
