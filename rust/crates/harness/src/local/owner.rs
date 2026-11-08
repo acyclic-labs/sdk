@@ -119,7 +119,7 @@ pub(super) fn state_directory_in(
 }
 
 mod directory;
-pub(super) use directory::separated_directory;
+pub(super) use directory::{planned_separated_directory, separated_directory};
 
 #[cfg(test)]
 pub(super) fn directory(path: &Path) -> Result<PathBuf> {

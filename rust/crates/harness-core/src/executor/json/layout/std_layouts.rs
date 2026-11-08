@@ -47,7 +47,8 @@ impl HeapLayout for serde_json::value::RawValue {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
-    const LAYOUT: &'static JsonLayout = <[u8; 32]>::LAYOUT;
+    const LAYOUT: &'static JsonLayout =
+        &JsonLayout::record(&[("v1", <([u8; 32], [u8; 32])>::LAYOUT)]);
 }
 /// A borrowed record is laid out as the record it borrows.
 impl<T: HeapLayout + ?Sized> HeapLayout for &T {
