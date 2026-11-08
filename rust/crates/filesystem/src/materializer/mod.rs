@@ -52,8 +52,6 @@ native_modules! {
 pub use witness::codec_fuzz;
 #[cfg(not(target_arch = "wasm32"))]
 mod directories;
-#[cfg(not(target_arch = "wasm32"))]
-mod resource_lock;
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(windows, all(any(test, feature = "local"), feature = "native-mount"))

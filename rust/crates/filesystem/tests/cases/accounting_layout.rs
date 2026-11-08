@@ -11,9 +11,14 @@ fn measured<T>(operation: impl FnOnce() -> T) -> (T, acyclic_test_support::Alloc
 }
 
 #[test]
-fn original_ledger_records_the_actual_allocator_layout() {
+fn original_ledger_admission_tracks_its_actual_arc_at_every_ceiling() {
+    // Process-global framework custody is established through the public host
+    // boundary before measuring finite ledger ownership. Repeated constructors
+    // still cross that same boundary and must not allocate another invocation.
+    #[cfg(feature = "native-watch")]
+    acyclic_fs::watch::initialize_native_watch_services().unwrap();
     let cancellation = CancellationToken::new();
-    let (work, allocations) = measured(|| {
+    let (probe, allocations) = measured(|| {
         NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
             .unwrap()
     });
@@ -26,21 +31,12 @@ fn original_ledger_records_the_actual_allocator_layout() {
         allocations.bytes_total,
         NativeMaterializationWork::accounting_state_bytes()
     );
-    assert_eq!(work.live_allocation_bytes(), allocations.bytes_total);
+    assert_eq!(probe.live_allocation_bytes(), allocations.bytes_total);
     assert_eq!(
-        work.receipt().peak_allocation_bytes,
+        probe.receipt().peak_allocation_bytes,
         allocations.bytes_total
     );
-    assert_eq!(work.receipt().allocation_operations, 1);
-}
-
-#[test]
-fn denied_ledger_does_not_allocate_its_arc() {
-    let cancellation = CancellationToken::new();
-    let (probe, allocations) = measured(|| {
-        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-            .unwrap()
-    });
+    assert_eq!(probe.receipt().allocation_operations, 1);
     let required = allocations.bytes_total;
     drop(probe);
     for ceiling in 0..=required {

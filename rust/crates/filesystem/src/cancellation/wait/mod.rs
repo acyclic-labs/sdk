@@ -129,7 +129,7 @@ impl Cancelled<'_> {
         let waiter = Arc::new(CancellationWaiter {
             links: Mutex::new(Some((Weak::new(), head.clone()))),
             #[cfg(not(target_arch = "wasm32"))]
-            cleanup: parking_lot::Mutex::new(cleanup),
+            cleanup: Mutex::new(cleanup),
             _allocation: allocation,
             ..CancellationWaiter::default()
         });
@@ -280,7 +280,11 @@ impl Drop for Cancelled<'_> {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(credit) = &mut *waiter.cleanup.lock() {
+        if let Some(credit) = &mut *waiter
+            .cleanup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
             credit.record_deferred(crate::WorkCounters {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED

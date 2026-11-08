@@ -1,7 +1,7 @@
 //! Runtime-independent cooperative cancellation for native and browser work.
 
 use crate::sync::{
-    Mutex,
+    InlineMutex as Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::future::Future;
@@ -33,7 +33,7 @@ struct CancellationWaiter {
     links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
     #[cfg(not(target_arch = "wasm32"))]
     // Head may precede cleanup; links and waker guards never span cleanup.
-    cleanup: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
+    cleanup: Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     _allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
 }
@@ -89,7 +89,11 @@ impl Drop for PreparedCancellation {
                 let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
             }
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(credit) = &mut *waiter.cleanup.lock() {
+            if let Some(credit) = &mut *waiter
+                .cleanup
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+            {
                 credit.record_deferred(crate::WorkCounters {
                     items_examined: 1,
                     ..crate::WorkCounters::UNCHARGED
@@ -273,6 +277,7 @@ impl CancellationToken {
             waiter
                 .cleanup
                 .lock()
+                .unwrap_or_else(PoisonError::into_inner)
                 .as_mut()
                 .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
                 .record_completed(crate::WorkCounters {
