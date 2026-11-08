@@ -211,7 +211,9 @@ async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
         .await
     {
         Ok(records) => records,
-        Err(acyclic_stream::StreamError::NotFound) => return Ok(pending()),
+        Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
+            return Ok(pending());
+        }
         Err(error) => return Err(Error::Stream(error)),
     };
     let Some(record) = records.try_next().await.map_err(Error::Stream)? else {

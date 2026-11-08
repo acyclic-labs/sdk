@@ -414,7 +414,7 @@ pub async fn served<P: crate::StreamProvider + ?Sized>(
 ) -> Result<Option<Revision>, StreamError> {
     match provider.wait_applied(at_least).await {
         Ok(revision) => Ok(Some(revision)),
-        Err(StreamError::Unsupported) => Ok(None),
+        Err(error) if error.category() == StreamError::Unsupported => Ok(None),
         Err(error) => Err(error),
     }
 }
