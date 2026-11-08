@@ -128,7 +128,7 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
     session.receive(window(1))?;
     let data = session.ready()?.ok_or("accepted data was dropped")?;
     assert!(matches!(&data.wire().body, Some(Body::Data(data))
-        if matches!(&data.item, Some(Item::ActorSocket(bytes)) if bytes == b"queued")));
+        if matches!(&data.item, Some(Item::ActorSocket(bytes)) if bytes.as_ref() == b"queued")));
     let (_, retained) = session
         .controls
         .pop_front()
