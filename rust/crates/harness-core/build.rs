@@ -5,11 +5,13 @@ pub mod native_environment;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
-    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    let protoc = acyclic_proto_build::protoc()?;
     // Crate-owned protocol sources make the published archive independently buildable.
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
     println!("cargo:rerun-if-changed=proto");
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
     println!(
         "cargo:rerun-if-changed={}",
         acyclic_proto_build::shared_protocols().display()

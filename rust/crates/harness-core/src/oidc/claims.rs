@@ -61,7 +61,13 @@ pub(super) fn verify(
     }
     let mut parts = token.split('.');
     let encoded = parts.next().ok_or_else(|| refused("invalid OIDC token"))?;
-    if parts.next().is_none() || parts.next().is_none() || parts.next().is_some() {
+    let payload = parts
+        .next()
+        .ok_or_else(|| refused("invalid OIDC compact token"))?;
+    let signature = parts
+        .next()
+        .ok_or_else(|| refused("invalid OIDC compact token"))?;
+    if parts.next().is_some() {
         return Err(refused("invalid OIDC compact token"));
     }
     let bytes = URL_SAFE_NO_PAD
@@ -84,16 +90,20 @@ pub(super) fn verify(
     let key = keys
         .get(&header.kid)
         .ok_or_else(|| refused("OIDC signing key is unknown"))?;
-    let mut validation = jsonwebtoken::Validation::new(key.algorithm);
-    // Time is deliberately checked below against the host-injected clock.
-    // Signature, issuer and audience checks remain enabled in the JWT library.
-    validation.validate_exp = false;
-    validation.set_required_spec_claims(&["iss", "sub", "aud", "exp"]);
-    validation.set_issuer(&[&config.issuer]);
-    validation.set_audience(&[&config.audience]);
-    let claims = jsonwebtoken::decode::<Claims>(token, &key.decoding, &validation)
-        .map_err(|_| refused("OIDC signature or required claims are invalid"))?
-        .claims;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| refused("invalid OIDC signature encoding"))?;
+    // The signature covers the original compact header and claims bytes.
+    // Parse claims only after authenticating them with the pinned public key.
+    key.verify(
+        &token.as_bytes()[..encoded.len() + 1 + payload.len()],
+        &signature,
+    )?;
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|_| refused("invalid OIDC claims encoding"))?;
+    let claims: Claims =
+        serde_json::from_slice(&payload).map_err(|_| refused("invalid OIDC required claims"))?;
     let audience = match &claims.aud {
         Audience::One(one) => vec![one.as_str()],
         Audience::Many(many) => many.iter().map(String::as_str).collect(),
