@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-tui/src/query_controller.rs b/rust/crates/harness-tui/src/query_controller.rs
+index b91e44ff0b0..718564dc7a4 100644
+--- a/rust/crates/harness-tui/src/query_controller.rs
++++ b/rust/crates/harness-tui/src/query_controller.rs
+@@ -65,7 +65,7 @@ impl<S> QueryController<S> {
+         let Some(page) = self.page.as_mut() else {
+             return false;
+         };
+-        if !page.page_boundary(top, rows, height) || pending.as_ref().get_ref().is_some() {
++        if !page.page_boundary(top, rows, height) {
+             return false;
+         }
+         let next = if rows < 0 {

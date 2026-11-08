@@ -15,6 +15,16 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "query-navigation": [
+    "rust/crates/harness-tui/src/query_controller.rs", "acyclic-harness-tui",
+    "query_page::tests::wrapped_query_pages_reveal_every_row_before_the_source_continuation",
+    "pending refresh must leave every admitted row reachable", ["--features", "tui"],
+    { mutations: [
+      { patch: "rust/proofs/query-navigation/progress.patch", label: "progress", diagnostic: "pending refresh must leave every admitted row reachable" },
+      { patch: "rust/proofs/query-navigation/safety.patch", label: "safety", diagnostic: "pending navigation must preserve the admitted page" },
+      { patch: "rust/proofs/query-navigation/cost.patch", label: "cost", diagnostic: "local query scroll must not allocate" },
+    ] },
+  ],
   "objects-explicit-close": [
     "rust/crates/objects/src/local.rs", "acyclic-objects",
     "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
