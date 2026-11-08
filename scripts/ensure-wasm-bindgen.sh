@@ -28,7 +28,7 @@ if [[ "$("$bindgen_bin" --version 2>/dev/null || true)" != 'wasm-bindgen 0.2.117
       url=https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.117/wasm-bindgen-0.2.117-x86_64-unknown-linux-musl.tar.gz
       if ! {
         if [[ -n "${PINNED_ASSET_FETCHER:-}" ]]; then
-          "$PINNED_ASSET_FETCHER" 97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240 "$url" "$temporary_archive"
+          "$PINNED_ASSET_FETCHER" 97f527f7c7956f69a88a4bdb5176142ebc4e255c2dbe3805ec4f373421028240 "$url" "$temporary_archive" >&2
         else
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
             --max-time 30 "$url" --output "$temporary_archive"
