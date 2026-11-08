@@ -18,6 +18,15 @@ pub enum AgentClientError {
     /// Canonical session admission, transport or authorization failure.
     #[error(transparent)]
     Session(#[from] WireSessionError),
+    /// The original failure of one selected producer, with its resource.
+    #[error("follow failed for {resource}: {cause}")]
+    Subscription {
+        /// Canonical resource selected by the failed subscription.
+        resource: String,
+        /// Original typed admission, transport or provider failure.
+        #[source]
+        cause: WireSessionError,
+    },
     /// A bounded agent record failed its canonical decoder.
     #[error(transparent)]
     Record(#[from] acyclic_harness_core::agent::Error),
@@ -45,6 +54,7 @@ impl AgentClientError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Session(cause) => cause.code(),
+            Self::Subscription { cause, .. } => cause.code(),
             Self::Record(cause) => cause.code(),
             Self::Closed(_) => "agent_stream_closed",
             Self::ResourceClosed(_) => "agent_resource_closed",
@@ -480,7 +490,12 @@ impl AgentClient {
                         waiting = true;
                         continue;
                     }
-                    Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
+                    Poll::Ready(Err(cause)) => {
+                        return Poll::Ready(Err(AgentClientError::Subscription {
+                            resource: resource.clone(),
+                            cause,
+                        }));
+                    }
                     Poll::Ready(Ok(None)) => {
                         return Poll::Ready(Err(WireSessionError::Stream(
                             acyclic_stream::StreamError::Unavailable,
@@ -511,7 +526,12 @@ impl AgentClient {
                     waiting = true;
                     continue;
                 }
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+                Poll::Ready(Err(cause)) => {
+                    return Poll::Ready(Err(AgentClientError::Subscription {
+                        resource: wire_codec::session::stream_resource(path.as_str()),
+                        cause,
+                    }));
+                }
                 Poll::Ready(Ok(None)) => {
                     return Poll::Ready(Err(WireSessionError::Stream(
                         acyclic_stream::StreamError::Unavailable,
