@@ -318,24 +318,61 @@ mod proofs {
 
     #[kani::proof]
     fn fanout_preserves_settled_coverage_and_pending_identity() {
+        let generation: u64 = kani::any();
         let cursor: u64 = kani::any();
-        let end: u64 = kani::any();
+        let head: u64 = kani::any();
+        let pending = if kani::any() {
+            Some(protocol::Pending {
+                summary: kani::any(),
+                generation,
+                through: kani::any(),
+                completion: if kani::any() {
+                    Some(if kani::any() {
+                        protocol::Completion::Ready
+                    } else {
+                        protocol::Completion::Failed
+                    })
+                } else {
+                    None
+                },
+            })
+        } else {
+            None
+        };
+        let Ok(state) = protocol::State::restore(generation, cursor, pending, head) else {
+            return;
+        };
         let common: u64 = kani::any();
-        kani::assume(cursor < end);
-        let mut state = protocol::State::restore(0, cursor, None, end).unwrap();
-        assert!(state.prepare([0; 32], end, end).is_ok());
-        let pending = state;
-        assert!(state.fork(common).is_err());
-        assert_eq!(state, pending);
-        assert!(state.complete([0; 32], protocol::Completion::Ready).is_ok());
-        assert!(state.fork(common).is_err());
-        assert!(state.swap([0; 32], 0, end).is_ok());
-        assert_eq!(state.fork(common).is_ok(), end <= common);
-        if let Ok(child) = state.fork(common) {
-            assert_eq!(child.cursor(), end);
-            assert!(child.pending().is_none());
+        let refusal = if cursor > common {
+            Some(protocol::Refusal::Range)
+        } else if pending.is_some() {
+            Some(protocol::Refusal::NotReady)
+        } else {
+            None
+        };
+        let fork = state.fork(common);
+        assert_eq!(fork.as_ref().err().copied(), refusal);
+        if let Ok(child) = fork {
+            assert_eq!(child, state);
         }
-        kani::cover!(cursor <= common && common < end);
-        kani::cover!(end <= common);
+        kani::cover!(refusal == Some(protocol::Refusal::Range) && pending.is_none());
+        kani::cover!(refusal == Some(protocol::Refusal::Range) && pending.is_some());
+        kani::cover!(
+            refusal == Some(protocol::Refusal::NotReady)
+                && pending.is_some_and(|value| value.completion.is_none())
+        );
+        kani::cover!(
+            refusal == Some(protocol::Refusal::NotReady)
+                && pending
+                    .is_some_and(|value| value.completion == Some(protocol::Completion::Ready))
+        );
+        kani::cover!(
+            refusal == Some(protocol::Refusal::NotReady)
+                && pending
+                    .is_some_and(|value| value.completion == Some(protocol::Completion::Failed))
+        );
+        kani::cover!(refusal.is_none() && generation == 0 && cursor == 0);
+        kani::cover!(refusal.is_none() && generation > 0 && cursor > 0);
+        kani::cover!(refusal.is_none() && generation == u64::MAX);
     }
 }
