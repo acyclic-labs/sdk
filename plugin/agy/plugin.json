@@ -1,0 +1,7 @@
+{
+  "name": "acyclic",
+  "version": "0.2.0",
+  "description": "Coordinate native workspaces through the shared Acyclic harness.",
+  "author": {"name": "Acyclic Labs"},
+  "license": "Apache-2.0"
+}

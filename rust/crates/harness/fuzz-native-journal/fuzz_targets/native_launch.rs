@@ -36,7 +36,9 @@ fn paths(
     let options: &[&str] = match host {
         "codex" => &["--add-dir"],
         "claude-code" => &["--plugin-dir", "--add-dir", "--settings"],
-        _ => &["--session-dir", "--extension"],
+        "agy" => &["--add-dir", "--settings"],
+        "pi" => &["--session-dir", "--extension"],
+        _ => &[],
     };
     let relative = format!("configuration/{value}");
     let absolute = cwd.join(&relative);
@@ -48,7 +50,7 @@ fn paths(
                 .ok_or_else(|| format!("generated absolute path is not Unicode: {absolute:?}"))?,
         ] {
             let mut supplied = flags.to_vec();
-            if *option == "--settings" {
+            if host == "claude-code" && *option == "--settings" {
                 // Replace the required inline settings, retaining its cardinality.
                 *supplied
                     .get_mut(1)
@@ -59,7 +61,7 @@ fn paths(
             let inherited = launch::parent_flags(host, &supplied, cwd).map_err(|error| {
                 format!("admitted path policy was refused: {host}, {supplied:?}: {error}")
             })?;
-            let index = if *option == "--settings" {
+            let index = if host == "claude-code" && *option == "--settings" {
                 1
             } else {
                 flags.len() + 1
@@ -173,12 +175,23 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
                 &["-p", "--output-format", "stream-json", "--verbose"],
                 vec![],
             ),
+            "opencode" => (&["run", "--format", "json", "--dir"], vec![]),
+            "agy" => (
+                &[
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                ],
+                vec![],
+            ),
             _ => (&["--mode", "json", "-p"], vec![]),
         };
         let mut expected = prefix
             .iter()
             .copied()
             .map(OsString::from)
+            .chain((host == "opencode").then(|| OsString::from(cwd)))
             .chain(inherited.iter().map(OsString::from))
             .chain(suffix)
             .collect::<Vec<_>>();
@@ -186,7 +199,9 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
             let option = match host {
                 "codex" => "resume",
                 "claude-code" => "--resume",
-                _ => "--fork",
+                "pi" => "--fork",
+                "agy" => "--conversation",
+                _ => "--session",
             };
             let resume = if host == "pi" {
                 session.file.unwrap_or(session.id)
@@ -264,25 +279,28 @@ fn check(input: &[u8]) -> Result<(), String> {
     });
     let reference = format!("native-{encoded}");
     let non_unicode = non_unicode_root(input);
-    for (host, required) in [
+    for (host, required_groups) in [
         (
             "codex",
             &[
-                "--sandbox",
-                "workspace-write",
-                "--ask-for-approval",
-                "never",
+                &["--sandbox", "workspace-write"][..],
+                &["--ask-for-approval", "never"][..],
             ][..],
         ),
         (
             "claude-code",
-            &["--settings", "{}", "--permission-mode", "default"][..],
+            &[
+                &["--settings", "{}"][..],
+                &["--permission-mode", "default"][..],
+            ][..],
         ),
         ("pi", &[][..]),
+        ("opencode", &[][..]),
+        ("agy", &[&["--sandbox"][..], &["--mode", "auto"][..]][..]),
     ] {
         check_host(
             host,
-            required,
+            required_groups,
             decoded.as_deref(),
             cwd,
             &non_unicode,
@@ -299,7 +317,7 @@ fn check(input: &[u8]) -> Result<(), String> {
 
 fn check_host(
     host: &str,
-    required: &[&str],
+    required: &[&[&str]],
     decoded: Option<&[String]>,
     cwd: &Path,
     non_unicode: &Path,
@@ -329,7 +347,7 @@ fn check_host(
     // Authored valid policy requests are a positive control, not a parser.
     let mut flags = required
         .iter()
-        .copied()
+        .flat_map(|group| group.iter().copied())
         .map(str::to_owned)
         .collect::<Vec<_>>();
     flags.extend(["--model".into(), encoded.into()]);
@@ -351,7 +369,7 @@ fn check_host(
     );
     policy(host, &flags, cwd, reference)?;
     paths(host, &flags, cwd, non_unicode, encoded)?;
-    if host != "pi" {
+    if matches!(host, "codex" | "claude-code" | "agy") {
         assert!(
             matches!(
                 launch::parent_flags(host, &flags, non_unicode),
@@ -366,24 +384,26 @@ fn check_host(
 fn refused_policies(
     host: &str,
     flags: &mut Vec<String>,
-    required: &[&str],
+    required: &[&[&str]],
     cwd: &Path,
     encoded: &str,
     reference: &str,
 ) -> Result<(), String> {
-    for (index, pair) in required.as_chunks::<2>().0.iter().enumerate() {
+    let mut start = 0;
+    for group in required {
         let mut missing = flags.clone();
-        missing.drain(2 * index..2 * index + 2);
+        missing.drain(start..start + group.len());
         assert!(
             matches!(launch::validate(host, &missing), Err(Error::Invalid(_))),
             "native launch admitted a missing required policy"
         );
         let mut repeated = flags.clone();
-        repeated.extend(pair.iter().copied().map(str::to_owned));
+        repeated.extend(group.iter().copied().map(str::to_owned));
         assert!(
             matches!(launch::validate(host, &repeated), Err(Error::Invalid(_))),
             "native launch admitted duplicate required policy"
         );
+        start += group.len();
     }
     flags.push("--model".into());
     assert!(
