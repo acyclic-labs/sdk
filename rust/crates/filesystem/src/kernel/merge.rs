@@ -8,7 +8,7 @@ use super::persistent_btree::Format;
 use super::persistent_diff::{
     diff_file_records_with_accounting, diff_tree_entries_with_accounting,
 };
-use super::persistent_point::{Owned, retire_allocation};
+use super::persistent_point::Owned;
 use super::range::plan_extent_range_with_accounting;
 use super::tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
 use super::{
@@ -16,7 +16,6 @@ use super::{
     ExtentMutation, ExtentMutationError, ExtentRangeRequest, ExtentReadError, ExtentSlice,
     FileMetadata, FilePayload, FileRecord, FileTableMutation, FileTableMutationError,
     GenerationRoot, LogicalName, MetadataField, TreeMutation, TreeMutationError,
-    decode_file_metadata,
 };
 use crate::FsError;
 use crate::async_storage::AsyncObjectStore;

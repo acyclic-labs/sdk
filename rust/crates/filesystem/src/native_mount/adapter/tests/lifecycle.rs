@@ -317,7 +317,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
         assert_eq!(file.seek(0, MountSeekTarget::Data)?, Some(8));
         if !detached {
             assert_eq!(source.read_range(&alias, 32, 4)?.as_ref(), b"open");
-            source.rename(&alias, &renamed, false, &work)?;
+            source.rename(&alias, &renamed, false, &work, None)?;
             file.write_range(0, Bytes::from_static(b"live"))?;
             assert!(source.lookup(&alias)?.is_none());
             assert_eq!(source.read_range(&renamed, 0, 4)?.as_ref(), b"live");

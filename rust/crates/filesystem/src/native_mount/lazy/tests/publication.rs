@@ -96,7 +96,7 @@ async fn a_name_renamed_away_in_a_source_directory_is_created_again()
     let index = mounted(&["sub", "index"]);
     view.create_file(&lock, FileMetadata::default(), None, &work)?;
     view.write_range(&lock, 0, Bytes::from_static(b"first"))?;
-    view.rename(&lock, &index, false, &work)?;
+    view.rename(&lock, &index, false, &work, None)?;
     view.create_file(&lock, FileMetadata::default(), None, &work)?;
     view.write_range(&lock, 0, Bytes::from_static(b"second"))?;
     let renamed = view.lookup(&index)?.ok_or("index")?.node.file_id;
@@ -287,7 +287,7 @@ async fn replaced_source_identity_keeps_open_handle_and_surviving_alias()
     let c = mounted(&["c"]);
     let d = mounted(&["d"]);
     let old = view.open_file(&c)?;
-    view.rename(&a, &c, true, &work)?;
+    view.rename(&a, &c, true, &work, None)?;
     old.write_range(0, Bytes::from_static(b"update"))?;
     assert_eq!(view.read_range(&c, 0, 6)?.as_ref(), b"source");
     assert_eq!(view.read_range(&d, 0, 6)?.as_ref(), b"update");

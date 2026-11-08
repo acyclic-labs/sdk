@@ -67,7 +67,6 @@ async fn scoped_custody(
     // The original scheduler failure is retained, not replaced by a label.
     match cause {
         JoinFailure::Native(error) => assert!(error.is_panic()),
-        #[cfg(feature = "test-support")]
         JoinFailure::Panicked { _payload } => assert_eq!(
             _payload
                 .lock()

@@ -81,6 +81,8 @@ def _invocation(binary: str, state: str, model: str) -> list[str]:
     """The one environment and flag set both the readiness check and the run use."""
     home = str(PurePosixPath(state) / "home")
     return [
+        "ACYCLIC_SIGNING_CUSTODY=private-file",
+        "ACYCLIC_SIGNING_CUSTODY_DIRECTORY=" + str(PurePosixPath(state) / "custody"),
         "HOME=" + home,
         "USERPROFILE=" + home, "CODEX_HOME=" + str(PurePosixPath(state) / "fixture-codex"),
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,

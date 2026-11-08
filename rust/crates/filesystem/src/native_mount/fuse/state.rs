@@ -366,28 +366,68 @@ impl ProjectionState {
     pub(super) fn admit_entry(
         &mut self,
         source: &dyn MountFilesystem,
+        parent: u64,
         inode: u64,
         name: ChildName,
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
+        let (ttl, name, completion) = self.prepare_entry(source, inode, name, stamp, work)?;
+        self.accept_entry(parent, &name, completion);
+        Ok(ttl)
+    }
+
+    /// Prepare cache facts before a bounded reply decides whether it fits.
+    pub(super) fn prepare_entry(
+        &mut self,
+        source: &dyn MountFilesystem,
+        inode: u64,
+        name: ChildName,
+        stamp: Option<ViewStamp>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<
+        (
+            Duration,
+            FuseOwned<MountPath>,
+            crate::materializer::NativeWorkReservation,
+        ),
+        NativeMountError,
+    > {
         let folded = name.folded.is_some();
         let key = self.retain_spelling(inode, name)?;
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if folded || self.cache == ProjectionCache::Direct {
-            return Ok(Duration::ZERO);
-        }
-        let Some(entry) = self.by_inode.get(&inode) else {
-            return Ok(Duration::ZERO);
-        };
-        let admitted =
-            self.admissible(source, &key, Some(entry.lookup.node.file_id), stamp, work)?;
-        if let Some(entry) = self.by_inode.get_mut(&inode)
-            && let Some(binding) = entry.binding_mut(&key)
+        let ttl = if !folded
+            && self.cache != ProjectionCache::Direct
+            && let Some(entry) = self.by_inode.get(&inode)
         {
-            hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+            let admitted =
+                self.admissible(source, &key, Some(entry.lookup.node.file_id), stamp, work)?;
+            if let Some(entry) = self.by_inode.get_mut(&inode)
+                && let Some(binding) = entry.binding_mut(&key)
+            {
+                hold(&mut binding.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+            }
+            if admitted { attributes } else { Duration::ZERO }
+        } else {
+            Duration::ZERO
+        };
+        let completion = work.reserve_work(Items.delta(1))?;
+        Ok((ttl, key, completion))
+    }
+
+    /// A delivered positive spelling replaces the kernel's previous miss.
+    pub(super) fn accept_entry(
+        &mut self,
+        parent: u64,
+        name: &MountPath,
+        mut completion: crate::materializer::NativeWorkReservation,
+    ) {
+        if let Some(component) = name.components().last()
+            && let Some(entry) = self.by_inode.get_mut(&parent)
+        {
+            entry.negative_children.remove(component.as_slice());
         }
-        Ok(if admitted { attributes } else { Duration::ZERO })
+        completion.record_deferred(Items.delta(1));
     }
 
     pub(super) fn negative_entry(

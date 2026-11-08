@@ -545,7 +545,7 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
     boundary(source.cancellation(), |work| source.flush(work))?;
     let renamed = native_test_path("renamed.bin");
     boundary(source.cancellation(), |work| {
-        source.rename(&payload, &renamed, true, work)
+        source.rename(&payload, &renamed, true, work, None)
     })?;
     let link = native_test_path("link.bin");
     boundary(source.cancellation(), |work| {

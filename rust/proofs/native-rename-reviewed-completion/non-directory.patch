@@ -1,0 +1,27 @@
+diff --git b/rust/crates/filesystem/src/native_mount/adapter/installation.rs a/rust/crates/filesystem/src/native_mount/adapter/installation.rs
+index ccd8d031616..f5ee8f7ab32 100644
+--- b/rust/crates/filesystem/src/native_mount/adapter/installation.rs
++++ a/rust/crates/filesystem/src/native_mount/adapter/installation.rs
+@@ -184,18 +184,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
+                                         .inspector(&mut accounting, cancellation)?,
+                                 ),
+                             };
+-                            match inspector
++                            inspector
+                                 .lookup_no_follow(&path, original, cancellation)
+-                                .await
+-                            {
+-                                Ok(lookup) => lookup
+-                                    .record
+-                                    .is_some_and(|record| record.file_id == file_id),
+-                                Err(FsError::Path(
+-                                    crate::kernel::PathLookupError::NotDirectory,
+-                                )) => false,
+-                                Err(error) => return Err(error.into()),
+-                            }
++                                .await?
++                                .record
++                                .is_some_and(|record| record.file_id == file_id)
+                         } else {
+                             false
+                         };

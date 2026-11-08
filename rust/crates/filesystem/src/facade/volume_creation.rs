@@ -348,19 +348,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             hold,
         })
     }
-    pub(crate) async fn read_creation_record<W: FsWork>(
-        &self,
-        volume_id: VolumeId,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<(VolumeCreated, OperationId), FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .read_creation(volume_id, &mut accounting, cancellation)
-            .await;
-        budget.finish(result, &accounting)
-    }
-
     pub(super) async fn read_creation(
         &self,
         volume_id: VolumeId,

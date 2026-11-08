@@ -263,9 +263,10 @@ macro_rules! policy_revision {
                     None,
                 )
                 .await?;
-                read_record_metadata_to_file_root_with_accounting(
-                    volume,
-                    record.ok_or(FsError::NotFound)?,
+                crate::kernel::read_file_metadata_with_accounting(
+                    volume.fs.objects(),
+                    (record.ok_or(FsError::NotFound)?).metadata,
+                    DecodeLimits::for_volume(volume.config),
                     &mut scope,
                     $cancellation,
                 )

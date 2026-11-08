@@ -45,10 +45,6 @@ impl HeapLayout for str {
 impl HeapLayout for serde_json::value::RawValue {
     const LAYOUT: &'static JsonLayout = &JsonLayout::BorrowedRaw;
 }
-#[cfg(not(target_arch = "wasm32"))]
-impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
-    const LAYOUT: &'static JsonLayout = <[u8; 32]>::LAYOUT;
-}
 /// A borrowed record is laid out as the record it borrows.
 impl<T: HeapLayout + ?Sized> HeapLayout for &T {
     const LAYOUT: &'static JsonLayout = T::LAYOUT;
@@ -314,15 +310,14 @@ copy_layouts!(
 /// of its fields, or an array of them followed by a length-bounding scalar.
 macro_rules! record {
     ($($name:literal => $layout:expr),* $(,)?) => {
-        JsonLayout::Node {
-            seq: Some(Alloc::INLINE),
-            map: Some(Alloc::INLINE),
-            tagged: false,
-            fields: &[$(($name, $layout)),*],
-            elements: &[$($layout,)* &JsonLayout::Scalar],
-            flatten: &[],
-        }
+        JsonLayout::record(&[$(($name, $layout)),*])
     };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
+    const LAYOUT: &'static JsonLayout =
+        &JsonLayout::record(&[("v1", <([u8; 32], [u8; 32])>::LAYOUT)]);
 }
 
 /// An externally tagged enum: an object of one member per variant.

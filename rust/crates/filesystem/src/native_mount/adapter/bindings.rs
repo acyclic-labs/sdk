@@ -61,7 +61,8 @@ where
         destination: &MountPath,
         replace: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
+        bindings: Option<&mut dyn MountRenameBindings>,
+    ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
@@ -132,11 +133,11 @@ where
                     moved,
                     replaced,
                 },
-                None,
+                bindings.map(|bindings| MutationSelection::Bindings(self, bindings)),
                 work,
             )
             .await
-            .map(drop)
+            .map(|completed| completed.stamp)
         })
     }
 
@@ -208,7 +209,7 @@ where
                     candidate,
                     change,
                     ViewChange::Entry(&destination, node),
-                    facts.then_some(node),
+                    facts.then_some(MutationSelection::Facts(node)),
                     work,
                 )
                 .await?;

@@ -157,6 +157,80 @@ pub(super) fn hold(held: &mut Option<ViewStamp>, stamp: ViewStamp) {
     *held = Some(held.map_or(stamp, |held| held.min(stamp)));
 }
 
+struct RenameBinding {
+    inode: u64,
+    index: usize,
+    file_id: crate::FileId,
+    replacement: Option<(FuseOwned<MountPath>, Option<FuseOwned<MountPath>>)>,
+    unchanged: bool,
+}
+
+pub(super) struct PreparedRename<S> {
+    replacements: FuseOwned<Vec<RenameBinding>>,
+    paths: HashMap<FuseOwned<MountPath>, u64>,
+    streams: S,
+}
+
+impl<S: Send> crate::native_mount::MountRenameBindings for PreparedRename<S> {
+    fn count(&self) -> usize {
+        self.replacements.len()
+    }
+    fn binding(&self, index: usize) -> Option<(&MountPath, crate::FileId)> {
+        let binding = &self.replacements[index];
+        let (path, native) = binding.replacement.as_ref()?;
+        Some((native.as_deref().unwrap_or(path), binding.file_id))
+    }
+    fn verified(&mut self, index: usize, unchanged: bool) {
+        self.replacements[index].unchanged = unchanged;
+    }
+}
+
+impl<S: FnOnce(&mut DirectoryStreams)> PreparedRename<S> {
+    pub(super) fn install(mut self, state: &mut ProjectionState, stamp: ViewStamp) {
+        (self.streams)(&mut state.streams);
+        for RenameBinding {
+            inode,
+            index,
+            replacement,
+            unchanged,
+            ..
+        } in self.replacements.drain(..)
+        {
+            let Some(entry) = state.by_inode.get_mut(&inode) else {
+                continue;
+            };
+            match replacement {
+                Some((path, native)) => {
+                    let Some(binding) = entry.bindings.get_mut(index) else {
+                        continue;
+                    };
+                    binding.path = path;
+                    binding.spelled = native;
+                    if unchanged {
+                        binding.verified = Some(stamp);
+                        binding.kernel = binding.kernel.map(|_| stamp);
+                    }
+                }
+                None => {
+                    entry.bindings.remove(index);
+                }
+            }
+            if entry.bindings.is_empty()
+                && entry.lookup_references == 0
+                && entry.open_handles == 0
+                && let Some(entry) = state.by_inode.remove(&inode)
+            {
+                state.forget_file(entry.lookup.node.file_id, inode);
+            }
+        }
+        // FORGET may retire an unreferenced inode while the host mutation
+        // runs; never reintroduce its precomputed path index entries.
+        self.paths
+            .retain(|_, inode| state.by_inode.contains_key(inode));
+        state.inode_by_path = self.paths;
+    }
+}
+
 impl ProjectionState {
     pub(super) fn remove_binding(
         &mut self,
@@ -164,11 +238,25 @@ impl ProjectionState {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        self.unbind(inode, path, work)?;
-        if self.inode_by_path.get(path) == Some(&inode) {
-            self.inode_by_path.remove(path);
-        }
+        self.prepare_remove_binding(inode, path, work)?(self);
         Ok(())
+    }
+
+    // The caller retains the names fence until installation. FORGET can remove
+    // the original inode in between, but cannot change its binding positions.
+    pub(super) fn prepare_remove_binding<'p>(
+        &self,
+        inode: u64,
+        path: &'p MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<impl FnOnce(&mut Self) + use<'p>, NativeMountError> {
+        let unbind = self.prepare_unbind(inode, path, work)?;
+        Ok(move |state: &mut Self| {
+            unbind(&mut *state);
+            if state.inode_by_path.get(path) == Some(&inode) {
+                state.inode_by_path.remove(path);
+            }
+        })
     }
 
     #[allow(
@@ -182,7 +270,8 @@ impl ProjectionState {
         spelled: &MountPath,
         parent_inode: u64,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
+    ) -> Result<PreparedRename<impl FnOnce(&mut DirectoryStreams) + Send + use<>>, NativeMountError>
+    {
         let mut replacements = fuse_vec(0, work)?;
         let mut paths = HashMap::new();
         let mut copied = 0u64;
@@ -204,7 +293,13 @@ impl ProjectionState {
                         .ok_or(crate::WorkError::Overflow)?;
                     retained -= 1;
                     fuse_reserve(&mut replacements, 1, work)?;
-                    replacements.push((*inode, index, None));
+                    replacements.push(RenameBinding {
+                        inode: *inode,
+                        index,
+                        file_id: entry.lookup.node.file_id,
+                        replacement: None,
+                        unchanged: false,
+                    });
                     continue;
                 }
                 let mut key = fuse_clone_path(rebased.as_deref().unwrap_or(&binding.path), work)?;
@@ -227,7 +322,13 @@ impl ProjectionState {
                     } else {
                         None
                     };
-                    replacements.push((*inode, index, Some((path, native))));
+                    replacements.push(RenameBinding {
+                        inode: *inode,
+                        index,
+                        file_id: entry.lookup.node.file_id,
+                        replacement: Some((path, native)),
+                        unchanged: false,
+                    });
                 }
             }
         }
@@ -239,36 +340,10 @@ impl ProjectionState {
             work,
         )?;
         work.charge(Copy.delta(copied))?;
-        Ok(move |state: &mut Self| {
-            streams(&mut state.streams);
-            for (inode, index, replacement) in replacements.drain(..) {
-                let Some(entry) = state.by_inode.get_mut(&inode) else {
-                    continue;
-                };
-                match replacement {
-                    Some((path, native)) => {
-                        let Some(binding) = entry.bindings.get_mut(index) else {
-                            continue;
-                        };
-                        binding.path = path;
-                        binding.spelled = native;
-                    }
-                    None => {
-                        entry.bindings.remove(index);
-                    }
-                }
-                if entry.bindings.is_empty()
-                    && entry.lookup_references == 0
-                    && entry.open_handles == 0
-                    && let Some(entry) = state.by_inode.remove(&inode)
-                {
-                    state.forget_file(entry.lookup.node.file_id, inode);
-                }
-            }
-            // FORGET may retire an unreferenced inode while the host mutation
-            // runs; never reintroduce its precomputed path index entries.
-            paths.retain(|_, inode| state.by_inode.contains_key(inode));
-            state.inode_by_path = paths;
+        Ok(PreparedRename {
+            replacements,
+            paths,
+            streams,
         })
     }
 }
@@ -395,30 +470,45 @@ impl ProjectionState {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let Some(entry) = self.by_inode.get_mut(&inode) else {
-            return Ok(());
-        };
+        self.prepare_unbind(inode, path, work)?(self);
+        Ok(())
+    }
+
+    fn prepare_unbind(
+        &self,
+        inode: u64,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
         let mut matched = None;
-        for (index, binding) in entry.bindings.iter().enumerate() {
-            work.charge(Items.delta(1))?;
-            if *binding.path == *path {
-                matched = Some(index);
-                break;
+        if let Some(entry) = self.by_inode.get(&inode) {
+            for (index, binding) in entry.bindings.iter().enumerate() {
+                work.charge(Items.delta(1))?;
+                if *binding.path == *path {
+                    let copied = (entry.bindings.len() - index - 1)
+                        .checked_mul(std::mem::size_of::<Binding>())
+                        .ok_or(crate::WorkError::Overflow)? as u64;
+                    matched = Some((index, copied, work.reserve_work(Copy.delta(copied))?));
+                    break;
+                }
             }
         }
-        if let Some(index) = matched {
-            let copied = (entry.bindings.len() - index - 1)
-                .checked_mul(std::mem::size_of::<Binding>())
-                .ok_or(crate::WorkError::Overflow)? as u64;
-            work.admit(Copy.delta(copied))?;
-            entry.bindings.remove(index);
-            work.record_admitted(Copy.delta(copied))?;
-        }
-        if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
-            let entry = self.by_inode.remove(&inode).ok_or(libc::EIO)?;
-            self.forget_file(entry.lookup.node.file_id, inode);
-        }
-        Ok(())
+        Ok(move |state: &mut Self| {
+            let Some(entry) = state.by_inode.get_mut(&inode) else {
+                return;
+            };
+            if let Some((index, copied, mut completion)) = matched {
+                entry.bindings.remove(index);
+                completion.record_deferred(Copy.delta(copied));
+            }
+            if entry.bindings.is_empty()
+                && entry.lookup_references == 0
+                && entry.open_handles == 0
+                && let Some(entry) = state.by_inode.remove(&inode)
+            {
+                state.forget_file(entry.lookup.node.file_id, inode);
+            }
+        })
     }
 
     pub(super) fn forget_file(&mut self, file_id: crate::FileId, inode: u64) {

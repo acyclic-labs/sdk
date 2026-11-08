@@ -48,9 +48,14 @@ impl DemandWork {
         reserved: WorkCounters,
         actual: WorkCounters,
     ) -> Result<(), DemandError> {
+        // Reconciliation may spend free copy credit pruning retired owners.
+        // Keep this completion's credit held until that work has finished.
+        let reconciled = self.reconcile_cancellation_registry();
         let refunded = self.refund(reserved);
-        let recorded = self.record(actual);
-        refunded
+        let recorded = self.record_reconciled(actual);
+        reconciled
+            .map_err(DemandError::from)
+            .and(refunded)
             .and(recorded)
             .and(
                 actual
