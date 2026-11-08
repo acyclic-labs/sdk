@@ -29,7 +29,7 @@ if (JSON.stringify(packages) !== JSON.stringify(referenced)) {
 }
 
 const head = run("git", ["rev-parse", "HEAD"], root);
-const tree = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), "typescript-check");
+const tree = join(resolve(root, process.env.CARGO_TARGET_DIR ?? "target"), "typescript-check");
 if (!existsSync(join(tree, ".git"))) run("git", ["clone", "-q", "--shared", "--no-checkout", root, tree], root);
 // This tree's own object store, wherever it lives now.
 writeFileSync(join(tree, ".git/objects/info/alternates"), `${resolve(root, run("git", ["rev-parse", "--git-common-dir"], root), "objects")}\n`);
