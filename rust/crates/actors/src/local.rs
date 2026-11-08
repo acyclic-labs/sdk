@@ -90,7 +90,9 @@ pub enum Error {
     /// A composed external guard changed. Recompute the original delivery;
     /// its handler must observe the changed guard or settle its refusal.
     /// Carries the refusal's conflicts, the external change a recomputation
-    /// must observe; empty when the participant refused while sealing.
+    /// must observe; empty when the participant refused while sealing and
+    /// supplied no comparable source observation. Two empty lists do not
+    /// establish that a source is unchanged.
     #[error("composed transaction precondition changed")]
     PreconditionChanged(Vec<acyclic_stream::CommitConflict>),
     /// A recomputed delivery met the identical guard refusal again: nothing

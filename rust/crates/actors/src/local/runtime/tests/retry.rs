@@ -103,34 +103,56 @@ async fn a_failed_alarm_delivery_waits_for_its_next_event() -> TestResult {
     Ok(())
 }
 
-/// How a composed participant refuses: a stale guard the commit rejects
-/// identically each time, or a refusal while sealing that names no change.
+/// A confirmed stale guard, or real source publications during preparation.
 #[derive(Clone, Copy)]
 enum Refusal {
     StaleGuard,
-    Sealing,
+    Changing,
 }
 
 struct Guard {
     refusal: Refusal,
     seals: Arc<AtomicUsize>,
     path: StreamPath,
+    provider: Arc<MemoryStream>,
 }
 
 impl crate::guest::Composition for Guard {
     fn seal<'a>(&'a mut self, mut request: CommitRequest) -> GuestFuture<'a, CommitRequest> {
         Box::pin(async move {
-            assert!(
-                self.seals.fetch_add(1, Ordering::SeqCst) < 2,
-                "unchanged guards caused a third storage attempt"
-            );
+            let attempt = self.seals.fetch_add(1, Ordering::SeqCst);
             match self.refusal {
                 // The guard stream holds one record: this can never hold.
-                Refusal::StaleGuard => request.conditions.push(CommitCondition::Tail {
-                    path: self.path.clone(),
-                    expected: 0,
-                }),
-                Refusal::Sealing => return Err(crate::guest::GuestError::PreconditionChanged),
+                Refusal::StaleGuard => {
+                    assert!(
+                        attempt < 2,
+                        "unchanged guards caused a third storage attempt"
+                    );
+                    request.conditions.push(CommitCondition::Tail {
+                        path: self.path.clone(),
+                        expected: 0,
+                    });
+                }
+                Refusal::Changing => {
+                    assert!(
+                        attempt < 4,
+                        "two inputs and two source changes need four attempts"
+                    );
+                    if attempt < 2 {
+                        self.provider
+                            .append(AppendRequest {
+                                path: self.path.clone(),
+                                records: vec![Bytes::from_static(b"changed").into()],
+                                if_tail: Some(1 + u64::try_from(attempt).unwrap()),
+                                idempotency_key: key(&format!("guard/change/{attempt}")).unwrap(),
+                            })
+                            .await
+                            .map_err(|error| {
+                                crate::guest::GuestError::Handler(error.to_string())
+                            })?;
+                        return Err(crate::guest::GuestError::PreconditionChanged);
+                    }
+                }
             }
             Ok(request)
         })
@@ -167,6 +189,7 @@ impl crate::guest::Composer for Guard {
                     .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))?
             ))
             .map_err(|error| crate::guest::GuestError::Decode(error.to_string()))?,
+            provider: Arc::clone(&self.provider),
         }))
     }
 }
@@ -202,19 +225,20 @@ impl Handler for Joined {
     }
 }
 
-/// Every delivery attempt touches storage, so it must append to the journal
-/// or wait on an event. A composed-guard refusal is retried only on evidence
-/// of an external change; the identical refusal again settles as a named
-/// failure, with the input unconsumed and nothing published.
+/// Source publications during preparation retry the original delivery. A
+/// repeated comparable stale guard settles as a named failure, with the input
+/// unconsumed and nothing published.
 ///
 /// Negative control: retrying every refusal recomputed the same delivery
 /// against the same unchanged guard forever, a storage loop with no journal
 /// progress that never reached the idle boundary. Two ready subscriptions have
 /// different stale guards: advancing fairness before commit alternated those
 /// refusals forever. The attempt counter catches that third attempt directly.
+/// Conversely, comparing empty receipts wrongly classifies two actual source
+/// publications as unchanged and fails before consuming either input.
 #[tokio::test]
-async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> TestResult {
-    for refusal in [Refusal::StaleGuard, Refusal::Sealing] {
+async fn guard_refusals_retry_changes_and_settle_unchanged_sources() -> TestResult {
+    for refusal in [Refusal::StaleGuard, Refusal::Changing] {
         let provider = Arc::new(MemoryStream::default());
         let store = Store::new(Arc::clone(&provider), root()?);
         let address = actor("guarded")?;
@@ -255,6 +279,7 @@ async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> Tes
                 refusal,
                 seals: Arc::clone(&seals),
                 path: StreamPath::new("guard")?,
+                provider: Arc::clone(&provider),
             })),
             Arc::new(Joined(Package::new()?)),
             Arc::new(SystemClock),
@@ -269,17 +294,36 @@ async fn an_unchanged_guard_refusal_settles_instead_of_retrying_forever() -> Tes
             Ok::<_, Box<dyn std::error::Error>>(runtime.complete().await)
         })
         .await?;
-        assert!(
-            matches!(completed, Err(Error::CompletionFailed(_))),
-            "{completed:?}"
-        );
-        // The first refusal is retried once; its identical repeat is final.
-        assert_eq!(seals.load(Ordering::SeqCst), 2);
-        assert_eq!(reported.load(Ordering::SeqCst), 1);
-        assert!(records(&*provider, "out/guarded").await?.is_empty());
+        let (attempts, failures, cursor) = match refusal {
+            Refusal::StaleGuard => {
+                assert!(
+                    matches!(completed, Err(Error::CompletionFailed(_))),
+                    "{completed:?}"
+                );
+                assert!(records(&*provider, "out/guarded").await?.is_empty());
+                (2, 1, 0)
+            }
+            Refusal::Changing => {
+                assert!(
+                    completed.is_ok(),
+                    "changed preparations must retry: {completed:?}"
+                );
+                assert_eq!(
+                    records(&*provider, "out/guarded").await?,
+                    vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r0")]
+                );
+                assert_eq!(records(&*provider, "guard/first").await?.len(), 3);
+                (4, 0, 1)
+            }
+        };
+        assert_eq!(seals.load(Ordering::SeqCst), attempts);
+        assert_eq!(reported.load(Ordering::SeqCst), failures);
         let state = store.load(&address).await?;
         for name in ["first", "second"] {
-            assert_eq!(state.state().and_then(|state| state.cursor(name)), Some(0));
+            assert_eq!(
+                state.state().and_then(|state| state.cursor(name)),
+                Some(cursor)
+            );
         }
     }
     Ok(())

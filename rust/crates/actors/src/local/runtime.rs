@@ -113,10 +113,14 @@ struct Inner {
 }
 
 impl Inner {
-    /// Every attempt touches storage, so a guard refusal is retried only on
-    /// evidence of an external change: the identical refusal again means
-    /// nothing changed, and the retry loop would never append or wait.
+    /// Only comparable guard observations can establish an unchanged refusal.
+    /// A preparation change has no conflict receipt; its empty list cannot
+    /// identify either the changed source or its generation.
     fn refused(&mut self, conflicts: Vec<acyclic_stream::CommitConflict>) -> Result<(), Error> {
+        if conflicts.is_empty() {
+            self.refused = None;
+            return Ok(());
+        }
         if self.refused.take().is_some_and(|last| last == conflicts) {
             return Err(Error::PreconditionUnchanged);
         }
