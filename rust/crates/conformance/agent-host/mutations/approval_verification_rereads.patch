@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/approvals/agent.rs b/rust/crates/harness-core/src/approvals/agent.rs
+index df0a7340e28..2cacf980407 100644
+--- a/rust/crates/harness-core/src/approvals/agent.rs
++++ b/rust/crates/harness-core/src/approvals/agent.rs
+@@ -433,6 +433,7 @@ impl AgentApprovals {
+             ));
+         }
+         // Authorization observes only settled evidence. It cannot start a review.
++        let bytes = self.policy.request(&*self.files, &request).await?;
+         let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+         match self.resolve_outcome(&view, None).await? {
+             Some(InteractionOutcome::Approved {}) => Ok(()),
