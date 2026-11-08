@@ -1,0 +1,18 @@
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -443,14 +443,9 @@
+ }
+ pub(in super::super) fn decode_operation_observation(
+     value: &wire::OperationState,
+-    expected: OperationId,
++    _expected: OperationId,
+ ) -> Result<OperationObservation, ProviderError> {
+     let id = decode_operation(value.operation.as_ref())?;
+-    if id != expected {
+-        return Err(ProviderError::Rejected(
+-            "operation identity was substituted".into(),
+-        ));
+-    }
+     let phase = match wire::OperationStatus::try_from(value.status)
+         .map_err(|_| ProviderError::Rejected("operation status is invalid".into()))?
+     {

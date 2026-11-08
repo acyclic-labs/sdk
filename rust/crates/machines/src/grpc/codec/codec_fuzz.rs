@@ -32,26 +32,111 @@ where
     result.ok()
 }
 
+fn identity<T: Copy>(
+    bytes: &[u8],
+    actual: Result<T, ProviderError>,
+    original: impl Fn(T) -> [u8; 16],
+) -> Result<T, ProviderError> {
+    let expected = <[u8; 16]>::try_from(bytes)
+        .ok()
+        .filter(|raw| raw.iter().any(|byte| *byte != 0));
+    assert_eq!(
+        actual.as_ref().ok().copied().map(original),
+        expected,
+        "wire identity admission must retain exactly sixteen non-nil original bytes"
+    );
+    if let Err(error) = &actual {
+        assert!(matches!(error, ProviderError::Rejected(_)));
+    }
+    actual
+}
+
+/// Feed the generated protobuf writers with original public identity bytes and
+/// their malformed descendants, using the same oracle as the protobuf targets.
+pub fn check_identities(bytes: &[u8]) {
+    macro_rules! check {
+        ($($name:ident),+ $(,)?) => { $(
+            let value = wire::$name { value: bytes.to_vec() };
+            check(concat!("acyclic.machines.v1.", stringify!($name)), &value.encode_to_vec());
+        )+ };
+    }
+    check!(MachineId, CheckpointId, OperationId, IdempotencyKey);
+}
+
+fn machine_page(
+    page: wire::MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<MachinePage, ProviderError> {
+    let actual = decode_machine_page(page.clone(), after, limit);
+    let machines = page
+        .machines
+        .into_iter()
+        .map(MachineObservation::try_from)
+        .collect::<Result<Vec<_>, _>>();
+    let next = page
+        .next
+        .as_ref()
+        .map(|id| decode_machine(Some(id)))
+        .transpose();
+    let expected = machines.ok().zip(next.ok()).and_then(|(machines, next)| {
+        let ordered = machines
+            .iter()
+            .zip(machines.iter().skip(1))
+            .all(|(left, right)| left.id < right.id);
+        let follows =
+            after.is_none_or(|cursor| machines.first().is_none_or(|first| first.id > cursor));
+        let bounded = u32::try_from(machines.len()).is_ok_and(|count| count <= limit);
+        let retained = next.is_none() || next == machines.last().map(|machine| machine.id);
+        (ordered && follows && bounded && retained).then_some(MachinePage { machines, next })
+    });
+    assert_eq!(
+        actual.as_ref().ok(),
+        expected.as_ref(),
+        "machine page admission retains original order, credit and cursor"
+    );
+    if let Err(error) = &actual {
+        assert!(matches!(error, ProviderError::Rejected(_)));
+    }
+    actual
+}
+
 /// Admit arbitrary protobuf output with the caller's retained identity. These
 /// checks do not dispatch a request, replace a provider, or wait for a producer.
 pub fn check(name: &str, bytes: &[u8]) {
     guest::check(name, bytes);
-    let machine = MachineId::from_digest([1; 32]);
-    let checkpoint = CheckpointId::from_digest([2; 32]);
-    let operation = OperationId::from_digest([3; 32]);
     match name {
         "acyclic.machines.v1.MachineId" => {
-            let _ = project::<wire::MachineId, _>(bytes, |value| decode_machine(Some(&value)));
+            let _ = project::<wire::MachineId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_machine(Some(&value)),
+                    MachineId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.CheckpointId" => {
-            let _ =
-                project::<wire::CheckpointId, _>(bytes, |value| decode_checkpoint(Some(&value)));
+            let _ = project::<wire::CheckpointId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_checkpoint(Some(&value)),
+                    CheckpointId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.OperationId" => {
-            let _ = project::<wire::OperationId, _>(bytes, |value| decode_operation(Some(&value)));
+            let _ = project::<wire::OperationId, _>(bytes, |value| {
+                identity(
+                    &value.value,
+                    decode_operation(Some(&value)),
+                    OperationId::as_bytes,
+                )
+            });
         }
         "acyclic.machines.v1.IdempotencyKey" => {
-            let _ = project::<wire::IdempotencyKey, _>(bytes, |value| decode_uuid(&value.value));
+            let _ = project::<wire::IdempotencyKey, _>(bytes, |value| {
+                identity(&value.value, decode_uuid(&value.value), |id| *id.as_bytes())
+            });
         }
         "acyclic.machines.v1.Image" => {
             if let Some(image) =
@@ -114,64 +199,90 @@ pub fn check(name: &str, bytes: &[u8]) {
                 project::<wire::MachineContract, _>(bytes, |value| decode_contract(Some(&value)));
         }
         "acyclic.machines.v1.MachineState" => {
-            if project::<wire::MachineState, _>(bytes, |value| {
-                decode_machine_observation(value, machine)
-            })
-            .is_some()
+            if let Some(original) =
+                project::<wire::MachineState, _>(bytes, MachineObservation::try_from)
             {
+                let foreign = if original.id == MachineId::from_digest([9; 32]) {
+                    MachineId::from_digest([1; 32])
+                } else {
+                    MachineId::from_digest([9; 32])
+                };
                 assert!(
-                    decode_machine_observation(
-                        wire::MachineState::decode(bytes).unwrap(),
-                        MachineId::from_digest([9; 32])
-                    )
-                    .is_err()
+                    decode_machine_observation(wire::MachineState::decode(bytes).unwrap(), foreign)
+                        .is_err()
                 );
             }
         }
+        "acyclic.machines.v1.MachinePage" => {
+            for limit in [1, MAX_PAGE_SIZE] {
+                if let Some(original) =
+                    project::<wire::MachinePage, _>(bytes, |page| machine_page(page, None, limit))
+                {
+                    if let Some(first) = original.machines.first() {
+                        let _ = machine_page(
+                            wire::MachinePage::decode(bytes).unwrap(),
+                            Some(first.id),
+                            limit,
+                        );
+                    }
+                }
+            }
+        }
         "acyclic.machines.v1.CheckpointState" => {
-            if project::<wire::CheckpointState, _>(bytes, |value| {
-                decode_checkpoint_observation(&value, checkpoint)
-            })
-            .is_some()
-            {
+            if let Some(original) = project::<wire::CheckpointState, _>(bytes, |value| {
+                decode_checkpoint_observation(&value, decode_checkpoint(value.checkpoint.as_ref())?)
+            }) {
+                let foreign = if original.id == CheckpointId::from_digest([9; 32]) {
+                    CheckpointId::from_digest([8; 32])
+                } else {
+                    CheckpointId::from_digest([9; 32])
+                };
                 assert!(
                     decode_checkpoint_observation(
                         &wire::CheckpointState::decode(bytes).unwrap(),
-                        CheckpointId::from_digest([9; 32])
+                        foreign
                     )
-                    .is_err()
+                    .is_err(),
+                    "original checkpoint must refuse a substituted caller identity"
                 );
             }
         }
         "acyclic.machines.v1.MachineEvent" => {
-            if project::<wire::MachineEvent, _>(bytes, |value| decode_event(&value, machine))
-                .is_some()
-            {
+            if let Some(original) = project::<wire::MachineEvent, _>(bytes, |value| {
+                decode_event(&value, decode_machine(value.machine.as_ref())?)
+            }) {
+                let foreign = if original.machine == MachineId::from_digest([9; 32]) {
+                    MachineId::from_digest([8; 32])
+                } else {
+                    MachineId::from_digest([9; 32])
+                };
                 assert!(
-                    decode_event(
-                        &wire::MachineEvent::decode(bytes).unwrap(),
-                        MachineId::from_digest([9; 32])
-                    )
-                    .is_err()
+                    decode_event(&wire::MachineEvent::decode(bytes).unwrap(), foreign).is_err(),
+                    "original machine event must refuse a substituted caller identity"
                 );
             }
         }
         "acyclic.machines.v1.OperationState" => {
-            if project::<wire::OperationState, _>(bytes, |value| {
-                decode_operation_observation(&value, operation)
-            })
-            .is_some()
-            {
+            if let Some(original) = project::<wire::OperationState, _>(bytes, |value| {
+                decode_operation_observation(&value, decode_operation(value.operation.as_ref())?)
+            }) {
+                let foreign = if original.id == OperationId::from_digest([9; 32]) {
+                    OperationId::from_digest([8; 32])
+                } else {
+                    OperationId::from_digest([9; 32])
+                };
                 assert!(
                     decode_operation_observation(
                         &wire::OperationState::decode(bytes).unwrap(),
-                        OperationId::from_digest([9; 32])
+                        foreign
                     )
-                    .is_err()
+                    .is_err(),
+                    "original operation must refuse a substituted caller identity"
                 );
             }
         }
         "acyclic.machines.v1.UsageReceipt" => {
+            let machine = MachineId::from_digest([1; 32]);
             if project::<wire::UsageReceipt, _>(bytes, |value| {
                 decode_usage_receipt(value, machine, 1, 2)
             })
@@ -188,6 +299,85 @@ pub fn check(name: &str, bytes: &[u8]) {
         }
         _ => {}
     }
+}
+
+/// The public observation writer and reader must retain the original producer's
+/// result before its wire bytes become a corpus input.
+pub fn capture_machine(original: &MachineObservation) -> Result<Vec<u8>, ProviderError> {
+    let value = wire::MachineState::try_from(original.clone())?;
+    assert_eq!(
+        MachineObservation::try_from(value.clone()),
+        Ok(original.clone()),
+        "original machine response must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    check("acyclic.machines.v1.MachineState", &bytes);
+    Ok(bytes)
+}
+
+/// Retain the actual event producer's identity, cursor, time and fact through the
+/// shared serving conversion before admitting its wire bytes to either target.
+pub fn capture_event(original: &MachineEvent) -> Vec<u8> {
+    let value = wire::MachineEvent::from(original.clone());
+    assert_eq!(
+        decode_event(&value, original.machine),
+        Ok(original.clone()),
+        "original machine event must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    for end in 0..=bytes.len() {
+        check("acyclic.machines.v1.MachineEvent", &bytes[..end]);
+    }
+    bytes
+}
+
+/// Bind checkpoint admission to the original public producer, then exercise the
+/// same protobuf oracle over that writer's packet and each truncated prefix.
+pub fn capture_checkpoint(original: &CheckpointObservation) -> Result<Vec<u8>, ProviderError> {
+    let value = wire::CheckpointState::try_from(original.clone())?;
+    assert_eq!(
+        decode_checkpoint_observation(&value, original.id),
+        Ok(original.clone()),
+        "original checkpoint must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    for end in 0..=bytes.len() {
+        check("acyclic.machines.v1.CheckpointState", &bytes[..end]);
+    }
+    Ok(bytes)
+}
+
+/// An operation summary retains the actual producer's identity and phase.
+pub fn capture_operation(original: OperationObservation) -> Vec<u8> {
+    let value = wire::OperationState::from(original);
+    assert_eq!(
+        decode_operation_observation(&value, original.id),
+        Ok(original),
+        "original operation must retain its producer observation"
+    );
+    let bytes = value.encode_to_vec();
+    for end in 0..=bytes.len() {
+        check("acyclic.machines.v1.OperationState", &bytes[..end]);
+    }
+    bytes
+}
+
+/// Capture an actual provider's list page through the shared serving writer and
+/// require its original cursor and caller credit to survive the client decoder.
+pub fn capture_machine_page(
+    original: &MachinePage,
+    after: Option<MachineId>,
+    limit: u32,
+) -> Result<Vec<u8>, ProviderError> {
+    let value = wire::MachinePage::try_from(original.clone())?;
+    assert_eq!(
+        machine_page(value.clone(), after, limit)?,
+        *original,
+        "original machine page must retain its producer observations and cursor"
+    );
+    let bytes = value.encode_to_vec();
+    check("acyclic.machines.v1.MachinePage", &bytes);
+    Ok(bytes)
 }
 
 /// Capture the existing request-side codec writers. Service response producers

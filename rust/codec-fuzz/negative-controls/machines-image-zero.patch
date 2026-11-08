@@ -1,0 +1,12 @@
+diff --git a/rust/crates/machines/src/contract/image.rs b/rust/crates/machines/src/contract/image.rs
+--- a/rust/crates/machines/src/contract/image.rs
++++ b/rust/crates/machines/src/contract/image.rs
+@@ -8,8 +8,5 @@ pub struct ImageDigest([u8; 32]);
+ impl ImageDigest {
+     /// Constructs a checked SHA-256 digest.
+     pub fn new(value: [u8; 32]) -> Result<Self, ProviderError> {
+-        if value == [0; 32] {
+-            return Err(ProviderError::Invalid("image digest cannot be zero".into()));
+-        }
+         Ok(Self(value))
+     }
