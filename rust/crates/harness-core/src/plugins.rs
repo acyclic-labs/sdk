@@ -176,13 +176,29 @@ pub struct Enabled {
 /// unknown or disabled requirement, a manifest naming another folder, a
 /// hook file outside the hook grammar, or a hook this host cannot run.
 pub async fn load(tree: &dyn Tree, layers: &[Layer<'_>], enabler: &str) -> Result<Enabled> {
+    load_result(tree, layers, enabler).await?
+}
+
+/// Load without retaining input evidence. Operational tree failures remain
+/// outer errors, even when their variant is [`Error::Invalid`]. The inner
+/// result is the semantic decision made from the original inputs.
+pub async fn load_result(
+    tree: &dyn Tree,
+    layers: &[Layer<'_>],
+    enabler: &str,
+) -> Result<Result<Enabled>> {
     let (value, _) =
-        config::compose(MANIFEST, layers, tree, Value::Object(Default::default())).await?;
-    load_enabled(tree, value, enabler, None)
-        .await
-        .map_err(|error| match error {
-            LoadFailure::Operational(error) | LoadFailure::Semantic(error) => error,
-        })
+        match config::compose_result(MANIFEST, layers, tree, Value::Object(Default::default()))
+            .await?
+        {
+            Ok(composed) => composed,
+            Err(error) => return Ok(Err(error)),
+        };
+    match load_enabled(tree, value, enabler, None).await {
+        Ok(enabled) => Ok(Ok(enabled)),
+        Err(LoadFailure::Semantic(error)) => Ok(Err(error)),
+        Err(LoadFailure::Operational(error)) => Err(error),
+    }
 }
 
 /// One plugin selection and the original inputs that admitted or refused it.

@@ -53,7 +53,9 @@ pub struct Evaluated {
 mod prepared;
 pub use prepared::{Evaluation, ModuleRead, Prepared, prepare};
 mod composition;
-pub use composition::{Composition, LayerInput, LayerState, ModuleCut, compose_with_evidence};
+pub use composition::{
+    Composition, LayerInput, LayerState, ModuleCut, compose_result, compose_with_evidence,
+};
 
 /// Evaluates the module at `path` holding `source`, with `base` as the value
 /// below it. Imports resolve in `tree`. A throw, an exhausted budget, an
@@ -120,7 +122,7 @@ pub async fn compose(
     tree: &dyn Tree,
     base: Value,
 ) -> Result<(Value, Vec<Link>)> {
-    composition::compose_plain(path, layers, tree, base).await
+    compose_result(path, layers, tree, base).await?
 }
 
 /// The most recently evaluated result or failure. Replacing the entry drops

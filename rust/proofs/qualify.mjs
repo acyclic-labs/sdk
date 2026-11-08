@@ -15,6 +15,23 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "settings-read-producer": [
+    "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "plugin composition cached an operational read failure", ["--features", "filesystem-local,test-support,hooks"],
+    { oracle: "rust/crates/harness-core/src/config/evaluate/model/plugins.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      mutations: [
+        { patch: "rust/proofs/settings-read-producer/composition.patch", label: "plain-composition-read-became-semantic", diagnostic: "plugin composition cached an operational read failure" },
+        { patch: "rust/proofs/settings-read-producer/plugin.patch", source: "rust/crates/harness-core/src/plugins.rs", label: "plain-plugin-read-became-semantic", diagnostic: "plugin decision cached an operational read failure" },
+      ] },
+  ],
+  "settings-admission-producer": [
+    "rust/crates/harness/src/local/agent_settings.rs", "acyclic-harness",
+    "local::agent_settings::tests::imported_settings_keep_the_original_directory_read_refusal",
+    "settings admission lost its original read producer", ["--features", "filesystem-local,test-support,hooks"],
+    { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+  ],
   "plugin-input-cut": [
     "rust/crates/harness-core/src/plugins.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",

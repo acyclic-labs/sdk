@@ -31,7 +31,8 @@ mod evaluate;
 #[cfg(not(target_arch = "wasm32"))]
 pub use evaluate::{
     Composition, Evaluated, Evaluation, LayerInput, LayerState, ModuleCut, ModuleRead, Prepared,
-    Surface, Tree, compose, compose_with_evidence, evaluate, evaluate_decision, prepare,
+    Surface, Tree, compose, compose_result, compose_with_evidence, evaluate, evaluate_decision,
+    prepare,
 };
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]

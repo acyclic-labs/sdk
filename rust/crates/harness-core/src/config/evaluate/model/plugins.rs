@@ -135,7 +135,11 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         let observed = tree(files);
         let reads = RETAINED_READS.get();
         let roots = RETAINED_ROOTS.get();
-        let plain = plugins::load(&observed, &layers, "original").await;
+        let plain = plugins::load_result(&observed, &layers, "original")
+            .await
+            .map_err(|error| {
+                format!("plain plugin semantic decision became operational: {error}")
+            })?;
         if RETAINED_READS.get() != reads || RETAINED_ROOTS.get() != roots {
             return Err("plain plugin load retained discarded module evidence".into());
         }
@@ -215,16 +219,28 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     // Error::Invalid from that producer is still operational, never cached.
     for invalid in [false, true] {
         for failed in 0..20 {
-            let observed = Observed {
-                failure: Some((failed, invalid)),
-                ..tree(valid.clone())
-            };
-            match plugins::load_decision(&observed, &layers, "original").await {
-                Err(Error::Invalid(reason))
-                    if invalid && reason == "original plugin read refusal" => {}
-                Err(Error::Storage(reason))
-                    if !invalid && reason == "original plugin read failure" => {}
-                _ => return Err("plugin decision cached an operational read failure".into()),
+            for retained in [false, true] {
+                let observed = Observed {
+                    failure: Some((failed, invalid)),
+                    ..tree(valid.clone())
+                };
+                let result = if retained {
+                    plugins::load_decision(&observed, &layers, "original")
+                        .await
+                        .map(plugins::Decision::into_result)
+                } else {
+                    plugins::load_result(&observed, &layers, "original").await
+                };
+                if observed.reads.load(Ordering::Relaxed) != failed + 1 {
+                    return Err("plugin failure repeated its original file read".into());
+                }
+                match result {
+                    Err(Error::Invalid(reason))
+                        if invalid && reason == "original plugin read refusal" => {}
+                    Err(Error::Storage(reason))
+                        if !invalid && reason == "original plugin read failure" => {}
+                    _ => return Err("plugin decision cached an operational read failure".into()),
+                }
             }
         }
     }
@@ -236,26 +252,34 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
         bytes: Some(b"import input from 'sys/plugin.json'; export default input.enabled ?? {};"),
     }];
     for failure in [None, Some((0, false)), Some((0, true))] {
-        let observed = Observed {
-            failure,
-            ..tree(valid.clone())
-        };
-        let result = plugins::load_decision(&observed, &layers, "original").await;
-        if observed.reads.load(Ordering::Relaxed) != 1 {
-            return Err("plugin composition repeated its original dependency read".into());
-        }
-        match (failure, result) {
-            (None, Ok(decision)) => {
-                let enabled = decision.into_result().map_err(|error| error.to_string())?;
-                if !enabled.names.is_empty() || rules(&enabled)? != json!([]) {
-                    return Err("empty plugin selection created a plugin".into());
-                }
+        for retained in [false, true] {
+            let observed = Observed {
+                failure,
+                ..tree(valid.clone())
+            };
+            let result = if retained {
+                plugins::load_decision(&observed, &layers, "original")
+                    .await
+                    .map(plugins::Decision::into_result)
+            } else {
+                plugins::load_result(&observed, &layers, "original").await
+            };
+            if observed.reads.load(Ordering::Relaxed) != 1 {
+                return Err("plugin composition repeated its original dependency read".into());
             }
-            (Some((_, false)), Err(Error::Storage(reason)))
-                if reason == "original plugin read failure" => {}
-            (Some((_, true)), Err(Error::Invalid(reason)))
-                if reason == "original plugin read refusal" => {}
-            _ => return Err("plugin composition cached an operational read failure".into()),
+            match (failure, result) {
+                (None, Ok(decision)) => {
+                    let enabled = decision.map_err(|error| error.to_string())?;
+                    if !enabled.names.is_empty() || rules(&enabled)? != json!([]) {
+                        return Err("empty plugin selection created a plugin".into());
+                    }
+                }
+                (Some((_, false)), Err(Error::Storage(reason)))
+                    if reason == "original plugin read failure" => {}
+                (Some((_, true)), Err(Error::Invalid(reason)))
+                    if reason == "original plugin read refusal" => {}
+                _ => return Err("plugin composition cached an operational read failure".into()),
+            }
         }
     }
     Ok(())

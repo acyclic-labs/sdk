@@ -116,13 +116,16 @@ pub(super) async fn compose_inner(
     })
 }
 
-pub(super) async fn compose_plain(
+/// Fold without retaining input evidence. Operational tree failures remain
+/// outer errors; the inner result is the evaluated content's decision.
+/// This uses the same fold and reads as [`compose`], without evidence buffers.
+pub async fn compose_result(
     path: &str,
     layers: &[Layer<'_>],
     tree: &dyn Tree,
     base: Value,
-) -> Result<(Value, Vec<Link>)> {
-    fold(path, layers, tree, base, None).await?
+) -> Result<Result<(Value, Vec<Link>)>> {
+    fold(path, layers, tree, base, None).await
 }
 
 struct Evidence {
