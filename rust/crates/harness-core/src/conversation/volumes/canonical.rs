@@ -178,13 +178,13 @@ mod tests {
             assert!(
                 matches!(
                     &restored_result,
-                    Err(Error::NativeFilesystem { source, .. })
-                        if matches!(source.as_ref(),
-                            acyclic_fs::FsError::NativeKernel(
-                                NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                                    counter: "bytes_copied",
-                                    ..
-                                })))
+                    Err(Error::NativeWork {
+                        cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                            counter: "bytes_copied",
+                            ..
+                        }),
+                        ..
+                    })
                 ),
                 "restored result: {restored_result:?}; receipt: {:?}",
                 restored.receipt()
