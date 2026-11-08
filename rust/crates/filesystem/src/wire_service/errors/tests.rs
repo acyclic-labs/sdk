@@ -139,7 +139,8 @@ cases! {
 }
 
 #[test]
-fn every_stream_category_survives_the_authority_wrapper() {
+fn every_stream_category_survives_the_authority_wrapper() -> Result<(), Box<dyn std::error::Error>>
+{
     use acyclic_stream::StreamError as E;
     let cases = [
         (E::InvalidResponse, Code::DataLoss),
@@ -161,11 +162,34 @@ fn every_stream_category_survives_the_authority_wrapper() {
     ];
     assert_eq!(cases.len(), E::ALL.len());
     for (error, expected) in cases {
-        assert_eq!(
-            status(&authority(AuthorityStoreError::NativeStream(error))).code(),
-            expected
-        );
+        let refusal = acyclic_auth::refusal::Refusal::capture_owned(
+            acyclic_auth::refusal::Parts {
+                code: expected as i32,
+                message: error.code().to_owned(),
+                details: bytes::Bytes::from_static(b"original member diagnostic"),
+                metadata: Default::default(),
+            },
+            acyclic_auth::refusal::Canonical {
+                code: expected as i32,
+                message: error.code(),
+                details: b"",
+                owned: &[],
+            },
+            None,
+        )
+        .ok_or("member diagnostic must retain the original status")?;
+        for error in [error, E::Refused(refusal)] {
+            let error = authority(AuthorityStoreError::NativeStream(error));
+            let response = status(&error);
+            assert_eq!(
+                response.code(),
+                expected,
+                "filesystem retained Stream refusal changed category: {error:?}"
+            );
+            assert_eq!(response.message(), error.to_string());
+        }
     }
+    Ok(())
 }
 
 #[test]
