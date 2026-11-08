@@ -1,0 +1,14 @@
+diff --git a/rust/crates/stream/src/snapshot.rs b/rust/crates/stream/src/snapshot.rs
+--- a/rust/crates/stream/src/snapshot.rs
++++ b/rust/crates/stream/src/snapshot.rs
+@@ -59,10 +59,6 @@
+     if let Poll::Ready(result) = ready {
+         return (state, result);
+     }
+-    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+-    if tokio::runtime::Handle::try_current().is_err() {
+-        return (state, Err(crate::StreamError::Unavailable));
+-    }
+     let (job, completed) = job::new(state);
+     let worker = job.run();
+     #[cfg(loom)]

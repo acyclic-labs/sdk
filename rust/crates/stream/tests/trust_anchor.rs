@@ -155,11 +155,13 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
     );
     assert_eq!(
         step(run.as_mut(), &wake),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable)),
+        "lost anchor producer left its original trust feed parked"
     );
     assert_eq!(
         *follower.state().borrow(),
-        FollowerState::Fenced(FenceCause::AnchorLost)
+        FollowerState::Fenced(FenceCause::AnchorLost),
+        "lost anchor producer lost its original fence cause"
     );
 }
 
@@ -288,10 +290,14 @@ async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
     );
     wake.0.store(false, Ordering::SeqCst);
     follower.close(FenceCause::Shutdown);
-    assert!(wake.0.load(Ordering::SeqCst));
+    assert!(
+        wake.0.load(Ordering::SeqCst),
+        "closed follower left its original anchor wait parked"
+    );
     assert_eq!(
         step(run.as_mut(), &wake),
-        Some(Err(StreamError::Unavailable))
+        Some(Err(StreamError::Unavailable)),
+        "closed follower did not end its original anchor wait"
     );
     assert_eq!(
         *follower.state().borrow(),

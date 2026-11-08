@@ -1,11 +1,24 @@
+use crate::session::authority::Binding;
 use crate::session::*;
 use crate::{CommitId, MemoryStream, OwnedBytes, Record};
 use proptest::prelude::*;
 
 pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
+    let authority = testing::authority();
+    let slots = testing::slots();
+    let binding = authority
+        .bind(
+            &slots,
+            0,
+            &StreamPath::new("model").unwrap(),
+            Default::default(),
+            1,
+        )
+        .unwrap()
+        .0;
     Session {
-        authority: testing::authority(),
-        slots: testing::slots(),
+        authority,
+        slots,
         trust_changed: None,
         deadline: Some(1000),
         provider: Arc::new(MemoryStream::default()),
@@ -17,26 +30,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         hello: true,
         prefer_control: true,
         revision: 1,
-        channels: BTreeMap::from([(
-            1,
-            Channel {
-                binding: Some(testing::binding()),
-                opaque_cursor: false,
-                followed: None,
-                revalidate: None,
-                generation: 1,
-                latest,
-                pending: VecDeque::new(),
-                progress: None,
-                indexed: None,
-                credit: wire::SessionWindow::default(),
-                sent: cursor(0),
-                applied: cursor(0),
-                ending: None,
-                socket: None,
-                input: None,
-            },
-        )]),
+        channels: BTreeMap::from([(1, empty_channel(latest, binding))]),
         sources: sources::Sources::new(),
         terminals: sources::Sources::new(),
         incoming: stream::empty().boxed(),
@@ -49,6 +43,26 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         runnable: BTreeSet::new(),
         ready_after: None,
         head_visits: 0,
+    }
+}
+
+pub(super) fn empty_channel(latest: bool, binding: Binding) -> Channel {
+    Channel {
+        binding: Some(binding),
+        opaque_cursor: false,
+        followed: None,
+        revalidate: None,
+        generation: 1,
+        latest,
+        pending: VecDeque::new(),
+        progress: None,
+        indexed: None,
+        credit: wire::SessionWindow::default(),
+        sent: cursor(0),
+        applied: cursor(0),
+        ending: None,
+        socket: None,
+        input: None,
     }
 }
 

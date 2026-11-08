@@ -184,6 +184,35 @@ fn compiled_prefix_matches_original_keys_and_refuses_original_read_credit() {
 
 #[test]
 fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
+    // A caller can violate its stable-view contract through interior state.
+    // A changed label is a typed invariant failure, never absence or a panic.
+    let changed = std::cell::Cell::new(false);
+    let mut original = Work::default();
+    let index = CompiledPrefixIndex::from_entries(
+        vec![b"root/a".to_vec(), b"root/b".to_vec()],
+        |entry: &Vec<u8>| {
+            if changed.get() {
+                // Retain the real first edge so lookup reaches the original
+                // shared label, rather than refusing an empty edge first.
+                entry.get(..1).unwrap_or_default()
+            } else {
+                entry.as_slice()
+            }
+        },
+        &mut original,
+    )
+    .unwrap();
+    changed.set(true);
+    assert!(
+        matches!(
+            index.matches(b"root/a", |_| true, &mut original),
+            Err(CompiledPrefixError::Invariant)
+        ),
+        "changed original prefix label became absence"
+    );
+    drop(index);
+    assert_eq!(original.live.get(), 0);
+
     for repeated in [false, true] {
         for population in [1_u32, 100_000] {
             let mut keys = (0..population)

@@ -97,6 +97,22 @@ pub(crate) fn command(bytes: &[u8]) -> bool {
     }
 }
 
+fn record(value: &crate::wire::Record) -> bool {
+    let followed = crate::StreamPath::new("codec/events").expect("canonical fixture path");
+    [None, Some(&followed)].into_iter().all(|context| {
+        match crate::wire_codec::record(value.clone(), context) {
+            Err(_) => true,
+            Ok(record) => {
+                crate::wire_codec::record(
+                    crate::wire_codec::record_wire(record.clone(), context),
+                    context,
+                ) == Ok(record.clone())
+                    && crate::follow_filter::projection_contract(&record).is_ok()
+            }
+        }
+    })
+}
+
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
     let value = crate::OwnedBytes::copy_from_slice(bytes);
@@ -198,31 +214,32 @@ pub fn check(bytes: &[u8]) -> bool {
         if let Ok(record) = crate::wire_codec::append_record(value) {
             if crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
                 record.clone(),
-            )) != Ok(record)
+            )) != Ok(record.clone())
+                || crate::follow_filter::projection_contract(&crate::Record {
+                    sequence: 0,
+                    value: record.value,
+                    headers: record.headers,
+                    commit_id: crate::CommitId::from_bytes([1; 32]),
+                    committed_at_micros: 0,
+                    origin: crate::StreamPath::new("codec/events").expect("canonical fixture path"),
+                })
+                .is_err()
             {
                 return false;
             }
         }
     }
     if let Ok(value) = crate::wire::Record::decode(bytes) {
-        let followed = crate::StreamPath::new("codec/events").expect("canonical fixture path");
-        for context in [None, Some(&followed)] {
-            if let Ok(record) = crate::wire_codec::record(value.clone(), context) {
-                if crate::wire_codec::record(
-                    crate::wire_codec::record_wire(record.clone(), context),
-                    context,
-                ) != Ok(record)
-                {
-                    return false;
-                }
-            }
+        if !record(&value) {
+            return false;
         }
     }
     if let Ok(value) = crate::wire::ReadResponse::decode(bytes) {
         if let Ok(records) = crate::wire_codec::read_response_records(value) {
-            if crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
-                records.clone(),
-            )) != Ok(records)
+            if records.iter().any(|value| !record(value))
+                || crate::wire_codec::read_response_records(crate::wire_codec::read_response_wire(
+                    records.clone(),
+                )) != Ok(records)
             {
                 return false;
             }
@@ -400,19 +417,10 @@ async fn publications(
     let mut publications = Vec::with_capacity(3);
     for (name, mut command) in commands(value)? {
         // This history has one source record. Both zero and one are real fork
-        // positions; the journal admission check still exercises the full u64.
+        // positions; journal codec checks still exercise the full u64.
         if let WriteRequest::Fork(request) = &mut command {
             request.at_tail = request.at_tail.map(|position| position % 2);
         }
-        #[cfg(any(
-            feature = "local",
-            feature = "postgres",
-            all(
-                any(feature = "wasm", feature = "wasm-journal"),
-                target_arch = "wasm32"
-            )
-        ))]
-        let command = command.validated()?;
         let key = match &command {
             WriteRequest::Append(request) => request.idempotency_key.clone(),
             WriteRequest::Fork(request) => request.idempotency_key.clone(),
@@ -449,10 +457,10 @@ async fn publications(
 /// Capture actual journal and framing encoder output without filesystem IO.
 pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     let mut seeds = Vec::new();
-    let (memory, publications) = publications(None).await?;
+    let (_memory, publications) = publications(None).await?;
     for Publication {
         name,
-        command,
+        command: _command,
         observation,
         envelope,
     } in publications
@@ -465,11 +473,11 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
                 target_arch = "wasm32"
             )
         ))]
-        seeds.push((name.to_owned(), command.encode_to_vec()));
+        seeds.push((name.to_owned(), _command.encode_to_vec()));
         #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         seeds.push((
             format!("frame-{name}"),
-            crate::local::codec_fuzz::frame(&command)?,
+            crate::local::codec_fuzz::frame(&_command)?,
         ));
         seeds.push((
             format!("observation-{name}"),
@@ -484,7 +492,7 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     seeds.push(("journal-header".into(), crate::local::codec_fuzz::header()?));
     #[cfg(feature = "local")]
     {
-        let state = memory.capture_state().await.encode();
+        let state = _memory.capture_state().await.encode();
         #[cfg(not(target_arch = "wasm32"))]
         {
             seeds.push((
@@ -498,36 +506,114 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         }
         seeds.push(("snapshot".into(), state));
     }
-    let changes = crate::AppendRecord::changes(
-        b"codec",
-        &[crate::wire::ChangeEntry {
-            key: bytes::Bytes::from_static(b"file"),
-            operation: "write".into(),
-            metadata: bytes::Bytes::from_static(b"metadata"),
-        }],
-        Vec::new(),
-    )?;
-    seeds.push(("changes".into(), changes.value.to_vec()));
-    seeds.push((
-        "changes-append-record".into(),
-        crate::wire_codec::append_record_wire(changes.clone()).encode_to_vec(),
-    ));
-    let record = crate::wire_codec::record_wire(
-        crate::Record {
-            sequence: 0,
-            value: changes.value,
-            headers: changes.headers,
-            commit_id: crate::CommitId::from_bytes([1; 32]),
-            committed_at_micros: 42,
-            origin: crate::StreamPath::new("codec/events")?,
-        },
-        None,
-    );
-    seeds.push(("changes-record".into(), record.encode_to_vec()));
-    seeds.push((
-        "record-batch".into(),
-        crate::wire_codec::read_response_wire(vec![record]).encode_to_vec(),
-    ));
+    // Existing names retain their original writer inputs and captured bytes.
+    for (name, keys, batch) in [
+        ("changes", &[b"file".as_slice()][..], "record-batch"),
+        (
+            "changes-projection",
+            &[b"file".as_slice(), b"file/child".as_slice()][..],
+            "changes-projection-record-batch",
+        ),
+    ] {
+        let entries = keys
+            .iter()
+            .map(|key| crate::wire::ChangeEntry {
+                key: bytes::Bytes::copy_from_slice(key),
+                operation: "write".into(),
+                metadata: bytes::Bytes::from_static(b"metadata"),
+            })
+            .collect::<Vec<_>>();
+        let changes = crate::AppendRecord::changes(b"codec", &entries, Vec::new())?;
+        seeds.push((name.into(), changes.value.to_vec()));
+        seeds.push((
+            format!("{name}-append-record"),
+            crate::wire_codec::append_record_wire(changes.clone()).encode_to_vec(),
+        ));
+        let record = crate::wire_codec::record_wire(
+            crate::Record {
+                sequence: 0,
+                value: changes.value,
+                headers: changes.headers,
+                commit_id: crate::CommitId::from_bytes([1; 32]),
+                committed_at_micros: 42,
+                origin: crate::StreamPath::new("codec/events")?,
+            },
+            None,
+        );
+        seeds.push((format!("{name}-record"), record.encode_to_vec()));
+        seeds.push((
+            batch.into(),
+            crate::wire_codec::read_response_wire(vec![record]).encode_to_vec(),
+        ));
+    }
+    seeds.extend(projection_seeds()?);
+    Ok(seeds)
+}
+
+fn projection_seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
+    use crate::{AppendRecord, Attribute, RecordHeaders, wire, wire_codec};
+    let changes = wire::ChangeRecord {
+        context: bytes::Bytes::from_static(b"publication"),
+        entries: [b"file/a", b"file/b", b"file/c"]
+            .into_iter()
+            .map(|key| wire::ChangeEntry {
+                key: bytes::Bytes::from_static(key),
+                operation: "write".into(),
+                metadata: bytes::Bytes::from_static(key),
+            })
+            .collect(),
+    };
+    let attributes = vec![Attribute {
+        name: "owner".into(),
+        value: b"author".as_slice().into(),
+    }];
+    let current = AppendRecord::changes(&changes.context, &changes.entries, attributes.clone())?;
+    let mut retained_attributes = vec![Attribute {
+        name: "acyclic.record".into(),
+        value: b"changes/v1".as_slice().into(),
+    }];
+    retained_attributes.extend(attributes.clone());
+    let retained = AppendRecord {
+        value: changes.encode_to_vec().into(),
+        headers: RecordHeaders::new(
+            changes
+                .entries
+                .iter()
+                .map(|entry| entry.key.clone().into())
+                .collect(),
+            retained_attributes,
+        )?,
+    };
+    let opaque = AppendRecord {
+        value: current.value.clone(),
+        headers: RecordHeaders::new(current.headers.keys().to_vec(), attributes)?,
+    };
+    let mut seeds = Vec::new();
+    for (format, body) in [("v1", retained), ("v2", current), ("opaque", opaque)] {
+        seeds.push((
+            format!("projection-{format}-append"),
+            wire_codec::append_record_wire(body.clone()).encode_to_vec(),
+        ));
+        let record = wire_codec::record_wire(
+            crate::Record {
+                sequence: 7,
+                value: body.value,
+                headers: body.headers,
+                commit_id: crate::CommitId::from_bytes([1; 32]),
+                committed_at_micros: 42,
+                origin: crate::StreamPath::new("codec/events")?,
+            },
+            None,
+        );
+        seeds.push((
+            format!("projection-{format}-record"),
+            record.encode_to_vec(),
+        ));
+        seeds.push((
+            format!("projection-{format}-batch"),
+            wire_codec::read_response_wire(vec![record]).encode_to_vec(),
+        ));
+    }
     Ok(seeds)
 }
 

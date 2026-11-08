@@ -108,6 +108,239 @@ pub(crate) fn negative() {
     admitted!(super::RwLock::stalled_reader_control(()));
 }
 
+// The same bounded operation traces run against Tokio and the substituted
+// watch, including cancellation of pending changed futures and publisher loss.
+#[cfg(loom)]
+pub(crate) fn watch(steps: u16, extended: bool) {
+    #[derive(Debug, PartialEq, Eq)]
+    enum Event {
+        Changed(Poll<bool>),
+        Value(u8),
+        Receivers(usize),
+    }
+    macro_rules! trace {
+        ($channel:path, $steps:expr) => {{
+            let (sender, mut first) = $channel(0u8);
+            let mut second = sender.subscribe();
+            let mut spare = Some(sender.clone());
+            let mut sender = Some(sender);
+            let mut events = Vec::new();
+            let mut steps = $steps;
+            let (mask, shift, count) = if extended { (7, 3, 3) } else { (3, 2, 4) };
+            for _ in 0..count {
+                match steps & mask {
+                    0 => {
+                        let mut changed = Box::pin(first.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    1 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            sender.send_modify(|value| *value += 1);
+                        }
+                    }
+                    2 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            second = sender.subscribe();
+                        }
+                        let mut changed = Box::pin(second.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    3 => {
+                        if spare.is_some() {
+                            drop(spare.take());
+                        } else {
+                            drop(sender.take());
+                        }
+                    }
+                    4 => events.push(Event::Value(*first.borrow_and_update())),
+                    5 => {
+                        if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                            events.push(Event::Value(sender.send_replace(7)));
+                        }
+                    }
+                    6 => {
+                        let mut changed = Box::pin(second.changed());
+                        events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                    }
+                    _ => {
+                        spare = sender.as_ref().or(spare.as_ref()).cloned();
+                    }
+                }
+                if let Some(sender) = sender.as_ref().or(spare.as_ref()) {
+                    events.push(Event::Value(*sender.borrow()));
+                    events.push(Event::Receivers(sender.receiver_count()));
+                }
+                steps >>= shift;
+            }
+            drop((sender, spare));
+            // An unseen final publication precedes the terminal result. A
+            // cancelled changed future cannot consume that publication.
+            for receiver in [&mut first, &mut second] {
+                for _ in 0..2 {
+                    let mut changed = Box::pin(receiver.changed());
+                    events.push(Event::Changed(poll!(changed).map(|value| value.is_ok())));
+                }
+                events.push(Event::Value(*receiver.borrow_and_update()));
+            }
+            events
+        }};
+    }
+    assert_eq!(
+        trace!(super::watch::channel, steps),
+        trace!(tokio::sync::watch::channel, steps),
+        "watch trace {steps} differs from Tokio"
+    );
+}
+
+/// A ready result is insufficient when the pending consumer is never woken.
+#[cfg(loom)]
+pub(crate) fn watch_progress() {
+    use std::{
+        future::Future,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Wake, Waker},
+    };
+
+    struct Flag(AtomicBool);
+    impl Wake for Flag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    macro_rules! progress {
+        ($channel:path) => {{
+            let (sender, mut receiver) = $channel(0u8);
+            let spare = sender.clone();
+            let flag = Arc::new(Flag(AtomicBool::new(false)));
+            let waker = Waker::from(Arc::clone(&flag));
+            let mut cx = Context::from_waker(&waker);
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            drop(spare);
+            assert!(
+                !flag.0.load(Ordering::SeqCst),
+                "nonfinal watch publisher drop woke a parked reader"
+            );
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            assert!(!sender.send_if_modified(|_| false));
+            assert!(
+                !flag.0.load(Ordering::SeqCst),
+                "unmodified watch publication woke a parked reader"
+            );
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            assert!(sender.send_if_modified(|value| {
+                *value += 1;
+                true
+            }));
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "publication lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            drop(changed);
+
+            // Each pending future owns its registration. Remove a nonfinal
+            // entry, replace the moved entry's waker, then cancel both peers.
+            let mut second = sender.subscribe();
+            let mut third = sender.subscribe();
+            let cancelled_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let second_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let third_flag = Arc::new(Flag(AtomicBool::new(false)));
+            let cancelled_wake = Waker::from(Arc::clone(&cancelled_flag));
+            let second_wake = Waker::from(Arc::clone(&second_flag));
+            let third_wake = Waker::from(Arc::clone(&third_flag));
+            let mut cancelled = Box::pin(receiver.changed());
+            let mut second_changed = Box::pin(second.changed());
+            let mut third_changed = Box::pin(third.changed());
+            assert!(
+                cancelled
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&cancelled_wake))
+                    .is_pending()
+            );
+            assert!(
+                second_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&second_wake))
+                    .is_pending()
+            );
+            assert!(
+                third_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&third_wake))
+                    .is_pending()
+            );
+            drop(cancelled);
+            assert_eq!(
+                Arc::strong_count(&cancelled_flag),
+                2,
+                "cancelled watch wait retained its observer"
+            );
+            assert!(
+                third_changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&second_wake))
+                    .is_pending()
+            );
+            assert_eq!(
+                Arc::strong_count(&third_flag),
+                2,
+                "watch repoll retained its previous observer"
+            );
+            drop(second_changed);
+            drop(third_changed);
+            assert_eq!(
+                Arc::strong_count(&second_flag),
+                2,
+                "cancelled watch peers retained their observer"
+            );
+
+            // Cancelling a pending future must leave the next wait usable.
+            let mut cancelled = Box::pin(receiver.changed());
+            assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+            drop(cancelled);
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            sender.send_replace(7);
+            assert!(
+                !cancelled_flag.0.load(Ordering::SeqCst)
+                    && !second_flag.0.load(Ordering::SeqCst)
+                    && !third_flag.0.load(Ordering::SeqCst),
+                "publication woke a cancelled watch wait"
+            );
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "replacement lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Ok(()))
+            ));
+            drop(changed);
+
+            let mut changed = Box::pin(receiver.changed());
+            assert!(changed.as_mut().poll(&mut cx).is_pending());
+            drop(sender);
+            assert!(
+                flag.0.swap(false, Ordering::SeqCst),
+                "publisher loss lost wake"
+            );
+            assert!(matches!(
+                changed.as_mut().poll(&mut cx),
+                Poll::Ready(Err(_))
+            ));
+        }};
+    }
+    progress!(tokio::sync::watch::channel);
+    progress!(super::watch::channel);
+}
+
 #[cfg(test)]
 #[cfg(not(loom))]
 #[test]

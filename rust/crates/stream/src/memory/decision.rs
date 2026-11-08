@@ -114,7 +114,7 @@ impl MemoryStream {
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: WriteOutcome::Append(result),
-                        allocation,
+                        _allocation: allocation,
                     }),
                 WriteRequest::Fork(request) => self
                     .plan_fork_locked(&mut state, request)?
@@ -122,7 +122,7 @@ impl MemoryStream {
                     .await
                     .map(|result| Execution {
                         outcome: WriteOutcome::Fork(result),
-                        allocation: None,
+                        _allocation: None,
                     }),
                 WriteRequest::Commit(request) | WriteRequest::CommitAccepted(request) => {
                     let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
@@ -137,7 +137,7 @@ impl MemoryStream {
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: result,
-                        allocation,
+                        _allocation: allocation,
                     })
                 }
             }

@@ -16,6 +16,7 @@ selections and timeouts do not qualify the negative control.
 
 This replaces the test's former `SelectAll` scheduler arm with a mutation of the
 actual operation. It qualifies allocation-free scheduling of these committed
-records; it does not prove population-independent queue lookup, wake draining,
-provider I/O or all stream operation costs. Existing source-cancellation and
-producer-loss controls remain separate.
+records; it does not prove population-independent queue lookup, provider I/O or
+all stream operation costs. The [bounded turn control](../ready-source-turn/README.md)
+uses the same strengthened oracle for wake consumption and parent registration.
+Producer-loss models remain separate.

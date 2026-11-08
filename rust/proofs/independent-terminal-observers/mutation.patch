@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/operation_claim/termination.rs b/rust/crates/stream/src/operation_claim/termination.rs
+--- a/rust/crates/stream/src/operation_claim/termination.rs
++++ b/rust/crates/stream/src/operation_claim/termination.rs
+@@ -52,7 +52,7 @@
+         // Every registered observer must progress even if another stops polling.
+         // Fan-out visits live observers once; observers do not relay notifications.
+         if published {
+-            self.changed.notify_waiters();
++            self.changed.notify_one();
+         }
+     }
+ 

@@ -52,6 +52,16 @@ fn negative_control_drops_the_connection_wake() {
 }
 
 #[test]
+fn connection_retirement_wakes_registered_and_late_observers() {
+    acyclic_stream::session::verify_connection_retirement(false);
+}
+#[test]
+#[should_panic(expected = "connection retirement lost its terminal wakeup")]
+fn negative_control_omits_connection_retirement() {
+    acyclic_stream::session::verify_connection_retirement(true);
+}
+
+#[test]
 fn cancelled_reconnect_cannot_capture_a_new_interest() {
     acyclic_stream::session::verify_abandoned_reconnect(false);
 }

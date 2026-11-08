@@ -15,9 +15,57 @@ pub enum OperationTermination {
     ProducerDropped,
 }
 
-pub(super) struct Signal {
+pub(crate) struct Signal {
     terminal: AtomicU8,
     changed: Notify,
+}
+
+impl Signal {
+    pub(crate) fn new() -> Self {
+        Self {
+            terminal: AtomicU8::new(0),
+            changed: Notify::new(),
+        }
+    }
+
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.terminal.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn publish(&self, terminal: OperationTermination) {
+        let published = self
+            .terminal
+            .compare_exchange(
+                0,
+                match terminal {
+                    OperationTermination::Released => 1,
+                    OperationTermination::ProducerDropped => 2,
+                },
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok();
+        // Every registered observer must progress even if another stops polling.
+        // Fan-out visits live observers once; observers do not relay notifications.
+        if published {
+            self.changed.notify_waiters();
+        }
+    }
+
+    pub(crate) async fn terminated(&self) -> OperationTermination {
+        let notified = self.changed.notified();
+        tokio::pin!(notified);
+        // Register before reading retained state, including concurrent retirement.
+        notified.as_mut().enable();
+        if !self.is_terminated() {
+            notified.await;
+        }
+        match self.terminal.load(Ordering::Acquire) {
+            1 => OperationTermination::Released,
+            2 => OperationTermination::ProducerDropped,
+            _ => unreachable!("only terminal publication wakes an operation observer"),
+        }
+    }
 }
 
 trait RetainedSignal: Send + Sync {
@@ -58,10 +106,7 @@ impl OperationObservation {
             1,
         )?;
         Ok(Self(Arc::new(FundedSignal {
-            signal: Signal {
-                terminal: AtomicU8::new(0),
-                changed: Notify::new(),
-            },
+            signal: Signal::new(),
             _storage: storage,
         })))
     }
@@ -71,46 +116,15 @@ impl OperationObservation {
     }
 
     pub(super) fn publish(&self, terminal: OperationTermination) {
-        let published = self
-            .0
-            .signal()
-            .terminal
-            .compare_exchange(
-                0,
-                match terminal {
-                    OperationTermination::Released => 1,
-                    OperationTermination::ProducerDropped => 2,
-                },
-                Ordering::Release,
-                Ordering::Relaxed,
-            )
-            .is_ok();
-        // One primitive wake per retirement. Consumers pass this retained wake
-        // onward, so producer work is independent of the number of observers.
-        if published {
-            self.0.signal().changed.notify_one();
-        }
+        self.0.signal().publish(terminal);
     }
 
     /// Waits once for this exact producer's terminal event. There is no stream
     /// requery, polling, global release notification or successor lookup.
+    /// Retirement wakes every registered observer independently; wake work is
+    /// proportional to live observers, with constant work per observer.
     pub async fn terminated(&self) -> OperationTermination {
-        let signal = self.0.signal();
-        let notified = signal.changed.notified();
-        tokio::pin!(notified);
-        // Registration precedes the state read. Tokio's intrusive notification
-        // transfers a notification when its selected waiter is cancelled.
-        notified.as_mut().enable();
-        if signal.terminal.load(Ordering::Acquire) == 0 {
-            notified.await;
-        }
-        let terminal = match signal.terminal.load(Ordering::Acquire) {
-            1 => OperationTermination::Released,
-            2 => OperationTermination::ProducerDropped,
-            _ => unreachable!("only terminal publication wakes an operation observer"),
-        };
-        signal.changed.notify_one();
-        terminal
+        self.0.signal().terminated().await
     }
 }
 
@@ -132,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_generation_survives_replacement_and_cancelled_notification_handoff() {
+    fn independent_observers_survive_replacement_and_cancellation() {
         for cancel_first in [false, true] {
             let claims = crate::OperationClaims::default();
             let owner = claims
@@ -171,12 +185,21 @@ mod tests {
             assert_eq!(second_wake.0.load(Ordering::SeqCst), 0);
             drop(owner);
             assert_eq!(first_wake.0.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                second_wake.0.load(Ordering::SeqCst),
+                1,
+                "retained operation observer blocked another observer's retirement"
+            );
             // Hold a replacement live while every old observer must terminate.
             let replacement = claims
                 .claim([1; 48], || Ok::<_, ()>(()), |_, _| Ok(()))
                 .unwrap()
                 .into_owner()
                 .unwrap();
+            assert_eq!(
+                second.as_mut().poll(&mut second_context),
+                Poll::Ready(OperationTermination::ProducerDropped)
+            );
             if cancel_first {
                 drop(first);
             } else {
@@ -185,18 +208,26 @@ mod tests {
                     Poll::Ready(OperationTermination::ProducerDropped)
                 );
             }
-            assert!(second_wake.0.load(Ordering::SeqCst) > 0);
-            assert_eq!(
-                second.as_mut().poll(&mut second_context),
-                Poll::Ready(OperationTermination::ProducerDropped)
-            );
             let mut late = Box::pin(observation.terminated());
             assert_eq!(
                 late.as_mut().poll(&mut second_context),
                 Poll::Ready(OperationTermination::ProducerDropped)
             );
             let released = replacement.observe();
+            let mut first = Box::pin(released.terminated());
+            let mut second = Box::pin(released.terminated());
+            assert!(first.as_mut().poll(&mut first_context).is_pending());
+            assert!(second.as_mut().poll(&mut second_context).is_pending());
+            let first_before = first_wake.0.load(Ordering::SeqCst);
+            let second_before = second_wake.0.load(Ordering::SeqCst);
             replacement.release();
+            assert_eq!(first_wake.0.load(Ordering::SeqCst), first_before + 1);
+            assert_eq!(second_wake.0.load(Ordering::SeqCst), second_before + 1);
+            assert_eq!(
+                second.as_mut().poll(&mut second_context),
+                Poll::Ready(OperationTermination::Released)
+            );
+            drop(first);
             let mut released = Box::pin(released.terminated());
             assert_eq!(
                 released.as_mut().poll(&mut second_context),
