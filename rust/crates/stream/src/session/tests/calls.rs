@@ -103,35 +103,6 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     )?;
     assert!(Arc::ptr_eq(&original.0.current()?, &dependency.current()?));
     let attributes = RecordAttributes::try_new(vec![])?;
-    for prefix in [false, true] {
-        let selected = original.dependent_resource(
-            ResourcePattern {
-                name: "fs:/volume/visible".into(),
-                prefix,
-            },
-            "fs/read",
-        )?;
-        let indexed = selected.filter_paths("fs:/volume", &crate::FollowFilter::default());
-        assert!(
-            indexed.is_ok(),
-            "dependent index ignored its declared action"
-        );
-        let indexed = indexed?;
-        for (key, expected) in [
-            (b"visible".as_slice(), true),
-            (b"visible/file", prefix),
-            (b"visible-neighbor", false),
-        ] {
-            assert_eq!(
-                indexed.matches(&crate::RecordHeaders::new(
-                    vec![key.to_vec().into()],
-                    vec![]
-                )?),
-                expected,
-                "dependent index broadened its declared exact resource"
-            );
-        }
-    }
     let current = original.0.current()?;
     let account = current.account_id()?;
     dependency.authorize_in_account(
@@ -177,6 +148,63 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
         Err(StreamError::AccessDenied),
         "dependent disclosure ignored the owner's current policy"
     );
+    #[cfg(feature = "test-support")]
+    for path in [
+        b"".as_slice(),
+        b"visible",
+        b"visible/file",
+        b"literal%2F",
+        &[255],
+    ] {
+        crate::codec_fuzz::filesystem_paths(path)?;
+    }
+    for (name, prefix) in [
+        ("fs:/volume/visible", true),
+        ("fs:/volume/visible/", true),
+        ("fs:/volume", false),
+        ("fs:/volume", true),
+        ("fs:/volume/", true),
+        ("fs:/volume/visible", false),
+        ("fs:/volume/visible/", false),
+    ] {
+        let selected = original.dependent_resource(
+            ResourcePattern {
+                name: name.into(),
+                prefix,
+            },
+            "fs/read",
+        )?;
+        let indexed = selected.filter_paths("fs:/volume", &crate::FollowFilter::default());
+        assert!(
+            indexed.is_ok(),
+            "dependent index ignored its declared action"
+        );
+        let indexed = indexed?;
+        for key in [
+            b"".as_slice(),
+            b"visible",
+            b"visible/",
+            b"visible/file",
+            b"visible-neighbor",
+            b"other",
+        ] {
+            let resource = if key.is_empty() {
+                "fs:/volume".to_owned()
+            } else {
+                format!("fs:/volume/{}", core::str::from_utf8(key)?)
+            };
+            assert_eq!(
+                indexed.matches(&crate::RecordHeaders::new(
+                    vec![key.to_vec().into()],
+                    vec![]
+                )?),
+                selected
+                    .authorize(&resource, &[], &attributes, PolicyDecision::Allow)
+                    .is_ok(),
+                "resource index differs from its original authorized scope: {name:?}, prefix={prefix}, key={key:?}"
+            );
+        }
+    }
     let listed = original.dependent_resource(
         ResourcePattern {
             name: "fs:/volume/visible".into(),

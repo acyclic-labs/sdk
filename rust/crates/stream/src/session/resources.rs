@@ -206,13 +206,6 @@ impl ResourceAuthorization {
                     .strip_prefix(volume_resource)
                     .and_then(|tail| tail.strip_prefix('/'))
                 {
-                    // A prefix pattern's trailing `/` is not a component,
-                    // exactly as `resource_matches` reads it.
-                    let path = if resource.resource.prefix {
-                        path.trim_end_matches('/')
-                    } else {
-                        path
-                    };
                     path_ranges(path, resource.resource.prefix, &mut ranges)?;
                 }
             }
@@ -231,15 +224,23 @@ impl ResourceAuthorization {
             .resource
             .name
             .strip_prefix(volume_resource)
-            .and_then(|tail| tail.strip_prefix('/'))
+            .and_then(|tail| {
+                if tail.is_empty() {
+                    Some("")
+                } else {
+                    tail.strip_prefix('/')
+                }
+            })
         {
             let mut ranges = Vec::new();
             path_ranges(path, self.resource.prefix, &mut ranges)?;
-            wire.all_of.push(wire::SessionFilterClause {
-                keys: ranges,
-                attributes: vec![],
-                all_keys: true,
-            });
+            if !ranges.is_empty() {
+                wire.all_of.push(wire::SessionFilterClause {
+                    keys: ranges,
+                    attributes: vec![],
+                    all_keys: true,
+                });
+            }
         }
         crate::FollowFilter::new(wire)
     }
@@ -368,6 +369,15 @@ fn path_ranges(
     prefix: bool,
     ranges: &mut Vec<wire::KeyRange>,
 ) -> Result<(), StreamError> {
+    // Prefix matching ignores its final separator at both grant and call scope.
+    let encoded = if prefix {
+        encoded.trim_end_matches('/')
+    } else {
+        encoded
+    };
+    if prefix && encoded.is_empty() {
+        return Ok(());
+    }
     let mut key = Vec::new();
     for (index, component) in encoded.split('/').enumerate() {
         if index != 0 {
