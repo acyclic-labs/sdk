@@ -76,10 +76,14 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         if_target: join.target_head(),
         idempotency_key: IdempotencyKey::new(),
     };
-    let preview = value!(
-        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-    )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = &original;
+    #[cfg(target_arch = "wasm32")]
+    let work = WorkBudget::UNBOUNDED;
+    let preview = value!(join.preview_pages(options, work, &cancellation).await)?;
     let staging = unbounded!(fs, create_workspace("directory-staging"))?;
     // Adopting an advanced cursor would silently omit its earlier rows while
     // plan.json still advertised the original complete conflict count.
@@ -435,6 +439,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         let rendered = preview.describe_conflict_file(conflict).await?;
         let view = &rendered.value;
         assert_eq!(view.kind, ConflictKind::Text);
+        merge_text_allocation_cost(view)?;
         let mut capacity = view.path.as_ref().ok_or("text path missing")?.capacity() as u64;
         for value in [&view.base, &view.ours, &view.theirs] {
             let ConflictValue::Text(text) = value else {
@@ -568,10 +573,13 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     // Read each proposal from one immutable staging head, then use the same
     // domain candidate and atomic publisher as every other workspace join.
     staging.write_text(text_path, "resolved\n").await?;
+    // Valid user whitespace makes the selected proposal larger than the
+    // original binary conflict's description, isolating its read receipt.
+    let binary_proposal = format!("{}{{\"take\":\"theirs\"}}", " ".repeat(65536));
     staging
         .write_text(
             &format!("{}.resolve.json", conflict_paths["binary"]),
-            r#"{"take":"theirs"}"#,
+            &binary_proposal,
         )
         .await?;
     staging
@@ -638,11 +646,33 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ));
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
-        resolutions.insert(
-            view.key.clone(),
-            directory.resolution(&staged, &view.key).await?,
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = original.receipt();
+        let resolution = directory.resolution(&staged, &view.key).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if &view.key == binary_key {
+            let output = original
+                .receipt()
+                .output_bytes
+                .checked_sub(before.output_bytes)
+                .ok_or("original output count regressed")?;
+            assert!(
+                output >= binary_proposal.len() as u64,
+                "proposal read escaped the preview's original receipt: {output} < {}",
+                binary_proposal.len()
+            );
+        }
+        resolutions.insert(view.key.clone(), resolution);
     }
+    merge_directory_proposal_retirement(
+        unbounded!(agent.join_into(&main).git_metadata(), plan())?,
+        options,
+        staging.clone(),
+        binary_key,
+        &binary_proposal,
+        text_key,
+    )
+    .await?;
     // The retained preview owns admission even after its last page. A fresh
     // token cannot revive it while reading a valid pinned proposal.
     cancellation.cancel();
@@ -664,6 +694,27 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             .await,
         Err(DrivenJoinError::StaleCandidate)
     ));
+    assert_eq!(unbounded!(main, head())?.id(), before_publish);
+    let invalid_key = candidate
+        .plan
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.path.as_deref() == Some("/text"))
+        .ok_or("text conflict missing from public candidate")?
+        .key
+        .clone();
+    foreign.plan.theirs = pins.2;
+    foreign.resolutions.insert(
+        invalid_key.clone(),
+        MergeResolution::Text(vec![0xff].into()),
+    );
+    assert!(
+        matches!(
+            directory.join().apply_candidate(options, &foreign, crate::PublicationPermit::Unrestricted).await,
+            Err(DrivenJoinError::UnsupportedResolution(key)) if key == invalid_key
+        ),
+        "invalid UTF-8 text proposal reached publication"
+    );
     assert_eq!(unbounded!(main, head())?.id(), before_publish);
     assert!(matches!(
         directory
@@ -721,6 +772,223 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn Error>> {
+    let (ConflictValue::Text(base), ConflictValue::Text(ours), ConflictValue::Text(theirs)) =
+        (&view.base, &view.ours, &view.theirs)
+    else {
+        return Err("public text conflict lost its input bodies".into());
+    };
+    let mut samples = Vec::new();
+    // Equal-length labels leave the actual diff and output size unchanged.
+    // Each extra custom label therefore isolates one required replacement.
+    for (ours_label, theirs_label) in [
+        ("ours", "theirs"),
+        ("fork", "theirs"),
+        ("ours", "source"),
+        ("fork", "source"),
+    ] {
+        let mut result = None;
+        let work = acyclic_test_support::measure(|| {
+            result = Some(crate::text_merge::merge_text(
+                base,
+                ours,
+                theirs,
+                ours_label,
+                theirs_label,
+            ));
+        });
+        let result = result.ok_or("text merger did not return")?;
+        assert!(!result.clean);
+        assert!(result.content.contains(&format!("<<<<<<< {ours_label}\n")));
+        assert!(
+            result
+                .content
+                .contains(&format!(">>>>>>> {theirs_label}\n"))
+        );
+        assert_eq!(work.count_current, 1, "only the returned text stays live");
+        eprintln!("merge labels {ours_label}/{theirs_label}: {work:?}");
+        samples.push(work);
+    }
+    for (fewer, more) in [(0, 1), (0, 2), (1, 3), (2, 3)] {
+        assert!(
+            samples[fewer].count_total < samples[more].count_total
+                && samples[fewer].bytes_total < samples[more].bytes_total,
+            "default marker label performed an identity replacement: {samples:?}"
+        );
+    }
+    // Identity merges need only the returned String. Exercise all three
+    // identities using the actual selected bodies, including their borrowed
+    // forms without a final newline; normalization must not allocate either.
+    let mut identities = Vec::new();
+    for newline in [true, false] {
+        let (base, ours, theirs) = if newline {
+            (base.as_str(), ours.as_str(), theirs.as_str())
+        } else {
+            (
+                base.strip_suffix('\n').unwrap_or(base),
+                ours.strip_suffix('\n').unwrap_or(ours),
+                theirs.strip_suffix('\n').unwrap_or(theirs),
+            )
+        };
+        for (base, ours, theirs, expected) in [
+            (base, ours, ours, ours),
+            (base, base, theirs, theirs),
+            (base, ours, base, ours),
+        ] {
+            let mut result = None;
+            let work = acyclic_test_support::measure(|| {
+                result = Some(crate::text_merge::merge_text(
+                    base, ours, theirs, "ours", "theirs",
+                ));
+            });
+            let result = result.ok_or("identity merger did not return")?;
+            assert!(result.clean);
+            assert_eq!(result.content, expected);
+            assert_eq!(work.count_current, 1);
+            eprintln!("merge identity newline={newline}: {work:?}");
+            identities.push(work);
+        }
+    }
+    assert!(
+        identities
+            .iter()
+            .all(|work| { work.count_total == 1 && work.bytes_total == work.bytes_current as u64 }),
+        "identity merge allocated beyond its returned content: {identities:?}"
+    );
+    Ok(())
+}
+
+async fn merge_directory_proposal_retirement<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    join: JoinPlan<A, O>,
+    options: ApplyOptions,
+    staging: Workspace<A, O>,
+    key: &ConflictKey,
+    proposal: &str,
+    text_key: &ConflictKey,
+) -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    // This existing observer funds the real standalone frame and retains a
+    // lease on that same ledger; it supplies no provider responses.
+    let original = crate::workspace::accounting_tests::Prefunded {
+        budget: crate::performance::BOUNDARY_BUDGET,
+        held: std::sync::Mutex::new(None),
+    };
+    let preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    while !directory.plan().complete {
+        let section = if directory.plan().conflicts_complete {
+            MergeDirectorySection::Clean
+        } else {
+            MergeDirectorySection::Conflicts
+        };
+        directory
+            .write_page(section, step, crate::PublicationPermit::Unrestricted)
+            .await?;
+    }
+    let live = || {
+        original
+            .held
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(held, _)| held.allocation.standalone_live_bytes())
+            .ok_or("original standalone ledger retired")
+    };
+    for accepted in [true, false] {
+        let bytes = if accepted {
+            proposal.to_owned()
+        } else {
+            format!("{proposal}!")
+        };
+        staging
+            .write_text(
+                &format!("{}.resolve.json", directory.conflict_file_path(key)?),
+                &bytes,
+            )
+            .await?;
+        let generation = unbounded!(staging, head())?;
+        for _ in 0..2 {
+            let before = live()?;
+            let resolution = directory.resolution(&generation, key).await;
+            if accepted {
+                assert_eq!(resolution?, MergeResolution::Select(ConflictSide::Theirs));
+            } else {
+                assert!(matches!(
+                    resolution,
+                    Err(DrivenJoinError::Workspace(WorkspaceError::Engine(_)))
+                ));
+            }
+            assert_eq!(
+                live()?,
+                before,
+                "discarded proposal buffer stayed charged to the original frame"
+            );
+        }
+    }
+    // Keep the actual public text result alive after its reader is gone;
+    // only dropping its final alias releases the original credit for its bytes.
+    let text = "resolved content\n".repeat(4096);
+    staging
+        .write_text(&directory.conflict_file_path(text_key)?, &text)
+        .await?;
+    let generation = unbounded!(staging, head())?;
+    let before = live()?;
+    let resolution = directory.resolution(&generation, text_key).await?;
+    let MergeResolution::Text(content) = &resolution else {
+        return Err("public text proposal changed resolution kind".into());
+    };
+    assert_eq!(content.as_slice(), text.as_bytes());
+    let retained = live()?;
+    assert!(
+        retained >= before + text.len() as u64,
+        "accepted text backing left its original allocation ledger: {retained} < {before} + {}",
+        text.len()
+    );
+    drop(directory);
+    let baseline = original
+        .held
+        .lock()
+        .unwrap()
+        .as_ref()
+        .ok_or("original allocation observer retired")?
+        .1;
+    assert!(
+        live()? >= baseline + text.len() as u64,
+        "returned text lost its original allocation owner with the directory"
+    );
+    let alias = resolution.clone();
+    let MergeResolution::Text(alias_content) = &alias else {
+        return Err("text alias changed resolution kind".into());
+    };
+    let MergeResolution::Text(content) = &resolution else {
+        return Err("text result changed resolution kind".into());
+    };
+    assert_eq!(
+        content.as_ptr(),
+        alias_content.as_ptr(),
+        "text clone copied its payload"
+    );
+    let retained = live()?;
+    drop(resolution);
+    assert_eq!(
+        live()?,
+        retained,
+        "text clone lost its original allocation lease"
+    );
+    drop(alias);
+    assert_eq!(
+        live()?,
+        baseline,
+        "discarded text retained its original allocation credit"
+    );
+    Ok(())
+}
+
 async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let target = unbounded!(fs, create_workspace("staging-credit-target"))?;
@@ -752,44 +1020,50 @@ async fn merge_directory_staging_credit() -> Result<(), Box<dyn Error>> {
     drop(calibration);
     let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
     let before = unbounded!(staging, head())?.id();
-    let join = unbounded!(source.join_into(&target), plan())?;
-    let preview = value!(
-        join.preview_pages(
-            options,
-            WorkBudget {
-                items_examined: allowance,
-                ..WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .await
-    )?;
-    let mut bounded = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
-    // EOF consumes one cursor item but renders no record, path or body. A
-    // refusal here must be staging work, not a renderer's earlier boundary.
-    assert!(matches!(
-        bounded
-            .write_page(
-                MergeDirectorySection::Conflicts,
-                step,
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await,
-        Err(WorkspaceError::Work(
-            crate::WorkError::BudgetExceeded { .. }
-        ))
-    ));
-    assert_eq!(unbounded!(staging, head())?.id(), before);
-    assert!(matches!(
-        bounded
-            .write_page(
-                MergeDirectorySection::Conflicts,
-                step,
-                crate::PublicationPermit::Unrestricted,
-            )
-            .await,
-        Err(WorkspaceError::InvalidMergeResolution)
-    ));
+    // Preparation and publication spend the same retained allowance. Zero
+    // append credit must refuse the page before its authority head changes.
+    for budget in [
+        WorkBudget {
+            items_examined: allowance,
+            ..WorkBudget::UNBOUNDED
+        },
+        WorkBudget {
+            authority_records_appended: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+    ] {
+        let join = unbounded!(source.join_into(&target), plan())?;
+        let preview = value!(join.preview_pages(options, budget, &cancellation).await)?;
+        let mut bounded =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        // EOF renders no conflict, path or body, isolating staging and commit.
+        assert!(
+            matches!(
+                bounded
+                    .write_page(
+                        MergeDirectorySection::Conflicts,
+                        step,
+                        crate::PublicationPermit::Unrestricted,
+                    )
+                    .await,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ),
+            "page publication escaped the preview's original credit"
+        );
+        assert_eq!(unbounded!(staging, head())?.id(), before);
+        assert!(matches!(
+            bounded
+                .write_page(
+                    MergeDirectorySection::Conflicts,
+                    step,
+                    crate::PublicationPermit::Unrestricted,
+                )
+                .await,
+            Err(WorkspaceError::InvalidMergeResolution)
+        ));
+    }
 
     let join = unbounded!(source.join_into(&target), plan())?;
     let preview = value!(

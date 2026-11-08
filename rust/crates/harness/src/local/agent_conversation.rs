@@ -516,8 +516,8 @@ impl Conversation {
     /// inbox sequence `inbox`: its settled entry, pending, or dropped.
     ///
     /// # Errors
-    /// Session, host or decoding failures, and an entry at `inbox` that
-    /// settled another request.
+    /// Session, host or decoding failures, an entry at `inbox` that settled
+    /// another request, or a pending request without a matching committed input.
     pub async fn reply(&self, id: &str, inbox: u64) -> Result<Reply> {
         match self
             .connection
@@ -542,7 +542,8 @@ impl Conversation {
     /// event.
     ///
     /// # Errors
-    /// An observer from another connection or selection is refused before I/O.
+    /// An observer from another connection or a retired conversation/status
+    /// selection is refused before I/O.
     /// Otherwise, session, host or decoding failures.
     pub async fn settle(
         &self,
@@ -552,7 +553,7 @@ impl Conversation {
     ) -> Result<Settlement> {
         if !events.belongs_to(&self.connection) {
             return Err(Error::Invalid(
-                "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+                "settlement requires an observer from the original connection with live conversation and status follows; recovery: observe this conversation again".into(),
             ));
         }
         let mut status: Option<StatusRecord> = None;

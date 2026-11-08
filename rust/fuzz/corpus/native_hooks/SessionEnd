@@ -1,0 +1,1 @@
+{"hooks":[{"command":"'acyclic' __hook claude-code SessionEnd","statusMessage":"Acyclic is routing the workspace","timeout":3,"type":"command"}]}

@@ -29,6 +29,82 @@ const claims = {
     "hard-link reply discarded current detached file facts",
     ["--no-default-features", "--features", "memory,native-mount"],
   ],
+  "failed-input-fairness": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+    "failed input starved another ready subscription", [],
+    { positive: [
+      "local::runtime::tests::retry::a_failed_record_does_not_starve_other_ready_subscriptions",
+      "local::runtime::tests::retry::an_unchanged_guard_refusal_settles_instead_of_retrying_forever",
+    ] },
+  ],
+  "seeded-runtime-configuration": [
+    "rust/crates/native-runtime/src/testing.rs", "acyclic-native-runtime",
+    "seeded_runtime_requires_explicit_executor_configuration",
+    "unconfigured replay admitted an unseeded executor", ["--features", "test-support"],
+    {
+      target: ["--test", "seeded_runtime"],
+      // This claim exercises refusal when Tokio's unstable seed API is absent.
+      env: { RUSTFLAGS: "-Dunexpected_cfgs", CARGO_ENCODED_RUSTFLAGS: "-Dunexpected_cfgs" },
+    },
+  ],
+  "merge-directory-custody": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
+    "workspace::tests::merge_drivers::merge_directory_pages_preserve_pins_and_non_text_conflicts",
+    "a one-row page expanded the whole merge", [],
+    { mutations: [
+      { patch: "rust/proofs/merge-directory-custody/foreign-generation.patch", label: "foreign-generation-admitted", diagnostic: "directory.resolution(&foreign, binary_key)" },
+      { patch: "rust/proofs/merge-directory-custody/page-credit.patch", label: "page-credit-exceeded", diagnostic: "a one-row page expanded the whole merge" },
+    ] },
+  ],
+  "merge-text-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured public merge resolution was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-text-admission/refusal.patch", label: "text-proposal-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-text-admission/markers.patch", label: "unresolved-markers-admitted", diagnostic: "captured public merge refusal changed" },
+        { source: "rust/crates/filesystem/src/merge_driver.rs", patch: "rust/proofs/merge-text-admission/wire.patch", label: "text-wire-type-substituted", diagnostic: "captured public text encoding changed" },
+      ],
+    },
+  ],
+  "merge-directory-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured merge-directory writer output was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-directory-admission/admission.patch", label: "writer-output-refused", diagnostic: "captured merge-directory writer output was refused" },
+        { patch: "rust/proofs/merge-directory-admission/version.patch", label: "future-version-admitted", diagnostic: "unsupported merge file version accepted by the shipped decoder" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-refusal.patch", label: "caller-resolution-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-directory-admission/resolution-side.patch", label: "caller-side-substituted", diagnostic: "captured public merge resolution changed" },
+      ],
+    },
+  ],
+  "native-hook-ownership": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "foreign hook metadata was admitted", [],
+    { fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 } },
+  ],
+  "native-hook-admission": [
+    "rust/crates/harness/src/host_hooks.rs", "acyclic-sdk-fuzz", "",
+    "native hook writer output was refused", [],
+    {
+      fuzz: { bin: "native_hooks", corpus: "rust/fuzz/corpus/native_hooks", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/native-hook-admission/version-refusal.patch", label: "supported-version-refused", diagnostic: "captured supported Codex version was refused" },
+        { patch: "rust/proofs/native-hook-admission/version-admission.patch", label: "obsolete-version-admitted", diagnostic: "captured obsolete Codex version was admitted" },
+        { patch: "rust/proofs/native-hook-admission/ownership.patch", label: "writer-ownership-refused", diagnostic: "native hook writer output was refused" },
+      ],
+    },
+  ],
+  "approval-wake-uncertainty": [
+    "rust/crates/harness-core/src/filesystem/agent_turns.rs", "acyclic-agent-host-conformance",
+    "local::local_approval_wake_retries_the_original_uncertain_request",
+    "approval wake uncertainty lost its original request", ["--features", "local"],
+    { target: ["--test", "main"] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
@@ -38,6 +114,66 @@ const claims = {
     "rust/crates/actors/src/domain/invocation.rs", "acyclic-guest-fuzz", "",
     "captured actor invocation was refused", [],
     { fuzz: { bin: "invocation_headers", corpus: "fuzz/corpus/invocation_headers", runs: 1024 } },
+  ],
+  "dispatcher-clock-retirement": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::clock::running_dispatcher_reports_its_original_clock_retirement",
+    "dispatcher did not return its original retired clock failure", [],
+  ],
+  "system-clock-runtime-retirement": [
+    "rust/crates/actors/src/local/runtime/clock.rs", "acyclic-actors",
+    "local::runtime::tests::clock::system_clock_keeps_its_original_deadline_after_runtime_retirement",
+    "wall clock retained a retired Tokio timer driver", [],
+    { mutations: [
+      { patch: "rust/proofs/system-clock-runtime-retirement/mutation.patch", label: "retired-runtime-driver", diagnostic: "wall clock retained a retired Tokio timer driver" },
+      { patch: "rust/proofs/system-clock-runtime-retirement/deferred.patch", label: "deferred-clock-capture", diagnostic: "wall clock escaped its original producer before first poll" },
+      { source: "rust/crates/native-runtime/src/wall_alarm/wait.rs", patch: "rust/proofs/system-clock-runtime-retirement/failure.patch", label: "masked-native-failure", diagnostic: "wall clock did not report original producer retirement" },
+    ] },
+  ],
+  "ready-alarm-progress": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "an earlier committed deadline must rearm the shared dispatcher", [],
+  ],
+  "ready-waker-custody": [
+    "rust/crates/actors/src/local/ready.rs", "acyclic-actors",
+    "local::ready::tests::earlier_deadline_rearms_the_shared_dispatcher_after_unlock",
+    "dispatcher observer retirement retained the ready index lock", [],
+    { mutations: [
+      { patch: "rust/proofs/ready-waker-custody/poll.patch", label: "poll-ready-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+      { patch: "rust/proofs/ready-waker-custody/listen.patch", label: "listen-locked-retirement", diagnostic: "dispatcher observer retirement retained the ready index lock" },
+    ] },
+  ],
+  "settlement-retired-source": [
+    "rust/crates/harness/src/local/observer.rs", "acyclic-harness",
+    "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
+    "settlement retained a retired status source", nativeHarness,
+    { mutations: [
+      { patch: "rust/proofs/settlement-retired-source/status.patch", label: "retired-status", diagnostic: "settlement retained a retired status source" },
+      { patch: "rust/proofs/settlement-retired-source/conversation.patch", label: "retired-conversation", diagnostic: "settlement retained a retired conversation source" },
+    ] },
+  ],
+  "inbox-producer-admission": [
+    "rust/crates/harness-core/src/agent/reply.rs", "acyclic-harness-core",
+    "agent_model::runtime::reply_waits_require_original_committed_requests",
+    "reply wait admitted an absent or mismatched original input",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"], positiveCommand: [
+      "nextest", "run", "--locked", "-p", "acyclic-harness-core",
+      "--features", "filesystem-local,native-execution,machines,test-support", "--test", "main",
+      "-E", "test(=agent_model::runtime::reply_waits_require_original_committed_requests) | test(=agent_model::reply::committed_reply_search_respects_identity_and_fork_base) | test(=agent_model::reply::admitted_steering_joins_its_settling_turn_and_original_identity)",
+      "--no-tests=fail", "--retries", "0",
+    ], completed: ["3 tests run: 3 passed"], mutations: [
+      { patch: "rust/proofs/inbox-producer-admission/mutation.patch", label: "uncommitted-reply", diagnostic: "reply wait admitted an absent or mismatched original input" },
+      { source: "rust/crates/harness-core/src/agent/host.rs", patch: "rust/proofs/inbox-producer-admission/spawn.patch", label: "uncommitted-spawn", diagnostic: "spawn wait admitted an absent or non-spawn original input" },
+    ] },
+  ],
+  "public-pause-retirement": [
+    "rust/crates/actors/src/local/runtime/pause.rs", "acyclic-harness-core",
+    "target_lifecycle::native::abandoned_pause_joins_original_native_retirement",
+    "abandoned public pause lost its original native transition",
+    ["--features", "filesystem-local,native-execution,machines,test-support"],
+    { target: ["--test", "main"] },
   ],
   "public-settlement-source": [
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
@@ -52,6 +188,16 @@ const claims = {
     "rust/crates/harness/src/local/agent_conversation.rs", "acyclic-harness",
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "public settlement retained its lost model producer", nativeHarness,
+  ],
+  "runtime-completion-cancellation": [
+    "rust/crates/actors/src/local/runtime/completion.rs", "acyclic-actors",
+    "local::runtime::tests::completion::completion_joins_discovery_delivery_and_producer_lifetime",
+    "completion retained its cancelled original observer", [],
+    { mutations: [
+      { patch: "rust/proofs/runtime-completion-cancellation/premature.patch", label: "premature-retirement", diagnostic: "live completion retired before its original idle cut" },
+      { patch: "rust/proofs/runtime-completion-cancellation/retirement.patch", label: "cancelled-observer-retained", diagnostic: "completion retained its cancelled original observer" },
+      { source: "rust/crates/actors/src/local/runtime.rs", patch: "rust/proofs/runtime-completion-cancellation/dispatch.patch", label: "dispatcher-registration-omitted", diagnostic: "cancelled completion did not wake the original dispatcher" },
+    ] },
   ],
   "runtime-completion-obligations": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
@@ -166,6 +312,7 @@ if (claim === "--help" && extra.length === 0) {
   process.exitCode = 2;
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
+  const environment = { ...process.env, ...options.env };
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
   const patch = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
@@ -180,7 +327,7 @@ if (claim === "--help" && extra.length === 0) {
       process.exit(2);
     }
   }
-  const fuzzCommand = runs => ["run", "--locked", "-p", crate, "--bin", options.fuzz.bin,
+  const fuzzCommand = runs => ["run", "--locked", "-p", crate, ...features, "--bin", options.fuzz.bin,
     "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
     `-artifact_prefix=target/${claim}/`];
@@ -191,7 +338,8 @@ if (claim === "--help" && extra.length === 0) {
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
     : command);
-  const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
+  const sources = [...new Set([source, ...(options.mutations ?? []).map(mutation => mutation.source ?? source)])];
+  const recovery = `git diff -- ${sources.join(" ")}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
   const oraclePath = options.oracle && new URL(options.oracle, new URL("../../", import.meta.url));
   let oracle;
@@ -208,10 +356,11 @@ if (claim === "--help" && extra.length === 0) {
         cwd: root, encoding: "utf8",
         ...(log ? { stdio: ["ignore", descriptor, descriptor] } : {}),
         env: {
-          ...process.env, PROPTEST_RNG_SEED: process.env.PROPTEST_RNG_SEED ?? "1697",
+          ...environment, PROPTEST_RNG_SEED: environment.PROPTEST_RNG_SEED ?? "1697",
           ...(options.fuzz ? {
-            RUSTFLAGS: process.env.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? process.env.RUSTFLAGS
-              : `${process.env.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`,
+            // RUSTFLAGS replaces Cargo configuration, including replay's Tokio support.
+            RUSTFLAGS: `${environment.RUSTFLAGS?.includes("-Cpasses=sancov-module") ? environment.RUSTFLAGS
+              : `${environment.RUSTFLAGS ?? ""} -Cpasses=sancov-module -Cllvm-args=-sanitizer-coverage-level=4 -Cllvm-args=-sanitizer-coverage-inline-8bit-counters -Cllvm-args=-sanitizer-coverage-pc-table -Cllvm-args=-sanitizer-coverage-trace-compares`} --cfg tokio_unstable`,
           } : {}),
           ...(options.loom ? {
             RUSTC_WORKSPACE_WRAPPER: fileURLToPath(new URL(
@@ -238,14 +387,24 @@ if (claim === "--help" && extra.length === 0) {
       require(result.output.includes("Starting 1 test across 1 binary"));
     }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
-    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
+    const lines = result.output.trimEnd().split(/\r?\n/);
+    const firstError = lines.findIndex(line => /^error(?:\[|:)/.test(line));
+    if (firstError >= 0 && firstError < lines.length - 35) {
+      console.log(lines.slice(firstError, firstError + 12).join("\n"));
+    }
+    console.log(lines.slice(-35).join("\n"));
+    if (options.fuzz) {
+      const coverage = result.output.match(/^#.*\bcov:.*$/gm)?.at(-1);
+      if (coverage) console.log(coverage);
+    }
     return result;
   }
   try {
-    const original = readFileSync(sourcePath);
     if (oraclePath) oracle = readFileSync(oraclePath);
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
     for (const mutation of mutations) {
+      const mutationSourcePath = new URL(mutation.source ?? source, new URL("../../", import.meta.url));
+      const original = readFileSync(mutationSourcePath);
       step = `check mutation anchors: ${mutation.patch}`;
       const anchor = run("git", ["apply", "--check", mutation.patch]);
       if (anchor.status !== 0) throw new Error(anchor.output);
@@ -261,10 +420,10 @@ if (claim === "--help" && extra.length === 0) {
           : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
       } finally {
-        writeFileSync(sourcePath, original);
+        writeFileSync(mutationSourcePath, original);
       }
       step = "restore exact original source";
-      require(readFileSync(sourcePath).equals(original));
+      require(readFileSync(mutationSourcePath).equals(original));
     }
     step = "restored original oracle completes";
     const restored = check("restored", positive);

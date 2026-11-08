@@ -1,0 +1,29 @@
+--- a/rust/crates/actors/src/local/ready.rs
++++ b/rust/crates/actors/src/local/ready.rs
+@@ -199,25 +199,19 @@
+     /// One shared dispatcher waiter, installed under the same lock as the empty check.
+     /// The runtime owns exactly one pending call, independent of actor population.
+     pub fn poll_ready(&self, context: &mut Context<'_>) -> Poll<Work<K>> {
+-        // Clone and retire arbitrary executor callbacks outside the index lock.
+-        let waker = context.waker().clone();
+         let mut index = self
+             .core
+             .index
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
+         if let Some((id, key)) = index.take() {
+-            drop(index);
+-            drop(waker);
+             Poll::Ready(Work {
+                 core: Arc::clone(&self.core),
+                 id,
+                 key,
+             })
+         } else {
+-            let previous = index.waiter.replace(waker);
+-            drop(index);
+-            drop(previous);
++            index.waiter = Some(context.waker().clone());
+             Poll::Pending
+         }
+     }

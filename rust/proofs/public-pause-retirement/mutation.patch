@@ -1,0 +1,31 @@
+diff --git a/rust/crates/actors/src/local/runtime/pause.rs b/rust/crates/actors/src/local/runtime/pause.rs
+--- a/rust/crates/actors/src/local/runtime/pause.rs
++++ b/rust/crates/actors/src/local/runtime/pause.rs
+@@ -38,7 +38,7 @@
+     T: acyclic_stream::ProviderTask + 'static,
+ {
+     let (send, receive) = futures::channel::oneshot::channel();
+-    PlatformExecutor.spawn_owned(Box::pin(async move {
++    let accepted = async move {
+         let slot = &placement.0;
+         let _control = slot.control.lock().await;
+         match apply(&store, &actor, slot, paused, transition).await {
+@@ -56,14 +56,15 @@
+                 let _ = taken.await;
+             }
+         }
+-    }));
+-    async move {
++    };
++    let observed = async move {
+         match receive.await {
+             Ok(Ok(value)) => Ok(value),
+             Ok(Err(failure)) => Err(failure.take()),
+             Err(_) => Err(Error::Stream(StreamError::Unavailable)),
+         }
+-    }
++    };
++    async move { futures::join!(accepted, observed).1 }
+ }
+ 
+ /// The tentative gate is scoped to the owned decision, not its observer.

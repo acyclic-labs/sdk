@@ -239,10 +239,10 @@ async fn a_fork_forks_its_parents_machine_when_the_target_can() -> Result {
     Ok(())
 }
 
-fn host(
-    stream: &Arc<MemoryStream>,
+fn host<P: acyclic_harness_core::store::JournalProvider + 'static>(
+    stream: &Arc<P>,
     lifecycle: Option<Arc<dyn AgentLifecycle>>,
-) -> Result<AgentHost<MemoryStream>> {
+) -> Result<AgentHost<P>> {
     Ok(AgentHost::composing(
         stream.clone(),
         Spawner::default(),
@@ -407,3 +407,7 @@ fn adopted(agent: AgentId) -> ForkAdopted {
         policy: None,
     }
 }
+
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+#[path = "target_lifecycle_native.rs"]
+mod native;

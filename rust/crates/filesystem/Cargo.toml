@@ -211,6 +211,10 @@ name = "embedded_workspace"
 required-features = ["local"]
 
 [[example]]
+name = "capture_merge_directory"
+required-features = ["local"]
+
+[[example]]
 name = "bench-fs"
 required-features = ["local", "native-watch"]
 

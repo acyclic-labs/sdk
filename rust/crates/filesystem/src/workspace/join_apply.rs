@@ -133,11 +133,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             let resolution = match resolution {
                 MergeResolution::Select(side) => side_resolution(*side),
                 MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(
-                    self.stage_regular_resolution(
-                        &conflict.key,
-                        Bytes::copy_from_slice(text.as_bytes()),
-                    )
-                    .await?,
+                    self.stage_regular_resolution(&conflict.key, text.clone())
+                        .await?,
                 )),
                 MergeResolution::Binary(bytes) => {
                     crate::kernel::MergeConflictResolution::File(Some(

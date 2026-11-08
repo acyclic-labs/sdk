@@ -4,7 +4,7 @@ use acyclic_stream::{BoxProviderFuture, ProviderPlatform, UnixMillisClock as _};
 use tokio::sync::watch;
 
 /// Failure of the original scheduling clock or its controller.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ClockError {
     /// A future deadline cannot be reached after its sole producer is dropped.
     #[error("actor clock producer dropped")]
@@ -12,6 +12,9 @@ pub enum ClockError {
     /// Refused advancement leaves the original time and deadline events intact.
     #[error("actor clock cannot advance backwards")]
     Reversed,
+    /// The shared native deadline producer refused or failed this wait.
+    #[error("actor clock: {0}")]
+    Native(#[source] std::sync::Arc<std::io::Error>),
 }
 
 /// The host clock. The dispatcher owns the only timer, armed at the earliest
@@ -27,7 +30,7 @@ pub trait Clock: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'static, Result<(), ClockError>>;
 }
 
-/// Wall clock over the platform timer: Tokio natively, the event loop in a browser.
+/// Wall clock over the shared native absolute alarm or browser event loop.
 pub struct SystemClock;
 impl Clock for SystemClock {
     fn now_unix_ms(&self) -> u64 {
@@ -37,11 +40,30 @@ impl Clock for SystemClock {
         &self,
         deadline_unix_ms: u64,
     ) -> BoxProviderFuture<'static, Result<(), ClockError>> {
-        let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());
-        Box::pin(async move {
-            platform_sleep(milliseconds).await;
-            Ok(())
-        })
+        #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+        {
+            // Capture the original clock producer before this future can move
+            // to another executor or outlive its creating scope.
+            let alarm = (self.now_unix_ms() < deadline_unix_ms)
+                .then(|| acyclic_native_runtime::WallAlarm::wait(deadline_unix_ms));
+            Box::pin(async move {
+                if let Some(alarm) = alarm {
+                    alarm
+                        .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?
+                        .await
+                        .map_err(|error| ClockError::Native(std::sync::Arc::new(error)))?;
+                }
+                Ok(())
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+        {
+            let milliseconds = deadline_unix_ms.saturating_sub(self.now_unix_ms());
+            Box::pin(async move {
+                platform_sleep(milliseconds).await;
+                Ok(())
+            })
+        }
     }
 }
 

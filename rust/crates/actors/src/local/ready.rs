@@ -199,19 +199,25 @@ impl<K: Clone> ReadySet<K> {
     /// One shared dispatcher waiter, installed under the same lock as the empty check.
     /// The runtime owns exactly one pending call, independent of actor population.
     pub fn poll_ready(&self, context: &mut Context<'_>) -> Poll<Work<K>> {
+        // Clone and retire arbitrary executor callbacks outside the index lock.
+        let waker = context.waker().clone();
         let mut index = self
             .core
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((id, key)) = index.take() {
+            drop(index);
+            drop(waker);
             Poll::Ready(Work {
                 core: Arc::clone(&self.core),
                 id,
                 key,
             })
         } else {
-            index.waiter = Some(context.waker().clone());
+            let previous = index.waiter.replace(waker);
+            drop(index);
+            drop(previous);
             Poll::Pending
         }
     }
@@ -219,11 +225,15 @@ impl<K: Clone> ReadySet<K> {
     /// Retain the dispatcher's alarm-change wake while admission is full.
     /// Install before reading the minimum deadline, under the same index lock.
     pub fn listen(&self, context: &Context<'_>) {
-        self.core
+        let waker = context.waker().clone();
+        let previous = self
+            .core
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waiter = Some(context.waker().clone());
+            .waiter
+            .replace(waker);
+        drop(previous);
     }
 
     /// Exact retained registration and ready counts, independent of actor heaps.
@@ -352,6 +362,31 @@ impl<K> Registration<K> {
     /// observation cannot move generation or consumption backwards. Reinstalling
     /// an unconsumed alarm permits retry after an unsuccessful physical attempt.
     pub fn update_alarm(&self, alarm: &super::Alarm) -> Result<(), super::Error> {
+        self.observe_alarm(alarm, alarm.pending())
+    }
+
+    /// Observe the committed alarm before a delivery at `now_unix_ms`. True
+    /// when this delivery is that due alarm: the delivery is its wake, so it
+    /// leaves the due index and a failed attempt is retried by the actor's
+    /// next event, never by its own elapsed deadline. An undue alarm stays
+    /// installed as the actor's future wake.
+    pub fn observe_delivery(
+        &self,
+        alarm: &super::Alarm,
+        now_unix_ms: u64,
+    ) -> Result<bool, super::Error> {
+        let due = alarm
+            .pending()
+            .is_some_and(|deadline| deadline <= now_unix_ms);
+        self.observe_alarm(alarm, alarm.pending().filter(|_| !due))?;
+        Ok(due)
+    }
+
+    fn observe_alarm(
+        &self,
+        alarm: &super::Alarm,
+        deadline: Option<u64>,
+    ) -> Result<(), super::Error> {
         if alarm.deadline_unix_ms == Some(0)
             || (alarm.deadline_unix_ms.is_some() && alarm.generation == 0)
             || alarm
@@ -377,9 +412,7 @@ impl<K> Registration<K> {
         {
             return Err(super::Error::Conflict);
         }
-        let due = alarm
-            .pending()
-            .map(|deadline| (deadline, self.id, alarm.generation));
+        let due = deadline.map(|deadline| (deadline, self.id, alarm.generation));
         if &entry.alarm == alarm && entry.due == due {
             return Ok(());
         }

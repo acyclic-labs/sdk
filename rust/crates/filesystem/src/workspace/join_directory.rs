@@ -98,7 +98,6 @@ pub enum MergeDirectorySection {
 enum ResolutionFile {
     Take { take: ResolutionSide },
     Remove { remove: bool },
-    Content { content: String },
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -125,26 +124,89 @@ impl ResolutionFile {
                 }
                 _ => Err(DrivenJoinError::UnsupportedResolution(conflict.key.clone())),
             },
-            Self::Content { content }
-                if conflict.kind == ConflictKind::Text
-                    && !crate::text_merge::has_conflict_markers(&content) =>
-            {
-                Ok(MergeResolution::Text(content))
-            }
             _ => Err(WorkspaceError::InvalidMergeResolution.into()),
         }
     }
 }
 
 fn decode_resolution(
-    bytes: &[u8],
+    bytes: acyclic_stream::OwnedBytes,
     conflict: &crate::ConflictView,
 ) -> Result<MergeResolution, DrivenJoinError> {
-    parse_resolution(bytes)?.resolve(conflict)
+    if conflict.kind == ConflictKind::Text {
+        std::str::from_utf8(&bytes).map_err(WorkspaceError::engine)?;
+        if crate::text_merge::has_conflict_markers(&bytes) {
+            return Err(WorkspaceError::InvalidMergeResolution.into());
+        }
+        return Ok(MergeResolution::Text(bytes));
+    }
+    parse_resolution(&bytes)?.resolve(conflict)
 }
 
 fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
     serde_json::from_slice(bytes).map_err(WorkspaceError::engine)
+}
+
+/// Replays original public admission output through the shipped decoder.
+/// The trace retains the conflict, exact caller bytes and accepted resolution,
+/// or `None` for the original typed invalid-resolution refusal.
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub fn check_captured_merge_resolution(trace: &[u8], data: &[u8]) {
+    let (conflict, bytes, expected): (crate::ConflictView, Vec<u8>, Option<MergeResolution>) =
+        serde_json::from_slice(trace).expect("captured public merge resolution trace");
+    let bytes: acyclic_stream::OwnedBytes = bytes.into();
+    let backing = bytes.as_ptr();
+    let actual = decode_resolution(bytes, &conflict);
+    if expected.is_some()
+        && let Ok(resolution) = &actual
+    {
+        let encoded = serde_json::to_vec(resolution).expect("serializable public resolution");
+        let original: serde_json::Value =
+            serde_json::from_slice(trace).expect("captured trace JSON");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+            original[2],
+            "captured public text encoding changed"
+        );
+        let restored: MergeResolution =
+            serde_json::from_slice(&encoded).expect("canonical resolution");
+        assert_eq!(&restored, resolution);
+        if let MergeResolution::Text(text) = resolution {
+            assert_eq!(
+                text.as_ptr(),
+                backing,
+                "text decoder copied its original backing"
+            );
+        }
+    }
+    match expected {
+        Some(expected) => assert_eq!(
+            actual.expect("captured public merge resolution was refused"),
+            expected,
+            "captured public merge resolution changed"
+        ),
+        None => assert!(
+            matches!(
+                actual,
+                Err(DrivenJoinError::Workspace(
+                    WorkspaceError::InvalidMergeResolution
+                ))
+            ),
+            "captured public merge refusal changed"
+        ),
+    }
+    // Every raw input also reaches the public text boundary, independently of
+    // whether it can decode as a structured conflict/proposal corpus entry.
+    if conflict.kind == ConflictKind::Text
+        && let Ok(resolution) = decode_resolution(data.into(), &conflict)
+    {
+        let MergeResolution::Text(text) = resolution else {
+            panic!("plain-text proposal selected a different resolution kind");
+        };
+        assert_eq!(text.as_slice(), data, "plain-text proposal bytes changed");
+        assert!(!crate::text_merge::has_conflict_markers(&text));
+    }
 }
 
 /// Exercises the shipped resolution decoder and admission against arbitrary
@@ -163,7 +225,7 @@ pub fn check_merge_directory_resolution(data: &[u8]) {
     else {
         return;
     };
-    let result = decode_resolution(&bytes, &conflict);
+    let result = decode_resolution(bytes.as_slice().into(), &conflict);
     check_resolution_roundtrip(&bytes);
     if let Ok(MergeResolution::Text(text)) = result {
         assert_eq!(conflict.kind, ConflictKind::Text);
@@ -202,6 +264,12 @@ fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes:
 
 #[cfg(any(test, feature = "fuzzing"))]
 fn check_resolution_roundtrip(bytes: &[u8]) {
+    if let Ok(decoded) = serde_json::from_slice::<MergeResolution>(bytes) {
+        let canonical = serde_json::to_vec(&decoded).expect("serializable public resolution");
+        let restored: MergeResolution =
+            serde_json::from_slice(&canonical).expect("canonical public resolution");
+        assert_eq!(decoded, restored);
+    }
     if let Ok(decoded) = parse_resolution(bytes) {
         let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
         let restored = parse_resolution(&canonical).expect("canonical resolution");
@@ -305,32 +373,29 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             return Err(DrivenJoinError::StaleCandidate);
         }
         let path = self.conflict_file_path(&view.key)?;
-        let text = view.kind == ConflictKind::Text;
-        let path = if text {
+        let path = if view.kind == ConflictKind::Text {
             path
         } else {
             format!("{path}.resolve.json")
         };
-        let bytes = generation
-            .read(
-                &path,
-                self.staging.volume.config.limits.maximum_read_bytes,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value;
+        let mut accounting = self.preview.accounting()?;
+        let mut scope = accounting.allocation_scope()?;
+        let read = read_selected_with_accounting(
+            &generation.workspace,
+            GenerationSelector::Exact(generation.id),
+            &path,
+            self.staging.volume.config.limits.maximum_read_bytes,
+            &mut scope,
+            &cancellation,
+        )
+        .await?;
         cancellation.check().map_err(WorkspaceError::from)?;
-        if text {
-            ResolutionFile::Content {
-                content: std::str::from_utf8(&bytes)
-                    .map_err(WorkspaceError::engine)?
-                    .to_owned(),
+        match decode_resolution(read.bytes, view)? {
+            MergeResolution::Text(bytes) => {
+                let read = crate::kernel::OwnedSourceChunk { bytes, ..read };
+                Ok(MergeResolution::Text(read.retain_bytes(&mut scope)?))
             }
-            .resolve(view)
-        } else {
-            decode_resolution(&bytes, view)
+            resolution => Ok(resolution),
         }
     }
 
@@ -369,7 +434,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// selected text bytes, with one commit per page and no per-file barriers.
     /// A false `complete` result always permits another page, including an empty
     /// page whose entire allowance was consumed by excluded conflicts.
-    /// Rendering and the staging commit use the preview's original cancellation.
+    /// Rendering and the staging commit spend the preview's original budget
+    /// and use its original cancellation, without resetting credit per page.
     pub async fn write_page(
         &mut self,
         section: MergeDirectorySection,
@@ -497,49 +563,51 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .await?;
             let view = &rendered.value;
             let path = self.conflict_file_path(&view.key)?;
-            let (path, bytes) = if view.kind == ConflictKind::Text {
-                use crate::MergeDriver;
-                let resolution = crate::DefaultTextMergeDriver
-                    .resolve(view)
-                    .map_err(|_| WorkspaceError::InvalidMergeResolution)?;
-                let text = match resolution {
-                    MergeResolution::Text(text) => text,
-                    MergeResolution::Select(side) => {
-                        let value = match side {
-                            ConflictSide::Base => rendered.value.base,
-                            ConflictSide::Ours => rendered.value.ours,
-                            ConflictSide::Theirs => rendered.value.theirs,
-                        };
-                        let ConflictValue::Text(text) = value else {
-                            return Err(WorkspaceError::InvalidMergeResolution);
-                        };
-                        text
-                    }
-                    _ => return Err(WorkspaceError::InvalidMergeResolution),
-                };
-                (path, text.into_bytes())
-            } else {
-                let absent = |value: &ConflictValue| {
-                    matches!(value, ConflictValue::Absent | ConflictValue::Binding(None))
-                };
-                let kind = if absent(&view.ours) || absent(&view.theirs) {
-                    MergeConflictFileKind::Deleted
+            let (path, bytes): (String, acyclic_stream::OwnedBytes) =
+                if view.kind == ConflictKind::Text {
+                    use crate::MergeDriver;
+                    let resolution = crate::DefaultTextMergeDriver
+                        .resolve(view)
+                        .map_err(|_| WorkspaceError::InvalidMergeResolution)?;
+                    let text = match resolution {
+                        MergeResolution::Text(text) => text,
+                        MergeResolution::Select(side) => {
+                            let value = match side {
+                                ConflictSide::Base => rendered.value.base,
+                                ConflictSide::Ours => rendered.value.ours,
+                                ConflictSide::Theirs => rendered.value.theirs,
+                            };
+                            let ConflictValue::Text(text) = value else {
+                                return Err(WorkspaceError::InvalidMergeResolution);
+                            };
+                            text.into()
+                        }
+                        _ => return Err(WorkspaceError::InvalidMergeResolution),
+                    };
+                    (path, text)
                 } else {
-                    match view.kind {
-                        ConflictKind::Binary => MergeConflictFileKind::Binary,
-                        ConflictKind::Metadata => MergeConflictFileKind::Mode,
-                        _ => MergeConflictFileKind::Type,
-                    }
+                    let absent = |value: &ConflictValue| {
+                        matches!(value, ConflictValue::Absent | ConflictValue::Binding(None))
+                    };
+                    let kind = if absent(&view.ours) || absent(&view.theirs) {
+                        MergeConflictFileKind::Deleted
+                    } else {
+                        match view.kind {
+                            ConflictKind::Binary => MergeConflictFileKind::Binary,
+                            ConflictKind::Metadata => MergeConflictFileKind::Mode,
+                            _ => MergeConflictFileKind::Type,
+                        }
+                    };
+                    (
+                        format!("{path}.conflict.json"),
+                        json(&MergeConflictFile {
+                            version: 1,
+                            kind,
+                            conflict: rendered.value,
+                        })?
+                        .into(),
+                    )
                 };
-                (
-                    format!("{path}.conflict.json"),
-                    json(&MergeConflictFile {
-                        version: 1,
-                        kind,
-                        conflict: rendered.value,
-                    })?,
-                )
-            };
             let mut accounting = self.preview.accounting()?;
             write_file(
                 &mut transaction,
@@ -569,18 +637,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 )
                 .await?;
         }
-        match transaction
-            .commit::<WorkspaceError, _, _>(
-                None,
-                permit,
-                WorkBudget::UNBOUNDED,
-                cancellation,
-                publication_ready,
-            )
-            .await
-            .map_err(|failure| failure.error)?
-            .value
-        {
+        let committed = {
+            let mut accounting = self.preview.accounting()?;
+            transaction
+                .commit_with_accounting(permit, &mut accounting, cancellation)
+                .await?
+        };
+        match committed {
             TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
             TransactionCommit::Conflict { .. } => return Err(WorkspaceError::StaleGeneration),
             TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => {
@@ -610,7 +673,7 @@ fn entry_name(domain: &[u8], identity: &[u8]) -> String {
 async fn write_file<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     transaction: &mut Transaction<A, O>,
     path: &str,
-    bytes: Vec<u8>,
+    bytes: impl Into<acyclic_stream::OwnedBytes>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkspaceError> {

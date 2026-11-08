@@ -161,6 +161,7 @@ pub(super) fn conflict_file_id(key: &ConflictKey) -> Option<FileId> {
 pub(super) fn resolution_matches_conflict(key: &ConflictKey, resolution: &MergeResolution) -> bool {
     match resolution {
         MergeResolution::Select(_) | MergeResolution::Unresolved => true,
+        MergeResolution::Text(bytes) if std::str::from_utf8(bytes).is_err() => false,
         MergeResolution::Text(_) | MergeResolution::Binary(_) => {
             matches!(key, ConflictKey::File(_) | ConflictKey::ContentRange { .. })
         }

@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -144,7 +144,8 @@
+ }
+ 
+ fn parse_resolution(bytes: &[u8]) -> Result<ResolutionFile, WorkspaceError> {
+-    serde_json::from_slice(bytes).map_err(WorkspaceError::engine)
++    let _ = bytes;
++    Err(WorkspaceError::InvalidMergeResolution)
+ }
+ 
+ /// Replays original public admission output through the shipped decoder.

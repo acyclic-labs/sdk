@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 mod simulation;
 #[cfg(feature = "test-support")]
 pub(crate) use simulation::Simulated;
+mod wait;
+pub use wait::AlarmWait;
 
 /// Called once on expiry or loss of the original alarm producer. It must
 /// only signal its owner and return. Failure retains the original native cause.
