@@ -63,12 +63,7 @@ async fn read_owned<S: Snapshot>(
         #[cfg(loom)]
         model::spawn(worker);
         #[cfg(all(not(loom), not(target_arch = "wasm32")))]
-        if tokio::runtime::Handle::try_current().is_ok() {
-            #[cfg(feature = "test-support")]
-            drop(acyclic_native_runtime::testing::spawn(worker));
-            #[cfg(not(feature = "test-support"))]
-            drop(tokio::spawn(worker));
-        } else {
+        if let Err(worker) = acyclic_native_runtime::try_spawn(worker) {
             std::thread::spawn(move || futures::executor::block_on(worker));
         }
         #[cfg(all(not(loom), target_arch = "wasm32"))]

@@ -31,7 +31,8 @@ impl<V: AsRef<[u8]>> PrefixKey<V> for EntryBytes {
 pub enum CompiledPrefixError<E> {
     /// The original caller's admission error.
     Work(E),
-    /// Keys must be distinct; `from_sorted` also requires unsigned byte order.
+    /// A distinct-key constructor found a duplicate, or `from_sorted` found
+    /// keys outside unsigned byte order.
     /// The position identifies an entry in the original input vector.
     Order(usize),
     /// The supplied table cannot be represented by the native address space.
@@ -95,7 +96,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         work.check().map_err(CompiledPrefixError::Work)?;
-        Self::compile(entries, EntryBytes, |position| position, work)
+        Self::compile(entries, EntryBytes, |position| position, true, work)
     }
 }
 
@@ -107,6 +108,27 @@ impl<V, A> CompiledPrefixIndex<V, A> {
     pub fn from_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
         entries: Vec<V>,
         key: K,
+        work: &mut W,
+    ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
+        Self::from_keyed_entries(entries, key, true, work)
+    }
+
+    /// Compiles repeated borrowed keys through the same table and traversal.
+    /// Every match returns the first original entry with that key; all entries
+    /// retain their original positions. Prefix acceptance examines only that
+    /// representative. Funding and key stability follow `from_entries`.
+    pub fn from_repeated_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        work: &mut W,
+    ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
+        Self::from_keyed_entries(entries, key, false, work)
+    }
+
+    fn from_keyed_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        distinct: bool,
         work: &mut W,
     ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Work};
@@ -126,13 +148,14 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         work.charge_items(entries.len() as u64).map_err(Work)?;
         order.extend(0..entries.len());
         sort(&mut order, &mut |&left, &right| {
-            let left = key.bytes(&entries[left]);
-            let right = key.bytes(&entries[right]);
-            work.charge_items(left.len().min(right.len()) as u64 + 1)?;
-            Ok::<_, W::Error>(left.cmp(right))
+            let left_key = key.bytes(&entries[left]);
+            let right_key = key.bytes(&entries[right]);
+            work.charge_items(left_key.len().min(right_key.len()) as u64 + 1)?;
+            Ok::<_, W::Error>(left_key.cmp(right_key).then_with(|| left.cmp(&right)))
         })
         .map_err(Work)?;
-        let index = CompiledPrefixIndex::compile(entries, key, |position| order[position], work)?;
+        let index =
+            CompiledPrefixIndex::compile(entries, key, |position| order[position], distinct, work)?;
         drop(order);
         drop(allocation);
         Ok(index)
@@ -182,6 +205,7 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         entries: Vec<V>,
         key: K,
         position: impl Fn(usize) -> usize,
+        distinct: bool,
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Order, Work};
@@ -190,7 +214,8 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             let right = key.bytes(&entries[position(index)]);
             work.charge_items(left.len().min(right.len()) as u64 + 1)
                 .map_err(Work)?;
-            if left >= right {
+            let order = left.cmp(right);
+            if order.is_gt() || (distinct && order.is_eq()) {
                 return Err(Order(position(index)));
             }
         }
@@ -230,7 +255,8 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             let end = node.end;
             let before = node.children.end;
             let mut from = node.children.start;
-            if result.key(position(from)).len() == end {
+            while from < before && result.key(position(from)).len() == end {
+                work.charge_items(1).map_err(Work)?;
                 from += 1;
             }
             let first_child = result.nodes.len();

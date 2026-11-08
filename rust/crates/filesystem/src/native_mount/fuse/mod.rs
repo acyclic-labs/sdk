@@ -88,8 +88,8 @@ mod session;
 pub(super) use session::FuseSession;
 mod lifecycle;
 mod mount;
-pub(super) use lifecycle::FuseRecoveryControl;
 use lifecycle::*;
+pub(super) use lifecycle::{FUSE_HELPERS, FuseRecoveryControl};
 mod write;
 mod xattr;
 

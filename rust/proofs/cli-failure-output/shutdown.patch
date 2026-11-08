@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/completion.rs b/rust/crates/harness/src/completion.rs
+--- a/rust/crates/harness/src/completion.rs
++++ b/rust/crates/harness/src/completion.rs
+@@ -169,7 +169,7 @@ impl CliCompletion {
+         open: impl FnOnce() -> io::Result<acyclic_native_runtime::InheritedOutput>,
+     ) -> Self {
+         if let Err(failure) = &mut self.0 {
+-            failure.stderr_report = settle_failure(shutdown, async {
++            failure.stderr_report = settle_failure(futures::FutureExt::shared(futures::FutureExt::boxed(std::future::pending())), async {
+                 let output = open()?;
+                 output.write_owned(failure.render().into_bytes()).await?;
+                 Ok(())

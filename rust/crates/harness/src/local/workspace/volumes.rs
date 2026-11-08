@@ -43,11 +43,12 @@ pub(in crate::local) fn held_directories(
 pub(in crate::local) fn require_available(
     capabilities: acyclic_fs::NativeMountCapabilities,
 ) -> Result<()> {
-    if capabilities.available() {
+    let Some(reason) = capabilities.unavailable_reason else {
         return Ok(());
-    }
+    };
     use acyclic_fs::NativeMountKind;
     Err(Error::MountUnavailable {
+        reason,
         device: match capabilities.kind {
             Some(NativeMountKind::LinuxFuse) => "/dev/fuse",
             Some(NativeMountKind::WindowsProjFs) => "ProjectedFSLib.dll",
@@ -621,7 +622,8 @@ mod tests {
         assert!(matches!(
             error,
             Error::MountUnavailable {
-                device: "/dev/fuse"
+                device: "/dev/fuse",
+                reason: "missing device",
             }
         ));
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);

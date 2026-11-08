@@ -12,6 +12,7 @@ description = "Deterministic rendering of immutable model conversation items"
 browser = ["dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 

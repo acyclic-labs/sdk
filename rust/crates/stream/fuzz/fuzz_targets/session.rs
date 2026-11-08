@@ -1,3 +1,4 @@
+//! Checks production session codecs, credit accounting and follow-data contracts.
 #![no_main]
 
 use acyclic_stream::{
@@ -28,8 +29,10 @@ fuzz_target!(|input: &[u8]| {
         let after = data.after.as_ref().map_or(0, |cursor| cursor.next);
         for next in [0, after.saturating_sub(1), after, u64::MAX] {
             for delivery in [0, 1, 2] {
-                checks::check(delivery, next, data, checks::Fault::None)
-                    .expect("follow data contract");
+                assert_eq!(
+                    checks::check(delivery, next, data, checks::Fault::None),
+                    Ok(())
+                );
             }
         }
     }

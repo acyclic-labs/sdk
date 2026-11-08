@@ -46,23 +46,22 @@ pub struct PlatformExecutor;
 impl PlatformExecutor {
     /// Submits an owned future without inserting an additional caller box.
     /// Custody fields outside an inner future box therefore outlive that box.
-    pub fn spawn_owned<F>(&self, mut future: F)
+    pub fn spawn_owned<F>(&self, future: F)
     where
         F: std::future::Future<Output = ()> + crate::ProviderTask + Unpin + 'static,
     {
-        // A ready operation needs no scheduler allocation. Unpin lets a
-        // pending operation transfer safely to the platform-owned executor,
-        // whose first poll installs its actual waker before waiting.
-        if std::pin::Pin::new(&mut future)
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-            .is_ready()
-        {
-            return;
-        }
         #[cfg(not(target_arch = "wasm32"))]
-        drop(acyclic_native_runtime::spawn(future));
+        acyclic_native_runtime::spawn_eager(future);
         #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
-        wasm_bindgen_futures::spawn_local(future);
+        {
+            let mut future = future;
+            if std::pin::Pin::new(&mut future)
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+            {
+                wasm_bindgen_futures::spawn_local(future);
+            }
+        }
     }
 }
 #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
@@ -120,6 +119,91 @@ mod tests {
         send.send(()).map_err(|()| "owned receiver dropped")?;
         finished.await??;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn physical_eager_task_retains_its_original_native_producer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut original = None;
+        for release_first in [true, false] {
+            let trace = physical_eager_trace(release_first).await?;
+            if let Some(original) = &original {
+                assert_eq!(
+                    &trace, original,
+                    "physical completion timing changed the seeded trace"
+                );
+            } else {
+                original = Some(trace);
+            }
+        }
+        Ok(())
+    }
+
+    async fn physical_eager_trace(
+        release_first: bool,
+    ) -> Result<(Vec<(u64, &'static str)>, Vec<String>), Box<dyn std::error::Error>> {
+        let (schedule, mut events) = Schedule::seeded(71);
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        // Change the real worker's completion order without changing the seed,
+        // operation, or simulated boundary. Channel closure ends either wait.
+        let producer = std::thread::spawn(move || -> std::io::Result<()> {
+            if release_first {
+                release.send(()).map_err(std::io::Error::other)?;
+            }
+            started.recv().map_err(std::io::Error::other)?;
+            if !release_first {
+                release.send(()).map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        });
+        let operation = schedule.scope(async {
+            let (sent, received) = futures::channel::oneshot::channel();
+            acyclic_native_runtime::run_blocking_io(
+                move || {
+                    PlatformExecutor.spawn_owned(Box::pin(async move {
+                        let result = acyclic_native_runtime::run_blocking_io(
+                            move || {
+                                entered.send(()).map_err(std::io::Error::other)?;
+                                released.recv().map_err(std::io::Error::other)?;
+                                Ok(42)
+                            },
+                            None,
+                        )
+                        .expect("original native submission")
+                        .await
+                        .and_then(std::convert::identity);
+                        let _ = sent.send(result);
+                    }));
+                },
+                None,
+            )?
+            .await?;
+            assert_eq!(received.await??, 42);
+            schedule.drained().await;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        });
+        tokio::pin!(operation);
+        loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => event.ok_or("lost original native producer boundary")?.release(),
+                result = &mut operation => { result?; break; },
+            }
+        }
+        assert_eq!(
+            schedule
+                .trace()
+                .iter()
+                .filter(|event| event.starts_with("native:"))
+                .count(),
+            2,
+            "both physical producers must retain the original schedule"
+        );
+        producer
+            .join()
+            .expect("physical completion producer panicked")?;
+        Ok((schedule.polls(), schedule.trace()))
     }
 
     async fn child_clock<const ROUTED: bool>() -> Result<Option<u64>, Box<dyn std::error::Error>> {

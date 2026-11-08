@@ -74,3 +74,32 @@ The backend features admit one `tests/main.rs` executable: `local` selects the
 native module and `browser` selects the Wasm module. Both imply the test-admission
 feature `backend-tests`; enabling that marker alone refuses compilation with the
 backend recovery command instead of reporting an empty successful suite.
+
+The public execution-query vectors refine
+`acyclic_harness_client::ExecutionQuery::continuation` against original decoded
+pages. A short page without its actor settlement fence and a page with a
+continuation both retain their original input. Local conversations and hosted
+Session consumers use this same cursor rule. The retained
+`mutations/execution_query_settlement_loss.patch` removes the production fence;
+the existing `local::local_native` vector must then fail with
+`execution cursor retired an input without its actor fence`. This control
+derives its page from the real serving result; it introduces no alternate
+execution model or readiness loop.
+
+Original invocation payloads use the public
+`acyclic_harness_core::tool::RecordedInvocation` persistence envelope, including
+provider metadata and retained execution authority. The same production decoder
+also serves the retained `recorded_invocation` fuzz target. The public serving
+vector rejects an unknown outer field derived from its actual invocation bytes;
+`mutations/execution_invocation_authority_loss.patch` removes that decoder guard
+and must fail with `execution invocation accepted foreign envelope authority`.
+The serving vector compares the public payload with its original immutable
+reference and checks nonempty provider continuation data. The canonical replay
+property roundtrips all four envelope fields, including bound targets and
+filesystem identities. `mutations/recorded_invocation_roundtrip_depth_loss.patch`
+reintroduces the default JSON nesting limit; the existing
+`projection::recorded_invocation_tests::complete_depth_and_numeric_bounds_apply_before_recording`
+control must then fail with `recursion limit exceeded` before admission.
+`mutations/recorded_invocation_filesystem_loss.patch` drops bound filesystem
+authority during production serialization; the same envelope property must
+refuse that loss against its original bound value.

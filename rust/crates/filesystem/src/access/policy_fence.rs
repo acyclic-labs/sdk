@@ -24,6 +24,13 @@ impl PolicyFence {
         self.generation_sensitive
     }
 
+    /// The captured decision's validity interval in Unix seconds: from, and
+    /// until when bounded.
+    #[must_use]
+    pub const fn interval(self) -> (u64, Option<u64>) {
+        (self.valid_from, self.valid_until)
+    }
+
     /// Whether the captured decision is still within its original time interval.
     #[must_use]
     pub fn valid_at(self, now: u64) -> bool {

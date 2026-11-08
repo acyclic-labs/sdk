@@ -127,10 +127,7 @@ impl Driver {
 #[test]
 fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
     use std::io::Read;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
         let directory = tempfile::tempdir().map_err(storage)?;
@@ -199,10 +196,7 @@ fn every_file_cut_drops_the_turn_before_independent_reopen() -> Result<()> {
 #[test]
 #[should_panic(expected = "unsimulated process reached a seeded replay")]
 fn a_replay_without_a_scripted_process_refuses_the_os() {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).unwrap();
     runtime.block_on(async {
         tokio::time::pause();
         let mut driver = Driver::new(71, None);

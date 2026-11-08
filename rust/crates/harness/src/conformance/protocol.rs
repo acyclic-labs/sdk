@@ -25,6 +25,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 pub mod embedded;
+mod observations;
 
 /// Fixture tool name, shared with protocol clients and actual guest artifacts.
 pub const TOOL: &str = "conformance.echo";
@@ -35,7 +36,10 @@ pub const REPLY: &str = "conformance hosted reply";
 pub fn model_events(step: u32) -> Vec<ModelEvent> {
     vec![
         if step == 0 {
-            ModelEvent::ToolCall(ToolCall::new("call-0".into(), TOOL.into(), json!({})))
+            ModelEvent::ToolCall(
+                ToolCall::new("call-0".into(), TOOL.into(), json!({}))
+                    .with_metadata(invocation_metadata()),
+            )
         } else {
             ModelEvent::Content {
                 delta: REPLY.into(),
@@ -45,6 +49,10 @@ pub fn model_events(step: u32) -> Vec<ModelEvent> {
             metadata: serde_json::Value::Null,
         },
     ]
+}
+
+fn invocation_metadata() -> serde_json::Value {
+    json!({"continuation": {"signature": "original provider continuation"}})
 }
 
 /// The shared internal fixture tool, whose actual executions are counted.
@@ -147,7 +155,12 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             id: IntentId::try_from("prompt")?,
             body: ModelContent::Text("Call the shared tool, then reply".into()),
         };
-        let first = call(endpoint, &prompt).await??;
+        let (first, concurrent) =
+            futures::try_join!(call(endpoint, &prompt), call(endpoint, &prompt))?;
+        let first = first?;
+        if serde_json::to_value(&first)? != serde_json::to_value(concurrent?)? {
+            return Err("concurrent prompt retries changed their delivery receipt".into());
+        }
         endpoint.drain(&root).await?;
         if serde_json::to_value(&first)? != serde_json::to_value(call(endpoint, &prompt).await??)? {
             return Err("an exact prompt retry changed its delivery receipt".into());
@@ -243,6 +256,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         if output.get("text").and_then(serde_json::Value::as_str) != Some(REPLY) {
             return Err("the guest's immutable reply differs".into());
         }
+        observations::verify(endpoint, &root, entry.inbox).await?;
         let AgentReply::Approvals { items, next } = call(endpoint, &approvals).await?? else {
             return Err("Approvals reply shape differs after settlement".into());
         };
@@ -256,7 +270,12 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             brief: ModelContent::Text("Run only after explicit placement".into()),
             role: "worker".into(),
         };
-        let spawned = call(endpoint, &spawn).await??;
+        let (spawned, concurrent) =
+            futures::try_join!(call(endpoint, &spawn), call(endpoint, &spawn))?;
+        let spawned = spawned?;
+        if serde_json::to_value(&spawned)? != serde_json::to_value(concurrent?)? {
+            return Err("concurrent spawn retries changed their delivery receipt".into());
+        }
         let AgentReply::Spawned { agent: child, .. } = &spawned else {
             return Err("Spawn reply shape differs".into());
         };
