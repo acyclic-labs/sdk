@@ -1,6 +1,4 @@
-use super::{
-    File, ITEM, NativeHostWork, Path, WorkCounters, buffer, copy_work, fs, io, wide_units, win,
-};
+use super::{File, ITEM, NativeHostWork, Path, WorkCounters, buffer, copy_work, fs, io, win};
 use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
 
 pub(super) fn open_windows_root_name(
@@ -35,7 +33,14 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
     const NT: &[u16] = &[92, 63, 63, 92];
     const UNC: &[u16] = &[92, 92, 63, 92, 85, 78, 67, 92];
     const MAX_UNITS: usize = 32768;
-    let length = wide_units(path.as_os_str(), work)?;
+    let mut length = 0usize;
+    for unit in path.as_os_str().encode_wide() {
+        work.started_io(ITEM)?;
+        if unit == 0 {
+            return Err(W::invalid_request());
+        }
+        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+    }
     let (mut input, allocation) = buffer(
         length.checked_add(1).ok_or(crate::WorkError::Overflow)?,
         work,
@@ -47,13 +52,7 @@ pub(super) fn with_root_name<W: NativeHostWork, T>(
                 .ok_or(crate::WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         })?;
-        for unit in path.as_os_str().encode_wide() {
-            work.started_io(ITEM)?;
-            if unit == 0 {
-                return Err(W::invalid_request());
-            }
-            input.push(unit);
-        }
+        input.extend(path.as_os_str().encode_wide());
         input.push(0);
         if input.starts_with(VERBATIM) || input.starts_with(NT) {
             return operation(&input, work);

@@ -4,8 +4,8 @@ use super::{
 };
 
 use super::{
-    Dir, File, HostStat, ITEM, NativeHostWork, NativeRootIdentity, OsStr, Path, READ, WRITE,
-    WorkCounters, buffer, copy_work, directory_identity, file_identity_and_length, fs, io, nt, win,
+    Dir, File, HostStat, ITEM, NativeHostWork, NativeRootIdentity, Path, READ, WRITE, WorkCounters,
+    buffer, copy_work, directory_identity, file_identity_and_length, fs, io, nt, win,
     windows_name_packet,
 };
 
@@ -20,15 +20,6 @@ pub(super) fn status_error(status: win::NTSTATUS) -> io::Error {
     }
     // SAFETY: translates a status without accessing memory.
     io::Error::from_raw_os_error(unsafe { win::RtlNtStatusToDosError(status) }.cast_signed())
-}
-
-pub(super) fn wide_units<W: NativeHostWork>(name: &OsStr, work: &mut W) -> Result<usize, W::Error> {
-    let mut count = 0usize;
-    for _ in name.encode_wide() {
-        work.started_io(ITEM)?;
-        count = count.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-    }
-    Ok(count)
 }
 
 pub(crate) fn with_wide_path<W: NativeHostWork, T>(
