@@ -1,8 +1,9 @@
-diff --git a/plugin/tests/hosts/managed-session.py b/plugin/tests/hosts/managed-session.py
---- a/plugin/tests/hosts/managed-session.py
-+++ b/plugin/tests/hosts/managed-session.py
-@@ -225,3 +225,4 @@ with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.
-   finally:
-    try:close_bridge()
-    finally:stop_owner()
-+assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'
+diff --git a/plugin/tests/hosts/managed-session.mjs b/plugin/tests/hosts/managed-session.mjs
+--- a/plugin/tests/hosts/managed-session.mjs
++++ b/plugin/tests/hosts/managed-session.mjs
+@@ -83,4 +83,5 @@
+   }
+   await closeBridge();await ownerStop();
++  assert.ok(clock()-started<10000,'native supervision fixture exceeded ten seconds');
+   console.log(JSON.stringify({suite:'managed-native-session-'+scenario,native_agent_fixture:true,real_codex_workspace_write_sandbox:true,model_calls:0,cwd_and_discovery:true,outside_denied:true,seconds:(clock()-started)/1000}));
+  }catch(error){
