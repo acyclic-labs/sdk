@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/demand/admissions.rs
++++ b/rust/crates/filesystem/src/demand/admissions.rs
+@@ -70,7 +70,7 @@
+         }
+         #[cfg(feature = "native-mount")]
+         {
+-            let (completed, unused, failed) = shared.take_view_reads();
++            let (completed, unused, failed) = (0_u64, 0_u64, false);
+             let settled = completed
+                 .checked_add(unused)
+                 .ok_or(crate::WorkError::Overflow)?;
