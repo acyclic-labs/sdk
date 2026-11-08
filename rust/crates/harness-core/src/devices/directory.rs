@@ -409,7 +409,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
         tokio::pin!(opening);
         let mut events = tokio::select! {
             result = &mut opening => result.map_err(|error| match error {
-                acyclic_stream::StreamError::NotFound if reconcile => Error::Indeterminate(invocation.operation_id),
+                cause if cause.category() == acyclic_stream::StreamError::NotFound && reconcile => Error::Indeterminate(invocation.operation_id),
                 cause => cause.into(),
             })?,
             _ = futures::future::OptionFuture::from(socket_end.as_mut()), if socket_end.is_some() => {
@@ -540,7 +540,7 @@ impl<P: StreamProvider + ?Sized + 'static> DeviceExecutor<P> {
     async fn accepted_tail(&self, call: &CallPath, operation: crate::OperationId) -> Result<u64> {
         match self.provider.head(call.log().clone()).await {
             Ok(head) => Ok(head.tail),
-            Err(acyclic_stream::StreamError::NotFound) => Ok(0),
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => Ok(0),
             Err(_) => Err(Error::Indeterminate(operation)),
         }
     }

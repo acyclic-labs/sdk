@@ -59,7 +59,7 @@ pub(crate) fn native_sdk_result<T>(
         Ok(Ok(output)) => Ok(output),
         Ok(Err(failure)) => {
             let source = failure;
-            let code = if source == acyclic_stream::StreamError::IdempotencyMismatch {
+            let code = if source.category() == acyclic_stream::StreamError::IdempotencyMismatch {
                 crate::wire::ErrorCode::Conflict
             } else {
                 crate::wire::ErrorCode::Storage

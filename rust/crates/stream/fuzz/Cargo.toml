@@ -16,6 +16,13 @@ libfuzzer-sys = "0.4"
 prost = "0.14.4"
 
 [[bin]]
+name = "grpc_status"
+path = "fuzz_targets/grpc_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "session"
 path = "fuzz_targets/session.rs"
 test = false

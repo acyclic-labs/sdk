@@ -42,10 +42,9 @@ pub enum StreamError {
     /// Required authority is unavailable.
     #[error("stream unavailable")]
     Unavailable,
-    /// [`Self::Unavailable`] as a member reported it, with the member's
-    /// original status retained verbatim. Recovery is exactly Unavailable's;
-    /// the refusal is a diagnostic, never retry permission.
-    #[error("stream unavailable{0}")]
+    /// A member's original status beyond its canonical category. Recovery
+    /// follows [`Self::category`]; diagnostics never grant retry permission.
+    #[error("stream member refused{0}")]
     Refused(acyclic_auth::refusal::Refusal),
     /// A provider-evaluated commit deadline elapsed before linearization.
     #[error("stream commit deadline elapsed")]
@@ -108,16 +107,46 @@ impl StreamError {
     /// Whether the provider left the outcome undecided: it was unreachable or
     /// its deadline elapsed, so the same request may yet succeed unchanged.
     #[must_use]
-    pub const fn uncertain(&self) -> bool {
-        matches!(
-            self,
-            Self::Unavailable | Self::Refused(_) | Self::DeadlineElapsed
-        )
+    pub fn uncertain(&self) -> bool {
+        matches!(self.category(), Self::Unavailable | Self::DeadlineElapsed)
+    }
+
+    /// The typed failure independently of a member's retained diagnostics.
+    #[must_use]
+    pub fn category(&self) -> Self {
+        match self {
+            Self::Refused(refusal) => refusal.original().map_or(Self::Unavailable, |parts| {
+                Self::from_grpc_status(parts.code, &parts.message)
+            }),
+            error => error.clone(),
+        }
+    }
+
+    pub(crate) fn from_grpc_status(code: i32, message: &str) -> Self {
+        match (code, message) {
+            (15, _) => Self::InvalidResponse,
+            (4, _) => Self::DeadlineElapsed,
+            (3, "invalid_path") => Self::InvalidPath,
+            (3, "limit_exceeded") => Self::LimitExceeded,
+            (3, _) => Self::InvalidArgument,
+            (5, _) => Self::NotFound,
+            (6, _) => Self::AlreadyExists,
+            (11, _) => Self::OutOfRange,
+            (7 | 16, _) => Self::AccessDenied,
+            (8, _) => Self::Capacity,
+            (9, "hierarchy_changed") => Self::HierarchyChanged,
+            (9, "idempotency_mismatch") => Self::IdempotencyMismatch,
+            (9, "prefix_not_retained") => Self::PrefixNotRetained,
+            (9, "deadline_elapsed") => Self::DeadlineElapsed,
+            (9, "revision_foreign") => Self::RevisionForeign,
+            (12, _) => Self::Unsupported,
+            _ => Self::Unavailable,
+        }
     }
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
     #[must_use]
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
         match self {
             Self::InvalidResponse => "invalid_response",
             Self::InvalidPath => "invalid_path",
@@ -130,7 +159,8 @@ impl StreamError {
             Self::IdempotencyMismatch => "idempotency_mismatch",
             Self::Capacity => "capacity",
             Self::AccessDenied => "access_denied",
-            Self::Unavailable | Self::Refused(_) => "unavailable",
+            Self::Unavailable => "unavailable",
+            Self::Refused(_) => self.category().code(),
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",

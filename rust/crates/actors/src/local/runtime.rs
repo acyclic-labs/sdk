@@ -621,7 +621,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     // A newly observed prefix resumes the SAME activation follow.
                     completion_tail = match provider.tail(self.store.root().clone()).await {
                         Ok(tail) => tail,
-                        Err(StreamError::NotFound) => 0,
+                        Err(error) if error.category() == StreamError::NotFound => 0,
                         Err(error) => return Err(error.into()),
                     };
                     if seen >= completion_tail
@@ -1011,7 +1011,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .insert(id.to_owned(), acyclic_stream::records_only(follow));
                 Ok(true)
             }
-            Err(StreamError::NotFound) => Ok(false),
+            Err(error) if error.category() == StreamError::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }
@@ -1044,7 +1044,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .await;
             let mut records = match records {
                 Ok(records) => records,
-                Err(StreamError::NotFound) => continue,
+                Err(error) if error.category() == StreamError::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
             if let Some(record) = records.next().await.transpose()? {

@@ -3,6 +3,40 @@ use crate::{StreamError, persistence};
 use futures::FutureExt as _;
 use prost::Message as _;
 
+/// Exercise the deployed status decoder and encoder with generated diagnostics.
+/// The input is diagnostic bytes, not a substitute external wire encoding.
+#[cfg(feature = "grpc")]
+pub fn grpc_status(bytes: &[u8]) -> bool {
+    use crate::wire_codec::status::{category, error_status, status};
+    use tonic::{Code, Status};
+    for code in 0..17 {
+        let mut original = Status::with_details(
+            Code::from_i32(code),
+            String::from_utf8_lossy(bytes),
+            bytes::Bytes::copy_from_slice(bytes),
+        );
+        if let Ok(value) = tonic::metadata::MetadataValue::try_from(bytes) {
+            original
+                .metadata_mut()
+                .append("acyclic-diagnostic", value.clone());
+            original.metadata_mut().append("acyclic-diagnostic", value);
+        }
+        let decoded = status(&original);
+        let encoded = error_status(&decoded);
+        if decoded.category() != category(&original)
+            || decoded.uncertain() != category(&original).uncertain()
+            || encoded.code() != original.code()
+            || encoded.message() != original.message()
+            || encoded.details() != original.details()
+            || encoded.metadata().as_ref() != original.metadata().as_ref()
+            || status(&encoded) != decoded
+        {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 fn session_admission() -> crate::wire::SessionFrame {
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();

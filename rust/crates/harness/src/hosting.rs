@@ -726,7 +726,7 @@ where
                         view.validate_for(&request).map_err(Error::Stream)?;
                         view
                     }
-                    Err(StreamError::NotFound) => {
+                    Err(error) if error.category() == StreamError::NotFound => {
                         return Ok(AgentReply::Children {
                             items: Vec::new(),
                             next: None,
@@ -965,7 +965,7 @@ where
     async fn tail(&self, path: StreamPath) -> Result<u64, Error> {
         match self.bound.agents().provider().tail(path).await {
             Ok(tail) => Ok(tail),
-            Err(StreamError::NotFound) => Ok(0),
+            Err(error) if error.category() == StreamError::NotFound => Ok(0),
             Err(error) => Err(Error::Stream(error)),
         }
     }

@@ -60,12 +60,11 @@ impl Connection {
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
         let result = exchanged(&self.controls, command).await.map_err(exchange)?;
         match result {
-            Err(
-                error @ AgentExchangeError::Session(
-                    acyclic_stream::StreamError::Unavailable
-                    | acyclic_stream::StreamError::Refused(_),
-                ),
-            ) => Err(self.stream_failure(error)),
+            Err(AgentExchangeError::Session(source))
+                if source.category() == acyclic_stream::StreamError::Unavailable =>
+            {
+                Err(self.stream_failure(AgentExchangeError::Session(source)))
+            }
             result => result
                 .map_err(|error| exchange(format_args!("{} command: {error}", command.kind()))),
         }

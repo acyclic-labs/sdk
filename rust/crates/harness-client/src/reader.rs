@@ -292,10 +292,8 @@ impl Failure {
     /// Classify an original stream error.
     #[must_use]
     pub fn of(error: &StreamError) -> Self {
-        match error {
-            StreamError::Unavailable | StreamError::Refused(_) | StreamError::DeadlineElapsed => {
-                Self::Unavailable
-            }
+        match error.category() {
+            StreamError::Unavailable | StreamError::DeadlineElapsed => Self::Unavailable,
             StreamError::Capacity => Self::Overloaded,
             StreamError::HierarchyChanged => Self::Changed,
             StreamError::AccessDenied => Self::Denied,
@@ -1078,7 +1076,7 @@ impl Reader {
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
-            (_, Outcome::Failed(StreamError::HierarchyChanged)) => {
+            (_, Outcome::Failed(error)) if error.category() == StreamError::HierarchyChanged => {
                 // This witness covers the whole hierarchy, not just the page
                 // reporting it. Old continuations cannot be rebound to a new
                 // version by an intervening reply or another driver wake.
@@ -1094,7 +1092,7 @@ impl Reader {
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }
-            (_, Outcome::Failed(StreamError::PrefixNotRetained)) => {
+            (_, Outcome::Failed(error)) if error.category() == StreamError::PrefixNotRetained => {
                 self.replaced(flight.key.path());
                 return;
             }

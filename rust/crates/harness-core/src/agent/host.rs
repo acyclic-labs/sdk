@@ -316,7 +316,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             // after the load is never missed.
             let tail = match self.provider.tail(path.clone()).await {
                 Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
+                Err(error) if error.category() == StreamError::NotFound => 0,
                 Err(error) => return Err(Error::Stream(error)),
             };
             let consumed = store

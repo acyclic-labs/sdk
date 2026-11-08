@@ -269,12 +269,12 @@ impl PostgresStream {
                 provider.check()?;
                 let mut replica = provider.inner.session.lock().await;
                 let result = replica.execute(command, deadline, PAGE).await;
-                if matches!(
-                    result,
-                    Err(StreamError::Unavailable
-                        | StreamError::Refused(_)
-                        | StreamError::InvalidResponse)
-                ) {
+                if result.as_ref().err().is_some_and(|error| {
+                    matches!(
+                        error.category(),
+                        StreamError::Unavailable | StreamError::InvalidResponse
+                    )
+                }) {
                     provider.fail();
                 }
                 result.map(|execution| execution.outcome)
@@ -412,7 +412,7 @@ impl StreamProvider for PostgresStream {
             async {
                 self.check()?;
                 match self.inner.core.read_commit_inner(id).await {
-                    Err(StreamError::NotFound) => {}
+                    Err(error) if error.category() == StreamError::NotFound => {}
                     result => return result,
                 }
                 // Success is immutable; only a missing envelope needs a fresh journal

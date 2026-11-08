@@ -582,10 +582,10 @@ fn validate_completed_parts(
 }
 
 fn stream_read_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
-    match error {
+    match error.category() {
         acyclic_stream::StreamError::NotFound => s3s::s3_error!(NoSuchUpload),
         acyclic_stream::StreamError::AccessDenied => s3s::s3_error!(AccessDenied),
-        acyclic_stream::StreamError::Unavailable | acyclic_stream::StreamError::Refused(_) => {
+        acyclic_stream::StreamError::Unavailable => {
             s3s::s3_error!(ServiceUnavailable)
         }
         _ => s3s::s3_error!(InternalError),
@@ -593,11 +593,11 @@ fn stream_read_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
 }
 
 fn stream_write_error(error: &acyclic_stream::StreamError) -> s3s::S3Error {
-    match error {
+    match error.category() {
         acyclic_stream::StreamError::IdempotencyMismatch => s3s::s3_error!(InvalidRequest),
         acyclic_stream::StreamError::Capacity | acyclic_stream::StreamError::LimitExceeded => {
             s3s::s3_error!(SlowDown)
         }
-        other => stream_read_error(other),
+        _ => stream_read_error(error),
     }
 }

@@ -419,7 +419,7 @@ impl HostDriver {
             .await
         {
             Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
+            Err(error) if error.category() == StreamError::NotFound => Vec::new(),
             Err(error) => return Err(error.into()),
         };
         let Some(record) = records.pop() else {

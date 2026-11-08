@@ -47,7 +47,8 @@ pub async fn answer<P: crate::store::JournalProvider + ?Sized>(
     let adopted = record(provider, &agent.status()?, 0).await?.cursor;
     let conversation = agent.conversation()?;
     match provider.tail(conversation.clone()).await {
-        Ok(0) | Err(StreamError::NotFound) => Ok(None),
+        Ok(0) => Ok(None),
+        Err(error) if error.category() == StreamError::NotFound => Ok(None),
         Ok(tail) => Ok(
             Some(super::reply::entry(provider, &conversation, tail - 1).await?)
                 .filter(|entry| entry.inbox >= adopted),

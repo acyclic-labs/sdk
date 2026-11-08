@@ -46,7 +46,9 @@ pub(super) fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityS
     // Absence has a filesystem meaning; every other category must survive
     // through the workspace and wire boundaries without diagnostic flattening.
     match error {
-        acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+        error if error.category() == acyclic_stream::StreamError::NotFound => {
+            AuthorityStoreError::Missing
+        }
         other => AuthorityStoreError::NativeStream(other),
     }
 }

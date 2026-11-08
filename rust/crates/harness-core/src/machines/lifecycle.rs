@@ -227,7 +227,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
         };
         let mut records = match self.stream.read(request).await {
             Ok(records) => records,
-            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) if error.category() == StreamError::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
         Ok(records.try_next().await?)
@@ -600,7 +600,7 @@ impl<P: crate::store::JournalProvider + ?Sized> AgentMachines<P> {
     async fn closed(&self, agent: &AgentPath) -> Result<bool> {
         match self.stream.tail(agent.closed().map_err(agent_error)?).await {
             Ok(_) => Ok(true),
-            Err(StreamError::NotFound) => Ok(false),
+            Err(error) if error.category() == StreamError::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
     }

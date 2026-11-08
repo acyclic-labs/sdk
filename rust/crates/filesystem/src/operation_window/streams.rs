@@ -66,7 +66,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> StreamOperationWindowStore<P> {
         let path = stream_window_path(workspace_id)?;
         let head = match self.provider.head(path.clone()).await {
             Ok(head) => head,
-            Err(acyclic_stream::StreamError::NotFound) => {
+            Err(error) if error.category() == acyclic_stream::StreamError::NotFound => {
                 return Ok((None, acyclic_stream::CommitCondition::Absent { path }));
             }
             Err(error) => return Err(error.into()),

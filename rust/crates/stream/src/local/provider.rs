@@ -257,7 +257,7 @@ impl StreamProvider for LocalStream {
             async {
                 self.check_available()?;
                 match self.inner.provider.read_commit_inner(commit_id).await {
-                    Err(StreamError::NotFound) => {}
+                    Err(error) if error.category() == StreamError::NotFound => {}
                     result => return result,
                 }
                 // A retained envelope is immutable. Only absence must join publication

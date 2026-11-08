@@ -117,7 +117,9 @@ impl Future for Next<'_> {
         let (event, records) = match this.reading.as_mut().expect("pending original read") {
             Reading::Opening(opening) => match futures::ready!(opening.as_mut().poll(cx)) {
                 Ok((tail, position, records)) => (Event::Opened { tail, position }, records),
-                Err(StreamError::AccessDenied) if this.key.is_some() => {
+                Err(error)
+                    if error.category() == StreamError::AccessDenied && this.key.is_some() =>
+                {
                     (Event::Refused, futures::stream::empty().boxed())
                 }
                 Err(error) => (Event::Ended(error), futures::stream::empty().boxed()),
