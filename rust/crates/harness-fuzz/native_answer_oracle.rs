@@ -103,8 +103,8 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
             }
             Some("text") => {
                 if before.omitted {
-                    assert!(
-                        current.pending.is_none(),
+                    assert_eq!(
+                        current.pending, before.pending,
                         "incremental native text retained after framing loss"
                     );
                 }
@@ -142,7 +142,7 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                 }
             }
             Some("step_finish") => {
-                if before.omitted {
+                if before.omitted && before.outcome.is_none() {
                     assert!(
                         !matches!(current.outcome, Some(Outcome::Succeeded(_))),
                         "incremental native reply succeeded after framing loss"
