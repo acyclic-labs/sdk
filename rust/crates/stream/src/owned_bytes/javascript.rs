@@ -65,12 +65,21 @@ pub fn snapshot_with<R>(
     view: &Uint8Array,
     allocate: impl FnOnce(u64) -> Result<(Vec<u8>, R), JsValue>,
 ) -> Result<(Vec<u8>, R), JsValue> {
+    let count = length(view)?;
+    let (bytes, reservation) = allocate(u64::from(count))?;
+    copy_admitted(view, count, bytes, reservation)
+}
+
+fn copy_admitted<R>(
+    view: &Uint8Array,
+    count: u32,
+    bytes: Vec<u8>,
+    reservation: R,
+) -> Result<(Vec<u8>, R), JsValue> {
     struct Snapshot<R> {
         bytes: Vec<u8>,
         custody: R,
     }
-    let count = length(view)?;
-    let (bytes, reservation) = allocate(u64::from(count))?;
     let mut snapshot = Snapshot {
         bytes,
         custody: reservation,
@@ -101,7 +110,5 @@ pub fn snapshot_prefix<R>(
     bytes
         .try_reserve_exact(count as usize)
         .map_err(|_| JsValue::from_str("byte snapshot allocation failed"))?;
-    bytes.resize(count as usize, 0);
-    copy(view, &mut bytes, count)?;
-    Ok((bytes, reservation))
+    copy_admitted(view, count, bytes, reservation)
 }
