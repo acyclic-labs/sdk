@@ -138,7 +138,7 @@ pub(super) async fn host_directory_holds_unknown_entries<
     let result: Result<bool, crate::WorkspaceError> = async {
         let (mut checkout, selected) = workspace
             .open_read_path(
-                crate::GenerationSelector::Exact(generation.id()),
+                crate::model::GenerationSelector::Exact(generation.id()),
                 &absolute,
                 &mut scope,
                 cancellation,
