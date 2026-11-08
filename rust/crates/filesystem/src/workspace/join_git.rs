@@ -223,7 +223,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                     .stage_merge_regular_record(
                         volume,
                         template,
-                        Bytes::copy_from_slice(text.as_bytes()),
+                        text.clone()
+                            .try_into_bytes()
+                            .map_err(WorkspaceError::engine)?,
                     )
                     .await?
             }

@@ -770,6 +770,27 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         Err(DrivenJoinError::StaleCandidate)
     ));
     assert_eq!(unbounded!(main, head())?.id(), before_publish);
+    let invalid_key = candidate
+        .plan
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.path.as_deref() == Some("/text"))
+        .ok_or("text conflict missing from public candidate")?
+        .key
+        .clone();
+    foreign.plan.theirs = pins.2;
+    foreign.resolutions.insert(
+        invalid_key.clone(),
+        MergeResolution::Text(vec![0xff].into()),
+    );
+    assert!(
+        matches!(
+            directory.join().apply_candidate(options, &foreign, crate::PublicationPermit::Unrestricted).await,
+            Err(DrivenJoinError::UnsupportedResolution(key)) if key == invalid_key
+        ),
+        "invalid UTF-8 text proposal reached publication"
+    );
+    assert_eq!(unbounded!(main, head())?.id(), before_publish);
     assert!(matches!(
         directory
             .join()
@@ -897,9 +918,8 @@ async fn merge_directory_proposal_retirement<
             );
         }
     }
-    // The accepted text is a new physical allocation. Keep the actual public
-    // result alive after its reader is gone; only dropping that result can
-    // release the original credit that funds its bytes.
+    // Keep the actual public text result alive after its reader is gone;
+    // only dropping its final alias releases the original credit for its bytes.
     let text = "resolved content\n".repeat(4096);
     staging
         .write_text(&directory.conflict_file_path(text_key)?, &text)
@@ -910,7 +930,7 @@ async fn merge_directory_proposal_retirement<
     let MergeResolution::Text(content) = &resolution else {
         return Err("public text proposal changed resolution kind".into());
     };
-    assert_eq!(content, &text);
+    assert_eq!(content.as_slice(), text.as_bytes());
     let retained = live()?;
     assert!(
         retained >= before + text.len() as u64,
@@ -929,7 +949,26 @@ async fn merge_directory_proposal_retirement<
         live()? >= baseline + text.len() as u64,
         "returned text lost its original allocation owner with the directory"
     );
+    let alias = resolution.clone();
+    let MergeResolution::Text(alias_content) = &alias else {
+        return Err("text alias changed resolution kind".into());
+    };
+    let MergeResolution::Text(content) = &resolution else {
+        return Err("text result changed resolution kind".into());
+    };
+    assert_eq!(
+        content.as_ptr(),
+        alias_content.as_ptr(),
+        "text clone copied its payload"
+    );
+    let retained = live()?;
     drop(resolution);
+    assert_eq!(
+        live()?,
+        retained,
+        "text clone lost its original allocation lease"
+    );
+    drop(alias);
     assert_eq!(
         live()?,
         baseline,

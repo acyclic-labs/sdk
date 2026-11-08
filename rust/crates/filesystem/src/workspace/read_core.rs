@@ -53,56 +53,78 @@ pub(super) async fn read_selected<
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = read_selected_with_accounting(
+        workspace,
+        selector,
+        path,
+        maximum_bytes,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map(|read| read.bytes);
+    work.finish(result, &accounting)
+}
+
+pub(super) async fn read_selected_with_accounting<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    workspace: &Workspace<A, O>,
+    selector: GenerationSelector,
+    path: &str,
+    maximum_bytes: u64,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<crate::kernel::OwnedSourceChunk, WorkspaceError> {
     #[cfg(all(test, not(target_arch = "wasm32")))]
     if matches!(selector, GenerationSelector::Head) {
         acyclic_test_support::differential::record(("workspace read", maximum_bytes));
     }
-    let mut accounting = work.accounting(cancellation);
+    let mut scope = accounting.allocation_scope()?;
     let result = async {
-        let mut scope = accounting.allocation_scope()?;
-        let result = async {
-            let (mut checkout, path) = workspace
-                .open_read_path(selector, path, &mut scope, cancellation)
-                .await?;
-            let lookup = {
-                let (lookup, _allocation) = checkout
-                    .value
-                    .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
-                    .await?;
-                lookup
-            };
-            let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-            if record.kind != FileKind::Regular {
-                return Err(WorkspaceError::NotRegularFile);
-            }
-            let length = regular_file_bytes(record)?;
-            if length > maximum_bytes {
-                return Err(WorkspaceError::ReadLimitExceeded);
-            }
-            if length > checkout.value.volume_config().limits.maximum_read_bytes {
-                return Err(crate::FsError::FileRead(
-                    crate::kernel::FileRangeReadError::InvalidRange,
-                )
-                .into());
-            }
-            let range = crate::ByteRange { offset: 0, length };
-            let read = checkout
+        let (mut checkout, path) = workspace
+            .open_read_path(selector, path, &mut scope, cancellation)
+            .await?;
+        let lookup = {
+            let (lookup, _allocation) = checkout
                 .value
-                .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
+                .lookup_no_follow_with_accounting(&path.value, &mut scope, cancellation, true)
                 .await?;
-            path.retire(&mut scope)?;
-            checkout.retire(&mut scope)?;
-            Ok::<_, WorkspaceError>(read.bytes)
+            lookup
+        };
+        let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
+        if record.kind != FileKind::Regular {
+            return Err(WorkspaceError::NotRegularFile);
         }
-        .await;
-        let result = authorize(workspace, result, &mut scope, cancellation).await;
-        if result.is_ok() {
-            scope.keep();
+        let length = regular_file_bytes(record)?;
+        if length > maximum_bytes {
+            return Err(WorkspaceError::ReadLimitExceeded);
         }
-        result
+        if length > checkout.value.volume_config().limits.maximum_read_bytes {
+            return Err(
+                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
+            );
+        }
+        let range = crate::ByteRange { offset: 0, length };
+        let read = checkout
+            .value
+            .read_record_range_with_accounting(record, range, range, &mut scope, cancellation)
+            .await?;
+        path.retire(&mut scope)?;
+        checkout.retire(&mut scope)?;
+        Ok::<_, WorkspaceError>(crate::kernel::OwnedSourceChunk::claimed(
+            read.bytes,
+            read.logical_owned_bytes,
+        ))
     }
     .await;
-    work.finish(result, &accounting)
+    let result = authorize(workspace, result, &mut scope, cancellation).await;
+    if result.is_ok() {
+        scope.keep();
+    }
+    result
 }
 
 pub(super) async fn read_range<

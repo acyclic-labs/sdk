@@ -135,7 +135,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
                 MergeResolution::Text(text) => crate::kernel::MergeConflictResolution::File(Some(
                     self.stage_regular_resolution(
                         &conflict.key,
-                        Bytes::copy_from_slice(text.as_bytes()),
+                        text.clone()
+                            .try_into_bytes()
+                            .map_err(WorkspaceError::engine)?,
                     )
                     .await?,
                 )),

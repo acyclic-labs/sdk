@@ -12,6 +12,27 @@ pub struct OwnedSourceChunk {
 }
 
 impl OwnedSourceChunk {
+    /// Transfers a read's original backing into independently shared custody.
+    /// Native bytes already own their claim. Ordinary bytes retain the producer's
+    /// exact capacity and one shared owner header on the original ledger.
+    pub(crate) fn retain_bytes(
+        self,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    ) -> Result<acyclic_stream::OwnedBytes, FsError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if accounting.native_work().is_some() {
+            return Ok(self.bytes);
+        }
+        let owned = crate::kernel::Owned::new(
+            self.bytes,
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone,
+            self.logical_owned_bytes,
+        );
+        crate::kernel::allocation::retained::Retained::from_owned(owned, accounting)?
+            .into_bytes((), accounting)
+            .map(Into::into)
+    }
+
     /// Bytes whose retained capacity is accounted by the ordinary caller.
     pub fn claimed(bytes: acyclic_stream::OwnedBytes, logical_owned_bytes: u64) -> Self {
         Self {

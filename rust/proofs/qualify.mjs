@@ -15,6 +15,19 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "merge-text-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs-fuzz", "",
+    "captured public merge resolution was refused", ["--features", "fuzz-targets"],
+    {
+      fuzz: { bin: "merge_directory_resolution", corpus: "rust/crates/filesystem/fuzz/corpus/merge_directory_resolution", runs: 1024 },
+      mutations: [
+        { patch: "rust/proofs/merge-text-admission/refusal.patch", label: "text-proposal-refused", diagnostic: "captured public merge resolution was refused" },
+        { patch: "rust/proofs/merge-text-admission/markers.patch", label: "unresolved-markers-admitted", diagnostic: "captured public merge refusal changed" },
+        { source: "rust/crates/filesystem/src/merge_driver.rs", patch: "rust/proofs/merge-text-admission/wire.patch", label: "text-wire-type-substituted", diagnostic: "captured public text encoding changed" },
+      ],
+    },
+  ],
+
     "merge-json-refusal": [
       "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
       "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
