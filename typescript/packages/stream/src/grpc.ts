@@ -15,7 +15,7 @@ import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError } from "./types.js";
+import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
@@ -296,14 +296,41 @@ function grpcStatus(error: ConnectError): Error {
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const failure = streamError(grpcStatus(error), operation);
-  return failure instanceof StreamError && failure.code === "capacity"
-    ? new StreamError("capacity_exhausted", failure.message, failure.status, failure.refusal)
-    : failure;
+  const reason = error.rawMessage;
+  let code: StreamFailureCode = "unavailable";
+  switch (error.code) {
+    case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
+    case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
+    case Code.AlreadyExists: code = "destination_exists"; break;
+    case Code.OutOfRange: code = "out_of_range"; break;
+    case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
+    case Code.ResourceExhausted: code = "capacity_exhausted"; break;
+    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
+    case Code.FailedPrecondition:
+      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed" || reason === "revision_foreign") code = reason;
+      break;
+  }
+  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+  return new StreamError(code, reason, undefined, code === "unavailable" ? grpcRefusal(error) : undefined);
+}
+
+/** Retain the original status bytes; Connect's decoded Any values are projections. */
+function grpcRefusal(error: ConnectError): StreamRefusal {
+  const encoder = new TextEncoder();
+  return {
+    status: error.code,
+    message: error.rawMessage,
+    details: Buffer.from(error.metadata.get("grpc-status-details-bin") ?? "", "base64"),
+    metadata: Array.from(error.metadata)
+      .filter(([name]) => name.startsWith("acyclic-"))
+      .map(([name, value]) => [name, encoder.encode(value)] as const),
+  };
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown, transient: boolean): unknown {
   if (!(error instanceof ConnectError)) return error;
-  return Object.assign(grpcStatus(error), { cause: error, transient });
+  return Object.assign(new Error(error.rawMessage, { cause: error }), {
+    code: grpcErrorCode(error.code, error.rawMessage), transient, refusal: grpcRefusal(error),
+  });
 }
