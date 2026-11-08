@@ -293,13 +293,18 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
         let denied = client.with_credential_provider(grpc::CredentialProvider::new(|| {
             future::ready(Err(grpc::CredentialError::Invalid))
         }));
-        assert!(matches!(
-            denied
-                .follow(crate::FollowRequest::new(StreamPath::new("events")?, 0))
-                .map_ok(crate::records_only)
-                .await,
-            Err(StreamError::AccessDenied)
-        ));
+        let error = match denied
+            .follow(crate::FollowRequest::new(StreamPath::new("events")?, 0))
+            .map_ok(crate::records_only)
+            .await
+        {
+            Ok(_) => panic!("failed renewal admitted a follow"),
+            Err(error) => error,
+        };
+        assert_eq!(error.category(), StreamError::AccessDenied);
+        let original = crate::wire_codec::error_status(&error);
+        assert_eq!(original.code(), tonic::Code::Unauthenticated);
+        assert_eq!(original.message(), "credential provider failed");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             4,

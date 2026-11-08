@@ -344,11 +344,12 @@ async fn buffered_observation_ends_when_its_original_response_producer_fails() -
     let error = waiting
         .await
         .expect_err("a closed producer cannot deliver its missing buffer");
-    assert_eq!(
-        error.downcast_ref::<StreamError>(),
-        Some(&StreamError::AccessDenied)
-    );
-    assert_eq!(records.next().await, Some(Err(StreamError::AccessDenied)));
+    let error = error.downcast_ref::<StreamError>().expect("Stream failure");
+    assert_eq!(error.category(), StreamError::AccessDenied);
+    let original = crate::wire_codec::error_status(error);
+    assert_eq!(original.code(), tonic::Code::PermissionDenied);
+    assert_eq!(original.message(), "original response refused");
+    assert_eq!(records.next().await, Some(Err(error.clone())));
     Ok(())
 }
 
