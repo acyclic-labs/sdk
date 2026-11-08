@@ -119,7 +119,7 @@ impl FuseProjection {
                 entry.lookup_references = entry.lookup_references.saturating_add(1);
                 let lookup = entry.lookup;
                 let attr = state.attr(inode, &lookup)?;
-                let ttl = state.admit_entry(source, inode, child, Some(stamp), work)?;
+                let ttl = state.admit_entry(source, parent, inode, child, Some(stamp), work)?;
                 return Ok(Entry { attr, ttl });
             }
             if let Some(empty) = state
@@ -158,7 +158,7 @@ impl FuseProjection {
         let attr = state.attr(inode, &lookup).inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
+        let ttl = state.admit_entry(source, parent, inode, child, stamp, work)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -247,7 +247,7 @@ impl FuseProjection {
         let attr = state.attr(inode, &lookup).inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
+        let ttl = state.admit_entry(source, parent, inode, child, stamp, work)?;
         Ok(Entry { attr, ttl })
     }
 
@@ -417,7 +417,7 @@ impl FuseProjection {
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        let ttl = state.admit_entry(source, inode, to, Some(linked.stamp), work)?;
+        let ttl = state.admit_entry(source, new_parent, inode, to, Some(linked.stamp), work)?;
         Ok(Entry { attr, ttl })
     }
 }
