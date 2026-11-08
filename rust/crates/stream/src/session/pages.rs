@@ -45,12 +45,7 @@ impl Visibility {
         for mut child in page.children {
             if !self.permits(
                 &*capability,
-                crate::StreamMethod::ChildrenPage
-                    .authorization()
-                    .admitted
-                    .first()
-                    .ok_or(StreamError::InvalidResponse)?
-                    .as_str(),
+                crate::authorization::CHILDREN_ACTION.as_str(),
                 child.path.as_str(),
                 crate::StreamMethod::ChildrenPage.authorization().scope,
             )? {

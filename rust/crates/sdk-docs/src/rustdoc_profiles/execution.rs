@@ -1,6 +1,6 @@
 use super::{
-    observe_binary_rustdoc, observe_rustdoc, package_by_name, ProfileError, ProfileSpec,
-    RustdocObservation,
+    ProfileError, ProfileSpec, RustdocObservation, observe_binary_rustdoc, observe_rustdoc,
+    package_by_name,
 };
 use crate::CommandOutput;
 use cargo_metadata::{Metadata, MetadataCommand, TargetKind};
@@ -384,20 +384,19 @@ pub fn execute_profile(
     }
     context.configure(&mut command)?;
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
-    let output = command.run_output().map_err(|error| {
+    let profile_id = profile.id().0;
+    eprintln!("Rustdoc profile {profile_id}: compiling {rustdoc_target:?}");
+    let status = command.run_status().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
-            "could not start Cargo for {}: {error}",
-            profile.id().0
+            "could not start Cargo for Rustdoc profile {profile_id}: {error}"
         ))
     })?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(ProfileError::InvalidRustdoc(format!(
-            "Cargo profile {} failed ({}): {}",
-            profile.id().0,
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+            "Cargo profile {profile_id} failed ({status}); compiler diagnostics were streamed to stderr"
         )));
     }
+    eprintln!("Rustdoc profile {profile_id}: compiled");
     let library_target = package
         .targets
         .iter()
