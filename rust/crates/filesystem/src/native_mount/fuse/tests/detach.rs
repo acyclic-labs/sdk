@@ -221,7 +221,13 @@ fn rename_and_forget(resurrect: bool) -> Result<(), Box<dyn std::error::Error>> 
         &work,
     )?;
     state.release_lookup_reference(inode, 1);
-    install(&mut state);
+    drop(state);
+    let stamp = projection
+        .core
+        .source
+        .rename(&name("before"), &name("after"), false, &work)?;
+    let mut state = projection.core.state().map_err(NativeMountError::from)?;
+    install(&mut state, stamp);
     if resurrect {
         state
             .inode_by_path

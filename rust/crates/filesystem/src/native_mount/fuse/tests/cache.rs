@@ -1,3 +1,4 @@
+use super::super::RENAME_NOREPLACE;
 use super::*;
 use crate::native_mount::fuse::invalidation::{KernelCacheNotifier, shared_invalidation_pass};
 use std::cell::RefCell;
