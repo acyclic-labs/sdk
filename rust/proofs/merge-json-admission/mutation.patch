@@ -1,0 +1,26 @@
+diff --git a/rust/crates/filesystem/src/workspace/join_directory.rs b/rust/crates/filesystem/src/workspace/join_directory.rs
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -600,17 +600,11 @@
+ fn json(
+     value: &impl Serialize,
+-    accounting: &mut KernelAccounting<'_>,
++    _accounting: &mut KernelAccounting<'_>,
+ ) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
+-    let serialize = move || {
+-        let accounting = accounting;
+-        // Keep serde_json's initial output chunk, admitted before entering the
+-        // serializer so a refused allocation cannot allocate an IO error box.
+-        let bytes =
+-            crate::kernel::allocation::writer::ImageWriter::produce(accounting, 128, |writer| {
+-                serde_json::to_writer(writer, value).map_err(WorkspaceError::engine)
+-            })?;
+-        let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
+-        Ok(bytes.into_bytes((), accounting)?.into())
++    let serialize = || {
++        serde_json::to_vec(value)
++            .map(Into::into)
++            .map_err(WorkspaceError::engine)
+     };
+     #[cfg(all(test, not(target_arch = "wasm32")))]
+     return crate::test_support::observe_json_output(serialize);

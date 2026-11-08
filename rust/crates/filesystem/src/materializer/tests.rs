@@ -155,13 +155,19 @@ fn buffer_growth_funds_both_live_backings() -> Result<(), Box<dyn std::error::Er
     ));
     assert_eq!(values, [1]);
     let bytes = [0; std::mem::size_of::<usize>()];
-    let mut writer = ImageWriter::new(&work)?;
-    writer.append(&bytes)?;
-    assert!(matches!(
-        writer.append(&bytes),
-        Err(NativeTreeMaterializationError::Work(_))
-    ));
-    assert_eq!(writer.bytes, bytes);
+    let (image, allocation) = crate::kernel::allocation::writer::native_image(&work, |writer| {
+        writer.append(&bytes)?;
+        assert!(matches!(
+            writer.append(&bytes),
+            Err(crate::FsError::NativeKernel(
+                NativeTreeMaterializationError::Work(_)
+            ))
+        ));
+        Ok(())
+    })?;
+    assert_eq!(image, bytes);
+    drop(image);
+    drop(allocation);
     Ok(())
 }
 
