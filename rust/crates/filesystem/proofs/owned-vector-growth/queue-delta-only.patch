@@ -1,0 +1,43 @@
+--- a/rust/crates/filesystem/src/watch_queue.rs
++++ b/rust/crates/filesystem/src/watch_queue.rs
+@@ -30,13 +30,34 @@
+             return false;
+         };
+         let capacity = capacity.min(maximum);
++        let Some(bytes) = capacity.checked_mul(std::mem::size_of::<T>()) else {
++            return false;
++        };
++        let previous = self
++            .allocation
++            .as_ref()
++            .map_or(0, crate::NativeAllocation::bytes);
++        if let Some(allocation) = &mut self.allocation
++            && allocation.grow(bytes as u64 - previous).is_err()
++        {
++            return false;
++        }
++        if self
++            .queue
++            .try_reserve_exact(capacity - self.queue.len())
++            .is_err()
++        {
++            if let Some(allocation) = &mut self.allocation {
++                allocation.release_deferred(bytes as u64 - previous);
++            }
++            return false;
++        }
+         if let Some(allocation) = &mut self.allocation {
+-            crate::kernel::reserve_native_buffer(&mut self.queue, capacity, allocation).is_ok()
+-        } else {
+-            self.queue
+-                .try_reserve_exact(capacity - self.queue.len())
+-                .is_ok()
+-        }
++            return allocation
++                .reconcile_capacity(self.queue.capacity() as u64 * std::mem::size_of::<T>() as u64)
++                .is_ok();
++        }
++        true
+     }
+ 
+     fn release_backing(&mut self) {

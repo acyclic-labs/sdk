@@ -53,3 +53,26 @@ to pass. The oracle counts the actual returned vector and name capacities,
 checks live credit before dropping them, and requires final retirement to
 restore the original baseline. Moving element funding uses constant-work
 guard splits and joins, with no physical allocation or payload copy.
+
+The same replacement operation supports `VecDeque` and adapts an existing
+native guard without creating another ledger. The watch queue, materializer
+buffers and retained projection handles share it. The queue control covers
+wrapped entries, refused replacement with zero physical allocations, admitted
+replacement with one allocation, preserved order, and final backing retirement:
+
+```sh
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount watch_queue::tests::native_queue_custody_tracks_backing_and_retries_denied_growth -- --exact --nocapture
+```
+
+`queue-delta-only.patch` restores the original queue growth body from
+1366b0461a80e2211db798d546ea8ec6be509075. The control must fail with `queue
+growth admitted replacement while original backing was still live`. Reverse
+the patch and require the unchanged control to pass. Its 4,096-byte allowance
+is unchanged; correct overlap admission refuses growth to 256 `u64` entries
+while the 128-entry backing is still live. The smaller wrapped-byte cases
+independently distinguish final capacity from simultaneous live capacity.
+
+The existing `materializer::tests::buffer_growth_funds_both_live_backings`
+control covers the native vector adapter and the actual image writer. Standard
+channel differential properties continue to cover queue bounds and disconnects.
+No growth operation adds a syscall, durability barrier, round trip or wait.

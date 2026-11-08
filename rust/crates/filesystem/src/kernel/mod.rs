@@ -54,6 +54,8 @@ mod persistent_io;
 mod persistent_pagination;
 mod persistent_point;
 pub use persistent_point::Owned;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use persistent_point::reserve_native_buffer;
 mod probe;
 mod publication;
 mod publication_evidence;

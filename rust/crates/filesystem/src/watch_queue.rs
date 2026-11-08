@@ -30,34 +30,13 @@ impl<T> State<T> {
             return false;
         };
         let capacity = capacity.min(maximum);
-        let Some(bytes) = capacity.checked_mul(std::mem::size_of::<T>()) else {
-            return false;
-        };
-        let previous = self
-            .allocation
-            .as_ref()
-            .map_or(0, crate::NativeAllocation::bytes);
-        if let Some(allocation) = &mut self.allocation
-            && allocation.grow(bytes as u64 - previous).is_err()
-        {
-            return false;
-        }
-        if self
-            .queue
-            .try_reserve_exact(capacity - self.queue.len())
-            .is_err()
-        {
-            if let Some(allocation) = &mut self.allocation {
-                allocation.release_deferred(bytes as u64 - previous);
-            }
-            return false;
-        }
         if let Some(allocation) = &mut self.allocation {
-            return allocation
-                .reconcile_capacity(self.queue.capacity() as u64 * std::mem::size_of::<T>() as u64)
-                .is_ok();
+            crate::kernel::reserve_native_buffer(&mut self.queue, capacity, allocation).is_ok()
+        } else {
+            self.queue
+                .try_reserve_exact(capacity - self.queue.len())
+                .is_ok()
         }
-        true
     }
 
     fn release_backing(&mut self) {
@@ -203,17 +182,21 @@ mod tests {
             baseline,
             "idle capacity is not physical storage"
         );
-        for value in 0..256u64 {
+        for value in 0..128u64 {
             sender.try_send(value).unwrap();
         }
-        assert_eq!(work.live_allocation_bytes(), baseline + 2_048);
-        assert!(matches!(sender.try_send(256), Err(TrySendError::Full(256))));
+        assert_eq!(work.live_allocation_bytes(), baseline + 1_024);
+        let refused = sender.try_send(128);
+        assert!(
+            matches!(refused, Err(TrySendError::Full(128))),
+            "queue growth admitted replacement while original backing was still live: {refused:?}"
+        );
         assert_eq!(
             work.live_allocation_bytes(),
-            baseline + 2_048,
+            baseline + 1_024,
             "denied growth retained no bytes"
         );
-        for value in 0..256u64 {
+        for value in 0..128u64 {
             assert_eq!(receiver.try_recv(), Ok(value));
         }
         assert_eq!(
@@ -221,8 +204,8 @@ mod tests {
             baseline,
             "drained large backing was released"
         );
-        sender.try_send(257).unwrap();
-        assert_eq!(receiver.try_recv(), Ok(257));
+        sender.try_send(129).unwrap();
+        assert_eq!(receiver.try_recv(), Ok(129));
         assert!(
             work.live_allocation_bytes() > baseline,
             "small retained backing stays charged"
@@ -230,47 +213,64 @@ mod tests {
         drop(receiver);
         assert_eq!(work.live_allocation_bytes(), baseline);
         assert!(matches!(
-            sender.try_send(258),
-            Err(TrySendError::Disconnected(258))
+            sender.try_send(130),
+            Err(TrySendError::Disconnected(130))
         ));
 
-        // The final eight-byte queue fits, but replacing its live four-byte
-        // backing would require twelve bytes at once. Refuse before allocation.
-        let baseline = crate::NativeMaterializationWork::accounting_state_bytes();
-        let work = crate::NativeMaterializationWork::new(
-            crate::WorkBudget {
-                peak_allocation_bytes: baseline + 8,
-                ..crate::WorkBudget::UNBOUNDED
-            },
-            &cancellation,
-        )
-        .map_err(|(error, _)| error)?;
-        let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let (sender, receiver) = bounded::<u8>(8, Some(allocation));
-        for value in 0..4 {
-            sender.try_send(value)?;
+        // Wrapped live entries must move in order, with both backings funded.
+        for denied in [true, false] {
+            let baseline = crate::NativeMaterializationWork::accounting_state_bytes();
+            let work = crate::NativeMaterializationWork::new(
+                crate::WorkBudget {
+                    peak_allocation_bytes: baseline + if denied { 8 } else { 12 },
+                    ..crate::WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            )
+            .map_err(|(error, _)| error)?;
+            let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+            let (sender, receiver) = bounded::<u8>(8, Some(allocation));
+            for value in 0..4 {
+                sender.try_send(value)?;
+            }
+            for value in 0..2 {
+                assert_eq!(receiver.try_recv(), Ok(value));
+            }
+            for value in 4..6 {
+                sender.try_send(value)?;
+            }
+            assert_eq!(receiver.retained_slots(), 4);
+            assert_eq!(work.live_allocation_bytes(), baseline + 4);
+            let before = work.receipt();
+            let mut result = Ok(());
+            let physical = acyclic_test_support::measure(|| {
+                result = sender.try_send(6);
+            });
+            if denied {
+                assert!(
+                    matches!(result, Err(TrySendError::Full(6))),
+                    "queue growth admitted replacement while original backing was still live: {result:?}"
+                );
+                assert_eq!(physical.count_total, 0);
+                assert_eq!(receiver.retained_slots(), 4);
+                assert_eq!(work.receipt(), before);
+            } else {
+                result?;
+                assert_eq!(physical.count_total, 1);
+                assert_eq!(physical.bytes_total, 8);
+                assert_eq!(receiver.retained_slots(), 8);
+                assert_eq!(work.live_allocation_bytes(), baseline + 8);
+                assert_eq!(work.receipt().peak_allocation_bytes, baseline + 12);
+                assert_eq!(work.receipt().bytes_copied, before.bytes_copied + 4);
+            }
+            for value in 2..if denied { 6 } else { 7 } {
+                assert_eq!(receiver.try_recv(), Ok(value));
+            }
+            sender.try_send(7)?;
+            assert_eq!(receiver.try_recv(), Ok(7));
+            drop(receiver);
+            assert_eq!(work.live_allocation_bytes(), baseline);
         }
-        assert_eq!(receiver.retained_slots(), 4);
-        assert_eq!(work.live_allocation_bytes(), baseline + 4);
-        let before = work.receipt();
-        let mut result = Ok(());
-        let physical = acyclic_test_support::measure(|| {
-            result = sender.try_send(4);
-        });
-        assert!(
-            matches!(result, Err(TrySendError::Full(4))),
-            "queue growth admitted replacement while original backing was still live: {result:?}"
-        );
-        assert_eq!(physical.count_total, 0);
-        assert_eq!(receiver.retained_slots(), 4);
-        assert_eq!(work.receipt(), before);
-        for value in 0..4 {
-            assert_eq!(receiver.try_recv(), Ok(value));
-        }
-        sender.try_send(5)?;
-        assert_eq!(receiver.try_recv(), Ok(5));
-        drop(receiver);
-        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 
