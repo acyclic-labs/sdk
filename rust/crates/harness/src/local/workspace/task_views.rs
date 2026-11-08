@@ -100,8 +100,7 @@ impl LocalWorkspace {
             let initial_view = selected.workspace().id();
             let mounted = workspace.mount_task_source(selected).await?;
             workspace.path = mounted.path().to_path_buf();
-            workspace.identity =
-                acyclic_fs::capture_root_identity(&workspace.path).map_err(storage)?;
+            workspace.identity = served_identity(&mounted)?;
             workspace.mounted = Some(mounted);
             workspace.mounts = workspace
                 .mounts_at_from(&workspace.path, Some(&self.mounts))
@@ -190,7 +189,7 @@ impl LocalWorkspace {
                 view.workspace().id(),
                 Arc::clone(&mounts),
             ))),
-            identity: acyclic_fs::capture_root_identity(&path).map_err(storage)?,
+            identity: served_identity(&mounted)?,
             path,
             fresh: false,
             import_source: false,
@@ -206,5 +205,25 @@ impl LocalWorkspace {
         state.mounts = mounts;
         state.workspace = Some((id, workspace.clone()));
         Ok(workspace)
+    }
+}
+
+/// A served view's root identity, from the mount that serves it. Its owner
+/// never asks the kernel: the kernel would forward that request to callbacks
+/// that can wait on the owner, so a coordination thread that asks deadlocks.
+fn served_identity(mounted: &TaskMount) -> Result<acyclic_fs::NativeRootIdentity> {
+    mounted
+        .native_root_identity()
+        .ok_or_else(|| Error::Unauthorized("task view is no longer mounted".into()))
+}
+
+impl LocalWorkspace {
+    /// The root's current identity: a served view's from its mount, any
+    /// other root's from the directory itself.
+    pub(in crate::local) fn root_identity(&self) -> Result<acyclic_fs::NativeRootIdentity> {
+        match &self.mounted {
+            Some(mounted) => served_identity(mounted),
+            None => acyclic_fs::capture_root_identity(&self.path).map_err(storage),
+        }
     }
 }
