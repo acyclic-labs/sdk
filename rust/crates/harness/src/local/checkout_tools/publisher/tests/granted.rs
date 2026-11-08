@@ -19,7 +19,16 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     let maximum = 65_536;
     let signed = &fixture.signed;
     let task = crate::runtime::Bindings {
-        scope: RuntimeScope::new(signed.capabilities().clone(), Default::default())?,
+        scope: RuntimeScope::new(
+            Capabilities::new(
+                signed
+                    .capabilities()
+                    .iter()
+                    .map(str::to_owned)
+                    .chain([crate::tools::shell::PLATFORM.capability()]),
+            ),
+            Default::default(),
+        )?,
         ..crate::runtime::Bindings::local()
     }
     .build()?
@@ -74,12 +83,6 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
             (Some(ExecutionAccess::WorkspaceWrite), false),
             (Some(ExecutionAccess::WorkspaceWrite), true),
         ] {
-            std::fs::write(&outside, "original").map_err(storage)?;
-            match std::fs::remove_file(&inside) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(storage(error)),
-            }
             let grant = access
                 .map(|access| {
                     ExecutionGrant::new(
@@ -106,6 +109,12 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                 .await?;
             // Reuse this same installed grant through two independent child calls.
             for _ in 0..2 {
+                std::fs::write(&outside, "original").map_err(storage)?;
+                match std::fs::remove_file(&inside) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(storage(error)),
+                }
                 let context = ToolContext::new(task.clone(), OperationId::new(), "host-grant")?;
                 let refused = if hook {
                     let output = executor

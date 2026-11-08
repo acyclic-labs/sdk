@@ -3,7 +3,8 @@
 The real host control uses `LocalHarnessConfig::native_host` and the public
 `LocalWorkspace::executor`. It installs six granted executors, uses each twice
 through the ordinary shell or hook path, and also executes unconfined controls.
-It checks read-only and outside-root denial and wrong-workspace refusal.
+Its task scope explicitly authorizes shell calls. It resets both files before
+each child, then checks read-only and outside-root denial and wrong-workspace refusal.
 Unsupported enforcement fails this control; it cannot qualify zero native work.
 
 On Linux with Landlock, capture only policy syscalls from that control:
@@ -24,7 +25,8 @@ must not install Landlock restrictions.
 
 Apply `original-constructor.patch` to restore the complete production constructor
 while keeping the same control, then repeat into `original.trace`. It must still
-preserve confinement, but create twelve rulesets instead of six. Reverse the
+preserve confinement, but create eight rulesets instead of six: wrong-workspace
+calls refuse before policy preparation. Reverse the
 patch before qualifying the retained source. This is the cost negative control;
 it restores real production compilation rather than a simulated counter.
 
