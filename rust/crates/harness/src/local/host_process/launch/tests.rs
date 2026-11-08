@@ -47,6 +47,16 @@ fn relative_parent_paths_keep_their_targets_when_child_cwd_changes() -> Result {
                 "../shared/policy.json",
             ],
         ),
+        (
+            "agy",
+            vec![
+                "--sandbox",
+                "--mode",
+                "default",
+                "--settings",
+                "../shared/policy.json",
+            ],
+        ),
     ] {
         let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = parent_flags(host, &supplied, &workspace)?;
@@ -131,6 +141,8 @@ fn native_child_arguments_allocate_only_the_returned_vector_and_strings() -> Res
             ],
         ),
         ("pi", vec![]),
+        ("opencode", vec![]),
+        ("agy", vec!["--sandbox", "--mode", "default"]),
     ] {
         let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = parent_flags(host, &supplied, Path::new("workspace"))?;

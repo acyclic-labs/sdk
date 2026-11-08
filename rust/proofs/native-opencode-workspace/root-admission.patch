@@ -1,0 +1,12 @@
+diff --git a/plugin/opencode/index.mjs b/plugin/opencode/index.mjs
+--- a/plugin/opencode/index.mjs
++++ b/plugin/opencode/index.mjs
+@@ -18,7 +18,7 @@ export default async function acyclic({client, directory}) {
+           throw new Error("step=admit OpenCode session: native session absent; recovery=opencode");
+         // Native children keep their host's original cwd and lifecycle.
+         if (original.data.parentID) return;
+-        return nativeSession(executable, "opencode", directory, id);
++        return;
+       })();
+     }
+     return selected;

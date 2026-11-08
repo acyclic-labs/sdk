@@ -145,6 +145,7 @@
     "action-33": "d0b83197c1c2df230360bf75842976b9c79b8df1b0433db62dc7af80cfc08bef",
     "action-34": "26605bd05359bfa77119e948714acabfcfd82829cf9ea7ecb89712d18f8d9775",
     "action-35": "d50ab52f8f226fa371d1c2acf3c4f994a633f941bde184564758df4952854994",
+    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
     "action-4": "72e1b6e3d8c3b86e38616ee1eeb0fb9110ad1f6e150444ff9ec2f8461b6ef767",
     "action-5": "33e77e2ad28240e6abb19de516e343b4689c94b057afd87966c8e34b129e5a03",
     "action-6": "91eaffde8f9b946629d4f5bfe967035d8bddb0f4da216c0bf3077524a6a03ecc",
@@ -152,6 +153,10 @@
     "action-8": "4807705fd5f33a0b5150c5ea7197effdc4fda46093eaf2a3b97de3a12830b268",
     "action-9": "93a4b4a19525491a1d5f351214a2eeaff9279acb712450d1df71d2f07441cc30",
     "ade2a59b80e2b1e3b32890fabc04374e55e74aa0": "070c9ef33ea3bbe92001e4e0ad255ad55565c6e53dcc6abe35a3ac28dbef9051",
+    "agy-PreInvocation.json": "f8551b653eed440265edfafb78515c69ab63c912cd33f80b85247919ead8fcce",
+    "agy-SessionStart.json": "16ef50f848c96aebb75c279060687dcbb3216cd1cc579a675223d7dd8904b0dd",
+    "agy-Stop.json": "89f50b57ae10f44010d802ddfb9e9c681f841edc839f1e13d7e66f93e2193f80",
+    "agy-running-derived.json": "0bb980c9d8ce02633346b83d6d3e0ca764933ab4b584618474e09228fed1f049",
     "b118563b0fa6ec8b7f58241e1b871660c77a7287": "2df01e29c6711bb71c95a9cf1a9a988f4583d38c9c6d3df48e38bb2340dd55c5",
     "b1454e2385e1874c43635729caeea2acb93d30f3": "4938bcdb617c79acaf4c54657134e9aa879e3021a976b9701c73c4bf08a133a0",
     "b2887b6781202e5243cc6ab8fd3626f63ba8f5f1": "ae99ca59d0639cc5c5e54264bd1eb280e74a2f9721eb90effa7831d4d7689052",
@@ -400,6 +405,8 @@
     "dd287a59f70c70d97f5744e3a347af0cfe0afa02": "8451c2323468c7a1ec5d3058aa49c5c6d1d4d994025484ca9d5cca326f4779c4",
     "dd8d87be9a8c8087b7e265fc308c045da26c6940": "a453e60419605d42f7bc6515c35ce531e3e4b66d01eac0bf9a0f86588917fb38",
     "df3703342b7b5d2eb19d20fb93ab0046bffc66a2": "1c836191e2de623e85e3901ad86a6d135d17c66681c3d3e6102fa147ddf609eb",
+    "duplicate-claim": "4d86bab1562af267e95235aec42fb8d59dbd503835e49af3ebc7e37764356205",
+    "duplicate-field": "e80f5b8b155a0f3256d6617178391aa4c25f9c20ff4e8ae5e3837806e28f0ad8",
     "e122058a5fbf67bc68743ec255a0b5930a8685da": "90addccf2668f2d1724f25d4510d8e9fbffc8e0c918d54411d4b71f50d4cb44d",
     "e13364640b8462f1bd8ac3faceb61b2db53395c0": "d6636adf49ff86c1717354d6e1d7e40d78718b6506752036957bac7468776cd2",
     "e176783bf9e55e5f991bbdfa5111f386d187e650": "929fe95618d49b8684e623e1f68f6af315c468b008a4fd815707c02ab990728d",
@@ -421,10 +428,7 @@
     "object": "93de8bc3e711c7d5d8c5c95149099bfaefdb3829590807ea86f87083bd1fda6e",
     "partial": "b0099d11d07ec318328beb00f4e5019ed830cff0c7f18960b05101745b769223",
     "task-invalid": "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824",
-    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
-    "action-36": "446073c2921c546a24e02c25b543604d66f0b14953826321b9c6d453b1b503f0",
-    "duplicate-field": "e80f5b8b155a0f3256d6617178391aa4c25f9c20ff4e8ae5e3837806e28f0ad8",
-    "duplicate-claim": "4d86bab1562af267e95235aec42fb8d59dbd503835e49af3ebc7e37764356205"
+    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c"
   },
   "prior_qualifications": [
     {
@@ -625,5 +629,19 @@
     "provenance": "Original production HostAction serializer output with a repeated action or nested claim member, emitted by the retained native_input oracle.",
     "negative_control": "native_input control 8 restores intermediate Value normalization; original byte admission assertion fails.",
     "scope": "Original source qualification only; later compositions require their own qualification. Both typed CLI callers reuse the one production reader."
+  },
+  "derived_and_recorded_agy": {
+    "version": "1.5.2",
+    "platform": "Windows",
+    "date": "2026-11-07",
+    "executable_sha256": "3f6f64a331fcd75c4ea3a25f89fdb0a9192feaa6e49bb828510b65dc0030b61e",
+    "provenance": "Three unchanged native hook stdin captures from an installed plugin: SessionStart, PreInvocation and fully idle Stop. The hook executable is Node recording stdin; PreInvocation returns a native terminate disposition and no provider request is sent. The running seed changes only fullyIdle to false. No shipping adapter, model completion or workspace qualification.",
+    "qualification": "unrun: production normalization and original corpus coverage require the scoped native-input campaign and producer/admission negative controls",
+    "files": {
+      "agy-SessionStart.json": "16ef50f848c96aebb75c279060687dcbb3216cd1cc579a675223d7dd8904b0dd",
+      "agy-PreInvocation.json": "f8551b653eed440265edfafb78515c69ab63c912cd33f80b85247919ead8fcce",
+      "agy-Stop.json": "89f50b57ae10f44010d802ddfb9e9c681f841edc839f1e13d7e66f93e2193f80",
+      "agy-running-derived.json": "0bb980c9d8ce02633346b83d6d3e0ca764933ab4b584618474e09228fed1f049"
+    }
   }
 }
