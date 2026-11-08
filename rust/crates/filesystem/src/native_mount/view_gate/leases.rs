@@ -3,9 +3,11 @@ use super::*;
 pub(in crate::native_mount) struct ViewReadLease {
     pub(in crate::native_mount) generation: u64,
     pub(super) gate: Arc<ViewGate>,
-    pub(super) owner_slot: usize,
-    pub(super) cleanup_slot: Option<usize>,
-    pub(super) payload_bytes: u64,
+    pub(super) key: [u8; 16],
+    pub(super) owner: crate::kernel::allocation::retained::RetainedArc<ReadOwner>,
+    pub(super) payload: Option<crate::kernel::allocation::retained::RetainedAllocation>,
+    // Settles after the owner and payload have physically left this lease.
+    pub(super) completion: crate::demand::ViewReadCompletion,
 }
 
 pub(in crate::native_mount) struct ViewWriteLease {
@@ -62,40 +64,21 @@ pub(super) struct WaitingWriter {
 }
 
 impl ViewReadLease {
-    /// Transfers an already admitted visible owner payload to this original lease.
-    pub(in crate::native_mount) fn attach_owned_payload(
+    pub(in crate::native_mount) fn fund_payload(
         &mut self,
         bytes: u64,
+        carrier: &mut super::super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let index = self
-            .cleanup_slot
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let Some(ReadSlot::Meter {
-            payload_active,
-            payload_finished,
-            proof_alive: true,
-            ..
-        }) = state.reader_slots.get_mut(index).and_then(Option::as_mut)
-        else {
-            return Err(MountSourceError::Work(crate::WorkError::Overflow));
-        };
-        let active = payload_active
-            .checked_add(bytes)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        payload_finished
-            .checked_add(active)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let owned = self
-            .payload_bytes
-            .checked_add(bytes)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        *payload_active = active;
-        self.payload_bytes = owned;
+        let mut allocation = carrier.with_accounting(|accounting| {
+            crate::kernel::allocation::retained::RetainedAllocation::claim(bytes, 1, accounting)
+        })?;
+        if let Some(payload) = &mut self.payload {
+            payload
+                .absorb(&mut allocation)
+                .map_err(super::super::lazy::mount_engine_error)?;
+        } else {
+            self.payload = Some(allocation);
+        }
         Ok(())
     }
 }
@@ -107,77 +90,29 @@ impl Drop for ViewReadLease {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.readers = {
-            assert!(state.readers >= 1, "owned view read");
-            state.readers - 1
+        assert!(state.readers > 0, "owned view read");
+        state.readers -= 1;
+        let readers = self.owner.readers.load(Ordering::Relaxed);
+        assert!(readers > 0, "owned callback read");
+        self.owner.readers.store(readers - 1, Ordering::Relaxed);
+        let retired = if readers == 1 {
+            // The complete key identifies this still-live callback owner.
+            // Retain the redundant parent too: even its funding must leave
+            // the gate before retirement can reenter the original ledger.
+            Some(
+                state
+                    .owners
+                    .extract_prefix(&self.key, |_| {})
+                    .unwrap_or_else(|_| unreachable!("complete reader key fits its index")),
+            )
+        } else {
+            None
         };
-        assert!(
-            self.owner_slot < state.reader_slots.len(),
-            "owned callback slot"
-        );
-        if let Some(slot) = state.reader_slots.get_mut(self.owner_slot)
-            && let Some(ReadSlot::Owner { readers, .. }) = slot
-        {
-            *readers = {
-                assert!(*readers >= 1, "owned callback read");
-                *readers - 1
-            };
-            if *readers == 0 {
-                *slot = None;
-                state.occupied_slots = {
-                    assert!(state.occupied_slots > 0, "owned callback slot");
-                    state.occupied_slots - 1
-                };
-            }
-        }
-        if let Some(index) = self.cleanup_slot {
-            assert!(index < state.reader_slots.len(), "owned cleanup slot");
-            if let Some(slot) = state.reader_slots.get_mut(index)
-                && let Some(ReadSlot::Meter {
-                    readers,
-                    finished,
-                    proof_alive,
-                    payload_active,
-                    payload_finished,
-                }) = slot
-            {
-                *readers = {
-                    assert!(*readers >= 1, "owned view read cleanup");
-                    *readers - 1
-                };
-                *finished = {
-                    assert!(
-                        *finished < u64::MAX,
-                        "admitted view read cleanup addressability"
-                    );
-                    *finished + 1
-                };
-                *payload_active = {
-                    assert!(
-                        *payload_active >= self.payload_bytes,
-                        "owned original binding payload"
-                    );
-                    *payload_active - self.payload_bytes
-                };
-                *payload_finished = {
-                    assert!(
-                        *payload_finished <= u64::MAX - self.payload_bytes,
-                        "admitted binding payload cleanup addressability"
-                    );
-                    *payload_finished + self.payload_bytes
-                };
-                if *readers == 0 && !*proof_alive {
-                    *slot = None;
-                    state.occupied_slots = {
-                        assert!(state.occupied_slots > 0, "owned cleanup slot");
-                        state.occupied_slots - 1
-                    };
-                }
-            }
-        }
-        state.release_empty_registry(&self.gate);
         let wake = state.readers == 0;
         drop(state);
+        // Original funding can reenter its ledger; release it outside the gate.
+        drop(retired);
+        self.completion.completed();
         if wake {
             self.gate.changed.notify_waiters();
         }

@@ -68,3 +68,30 @@ pub(super) fn boundary<T>(
     let work = capture_meter(crate::performance::BOUNDARY_BUDGET, cancellation)?;
     operation(&work)
 }
+
+impl NativeDemandCarrier<'_> {
+    pub(in crate::native_mount) fn with_accounting<T>(
+        &mut self,
+        operation: impl FnOnce(&mut crate::kernel::KernelAccounting<'_>) -> Result<T, crate::FsError>,
+    ) -> Result<T, MountSourceError> {
+        match self {
+            Self::Native(work) => operation(&mut crate::kernel::KernelAccounting::native(
+                work,
+                work.cancellation(),
+            )),
+            Self::Borrowed(work) => {
+                work.record(crate::WorkCounters::UNCHARGED)
+                    .map_err(MountSourceError::from)?;
+                work.check().map_err(MountSourceError::from)?;
+                let (allocations, counters, budget, cancellation) = work.allocation_parts();
+                operation(&mut crate::kernel::KernelAccounting::borrowed_standalone(
+                    allocations,
+                    counters,
+                    budget,
+                    cancellation,
+                ))
+            }
+        }
+        .map_err(super::lazy::mount_engine_error)
+    }
+}
