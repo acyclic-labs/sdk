@@ -1,0 +1,11 @@
+diff --git a/rust/crates/actors/src/conformance.rs b/rust/crates/actors/src/conformance.rs
+--- a/rust/crates/actors/src/conformance.rs
++++ b/rust/crates/actors/src/conformance.rs
+@@ -1390,7 +1390,6 @@
+     target.restart().await?;
+     restarted.send("emit").await?;
+     restarted.expect(&["r0", "r2"]).await?;
+-    target.advance_to(deadline).await?;
+     restarted.expect(&["r0", "r2", "a1"]).await
+ }
+ 

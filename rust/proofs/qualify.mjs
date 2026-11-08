@@ -355,6 +355,15 @@ const claims = {
       completed: ["2 passed; 0 failed", "1 passed; 0 failed"],
     },
   ],
+  "actors-conformance-clock": [
+    "rust/crates/actors/src/conformance.rs", "acyclic-actors",
+    "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
+    "outbox", [],
+    { mutations: [
+      { patch: "rust/proofs/actors-conformance-clock/early.patch", label: "alarm-before-observation", diagnostic: "outbox" },
+      { patch: "rust/proofs/actors-conformance-clock/missing.patch", label: "restart-without-advancement", diagnostic: "outbox" },
+    ] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
