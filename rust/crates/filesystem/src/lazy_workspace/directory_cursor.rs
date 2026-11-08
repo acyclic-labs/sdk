@@ -174,13 +174,13 @@ fn decode_fields(
     })?;
     let phase = match decoder.u8(observe)? {
         0 => LazyDirectoryPhase::Source(None),
-        1 => LazyDirectoryPhase::Source(Some(SourceCursor {
-            source: SourceReference {
+        1 => LazyDirectoryPhase::Source(Some(SourceCursor::detached(
+            SourceReference {
                 identity: decoder.fixed::<16, crate::FsError>(observe)?,
                 epoch: decoder.u64(observe)?,
             },
-            token: decoder.u64(observe)?,
-        })),
+            decoder.u64(observe)?,
+        ))),
         2 => LazyDirectoryPhase::Authored(None),
         3 => {
             let encoding =
