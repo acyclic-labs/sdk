@@ -227,7 +227,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
             let progress = flags & 16 != 0;
             channel.latest = latest;
             channel.credit = wire::SessionWindow { frames, bytes };
-            channel.ending = ending.then_some(StreamError::Unavailable.code());
+            channel.ending = ending.then_some(Err(StreamError::Unavailable));
             channel.progress = progress.then(wire::SessionWatermark::default);
             for pending in 0..5 {
                 channel.pending = (0..pending)
