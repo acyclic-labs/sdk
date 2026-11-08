@@ -11,6 +11,7 @@ pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
 /// a checkout's tree, one directory per bound project.
 const BINDINGS: &str = ".bindings";
 
+mod bindings;
 mod bootstrap;
 #[cfg(test)]
 #[cfg(not(loom))]
@@ -36,6 +37,8 @@ pub(super) struct MountedVolume {
     pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
     /// One writable projection cannot isolate effects from concurrent commands.
     pub(super) execution: StateArc<AsyncMutex<()>>,
+    // Retires the exact index entry after this physical source's fields.
+    _binding: Option<acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 
@@ -78,6 +81,7 @@ pub struct LocalWorkspace {
     /// Original auxiliary binding, retained while this view or its selections
     /// can still execute against its shared physical projections.
     pub(super) binding: Option<Arc<Mounts>>,
+    bindings: acyclic_fs::kernel::allocation::RetainedArc<bindings::Bindings>,
     pub(super) context_line: String,
     /// Custody of this owner's tool process trees; absent in an embedded
     /// binding, whose state directory has no exclusive owner to fence it.
@@ -181,6 +185,7 @@ impl LocalWorkspace {
         project: &VolumeRef,
         scratch: VolumeRef,
         authority: &crate::filesystem::NativeMountAuthority,
+        binding: &acyclic_fs::kernel::allocation::RetainedArc<bindings::Binding>,
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
@@ -207,6 +212,7 @@ impl LocalWorkspace {
             &mut mounts,
             authority,
             &self.task_view_admission,
+            Some(binding),
         )
         .await?;
         Ok(Arc::new(mounts))
@@ -396,6 +402,7 @@ pub(super) async fn open(
                 .as_ref()
                 .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?,
             &task_view_admission,
+            None,
         )
         .await?;
         Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
@@ -427,6 +434,7 @@ pub(super) async fn open(
         context_line,
         mounts,
         binding: None,
+        bindings: bindings::Bindings::new(&cancellation)?,
         processes,
     })
 }
