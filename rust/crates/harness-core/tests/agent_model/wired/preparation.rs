@@ -220,6 +220,17 @@ pub(super) async fn check(
             probe: probe.clone(),
         },
     )?;
+    observe(stream, &host, &probe, &model, parent, child).await
+}
+
+async fn observe(
+    stream: &Arc<MemoryStream>,
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+) -> Result {
     let old = settled(stream, &within(), child)
         .await?
         .unwrap()
@@ -227,17 +238,13 @@ pub(super) async fn check(
         .unwrap();
     let (release, gate) = oneshot::channel();
     *probe.gate.lock().unwrap() = Some(gate);
-    let mut pending = Box::pin(deliver(
-        &host,
-        parent,
-        requested("observe-original", parent),
-    ));
+    let mut pending = Box::pin(deliver(host, parent, requested("observe-original", parent)));
     assert!(
         pending.as_mut().now_or_never().is_none(),
         "wait skipped original observation"
     );
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
-    deliver(&host, child, requested("advance-after-selection", child)).await?;
+    deliver(host, child, requested("advance-after-selection", child)).await?;
     let latest = settled(stream, &within(), child)
         .await?
         .unwrap()
@@ -258,7 +265,7 @@ pub(super) async fn check(
         [old],
         "wait replaced the original answer position"
     );
-    let value = result(&model);
+    let value = result(model);
     assert_eq!(value["settled"][0]["answer"], "later child answer");
     assert_eq!(value["settled"][0]["agent"], child.as_str());
     assert_eq!(value["running"], serde_json::json!([]));
@@ -268,7 +275,7 @@ pub(super) async fn check(
         unreachable!()
     };
     host.send(child, &super::super::user(), &record).await?;
-    let deferred = deliver(&host, parent, requested("defer-original", parent)).await?;
+    let deferred = deliver(host, parent, requested("defer-original", parent)).await?;
     assert!(
         matches!(deferred.phase, Phase::Waiting { .. }),
         "wait retained delivery instead of committing its condition"
@@ -280,13 +287,13 @@ pub(super) async fn check(
     assert_eq!(host.state(parent).await?.phase, Phase::Idle);
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
     assert_eq!(
-        result(&model)["settled"][0]["answer"],
+        result(model)["settled"][0]["answer"],
         "child releases deferred wait"
     );
 
     let (producer, gate) = oneshot::channel();
     *probe.gate.lock().unwrap() = Some(gate);
-    let mut pending = Box::pin(deliver(&host, parent, requested("cancel-original", parent)));
+    let mut pending = Box::pin(deliver(host, parent, requested("cancel-original", parent)));
     assert!(pending.as_mut().now_or_never().is_none());
     probe.stop.lock().unwrap().as_ref().unwrap().cancel();
     assert!(
