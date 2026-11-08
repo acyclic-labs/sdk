@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -437,7 +437,9 @@
+         };
+         // Resolution already checked the complete parent. Within that one
+         // parent the fixed-size child identity suffices; retain its first name.
+-        if seen.insert(wait_identity(&child)) {
++        let identity = wait_identity(&child);
++        seen.insert(identity);
++        if !children.iter().any(|(_, known)| wait_identity(known) == identity) {
+             children.push((reference, child));
+         }
+     }
