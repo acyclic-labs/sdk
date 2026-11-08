@@ -1,6 +1,6 @@
 # Native host workspace coordination
 
-Claude Code, Codex and Pi run their own sessions, providers, tools, permissions
+Claude Code, Codex, Pi, OpenCode and Antigravity run their own sessions, providers, tools, permissions
 and agent loops. Acyclic coordinates isolated workspaces, capture and merges
 through an already-running GraphCoder harness.
 
@@ -15,6 +15,14 @@ acyclic host codex -- --sandbox workspace-write --ask-for-approval never
 Codex requires **0.164.0 or later**; install and doctor reject older or unknown
 versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
 `--settings PATH` for a Claude settings file or Pi extension file.
+
+OpenCode installs one extension in `OPENCODE_CONFIG_DIR/plugins/acyclic.js`
+(otherwise the native XDG configuration directory). `--settings PATH` selects
+that extension file explicitly. Antigravity (`agy`) installs a complete package
+through its native plugin manager and does not accept `--settings`.
+Both adapters share the workspace owner and native process supervision; the
+host continues to own its tools, model loop and permissions. The retained native
+controls target OpenCode 1.19.5 and Antigravity 1.5.2.
 
 Without `--settings`, installation follows `CLAUDE_CONFIG_DIR` or
 `PI_CODING_AGENT_DIR`, falling back to the native default when the selector is

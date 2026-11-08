@@ -100,7 +100,7 @@ fn internal(args: &[String]) -> Result<bool> {
             };
             let answer = match read_json(io::stdin().lock()) {
                 Ok(input) => hook(host, event, input),
-                Err(error) => hook_failure(event, &error.to_string()),
+                Err(error) => native_hook_failure(host, event, &error.to_string()),
             };
             println!("{answer}");
         }
@@ -242,23 +242,52 @@ fn help() -> Result<()> {
 
 fn hook(host: &str, event: &str, input: Value) -> Value {
     let result = (|| -> Result<Value> {
-        let input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
+        let mut input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
+        let event = if host == "agy" {
+            let workspace = env::var("ACYCLIC_WORKSPACE").ok();
+            let Some(event) = input::agy_hook(event, &mut input, workspace.as_deref())? else {
+                return Ok(json!({}));
+            };
+            event
+        } else {
+            event
+        };
         let cwd = PathBuf::from(
             input
                 .get("cwd")
                 .and_then(Value::as_str)
                 .ok_or("native hook lacks cwd")?,
         );
-        Ok(host_files::request(
+        let response = host_files::request(
             &cwd,
             HostAction::Hook {
                 host: host.into(),
                 event: event.into(),
                 input,
             },
-        )?)
+        )?;
+        Ok(if host == "agy" { json!({}) } else { response })
     })();
-    result.unwrap_or_else(|error| hook_failure(event, &error.to_string()))
+    result.unwrap_or_else(|error| native_hook_failure(host, event, &error.to_string()))
+}
+
+fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
+    if host != "agy" {
+        return hook_failure(event, error);
+    }
+    // The native host ignores hook exit status. Its own invocation disposition
+    // carries refusal. Stop must not re-enter a failed PreInvocation; the root
+    // launcher retains the final capture error after the native process exits.
+    let reason = format!(
+        "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode plan"
+    );
+    match event {
+        "PreInvocation" => {
+            json!({"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":reason}}]})
+        }
+        "Stop" => json!({"decision":"stop","reason":reason}),
+        _ => json!({"reason":reason}),
+    }
 }
 
 fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {

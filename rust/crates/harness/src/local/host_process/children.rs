@@ -360,11 +360,13 @@ impl NativeChildren {
                 .ok_or_else(|| invalid(format!("child {name} absent")))
         };
         let claim: TurnClaim = serde_json::from_value(field("claim")?).map_err(storage)?;
-        let prompt = field("prompt")?
-            .as_str()
-            .ok_or_else(|| invalid("native prompt absent"))?
-            .as_bytes()
-            .to_vec();
+        let prompt = field("prompt")?;
+        let prompt = launch::child_input(
+            &self.host,
+            prompt
+                .as_str()
+                .ok_or_else(|| invalid("native prompt absent"))?,
+        )?;
         let resume = if self.host == "pi" {
             turn.pointer("/session/file")
                 .or_else(|| turn.pointer("/session/id"))

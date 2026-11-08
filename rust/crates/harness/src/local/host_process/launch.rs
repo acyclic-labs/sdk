@@ -10,7 +10,10 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 fn is_switch(host: &str, name: &str) -> bool {
-    host == "pi" && name == "--no-extensions"
+    matches!(
+        (host, name),
+        ("pi", "--no-extensions") | ("agy", "--sandbox")
+    )
 }
 
 /// Decodes the root's serialized argument vector at the child-owner boundary.
@@ -61,12 +64,32 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
                 "--session-dir",
             ],
         ),
-        _ => return Err(invalid("host launcher supports codex, claude-code or pi")),
+        "opencode" => ("", "", &["--model", "--agent"]),
+        "agy" => (
+            "--sandbox",
+            "--mode",
+            &[
+                "--settings",
+                "--mode",
+                "--model",
+                "--agent",
+                "--effort",
+                "--add-dir",
+            ],
+        ),
+        _ => {
+            return Err(invalid(
+                "host launcher supports codex, claude-code, pi, opencode or agy",
+            ));
+        }
     };
     let mut required = [(sandbox, 0), (approval, 0)];
     let mut arguments = args.iter();
     while let Some(name) = arguments.next() {
         if is_switch(host, name) {
+            for (option, count) in &mut required {
+                *count += usize::from(name.as_str() == *option);
+            }
             continue;
         }
         if !allowed.contains(&name.as_str()) || arguments.next().is_none() {
@@ -83,8 +106,9 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
             continue;
         }
         if count != 1 {
+            let value = if is_switch(host, name) { "" } else { " VALUE" };
             return Err(invalid(format!(
-                "host requires exactly one {name} VALUE; children inherit it unchanged"
+                "host requires exactly one {name}{value}; children inherit it unchanged"
             )));
         }
     }
@@ -96,6 +120,8 @@ pub fn program(host: &str) -> Result<&'static str> {
         "codex" => Ok("codex"),
         "claude-code" => Ok("claude"),
         "pi" => Ok("pi"),
+        "opencode" => Ok("opencode"),
+        "agy" => Ok("agy"),
         _ => Err(invalid("unsupported native host")),
     }
 }
@@ -115,7 +141,7 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
         };
         let inherited_path = match (host, name.as_str()) {
             (_, "--add-dir") | ("claude-code", "--plugin-dir") | ("pi", "--session-dir") => true,
-            ("claude-code", "--settings") => !value.trim_start().starts_with('{'),
+            ("claude-code" | "agy", "--settings") => !value.trim_start().starts_with('{'),
             ("pi", "--extension") => ![
                 "npm:", "git:", "github:", "http:", "https:", "ssh:", "builtin:",
             ]
@@ -138,7 +164,7 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
                 .into();
         }
     }
-    if matches!(host, "codex" | "claude-code") {
+    if matches!(host, "codex" | "claude-code" | "agy") {
         // The parent already admits its cwd. Preserve that same root when a
         // separate child starts in a descendant view; admit no additional path.
         flags.extend([
@@ -187,6 +213,8 @@ pub fn child_arguments(
     let native_arguments = match host {
         "codex" => 5,
         "claude-code" => 4,
+        "opencode" => 5,
+        "agy" => 4,
         _ => 3,
     };
     let policy = args.iter().map(Into::into);
@@ -213,7 +241,7 @@ pub fn child_arguments(
                 arguments.extend(["--resume", id].into_iter().map(OsString::from));
             }
         }
-        _ => {
+        "pi" => {
             arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
             arguments.extend(policy);
             // Each turn runs in a fresh view directory and the previous one
@@ -223,8 +251,61 @@ pub fn child_arguments(
                 arguments.extend(["--fork", file].into_iter().map(OsString::from));
             }
         }
+        "opencode" => {
+            arguments.extend(
+                ["run", "--format", "json", "--dir"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            arguments.push(cwd.into());
+            arguments.extend(policy);
+            if let Some(id) = session {
+                arguments.extend(["--session", id].into_iter().map(OsString::from));
+            }
+        }
+        "agy" => {
+            arguments.extend(
+                [
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            );
+            arguments.extend(policy);
+            if let Some(id) = session {
+                arguments.extend(["--conversation", id].into_iter().map(OsString::from));
+            }
+        }
+        _ => return Err(invalid("unsupported native host")),
     }
     Ok(arguments)
+}
+
+/// One prompt on the native host's stdin. Antigravity consumes a framed user
+/// event; the other hosts consume the prompt bytes directly.
+pub(super) fn child_input(host: &str, prompt: &str) -> Result<Vec<u8>> {
+    if host != "agy" {
+        return Ok(prompt.as_bytes().to_vec());
+    }
+    #[derive(serde::Serialize)]
+    struct Message<'a> {
+        content: &'a str,
+    }
+    #[derive(serde::Serialize)]
+    struct User<'a> {
+        event: &'static str,
+        message: Message<'a>,
+    }
+    let mut input = serde_json::to_vec(&User {
+        event: "user",
+        message: Message { content: prompt },
+    })
+    .map_err(storage)?;
+    input.push(b'\n');
+    Ok(input)
 }
 
 /// Runs `acyclic host HOST -- POLICY_ARGS`: the interactive native root under
@@ -232,7 +313,7 @@ pub fn child_arguments(
 pub fn launch(args: &[String]) -> Result<()> {
     let host = args
         .first()
-        .ok_or_else(|| invalid("host requires codex, claude-code or pi"))?;
+        .ok_or_else(|| invalid("host requires codex, claude-code, pi, opencode or agy"))?;
     let flags = args.get(1..).unwrap_or_default();
     let flags = match flags {
         [separator, rest @ ..] if separator == "--" => rest,

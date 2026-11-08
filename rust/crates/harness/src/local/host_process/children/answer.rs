@@ -13,6 +13,8 @@ pub(super) struct NativeAnswer {
     pub(super) pending: Option<String>,
     pub(super) outcome: Option<Outcome<String>>,
     pub(super) omitted: bool,
+    pub(super) last_part: Option<String>,
+    pub(super) truncated: bool,
 }
 
 impl NativeAnswer {
@@ -20,6 +22,8 @@ impl NativeAnswer {
     /// A later complete reply can recover; a native refusal stays authoritative.
     pub(super) fn omit(&mut self) {
         self.pending = None;
+        self.last_part = None;
+        self.truncated = false;
         if matches!(self.outcome, Some(Outcome::Succeeded(_))) {
             self.outcome = None;
         }
@@ -27,8 +31,32 @@ impl NativeAnswer {
     }
 
     pub(super) fn record(&mut self, event: &Value) {
+        if event.get("event").and_then(Value::as_str) == Some("result") {
+            self.pending = None;
+            let result = &event["result"];
+            self.outcome = match result.get("status").and_then(Value::as_str) {
+                Some("SUCCESS")
+                    if result.get("finished_reason").is_none()
+                        && result.get("error").is_none() =>
+                {
+                    result
+                        .get("response")
+                        .and_then(Value::as_str)
+                        .map(|text| Outcome::Succeeded(bounded([text])))
+                }
+                Some("CANCELED" | "INTERRUPTED") => Some(Outcome::Cancelled),
+                _ => Some(Outcome::Failed {
+                    message: result
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("step=read native reply: native turn did not complete; recovery=acyclic agents")
+                        .into(),
+                }),
+            };
+            return;
+        }
         match event.get("type").and_then(Value::as_str) {
-            Some("turn.started") => *self = Self::default(),
+            Some("turn.started" | "step_start") => *self = Self::default(),
             Some("item.completed")
                 if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
                     && self.outcome.is_none() =>
@@ -41,11 +69,41 @@ impl NativeAnswer {
             Some("turn.completed") if self.outcome.is_none() => {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
             }
+            Some("text")
+                if event
+                    .pointer("/part/time/end")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|end| end > 0)
+                    && self.outcome.is_none()
+                    && !self.truncated =>
+            {
+                if let (Some(id), Some(text)) = (
+                    event
+                        .pointer("/part/id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty()),
+                    event.pointer("/part/text").and_then(Value::as_str),
+                ) && self.last_part.as_deref() != Some(id)
+                {
+                    let source_len = self.pending.as_ref().map_or(0, String::len) + text.len();
+                    let retained = bounded(self.pending.as_deref().into_iter().chain([text]));
+                    self.truncated = retained.len() < source_len;
+                    self.pending = Some(retained);
+                    self.last_part = Some(id.into());
+                }
+            }
+            Some("step_finish")
+                if event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
+                    && self.outcome.is_none() =>
+            {
+                self.outcome = self.pending.take().map(Outcome::Succeeded);
+            }
             Some("turn.failed" | "error") => {
                 self.pending = None;
                 self.outcome = Some(Outcome::Failed {
                     message: event
                         .pointer("/error/message")
+                        .or_else(|| event.pointer("/error/data/message"))
                         .or_else(|| event.get("message"))
                         .and_then(Value::as_str)
                         .unwrap_or("step=read native reply: native model turn failed; recovery=acyclic agents")
