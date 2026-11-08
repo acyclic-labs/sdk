@@ -136,7 +136,8 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     workspace.write_text("/result.txt", "original").await?;
-    let root = tempfile::tempdir()?;
+    let root = tempfile::tempdir()
+        .inspect_err(|error| eprintln!("view temporary directory: {error:?}"))?;
     let admission = Arc::new(crate::hold_root(root.path())?);
     let options = super::tests::fixture_options(
         &workspace,
@@ -148,15 +149,21 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let retained = workspace.mount_view(options.clone()).await?;
     // A startup that fails after issuance leaves nothing behind: the view's
     // issuance owns its directory from creation, not from a successful mount.
-    let listed = || std::fs::read_dir(root.path()).map(Iterator::count);
+    let listed = || {
+        std::fs::read_dir(root.path())
+            .inspect_err(|error| eprintln!("view admission directory listing: {error:?}"))
+            .map(Iterator::count)
+    };
     let before = listed()?;
     let unauthorized = MountOptions::read_write().view_root(admission);
     assert!(workspace.mount_view(unauthorized).await.is_err());
     assert_eq!(listed()?, before);
     let completed = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), completed.path().parent());
-    std::fs::write(retained.path().join("still-live.txt"), b"retained")?;
-    std::fs::write(completed.path().join("result.txt"), b"captured")?;
+    std::fs::write(retained.path().join("still-live.txt"), b"retained")
+        .inspect_err(|error| eprintln!("retained view kernel write: {error:?}"))?;
+    std::fs::write(completed.path().join("result.txt"), b"captured")
+        .inspect_err(|error| eprintln!("completed view kernel write: {error:?}"))?;
     {
         let mut owner = completed
             .session
@@ -191,13 +198,15 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         b"captured"
     );
     assert_eq!(
-        std::fs::read(retained.path().join("still-live.txt"))?,
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after completion: {error:?}"))?,
         b"retained"
     );
 
     let abandoned = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), abandoned.path().parent());
-    std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
+    std::fs::write(abandoned.path().join("result.txt"), b"unverified")
+        .inspect_err(|error| eprintln!("abandoned view kernel write: {error:?}"))?;
     abandoned.abandon_command().await?;
     assert!(!abandoned.path().exists());
     assert_eq!(
@@ -208,7 +217,8 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         b"captured"
     );
     assert_eq!(
-        std::fs::read(retained.path().join("still-live.txt"))?,
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after abandonment: {error:?}"))?,
         b"retained"
     );
     let cancelled = workspace.mount_view(options.clone()).await?;
@@ -251,7 +261,8 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     assert!(cancelled_session.upgrade().is_none());
     assert!(!cancelled_path.exists());
     assert_eq!(
-        std::fs::read(retained.path().join("still-live.txt"))?,
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after cancellation: {error:?}"))?,
         b"retained"
     );
     let unmounted = workspace.mount_view(options).await?;

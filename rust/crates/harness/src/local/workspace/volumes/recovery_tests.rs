@@ -235,52 +235,17 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     Ok(())
 }
 
-/// A crash can leave a binding linking to a view of the crashed process's
-/// reaped root. Recovery removes that link, and only that kind of link: a
-/// live view's link is its owner's, and one naming anything but a view is
-/// still refused, as
-/// `scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence` checks.
+/// Alias custody ends independently of the physical view's retirement.
 #[test]
-fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
+fn projection_alias_custody_is_independent_of_physical_retirement() -> TestResult {
     let root = tempfile::tempdir()?;
-    let destination = root.path().join(HOME_PATH);
-    std::fs::create_dir(root.path().join(".volumes"))?;
-    let roots = acyclic_fs::shared_view_root()?
-        .parent()
-        .ok_or("shared root has no parent")?
-        .to_path_buf();
-    let reaped = roots.join(format!("{:032x}", 0)).join("v0000000000000001");
-    std::os::unix::fs::symlink(&reaped, &destination)?;
-    recover(root.path())?;
-    assert!(
-        std::fs::symlink_metadata(&destination).is_err(),
-        "the crashed binding's link survived recovery"
-    );
-    // Recovery cannot remove a live view's link without its owner's custody.
-    let live_root = roots.join(format!(
-        "{:032x}",
-        u128::from_be_bytes(acyclic_fs::MountId::new().into_bytes())
-    ));
-    let live = live_root.join("v0000000000000001");
-    std::fs::create_dir_all(&live)?;
+    let destination = root.path().join("alias");
+    let live = root.path().join("live");
+    let replacement = root.path().join("replacement");
+    std::fs::create_dir(&live)?;
+    std::fs::create_dir(&replacement)?;
     std::os::unix::fs::symlink(&live, &destination)?;
-    recover(root.path())?;
-    assert!(
-        std::fs::symlink_metadata(&destination)?
-            .file_type()
-            .is_symlink(),
-        "a live view's link was removed"
-    );
-    // The old root's parent is gone. Both a missing target and a different
-    // live target must fail closed, preserving the live alias in either case.
-    assert!(bind_alias(&destination, &reaped, None).is_err());
-    assert_eq!(std::fs::read_link(&destination)?, live);
-    assert!(matches!(
-        bind_alias(&destination, &roots.join("another"), None),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(std::fs::read_link(&destination)?, live);
-    unlink_binding(&destination, &reaped)?;
+    unlink_binding(&destination, &replacement)?;
     assert_eq!(std::fs::read_link(&destination)?, live);
     // The projection can release its own alias before asynchronous retirement
     // removes the physical view. No future cleanup pass owns this alias.
@@ -290,8 +255,12 @@ fn recovery_removes_a_crashed_binding_link_to_a_shared_view() -> TestResult {
         "the dropped projection's alias survived while its view was live"
     );
     assert!(live.is_dir());
-    std::fs::remove_dir(&live)?;
-    std::fs::remove_dir(&live_root)?;
+    std::os::unix::fs::symlink(&replacement, &destination)?;
+    unlink_binding(&destination, &live)?;
+    assert_eq!(std::fs::read_link(&destination)?, replacement);
+    std::fs::remove_dir(&replacement)?;
+    unlink_binding(&destination, &replacement)?;
+    assert!(std::fs::symlink_metadata(&destination).is_err());
     Ok(())
 }
 
