@@ -59,12 +59,10 @@ fn scoped_rustup_homes_select_their_own_commands_targets_and_cfgs() {
                     nightly_rustdoc_command(&host).unwrap().get_program(),
                     home.join("bin/cargo")
                 );
-                assert!(
-                    rustdoc_platform_cfgs()
-                        .unwrap()
-                        .0
-                        .contains(&format!("fixture_{name}"))
-                );
+                assert!(rustdoc_platform_cfgs()
+                    .unwrap()
+                    .0
+                    .contains(&format!("fixture_{name}")));
                 let other = if name == "a" {
                     "fixture-b"
                 } else {
