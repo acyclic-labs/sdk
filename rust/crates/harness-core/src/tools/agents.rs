@@ -136,6 +136,48 @@ fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> Strin
     crate::agent::call_key(step, invocation.operation_id)
 }
 
+/// The child `parent`'s `spawn` tool names `name`: the one derivation every
+/// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
+///
+/// # Errors
+/// When `name` is not a valid spawn name or the child would exceed the depth.
+pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
+    let intent = spawn_intent(name, 0).map_err(agent)?;
+    TurnEffect::child(parent, &intent).map_err(agent)
+}
+
+/// Resolves the child operand of diff, merge or discard exactly once. File
+/// operands (including `add agents/file`) retain their ordinary path meaning.
+/// The driver supplies its existing child derivation; the repository key is
+/// always the complete canonical address, including the owning ancestry.
+/// Both local names and canonical addresses must name a direct child.
+pub fn resolve_child_branch(
+    parent: &AgentPath,
+    arguments: &mut [String],
+    resolve: impl FnOnce(&AgentPath, &str) -> Result<AgentPath>,
+) -> Result<Option<AgentPath>> {
+    let [command, branch] = arguments else {
+        return Ok(None);
+    };
+    if !matches!(command.as_str(), "diff" | "merge" | "discard") {
+        return Ok(None);
+    }
+    let child = if let Some(name) = branch.strip_prefix("agents/") {
+        resolve(parent, name)?
+    } else if branch.starts_with("harness/agents/") {
+        AgentPath::try_from(branch.clone()).map_err(agent)?
+    } else {
+        return Ok(None);
+    };
+    if !child.is_child_of(parent) {
+        return Err(Error::Invalid(
+            "only direct children can be coordinated; ask the owning parent".into(),
+        ));
+    }
+    *branch = child.as_str().to_owned();
+    Ok(Some(child))
+}
+
 impl AgentTool {
     async fn run(
         &self,

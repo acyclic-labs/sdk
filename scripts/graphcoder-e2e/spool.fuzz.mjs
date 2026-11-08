@@ -66,7 +66,9 @@ async function replay(bytes, unique, partition, closedFirst, path) {
   let comparisons = 0;
   const terminal = spool.next(() => { comparisons++; return false; })
     .then(() => assert.fail("a false predicate cannot resolve"), error => error);
-  const missing = spool.keyed(Symbol("absent")).then(() => assert.fail("absent key cannot resolve"), error => error);
+  const missing = [], repeated = Symbol("absent");
+  for (const id of [repeated, repeated, Symbol("other absent")])
+    spool.keyed(id).then(value => missing.push(value), error => missing.push(error));
   const drained = finished(source);
   if (closedFirst) close(captured);
   else source.once("end", () => close(captured));
@@ -79,7 +81,8 @@ async function replay(bytes, unique, partition, closedFirst, path) {
     assert.equal(result.error.detail, reason, "cancellation retains its original reason");
   }
   assert.equal(cause.kind, reference.kind, "original terminal must survive byte partitions and physical-exit order");
-  assert.equal(await missing, cause, "all original waiters must receive the same terminal");
+  assert.equal(missing.length, 3, "original terminal settles repeated and distinct keyed waits before source retirement");
+  assert.ok(missing.every(error => error === cause), "all original waiters must receive the same terminal");
   assert.equal(spool.ended, cause);
   assert.equal(spool.sequence, reference.sequence);
   assert.deepEqual(events, reference.events, "no event may follow the first malformed or duplicate terminal");
@@ -140,35 +143,44 @@ async function failure(bytes, mode, error) {
   assert.equal(await observed(spool.keyed(Symbol("later missing"))), cause);
 }
 
-// The original file writer supplies the failure, before any source output or
-// process completion. Empty history needs no file; readers after the refusal
-// retain its original cause.
+// The original file writer supplies the failure before process completion:
+// missing parent at open, or a real write to a read-only descriptor with a
+// second captured source chunk held for drain. No injected file callbacks.
 async function transcriptFailure(directory) {
-  const source = new PassThrough();
-  const transcript = createWriteStream(join(directory, "absent", "events.jsonl"));
-  const failed = finished(transcript).then(() => assert.fail("missing parent cannot accept a transcript"), error => error);
-  let close;
-  const spool = new Spool(source, new Promise(resolve => { close = resolve; }), { key, transcript });
-  const terminal = spool.next(() => false).catch(error => error);
-  const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
-  const history = spool.history().catch(error => error);
-  const error = await failed;
-  assert.equal(spool.ended?.kind, "spool", "the original writer failure must end the spool before any waiter join");
-  const cause = await terminal;
-  assert.equal(error.code, "ENOENT");
-  assert.equal(cause.kind, "spool");
-  assert.equal(cause.detail, error);
-  assert.equal(cause.cause, error);
-  assert.equal(await missing, cause);
-  assert.deepEqual(await history, [], "history before the first completed write needs no file");
-  await assert.rejects(spool.history(), error => error === cause, "late history cannot bypass transcript failure");
-  await assert.rejects(spool.next(() => true), error => error === cause);
-  await assert.rejects(spool.keyed(Symbol("late transcript key")), error => error === cause);
-  source.end(original);
-  close(captured);
-  await finished(source);
-  assert.equal(spool.sequence, 0, "later source output cannot replace the writer refusal");
-  assert.equal(spool.ended, cause);
+  for (const queued of [false, true]) {
+    const source = new PassThrough();
+    const path = join(directory, queued ? "read-only.jsonl" : "absent/events.jsonl");
+    if (queued) writeFileSync(path, "");
+    const transcript = createWriteStream(path, queued ? { flags: "r", highWaterMark: 1 } : {});
+    const failed = finished(transcript).then(() => assert.fail("the original descriptor cannot accept a transcript"), error => error);
+    let close;
+    const spool = new Spool(source, new Promise(resolve => { close = resolve; }), { key, transcript });
+    const terminal = spool.next(() => false).catch(error => error);
+    const missing = spool.keyed(Symbol("missing transcript key")).catch(error => error);
+    const history = spool.history().catch(error => error);
+    if (queued) {
+      source.write(original); source.write(distinct);
+      assert.equal(spool.sequence, 1, "the second captured chunk waits for the original writer drain");
+    }
+    const error = await failed;
+    assert.equal(spool.ended?.kind, "spool", "the original writer failure must end the spool before any waiter join");
+    const cause = await terminal;
+    assert.equal(error.code, queued ? "EBADF" : "ENOENT");
+    assert.equal(cause.kind, "spool");
+    assert.equal(cause.detail, error);
+    assert.equal(cause.cause, error);
+    assert.equal(await missing, cause);
+    assert.deepEqual(await history, [], "history before the first completed write needs no file");
+    assert.equal(transcript.listenerCount("drain"), 0, "the failed writer releases its obsolete drain observer");
+    await assert.rejects(spool.history(), error => error === cause, "late history cannot bypass transcript failure");
+    await assert.rejects(spool.next(() => true), error => error === cause);
+    await assert.rejects(spool.keyed(Symbol("late transcript key")), error => error === cause);
+    source.end(original);
+    close(captured);
+    await finished(source);
+    assert.equal(spool.sequence, queued ? 1 : 0, "queued and later source output cannot replace the writer refusal");
+    assert.equal(spool.ended, cause);
+  }
 }
 
 // Native file closure is the finite observation boundary, including when the
@@ -237,7 +249,7 @@ async function persisted(bytes, path) {
   assert.equal(terminal.kind, "eof");
   await written;
   const ranges = [[event.id, 0, original.length], [event.id + "\0", original.length, distinct.length]];
-  for (const mutation of [Buffer.alloc(0), bytes, Buffer.concat([bytes, baseline])]) {
+  for (const mutation of [Buffer.alloc(0), bytes, Buffer.concat([bytes, baseline]), Buffer.concat([baseline, bytes])]) {
     writeFileSync(path, mutation);
     for (const [id, at, length] of ranges) {
       if (mutation.length < at + length) {

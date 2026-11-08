@@ -328,8 +328,18 @@ pub(crate) fn merge_added_metadata_fields(
     ours: FileMetadata,
     theirs: FileMetadata,
 ) -> Option<FileMetadata> {
-    fn same<T: Copy + PartialEq>(ours: T, theirs: T) -> Option<T> {
-        (ours == theirs).then_some(ours)
+    fn observed<T: Copy + PartialEq>(
+        ours: MetadataField<T>,
+        theirs: MetadataField<T>,
+    ) -> Option<MetadataField<T>> {
+        // An unavailable field is an unobserved fact, including on a profile
+        // that cannot represent it. It cannot contradict an exact observation.
+        match (ours, theirs) {
+            (MetadataField::Unavailable, value) | (value, MetadataField::Unavailable) => {
+                Some(value)
+            }
+            _ => (ours == theirs).then_some(ours),
+        }
     }
     fn later(ours: MetadataField<i64>, theirs: MetadataField<i64>) -> MetadataField<i64> {
         match (ours, theirs) {
@@ -344,18 +354,18 @@ pub(crate) fn merge_added_metadata_fields(
         }
     }
     Some(FileMetadata {
-        posix_mode: same(ours.posix_mode, theirs.posix_mode)?,
-        posix_uid: same(ours.posix_uid, theirs.posix_uid)?,
-        posix_gid: same(ours.posix_gid, theirs.posix_gid)?,
-        posix_flags: same(ours.posix_flags, theirs.posix_flags)?,
-        windows_attributes: same(ours.windows_attributes, theirs.windows_attributes)?,
+        posix_mode: observed(ours.posix_mode, theirs.posix_mode)?,
+        posix_uid: observed(ours.posix_uid, theirs.posix_uid)?,
+        posix_gid: observed(ours.posix_gid, theirs.posix_gid)?,
+        posix_flags: observed(ours.posix_flags, theirs.posix_flags)?,
+        windows_attributes: observed(ours.windows_attributes, theirs.windows_attributes)?,
         created_ns: later(ours.created_ns, theirs.created_ns),
         modified_ns: later(ours.modified_ns, theirs.modified_ns),
         accessed_ns: later(ours.accessed_ns, theirs.accessed_ns),
         changed_ns: later(ours.changed_ns, theirs.changed_ns),
-        named_attributes: same(ours.named_attributes, theirs.named_attributes)?,
-        acl: same(ours.acl, theirs.acl)?,
-        security_descriptor: same(ours.security_descriptor, theirs.security_descriptor)?,
+        named_attributes: observed(ours.named_attributes, theirs.named_attributes)?,
+        acl: observed(ours.acl, theirs.acl)?,
+        security_descriptor: observed(ours.security_descriptor, theirs.security_descriptor)?,
     })
 }
 

@@ -175,7 +175,27 @@ impl WasmAgentControls {
         })
     }
 
-    /// Observe through the same pool and slot used for these controls.
+    /// Select on the existing pool, retaining the original command caller and
+    /// the host's read-only enrollment for the selected private output.
+    pub async fn select(&self, agent: js_sys::JsString) -> Result<WasmAgentDiscovery, JsValue> {
+        let (controls, tools) = self
+            .controls
+            .select(super::agent_client::agent_path(agent)?)
+            .await
+            .map_err(exchange_error)?;
+        Ok(WasmAgentDiscovery {
+            controls: Rc::new(controls),
+            tools,
+        })
+    }
+
+    /// Slot for resource follows opened through this selection's observer.
+    #[wasm_bindgen(getter, js_name = observationCredential)]
+    pub fn observation_credential(&self) -> u32 {
+        self.controls.observation_credential()
+    }
+
+    /// Observe through this selection's read-only grant on the same pool.
     pub fn observe(
         &self,
         agent: js_sys::JsString,

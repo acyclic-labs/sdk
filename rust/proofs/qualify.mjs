@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "inbox-settlement": [
+    "rust/crates/harness-core/src/agent/records.rs", "acyclic-harness-core",
+    "agent::checkpoint::tests::bounded_record_fields_and_settled_checkpoints_fit_their_frames",
+    "a conversation entry fits", ["--features", "filesystem-local,test-support"],
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
@@ -88,6 +93,34 @@ const claims = {
     "local::tests::agents::lost_model_producer_closes_local_session_without_settling_input",
     "settlement bypassed the original runtime terminal event",
     nativeHarness,
+  ],
+  "native-eof-refusal": [
+    "rust/crates/harness/src/local/host_process/children.rs", "acyclic-harness",
+    "local::host_process::children::tools::tests::eof_retires_native_children_before_draining_a_held_reply",
+    "original process must retire before reply drain",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_eof_refusal_retirement.patch" },
+  ],
+  "native-child-branch-scope": [
+    "rust/crates/harness/src/local/host_workspace.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "parent-scoped child reference",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_branch_scope.patch" },
+  ],
+  "native-child-merge-custody": [
+    "rust/crates/harness/src/local/host_owner.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "canonical child merge bypassed running-session custody",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/harness/fuzz-native-journal/mutations/native_child_merge_custody.patch" },
+  ],
+  "native-added-metadata": [
+    "rust/crates/filesystem/src/kernel/merge/fields.rs", "acyclic-harness",
+    "local::host_process::children::tests::native_reference_aliases_preserve_process_and_parent_ownership",
+    "step=codex merge right child",
+    ["--no-default-features", "--features", "filesystem-local,native-execution"],
+    { patch: "../../crates/filesystem/fuzz/mutations/added_metadata_observation.patch" },
   ],
   "admission-rebind": [
     "rust/crates/stream/src/session/client/admissions.rs", "acyclic-stream",
@@ -178,9 +211,10 @@ if (claim === "--help" && extra.length === 0) {
 } else {
   const [source, crate, test, diagnostic, features, options = {}] = claims[claim];
   const sourcePath = new URL(source, new URL("../../", import.meta.url));
-  const patch = claim === "work-mixed"
+  const patchRelative = claim === "work-mixed"
     ? "rust/proofs/work-arithmetic/mixed-mutation.patch"
     : `rust/proofs/${claim}/${options.patch ?? "mutation.patch"}`;
+  const patch = fileURLToPath(new URL(patchRelative, new URL("../../", import.meta.url)));
   const target = options.target ?? ["--lib"];
   let fuzzTarget;
   if (options.fuzz) {
