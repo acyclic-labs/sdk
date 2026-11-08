@@ -669,6 +669,7 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         staging.clone(),
         binary_key,
         &binary_proposal,
+        text_key,
     )
     .await?;
     // The retained preview owns admission even after its last page. A fresh
@@ -758,6 +759,7 @@ async fn merge_directory_proposal_retirement<
     staging: Workspace<A, O>,
     key: &ConflictKey,
     proposal: &str,
+    text_key: &ConflictKey,
 ) -> Result<(), Box<dyn Error>> {
     let cancellation = CancellationToken::new();
     // This existing observer funds the real standalone frame and retains a
@@ -819,6 +821,44 @@ async fn merge_directory_proposal_retirement<
             );
         }
     }
+    // The accepted text is a new physical allocation. Keep the actual public
+    // result alive after its reader is gone; only dropping that result can
+    // release the original credit that funds its bytes.
+    let text = "resolved content\n".repeat(4096);
+    staging
+        .write_text(&directory.conflict_file_path(text_key)?, &text)
+        .await?;
+    let generation = unbounded!(staging, head())?;
+    let before = live()?;
+    let resolution = directory.resolution(&generation, text_key).await?;
+    let MergeResolution::Text(content) = &resolution else {
+        return Err("public text proposal changed resolution kind".into());
+    };
+    assert_eq!(content, &text);
+    let retained = live()?;
+    assert!(
+        retained >= before + text.len() as u64,
+        "accepted text backing left its original allocation ledger: {retained} < {before} + {}",
+        text.len()
+    );
+    drop(directory);
+    let baseline = original
+        .held
+        .lock()
+        .unwrap()
+        .as_ref()
+        .ok_or("original allocation observer retired")?
+        .1;
+    assert!(
+        live()? >= baseline + text.len() as u64,
+        "returned text lost its original allocation owner with the directory"
+    );
+    drop(resolution);
+    assert_eq!(
+        live()?,
+        baseline,
+        "discarded text retained its original allocation credit"
+    );
     Ok(())
 }
 
