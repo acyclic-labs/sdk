@@ -1948,3 +1948,12 @@ actor_codecs/call-cancelled-accepted-v2	140	abd44aff76f6df5be7587895bf6e3fbc8519
 actor_codecs/call-cancelled-v2	93	bd7b5327f2078fa26059b9405f6679507ee3d29b70014b627e61f8423e0a64b7	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 actor_codecs/call-indeterminate-v2	98	7b124a5c11ff1be2bd2b441967c5d219da6e1eaefac08b305b118698d01a3e8c	CallPath builders, MemoryStream commit/follow and wire_codec::record_wire
 harness_codecs/agent-v13-roster	896	b7473beb7d2e881ed3c2a24f94187f2f31079ef89c7f11c878d80aebc91ed523	harness-core Roster::new -> Roster::canonical, retaining original target and owner order
+stream_persistence/projection-v1-append	161	36f94977f591a3dc3aff7d4e0bde00ad4af76347265e2cd52d205e9052be3d97	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-v1-record	213	010a64fec5b9e77935bcd36a8a5629aaf1b4b4bcedd9a8a6d0c2678f4b9ab89e	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-v1-batch	224	dbae00a7fd3979f34d3f8503b385c44a695dd4c5ea85681aa44032913e3b7cd1	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-v2-append	115	58f52062b38d46ba52718578acb0d45d45c5c7885fc0c2c1dc958259c37879ff	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-v2-record	167	f8dd3401326121d32bc8b8afeadd6aec43b561db2277f704648a6872fc978624	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-v2-batch	178	3237a55ed899ce5bfce81a5cb1db279d08d143303b20d4e8ad1267c8a1db705f	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-opaque-append	109	102550095d9255e877b879e011216aff7a7f054656362906822c7ce5c9624cd2	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-opaque-record	161	2002b3e0a10f28e71b1c45553645f9958b525035779c0d776ae830c0f51064d8	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers
+stream_persistence/projection-opaque-batch	172	f4f2f609fd686897c66837451846933a8312f0f663e3126f06e05e509387974b	acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers

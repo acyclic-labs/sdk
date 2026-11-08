@@ -97,11 +97,12 @@ impl MemoryStream {
         self.state
             .read()
             .await
-            .find_commit(&commit_id, || {
+            .find_commit(&commit_id, |items| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = &self.work {
-                    work.record(work.meter.examine(1, 0))?;
+                    work.record(work.meter.examine(items, 0))?;
                 }
+                let _ = items;
                 Ok::<_, StreamError>(())
             })?
             .cloned()
@@ -1020,7 +1021,7 @@ impl MemoryStream {
     ) -> crate::NativeStreamResult<Option<IdempotencyObservation>> {
         let state = self.state.read().await;
         let replay = inspect(&meter, || {
-            state.replay(key.as_bytes(), || meter.examine(1, 0))
+            state.replay(key.as_bytes(), |items| meter.examine(items, 0))
         })??;
         let output = match replay {
             Some(replay) => crate::native::clone_outcome(&replay.result, &meter)?.map(|outcome| {

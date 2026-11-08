@@ -72,57 +72,85 @@ impl FollowIndex {
         })
     }
 
-    pub(crate) fn publish(&mut self, records: &[Record], tail: u64) {
-        let entries = &mut self.entries;
-        let mut candidate = |id: u64, record: &Record| {
-            if let Some(entry) = entries.get_mut(&id)
-                && entry.notified != tail
-                && entry.filter.matches(&record.headers)
-            {
-                entry.notified = tail;
-                entry.changed.send_replace(tail);
-            }
-        };
-        for record in records {
-            for key in record.headers.keys() {
-                Node::query(&self.ranges, key.as_ref(), &mut |id| candidate(id, record));
-            }
-            for attribute in record.headers.attributes() {
-                if let Some(ids) = self
-                    .attributes
-                    .get(attribute.name)
-                    .and_then(|values| values.get(attribute.value.as_ref()))
-                {
-                    for &id in ids {
-                        candidate(id, record);
-                    }
-                }
-            }
-            for &id in &self.all {
-                candidate(id, record);
-            }
+    // Select under the index lock, then invoke external wakers after release.
+    // A waker may synchronously drop another follow and remove its registration.
+    fn notify(
+        index: &SyncMutex<Self>,
+        select: impl FnOnce(&mut Self, &mut Vec<(watch::Sender<u64>, u64)>),
+    ) {
+        let mut notifications = Vec::new();
+        {
+            let mut state = index
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            select(&mut state, &mut notifications);
+        }
+        for (changed, tail) in notifications {
+            changed.send_replace(tail);
         }
     }
 
+    pub(crate) fn publish(index: &SyncMutex<Self>, records: &[Record], tail: u64) {
+        Self::notify(index, |state, notifications| {
+            let entries = &mut state.entries;
+            let mut candidate = |id: u64, record: &Record| {
+                if let Some(entry) = entries.get_mut(&id)
+                    && entry.notified != tail
+                    && entry.filter.matches(&record.headers)
+                {
+                    entry.notified = tail;
+                    notifications.push((entry.changed.clone(), tail));
+                }
+            };
+            for record in records {
+                for key in record.headers.keys() {
+                    Node::query(&state.ranges, key.as_ref(), &mut |id| candidate(id, record));
+                }
+                for attribute in record.headers.attributes() {
+                    if let Some(ids) = state
+                        .attributes
+                        .get(attribute.name)
+                        .and_then(|values| values.get(attribute.value.as_ref()))
+                    {
+                        for &id in ids {
+                            candidate(id, record);
+                        }
+                    }
+                }
+                for &id in &state.all {
+                    candidate(id, record);
+                }
+            }
+        });
+    }
+
     /// Creation may expose inherited history even without appended records.
-    pub(crate) fn created(&mut self, tail: u64) {
-        for entry in self.entries.values_mut() {
-            entry.changed.send_replace(tail);
-        }
+    pub(crate) fn created(index: &SyncMutex<Self>, tail: u64) {
+        Self::notify(index, |state, notifications| {
+            notifications.extend(
+                state
+                    .entries
+                    .values()
+                    .map(|entry| (entry.changed.clone(), tail)),
+            );
+        });
     }
 
     /// A failed durable refresh must wake readers to observe the failure.
     #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
-    pub(crate) fn invalidate(&self) {
-        for entry in self.entries.values() {
-            entry.changed.send_replace(entry.notified);
-        }
+    pub(crate) fn invalidate(index: &SyncMutex<Self>) {
+        Self::notify(index, |state, notifications| {
+            notifications.extend(
+                state
+                    .entries
+                    .values()
+                    .map(|entry| (entry.changed.clone(), entry.notified)),
+            );
+        });
     }
 
-    fn remove(&mut self, id: u64) {
-        let Some(entry) = self.entries.remove(&id) else {
-            return;
-        };
+    fn remove(&mut self, id: u64) -> Option<Entry> {
+        let entry = self.entries.remove(&id)?;
         if let Some(ranges) = entry.filter.ranges() {
             for (ordinal, range) in ranges.iter().enumerate() {
                 self.ranges = Node::remove(self.ranges.take(), &(range.start.clone(), id, ordinal));
@@ -144,15 +172,18 @@ impl FollowIndex {
         } else {
             self.all.remove(&id);
         }
+        Some(entry)
     }
 }
 impl Drop for FollowInterest {
     fn drop(&mut self) {
         if let Some(index) = self.index.upgrade() {
-            index
+            let removed = index
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(self.id);
+            // The final publisher may wake its receiver during destruction.
+            drop(removed);
         }
     }
 }
@@ -317,9 +348,9 @@ mod tests {
             committed_at_micros: 0,
             origin: crate::StreamPath::new("origin").unwrap(),
         };
-        index.lock().unwrap().publish(&[record("z", 0)], 1);
+        FollowIndex::publish(&index, &[record("z", 0)], 1);
         assert!(!followed.changed.has_changed().unwrap());
-        index.lock().unwrap().publish(&[record("b", 1)], 2);
+        FollowIndex::publish(&index, &[record("b", 1)], 2);
         assert!(followed.changed.has_changed().unwrap());
         assert_eq!(*followed.changed.borrow_and_update(), 2);
         drop(followed);

@@ -1,0 +1,15 @@
+diff --git a/rust/crates/stream/src/snapshot/job.rs b/rust/crates/stream/src/snapshot/job.rs
+--- a/rust/crates/stream/src/snapshot/job.rs
++++ b/rust/crates/stream/src/snapshot/job.rs
+@@ -128,9 +128,10 @@
+             {
+                 skip_wake = completed.mutant == super::model::Mutant::NoWake;
+             }
++            drop(completed.waker.take());
+             (
+                 completed.value.take(),
+-                completed.waker.take(),
++                None::<Waker>,
+                 completed.worker.take(),
+             )
+         };

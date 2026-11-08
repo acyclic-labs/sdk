@@ -395,6 +395,30 @@ pub(crate) async fn closed_transport() -> TestResult<Status> {
 
 #[tokio::test]
 async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> TestResult {
+    // Capture the kernel refusal through the actual Tonic channel. The same
+    // source chain also classifies eager member connection failures.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    drop(listener);
+    let error = Endpoint::from_shared(endpoint.clone())?
+        .connect()
+        .await
+        .err()
+        .ok_or("refused endpoint connected")?;
+    let failure = crate::session::transport::Failure::from(ConnectError::Endpoint(error));
+    assert_eq!(failure.error, StreamError::Unavailable);
+    assert!(
+        !failure.transient,
+        "a refused connect must not poll for a listener"
+    );
+    let channel = Endpoint::from_shared(endpoint)?.connect_lazy();
+    let mut service = wire::stream_service_client::StreamServiceClient::new(channel);
+    let error = service
+        .append(Request::new(wire::AppendRequest::default()))
+        .await
+        .err()
+        .ok_or("refused endpoint accepted append")?;
+    assert_unary_retry(error, false).await?;
     assert_unary_retry(closed_transport().await?, true).await?;
     assert_unary_retry(Status::unknown("peer outcome unknown"), false).await?;
     assert_unary_retry(Status::unavailable("restarting"), false).await?;
@@ -424,31 +448,57 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
 }
 
 #[tokio::test]
-async fn application_unavailability_returns_without_retry_and_preserves_a_caller_resend()
+async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_resend()
 -> TestResult {
-    let attempts = Arc::new(AtomicUsize::new(0));
-    let calls = Arc::clone(&attempts);
-    let client = client_with_interceptor(MemoryStream::default(), move |request: Request<()>| {
-        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            Err(Status::unavailable("application refusal"))
-        } else {
-            Ok(request)
-        }
-    })?;
-    let key = IdempotencyKey::unique();
-    let error = client
-        .inspect_idempotency(key.clone())
-        .await
-        .expect_err("the original application refusal must be returned");
-    assert_eq!(
-        original(&error_status(&error)),
-        original(&Status::unavailable("application refusal"))
-    );
-    assert_eq!(attempts.load(Ordering::SeqCst), 1);
-    // The same live server accepts the caller's next request. An automatic
-    // readiness retry would consume this response before returning the error.
-    assert_eq!(client.inspect_idempotency(key).await, Ok(None));
-    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    for error in StreamError::ALL {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&attempts);
+        let provider = MemoryStream::default();
+        // The shipping encoder's status crosses real HTTP/2 trailers before
+        // the public client decodes it.
+        let original = wire_codec::error_status(&error);
+        let client = client_with_interceptor(provider.clone(), move |request: Request<()>| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(original.clone())
+            } else {
+                Ok(request)
+            }
+        })?;
+        let request = AppendRequest {
+            path: StreamPath::new("application-error/original")?,
+            records: vec![OwnedBytes::from_static(b"original caller body").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        assert_eq!(
+            client.append(request.clone()).await,
+            Err(error.clone()),
+            "public transport changed application error {error:?}"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?,
+            None
+        );
+        // The same live server accepts the caller's next request. An automatic
+        // readiness retry would consume this response before returning the error.
+        let outcome = client.append(request.clone()).await?;
+        assert!(matches!(outcome, AppendOutcome::Committed(_)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        let observation = provider
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .ok_or("public append lost original idempotency key")?;
+        assert_eq!(observation.idempotency_key, request.idempotency_key);
+        // The original provider's keyed replay checks the entire caller command,
+        // including its path, condition and body, against what crossed the wire.
+        assert_eq!(provider.append(request.clone()).await?, outcome);
+        assert_eq!(client.append(request.clone()).await?, outcome);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(provider.tail(request.path).await?, 1);
+    }
     Ok(())
 }
 

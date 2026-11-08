@@ -43,6 +43,13 @@ pub(crate) struct JournalFrame<'a> {
     pub(crate) command: &'a WriteRequest,
     /// Trusted proposal clock. A journal that owns the acceptance clock may
     /// replace it; installation binds that returned stamp to the original plan.
+    #[cfg(any(
+        all(feature = "local", not(target_arch = "wasm32")),
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
+    ))]
     pub(crate) at_millis: u64,
     pub(crate) deadline: Option<u64>,
     #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
@@ -58,21 +65,41 @@ pub(crate) enum AppendIf {
         head: u64,
     },
     /// Proven refusal before any durable edit.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     Refused(StreamError),
 }
 
 pub(crate) struct Execution {
     pub(crate) outcome: WriteOutcome,
-    pub(crate) allocation: crate::memory::Allocation,
+    // Retain the original reply claim even when an adapter only takes its outcome.
+    pub(crate) _allocation: crate::memory::Allocation,
 }
 
 #[derive(Default)]
-struct Attempt {
+struct AttemptResult {
     started: bool,
     appended: Option<AppendIf>,
 }
 
-impl Attempt {
+struct Attempt<'a> {
+    result: AttemptResult,
+    failed: &'a mut bool,
+    revisions: &'a AppliedRevisions,
+}
+
+impl<'a> Attempt<'a> {
+    fn new(failed: &'a mut bool, revisions: &'a AppliedRevisions) -> Self {
+        Self {
+            result: AttemptResult::default(),
+            failed,
+            revisions,
+        }
+    }
+
+    fn finish(mut self) -> AttemptResult {
+        std::mem::take(&mut self.result)
+    }
+
     fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
@@ -80,7 +107,7 @@ impl Attempt {
         frame: JournalFrame<'_>,
     ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
         async move {
-            self.started = true;
+            self.result.started = true;
             let result = journal.append_if(expected, &[frame]).await?;
             let outcome = match &result {
                 AppendIf::Accepted {
@@ -93,15 +120,27 @@ impl Attempt {
                     Ok(Some(*at_millis))
                 }
                 AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 AppendIf::Refused(error) => Err(error.clone()),
             };
-            self.appended = Some(result);
+            self.result.appended = Some(result);
             outcome
         }
     }
 }
 
-/// Storage owns physical ordering, durability, its acceptance clock and events.
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        // A dropped durability waiter proves neither refusal nor installation.
+        // Retire its original authority before another observer can use its cut.
+        if self.result.started {
+            *self.failed = true;
+            self.revisions.close();
+        }
+    }
+}
+
+/// Storage owns physical ordering, durability and its acceptance clock.
 /// It never evaluates Stream conditions or invents a replacement retry identity.
 pub(crate) trait CommandJournal: ProviderPlatform {
     fn append_if(
@@ -114,6 +153,11 @@ pub(crate) trait CommandJournal: ProviderPlatform {
         from: u64,
         page: usize,
     ) -> impl Future<Output = Result<JournalPage, StreamError>> + ProviderTask;
+}
+
+/// Journal notifications for replicas refreshed by an independent writer.
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub(crate) trait JournalNotifications: CommandJournal {
     /// Registers atomically against `after`; an already advanced head is ready.
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
 }
@@ -136,7 +180,9 @@ impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
         (**self).observe(provider, command, after)
     }
 }
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
 struct NoopObserver;
+#[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
 impl ReplayObserver for NoopObserver {
     fn observe<'a>(
         &'a mut self,
@@ -187,11 +233,16 @@ impl<J: CommandJournal> Replicated<J> {
         self
     }
 
+    #[cfg(any(feature = "local", feature = "postgres"))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }
 
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        any(feature = "local", feature = "postgres"),
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn set_proposal_clock(&self, millis: u64) {
         self.clock.set(millis);
     }
@@ -210,7 +261,7 @@ impl<J: CommandJournal> Replicated<J> {
     }
 
     /// A proven stale cut refuses this proposal without invalidating the replica.
-    fn complete<T>(&mut self, attempt: Attempt, result: &Result<T, StreamError>) -> bool {
+    fn complete<T>(&mut self, attempt: AttemptResult, result: &Result<T, StreamError>) -> bool {
         match attempt.appended {
             Some(AppendIf::Stale { head }) if head > self.cursor => {
                 self.stale = true;
@@ -223,6 +274,7 @@ impl<J: CommandJournal> Replicated<J> {
                 self.cursor = sequence;
                 self.clock.set(at_millis);
             }
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             Some(AppendIf::Refused(_)) => {}
             Some(_) => self.fail(),
             None if attempt.started
@@ -257,21 +309,23 @@ impl<J: CommandJournal> Replicated<J> {
             at_millis: self.clock.now_unix_millis(),
             deadline: request.deadline_unix_millis,
         };
-        let mut attempt = Attempt::default();
+        let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
         let result = plan
             .with_commit_clock(Arc::clone(&self.clock) as _)
             .settle_durable(body, attempt.persist(&mut self.journal, expected, frame))
             .await
             .map(|(outcome, allocation)| Execution {
                 outcome: WriteOutcome::Commit(outcome),
-                allocation,
+                _allocation: allocation,
             });
+        let attempt = attempt.finish();
         if !self.complete(attempt, &result) {
             return Err(StreamError::PrefixNotRetained);
         }
         result
     }
 
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
     pub(crate) async fn refresh(&mut self, page: usize) -> Result<(), StreamError> {
         self.refresh_with(page, &mut NoopObserver).await
     }
@@ -343,13 +397,18 @@ impl<J: CommandJournal> Replicated<J> {
         result
     }
 
+    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
     pub(crate) fn changed(
         &mut self,
-    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError> {
+    ) -> Result<BoxProviderFuture<'static, Result<(), StreamError>>, StreamError>
+    where
+        J: JournalNotifications,
+    {
         self.check()?;
         Ok(self.journal.changed(self.cursor))
     }
 
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm-journal"))]
     pub(crate) fn execute(
         &mut self,
         command: WriteRequest,
@@ -403,9 +462,16 @@ impl<J: CommandJournal> Replicated<J> {
             }
             observe.observe(&self.provider, command, false).await?;
             let expected = self.cursor;
-            let mut attempt = Attempt::default();
+            let mut attempt = Attempt::new(&mut self.failed, &self.provider.revisions);
             let frame = JournalFrame {
                 command,
+                #[cfg(any(
+                    all(feature = "local", not(target_arch = "wasm32")),
+                    all(
+                        any(feature = "wasm", feature = "wasm-journal"),
+                        target_arch = "wasm32"
+                    )
+                ))]
                 at_millis: self.clock.now_unix_millis(),
                 deadline,
                 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
@@ -417,6 +483,7 @@ impl<J: CommandJournal> Replicated<J> {
                     .apply_durable(&canonical, deadline, persist)
                     .await
             };
+            let attempt = attempt.finish();
             // Exact accepted identities and mismatched immutable bindings are
             // authoritative at the retained cut. A local refusal needs one
             // current observation before it can be returned as current state.

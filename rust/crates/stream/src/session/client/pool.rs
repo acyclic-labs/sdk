@@ -14,6 +14,14 @@ pub(super) mod retry_model;
 #[cfg(all(not(loom), feature = "grpc", not(target_arch = "wasm32")))]
 mod route_searches;
 
+// Only the original dispatcher produces handshakes. Client and observation
+// clones must not keep that producer alive after its task is cancelled.
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.connections.close(StreamError::Unavailable);
+    }
+}
+
 impl Pool {
     pub(super) async fn run(&mut self) -> Result<(), StreamError> {
         loop {
@@ -37,8 +45,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(StreamError::Unavailable)) | None => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&error),
+                            Some(Err(transport::Failure { transient: true, .. })) | None => self.reconnect(&node)?,
+                            Some(Err(failure)) => self.fail_link(&node,&failure.error),
                         }
                     }
                     None => return Err(StreamError::Unavailable),
@@ -893,6 +901,7 @@ impl Pool {
         }
     }
     pub(super) fn fail(&mut self, error: &StreamError) {
+        self.connections.close(error.clone());
         for (_, mut route) in std::mem::take(&mut self.routes) {
             if let Some(input) = &route.input {
                 input.0.close(error.clone());

@@ -62,7 +62,7 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
             .into_inner()
             .map(|frame| frame.map_err(|_| StreamError::Unavailable))
             .boxed();
-        let session = serve_on_with_products(
+        let session = serve_on_with_products::<_, StreamError>(
             Arc::clone(&self.provider),
             Arc::clone(&self.authority),
             self.products.clone(),

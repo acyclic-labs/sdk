@@ -84,7 +84,7 @@ export class SessionNode {
     for (const connection of this.connections) if (connection.node === node && !connection.closed) {
       connection.closed = true;
       connection.routes.clear();
-      connection.output.end(new StreamError("unavailable", "test disconnect"));
+      connection.output.end(Object.assign(new StreamError("unavailable", "test disconnect"), { transient: true }));
     }
   }
   get active(): number { return this.connections.reduce((sum, connection) => sum + connection.routes.size, 0); }

@@ -239,26 +239,18 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         request: ChildrenPageRequest,
     ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
         async move {
-            let limit = request.limit;
-            let view = self
-                .heads(HeadsRequest {
-                    retained: Default::default(),
-                    durable_through: None,
-                    projection: HeadProjection::Watermarks,
-                    paths: Default::default(),
-                    children: Some(request),
-                    limit,
-                    at_least: Default::default(),
-                })
-                .await?;
-            if view.projection != HeadProjection::Watermarks || !view.heads.is_empty() {
-                return Err(StreamError::InvalidResponse);
-            }
-            let page = view.children.ok_or(StreamError::InvalidResponse)?;
-            if page.children.len() > limit as usize {
-                return Err(StreamError::InvalidResponse);
-            }
-            Ok(page)
+            let selection = HeadsRequest {
+                retained: Default::default(),
+                durable_through: None,
+                projection: HeadProjection::Watermarks,
+                paths: Default::default(),
+                limit: request.limit,
+                children: Some(request),
+                at_least: Default::default(),
+            };
+            let view = self.heads(selection.clone()).await?;
+            view.validate_for(&selection)?;
+            view.children.ok_or(StreamError::InvalidResponse)
         }
     }
 

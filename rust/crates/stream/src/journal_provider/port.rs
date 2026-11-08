@@ -182,31 +182,6 @@ impl CommandJournal for HostPort {
             at_millis,
         })
     }
-
-    fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
-        let (send, received) = futures::channel::oneshot::channel();
-        let mut send = Some(send);
-        let callback = Closure::<dyn FnMut()>::new(move || {
-            if let Some(send) = send.take() {
-                let _ = send.send(());
-            }
-        })
-        .into_js_value();
-        let registration = u32::try_from(after).map_err(unavailable).and_then(|after| {
-            self.journal
-                .changed(after, callback.unchecked_ref())
-                .map_err(unavailable)
-        });
-        Box::pin(async move {
-            let registration = Registration {
-                remove: registration?,
-                _callback: callback,
-            };
-            let result = received.await.map_err(unavailable);
-            drop(registration);
-            result
-        })
-    }
 }
 
 fn word(bytes: &[u8], start: usize) -> Result<u64, StreamError> {
@@ -217,14 +192,4 @@ fn word(bytes: &[u8], start: usize) -> Result<u64, StreamError> {
             .try_into()
             .map_err(unavailable)?,
     ))
-}
-
-struct Registration {
-    remove: js_sys::Function,
-    _callback: JsValue,
-}
-impl Drop for Registration {
-    fn drop(&mut self) {
-        let _ = self.remove.call0(&JsValue::NULL);
-    }
 }

@@ -12,7 +12,7 @@ pub(super) mod inspection;
 // Leaf lock: only transfers owned state/results and the waiter registration.
 // No provider guard is held here; wake and state destruction happen outside it.
 struct Completion<S: Snapshot> {
-    value: Option<(S, Option<S::Output>)>,
+    value: Option<(S, Result<S::Output, crate::StreamError>)>,
     waker: Option<Waker>,
     // The consumer is gone: its job must not acquire or keep a lock reservation.
     abandoned: bool,
@@ -33,7 +33,10 @@ pub(super) struct Job<S: Snapshot> {
 
 pub(super) fn new<S: Snapshot>(
     state: S,
-) -> (Job<S>, impl Future<Output = (S, Option<S::Output>)> + Send) {
+) -> (
+    Job<S>,
+    impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + Send,
+) {
     let completed = Arc::new(SyncMutex::new(Completion {
         value: None,
         waker: None,
@@ -42,13 +45,19 @@ pub(super) fn new<S: Snapshot>(
         #[cfg(loom)]
         mutant: super::model::mutant(),
     }));
+    #[cfg(all(test, not(loom)))]
+    let observation = {
+        let mut observation = inspection::take();
+        inspection::notify(&mut observation, &completed, inspection::Cut::Created);
+        observation
+    };
     let job = Job {
         state: Some(state),
         completed: completed.clone(),
         #[cfg(loom)]
         discard_on_drop: super::model::discard_on_drop(),
         #[cfg(all(test, not(loom)))]
-        observation: inspection::take(),
+        observation,
     };
     (
         job,
@@ -69,22 +78,26 @@ struct Receiver<S: Snapshot> {
 }
 
 impl<S: Snapshot> Future for Receiver<S> {
-    type Output = (S, Option<S::Output>);
+    type Output = (S, Result<S::Output, crate::StreamError>);
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Self::Output> {
-        let value = {
+        let waker = cx.waker().clone();
+        let (value, previous) = {
             let mut completed = self
                 .completed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let value = completed.value.take();
-            if value.is_none() {
-                completed.waker = Some(cx.waker().clone());
-            }
-            value
+            let previous = if value.is_none() {
+                completed.waker.replace(waker)
+            } else {
+                None
+            };
+            (value, previous)
         };
+        drop(previous);
         match value {
             Some(value) => {
                 self.satisfied = true;
@@ -111,21 +124,31 @@ impl<S: Snapshot> Drop for Receiver<S> {
             #[cfg(not(loom))]
             return;
         }
-        let (value, worker) = {
+        #[cfg(loom)]
+        let skip_wake;
+        let (value, waker, worker) = {
             let mut completed = self
                 .completed
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             completed.abandoned = true;
-            completed.waker = None;
             #[cfg(loom)]
-            if completed.mutant == super::model::Mutant::NoWake {
-                completed.worker = None;
+            {
+                skip_wake = completed.mutant == super::model::Mutant::NoWake;
             }
-            (completed.value.take(), completed.worker.take())
+            (
+                completed.value.take(),
+                completed.waker.take(),
+                completed.worker.take(),
+            )
         };
         // State destruction and the wake happen outside the leaf lock.
         drop(value);
+        drop(waker);
+        #[cfg(loom)]
+        if skip_wake {
+            return;
+        }
         if let Some(worker) = worker {
             worker.wake();
         }
@@ -146,7 +169,8 @@ impl<S: Snapshot> Job<S> {
             // Abandonment is checked before every read poll, so a job whose
             // consumer is gone never enters, or stays queued on, a lock.
             poll_fn(|cx| {
-                {
+                let waker = cx.waker().clone();
+                let previous = {
                     let mut completed = completed.lock().unwrap_or_else(PoisonError::into_inner);
                     if completed.abandoned {
                         #[cfg(loom)]
@@ -155,25 +179,26 @@ impl<S: Snapshot> Job<S> {
                         }
                         return Poll::Ready(None);
                     }
-                    completed.worker = Some(cx.waker().clone());
-                }
+                    completed.worker.replace(waker)
+                };
+                drop(previous);
                 let result = read.as_mut().poll(cx).map(Some);
                 #[cfg(all(test, not(loom)))]
                 if result.is_pending() {
-                    inspection::notify(observation, inspection::Cut::Pending);
+                    inspection::notify(observation, &completed, inspection::Cut::Pending);
                 }
                 result
             })
             .await
         };
         match result {
-            Some(result) => self.finish(Some(result)),
+            Some(result) => self.finish(result),
             // Nobody receives the cursor; dropping it never advanced it twice.
             None => drop(self.state.take()),
         }
     }
 
-    fn finish(&mut self, result: Option<S::Output>) {
+    fn finish(&mut self, result: Result<S::Output, crate::StreamError>) {
         let Some(state) = self.state.take() else {
             return;
         };
@@ -183,14 +208,19 @@ impl<S: Snapshot> Job<S> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             completed.value = Some((state, result));
-            #[cfg(loom)]
-            if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
-                if let Some(waker) = completed.waker.take() {
-                    waker.wake();
+            let worker = {
+                #[cfg(loom)]
+                {
+                    if completed.mutant == super::model::Mutant::ArmedAfterCompletion {
+                        None
+                    } else {
+                        completed.worker.take()
+                    }
                 }
-                return;
-            }
-            (completed.waker.take(), completed.worker.take())
+                #[cfg(not(loom))]
+                completed.worker.take()
+            };
+            (completed.waker.take(), worker)
         };
         drop(worker);
         if let Some(waker) = waker {
@@ -207,8 +237,12 @@ impl<S: Snapshot> Drop for Job<S> {
         }
         // The awaited read is dropped before this owner, so cancellation has
         // already released any queued/granted permit and has not moved a cursor.
-        self.finish(None);
+        self.finish(Err(crate::StreamError::Unavailable));
         #[cfg(all(test, not(loom)))]
-        inspection::notify(&mut self.observation, inspection::Cut::Retired);
+        inspection::notify(
+            &mut self.observation,
+            &self.completed,
+            inspection::Cut::Retired,
+        );
     }
 }
