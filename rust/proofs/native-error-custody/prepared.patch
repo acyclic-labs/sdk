@@ -7,7 +7,7 @@ index af6ebdd8663..761367e502f 100644
                                              &mut failed,
                                              task,
 -                                            Some(&observed_work),
-+                                            Some(&observed_work).filter(|_| false),
++                                            Some(observed_work.as_ref()).filter(|_| false),
                                          )
                                          .await
                                          {

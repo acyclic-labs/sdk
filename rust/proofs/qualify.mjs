@@ -1135,6 +1135,8 @@ if (claim === "--help" && extra.length === 0) {
     mkdirSync(directory, { recursive: true });
     const invocation = options.runner ?? ["cargo", ...selected];
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
+    console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
+    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
       const checkedPath = new URL(checkedSource, new URL("../../", import.meta.url));
@@ -1146,8 +1148,6 @@ if (claim === "--help" && extra.length === 0) {
         ? "Starting 1 test across 1 binary" : "running 1 test";
       require(result.output.includes(started));
     }
-    console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
-    console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
     return result;
   }
   try {
