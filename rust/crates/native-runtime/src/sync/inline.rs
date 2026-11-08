@@ -7,24 +7,32 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 
 #[derive(Debug, Default)]
-pub(crate) struct Mutex<T> {
+/// A poison-preserving mutex with its native lock storage inside the value.
+///
+/// Acquiring an uncontended lock needs no separate backing allocation. Contended
+/// waits use the shared parking service. Poison is advisory, as with
+/// [`std::sync::Mutex`]; callers can recover the original value from its error.
+pub struct Mutex<T> {
     inner: parking_lot::Mutex<T>,
     poisoned: AtomicBool,
 }
 
 impl<T> Mutex<T> {
-    pub(crate) const fn new(value: T) -> Self {
+    /// Creates a mutex without allocating its lock storage separately.
+    pub const fn new(value: T) -> Self {
         Self {
             inner: parking_lot::Mutex::new(value),
             poisoned: AtomicBool::new(false),
         }
     }
 
-    pub(crate) fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
+    /// Waits for ownership, returning the held guard even if an owner panicked.
+    pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         self.guard(self.inner.lock())
     }
 
-    pub(crate) fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
+    /// Attempts ownership once without waiting.
+    pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
         self.guard(self.inner.try_lock().ok_or(TryLockError::WouldBlock)?)
             .map_err(TryLockError::Poisoned)
     }
@@ -39,7 +47,9 @@ impl<T> Mutex<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct MutexGuard<'a, T> {
+/// Exclusive ownership of an inline mutex; dropping it publishes poison before
+/// releasing the lock if its owner started unwinding while holding it.
+pub struct MutexGuard<'a, T> {
     inner: parking_lot::MutexGuard<'a, T>,
     poisoned: &'a AtomicBool,
     panicking: bool,
@@ -78,22 +88,29 @@ impl<T> Drop for MutexGuard<'_, T> {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct Condvar(parking_lot::Condvar);
+/// A condition variable paired with an inline mutex.
+///
+/// Notifications are not retained. Waiters must check their predicate while
+/// holding the mutex and recheck it after waking. Like the native parking
+/// condition, each instance must use only one mutex at a time.
+pub struct Condvar(parking_lot::Condvar);
 
 impl Condvar {
-    pub(crate) const fn new() -> Self {
+    /// Creates an empty condition variable.
+    pub const fn new() -> Self {
         Self(parking_lot::Condvar::new())
     }
 
-    pub(crate) fn wait<'a, T>(
-        &self,
-        mut guard: MutexGuard<'a, T>,
-    ) -> LockResult<MutexGuard<'a, T>> {
+    /// Releases ownership until notified, then reacquires the same mutex and
+    /// reports its poison state.
+    pub fn wait<'a, T>(&self, mut guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         self.0.wait(&mut guard.inner);
         checked(guard)
     }
 
-    pub(crate) fn wait_timeout<'a, T>(
+    /// Waits for notification or the requested duration, then reacquires the
+    /// same mutex. A poison error retains both the guard and timeout result.
+    pub fn wait_timeout<'a, T>(
         &self,
         mut guard: MutexGuard<'a, T>,
         timeout: std::time::Duration,
@@ -104,11 +121,13 @@ impl Condvar {
             .map_err(|error| PoisonError::new((error.into_inner(), elapsed)))
     }
 
-    pub(crate) fn notify_one(&self) {
+    /// Wakes one waiter, if present.
+    pub fn notify_one(&self) {
         self.0.notify_one();
     }
 
-    pub(crate) fn notify_all(&self) {
+    /// Wakes every currently registered waiter.
+    pub fn notify_all(&self) {
         self.0.notify_all();
     }
 }

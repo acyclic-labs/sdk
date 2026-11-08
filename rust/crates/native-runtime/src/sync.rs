@@ -1,8 +1,8 @@
 //! Model builds instrument the same queue and completion locks as native runs.
 #[cfg(not(loom))]
-pub(crate) use inline::{Condvar, Mutex, MutexGuard};
+pub use inline::{Condvar, Mutex, MutexGuard};
 #[cfg(loom)]
-pub(crate) use loom::sync::{Condvar, Mutex, MutexGuard};
+pub use loom::sync::{Condvar, Mutex, MutexGuard};
 #[cfg(not(loom))]
 pub(crate) use std::sync::mpsc;
 

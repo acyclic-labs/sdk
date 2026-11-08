@@ -19,6 +19,7 @@ mod delivery;
 mod host_index;
 mod sync;
 use sync::Mutex as CompletionMutex;
+pub use sync::{Condvar as InlineCondvar, Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
