@@ -620,6 +620,19 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
         assert_eq!(view.lookup(&b)?.expect("alias").node.logical_bytes, 7);
         assert_eq!(view.read_range(&b, 0, 7)?.as_ref(), b"second!");
         assert_eq!(view.open_file(&b)?.read_range(0, 7)?.as_ref(), b"second!");
+        let c = mounted(&["c"]);
+        let linked = view.hard_link(&b, &c, Some(identity), true, &work)?;
+        let facts = linked.facts.expect("authorized hard-link facts");
+        assert_eq!(
+            facts.lookup.node.logical_bytes, 7,
+            "hard-link reply discarded current detached file facts"
+        );
+        assert_eq!(facts.lookup.node.file_id, identity);
+        assert_eq!(facts.lookup.metadata, open.lookup()?.metadata);
+        assert_eq!(facts.lookup.node.link_count, 2);
+        assert_eq!(facts.stamp, linked.stamp);
+        assert_eq!(view.open_file(&c)?.read_range(0, 7)?.as_ref(), b"second!");
+        view.remove(&c, Some(identity), &work)?;
         if write_before_unlink {
             view.remove(&b, Some(identity), &work)?;
             open.write_range(0, Bytes::from_static(b"orphan!"))?;

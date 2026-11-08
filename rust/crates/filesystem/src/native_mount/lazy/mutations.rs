@@ -355,10 +355,18 @@ macro_rules! mutation_callbacks {
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_locked(source, Some(work))?;
             self.promote_parents_locked(destination, work)?;
-            let linked = self
+            let mut linked = self
                 .authored
                 .hard_link(source, destination, expected, facts, work)?;
             self.record_rebound(&self.path(destination, work)?.0)?;
+            if let Some(facts) = &mut linked.facts {
+                facts.lookup = self.project_authored(facts.lookup, work)?;
+                match self.require_path(source, crate::access::Action::List, work) {
+                    Ok(()) => {}
+                    Err(MountSourceError::AccessDenied) => linked.facts = None,
+                    Err(error) => return Err(error),
+                }
+            }
             Ok(linked)
         }
 

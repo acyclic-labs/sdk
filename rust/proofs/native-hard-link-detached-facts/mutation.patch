@@ -1,0 +1,24 @@
+diff --git b/rust/crates/filesystem/src/native_mount/lazy/mutations.rs a/rust/crates/filesystem/src/native_mount/lazy/mutations.rs
+index 7439d5f982f..e5555cb33bd 100644
+--- b/rust/crates/filesystem/src/native_mount/lazy/mutations.rs
++++ a/rust/crates/filesystem/src/native_mount/lazy/mutations.rs
+@@ -355,18 +355,10 @@ macro_rules! mutation_callbacks {
+             let _mutation = self.mutation_lease(None, Some(work))?;
+             self.promote_locked(source, Some(work))?;
+             self.promote_parents_locked(destination, work)?;
+-            let mut linked = self
++            let linked = self
+                 .authored
+                 .hard_link(source, destination, expected, facts, work)?;
+             self.record_rebound(&self.path(destination, work)?.0)?;
+-            if let Some(facts) = &mut linked.facts {
+-                facts.lookup = self.project_authored(facts.lookup, work)?;
+-                match self.require_path(source, crate::access::Action::List, work) {
+-                    Ok(()) => {}
+-                    Err(MountSourceError::AccessDenied) => linked.facts = None,
+-                    Err(error) => return Err(error),
+-                }
+-            }
+             Ok(linked)
+         }
+ 

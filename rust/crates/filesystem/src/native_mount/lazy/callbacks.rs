@@ -345,7 +345,7 @@ where
                         .await?;
                     match self.resolve(path, &text, owner, work).await? {
                         Resolution::Authored(lookup) => {
-                            Ok(Some((self.project_authored(lookup, work).await?, None)))
+                            Ok(Some((self.project_authored(lookup, work)?, None)))
                         }
                         Resolution::Absent => Ok(None),
                         Resolution::Unauthored(lookup, _allocation) => {
