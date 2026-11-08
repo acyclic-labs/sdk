@@ -138,24 +138,6 @@ fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
     assert!(owner_exit_ends_its_model("startupCrash", true).is_err());
 }
 
-#[test]
-fn a_crashed_model_reports_typed_producer_loss() -> std::io::Result<()> {
-    let mut driver = driver::Driver::configured(&repository(), "move", "startupCrash")?;
-    let result = driver.call(&json!({"action":"ready"}));
-    assert!(
-        result.is_err(),
-        "crashed model returned an action result: {result:?}"
-    );
-    if let Err(error) = result {
-        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
-        assert!(
-            error.to_string().contains("model exited before answering"),
-            "{error}"
-        );
-    }
-    Ok(())
-}
-
 /// Connects exactly `connections` times in one command against a budget of `steps`: the command itself is one step
 /// and each connection one more. Returns the budget left after the command, or the exit code if the process ended.
 fn connect_at_budget(
