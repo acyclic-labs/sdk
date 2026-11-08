@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, copyFile, mkdir, rename, rm, rmdir } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import test from "node:test";
+import { McpClient } from "../../shared/mcp-client.mjs";
 import { Processes, Spool } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
 import { environment, nativeEnvironment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
@@ -11,18 +12,18 @@ import { withOwnedCase } from "../../../scripts/graphcoder-e2e/suite.mjs";
 import { nativePackage } from "./native-model.mjs";
 import { startWorkspaceOwner } from "./workspace-owner.mjs";
 
-const recovery = "Set ACYCLIC_TEST_BINARY, E2E_GRAPHCODER and E2E_AGY to matching absolute executables; run node --test --test-concurrency=1 plugin/tests/hosts/agy-capture-admission.test.mjs";
+const recovery = "Set ACYCLIC_TEST_BINARY, E2E_GRAPHCODER, E2E_AGY and E2E_MOCK_MODEL to matching absolute executables; run node --test --test-concurrency=1 plugin/tests/hosts/agy-capture-admission.test.mjs";
 
-// This is a native admission control, not a successful model-turn control. A
-// real provider request is answered with an empty 401; no model is purchased.
-test("native AGY refuses a failed shared capture before provider admission and admits after restoration", async t => {
-  const binaries = ["ACYCLIC_TEST_BINARY", "E2E_GRAPHCODER", "E2E_AGY"].map(name => {
+// The native host produces the hooks, requests and terminals. Authentication
+// refusal and the shared model server exercise both admitted outcomes locally.
+test("native AGY fences capture, executes tools and settles managed children", async t => {
+  const binaries = ["ACYCLIC_TEST_BINARY", "E2E_GRAPHCODER", "E2E_AGY", "E2E_MOCK_MODEL"].map(name => {
     const path = process.env[name];
     assert.ok(isAbsolute(path ?? ""), `step=admit ${name}; recovery=${recovery}`);
     return path;
   });
-  const [binary, graphcoder, nativeAgy] = binaries;
-  let root, provider, retained;
+  const [binary, graphcoder, nativeAgy, mock] = binaries;
+  let root, provider, retained, succeeded = false;
   let step = "create exclusive native profile";
   const scope = new Processes();
   try {
@@ -90,9 +91,10 @@ test("native AGY refuses a failed shared capture before provider admission and a
       await request({ kind: "hook", host: "agy", event: "ToolBoundary", input: { task: opened.task } });
 
       const capability = randomBytes(32).toString("hex");
-      let requests = 0;
+      let requests = 0, nativePath;
       provider = createServer((request, response) => {
         requests++;
+        nativePath = new URL(request.url, "http://127.0.0.1").pathname;
         // The native client sees a terminal authentication refusal, so a
         // successful capture can prove admission without a model fixture.
         request.resume();
@@ -104,7 +106,7 @@ test("native AGY refuses a failed shared capture before provider admission and a
       Object.assign(env, { GEMINI_API_KEY: capability,
         GOOGLE_GEMINI_BASE_URL: `http://127.0.0.1:${provider.address().port}` });
       const args = ["--print=Capture the native pre-invocation hook without invoking a model.",
-        "--output-format", "stream-json", "--sandbox", "--mode", "plan",
+        "--output-format", "stream-json", "--sandbox", "--mode", "accept-edits",
         "--settings", JSON.stringify({ modelProvider: "gemini" })];
       // The native host produces every callback and terminal. Print mode leaves
       // the physical owner's cancellation pipe separate from native input.
@@ -130,6 +132,124 @@ test("native AGY refuses a failed shared capture before provider admission and a
       assert.notEqual(admitted.code, 0, "the fixture provider always refuses authentication");
       assert.equal(requests, 1, "restored shared capture must admit exactly the original native provider request");
       assert.doesNotMatch(admitted.stdout, /host-admitted mount root was replaced/);
+      assert.match(nativePath, /^\/[^/]+\/models\/[^/]+:streamGenerateContent$/);
+
+      step = "start the shared native model producer";
+      const prompt = "Write the native AGY tool marker, then return the completion marker.", answer = "native-agy-completed";
+      const written = join(workspace, "native-tool.txt"), contents = "native-agy-tool-write";
+      const children = ["first", "second"].map(reference => ({ reference,
+        prompt: `Return the native AGY ${reference} child marker.`, answer: `native-agy-${reference}-child` }));
+      const coordinationPrompt = "Spawn the managed native AGY child, wait for its reply, then return the coordination marker.";
+      const childPrompt = "Return the model-coordinated native AGY child marker.", childAnswer = "native-agy-coordinated-child";
+      const coordinationAnswer = "native-agy-coordination-completed";
+      const coordinate = (id, name, Arguments) => ({ id, name: "call_mcp_tool",
+        arguments: { ServerName: "acyclic_sessions", ToolName: name, Arguments } });
+      const script = join(root, "model.json"), recorded = join(root, "model-requests.jsonl");
+      const namespace = nativePath.split("/")[1];
+      await writeFile(script, JSON.stringify({ cases: { [namespace]: { steps: [
+        { when: { user: prompt }, tools: [{ id: "native-write", name: "write_file",
+          arguments: { Path: written, Content: contents } }] },
+        { when: { contains: "\"functionResponse\"" }, text: [answer] },
+        ...children.map(child => ({ when: { user: child.prompt }, text: [child.answer] })),
+        { when: { user: coordinationPrompt }, tools: [coordinate("native-spawn", "spawn",
+          { reference: "model-child", prompt: childPrompt })] },
+        { when: { user: childPrompt }, tools: [{ id: "child-write", name: "write_file",
+          arguments: { Path: "native-child.txt", Content: "native-agy-child-write" } }] },
+        { when: { user: childPrompt, contains: "\"functionResponse\"" }, text: [childAnswer] },
+        { when: { user: coordinationPrompt, tool_result: "native:spawn" },
+          tools: [coordinate("native-wait", "wait", { reference: "model-child" })] },
+        { when: { user: coordinationPrompt, tool_result: childAnswer }, text: [coordinationAnswer] },
+      ] } } }));
+      const model = scope.start(mock, ["--script", script, "--record", recorded], { env });
+      const modelEvents = new Spool(model.child.stdout, model.closed, {
+        key: event => event.event === "ready" ? ["ready"] : [], unique: true,
+      });
+      const { port } = await modelEvents.keyed("ready");
+      env.GOOGLE_GEMINI_BASE_URL = `http://127.0.0.1:${port}`;
+      step = "complete an original native tool turn after successful capture";
+      const toolArgs = [`--print=${prompt}`, ...args.slice(1)];
+      toolArgs[toolArgs.indexOf("--mode") + 1] = "accept-edits";
+      const completed = await invoke(toolArgs);
+      const calls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      t.diagnostic(JSON.stringify({ role: "model", requests: calls }));
+      assert.equal(completed.code, 0, completed.stderr + completed.stdout);
+      const terminal = completed.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+        .find(event => event.event === "result")?.result;
+      assert.equal(terminal?.status, "SUCCESS", "native AGY omitted its successful terminal");
+      assert.equal(terminal.response.trimEnd(), answer);
+      assert.equal(terminal.error, undefined);
+      assert.deepEqual(calls.map(call => [call.status, call.step]), [[200, 0], [200, 1]],
+        "native AGY must complete the original tool exchange before its final model step");
+      const returned = calls[1].body.contents.flatMap(content => content.parts)
+        .find(part => part.functionResponse)?.functionResponse;
+      assert.equal(returned?.name, "write_file");
+      assert.equal(await readFile(written, "utf8"), contents, "native AGY wrote outside its admitted workspace");
+
+      step = "settle two original native children through the shared process owner";
+      env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits",
+        "--settings", JSON.stringify({ modelProvider: "gemini" }), "--add-dir", workspace]);
+      const bridge = scope.start(staged.executable, ["__mcp", "agy"], { cwd: workspace, env });
+      const client = new McpClient(bridge.child, { name: "native-agy-conformance", version: "1", recovery });
+      const call = async (name, args) => {
+        const result = await client.request(name, args);
+        t.diagnostic(JSON.stringify({ role: "coordination", name, args, result }));
+        assert.ok(!result.isError, JSON.stringify(result));
+        return JSON.parse(result.content[0].text);
+      };
+      try {
+        const spawned = [];
+        for (const child of children) spawned.push(await call("spawn", {
+          reference: child.reference, prompt: child.prompt,
+        }));
+        assert.notEqual(spawned[0].cwd, spawned[1].cwd, "managed children shared a native working directory");
+        for (const child of spawned) assert.notEqual(child.cwd, workspace);
+        const replies = await Promise.all(children.map(child => call("wait", { reference: child.reference })));
+        for (const [index, reply] of replies.entries()) {
+          assert.equal(reply.reply.kind, "answered", JSON.stringify(reply));
+          assert.equal(reply.reply.outcome.Succeeded?.text.trimEnd(), children[index].answer, JSON.stringify(reply));
+          assert.equal(reply.status.settled, true, "native reply preceded physical process settlement");
+        }
+      } finally {
+        bridge.input.end();
+        const result = await bridge.closed;
+        t.diagnostic(JSON.stringify({ role: "coordination-owner", ...result }));
+        assert.equal(result.code, 0, result.stderr);
+      }
+      const allCalls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      t.diagnostic(JSON.stringify({ role: "model-with-children", requests: allCalls }));
+      assert.deepEqual(allCalls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
+        [[200, 0], [200, 1], [200, 2], [200, 3]], "each original native child must complete one model request");
+      step = "complete native model-issued coordination through the installed MCP adapter";
+      const coordinatedArgs = [...toolArgs]; coordinatedArgs[0] = `--print=${coordinationPrompt}`;
+      // Headless native MCP calls require explicit user policy, independently
+      // of edit approval. Grant only these two coordination operations.
+      coordinatedArgs[coordinatedArgs.indexOf("--settings") + 1] = JSON.stringify({ modelProvider: "gemini",
+        permissions: { allow: ["mcp(acyclic_sessions/spawn)", "mcp(acyclic_sessions/wait)"] } });
+      const coordinated = await invoke(coordinatedArgs);
+      const coordinatedCalls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      t.diagnostic(JSON.stringify({ role: "model-coordination", requests: coordinatedCalls }));
+      assert.equal(coordinated.code, 0, coordinated.stderr + coordinated.stdout);
+      const coordinatedTerminal = coordinated.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+        .find(event => event.event === "result")?.result;
+      assert.equal(coordinatedTerminal?.status, "SUCCESS", JSON.stringify(coordinatedTerminal));
+      assert.equal(coordinatedTerminal.response.trimEnd(), coordinationAnswer);
+      assert.deepEqual(coordinatedCalls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
+        Array.from({ length: 9 }, (_, step) => [200, step]), "native spawn and wait must each return before the final model step");
+      const waitResponse = coordinatedCalls.at(-1).body.contents.flatMap(content => content.parts)
+        .findLast(part => part.functionResponse?.id === "native-wait").functionResponse.response.output;
+      const childReply = JSON.parse(waitResponse.trimEnd().split("\n").at(-1));
+      assert.equal(childReply.status.settled, true);
+      assert.equal(await readFile(join(childReply.cwd, "native-child.txt"), "utf8"), "native-agy-child-write",
+        "writing native child did not capture its file in the admitted view");
+      step = "inspect native profile session storage after physical settlement";
+      const profileFiles = await readdir(join(profile, ".gemini"), { recursive: true });
+      t.diagnostic(JSON.stringify({ role: "native-profile-paths", files: profileFiles }));
+      const nativeProfile = join(profile, ".gemini", "antigravity-cli");
+      assert.ok(profileFiles.includes("antigravity-cli"), "native plugin/session profile escaped the trial HOME");
+      const persisted = await readdir(nativeProfile, { recursive: true });
+      assert.ok(persisted.some(path => path.includes(coordinatedTerminal.conversation_id)),
+        "original native conversation absent from trial profile");
+      succeeded = true;
     } });
   } catch (cause) {
     throw new Error(`step=${step}: ${cause.message}; recovery=${recovery}`, { cause });
@@ -137,8 +257,9 @@ test("native AGY refuses a failed shared capture before provider admission and a
     try {
       await scope.close();
       if (provider) { provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve)); }
-      // A failed restoration retains its directory and original native logs.
-      if (root && !retained) await rm(root, { recursive: true });
+      // Failure retains the original native logs after physical retirement.
+      if (root && !retained && succeeded) await rm(root, { recursive: true });
+      else if (root) t.diagnostic(JSON.stringify({ retained_native_fixture: root }));
     } catch (cause) {
       throw new Error(`step=retire native capture fixture: ${cause.message}; recovery=${recovery}`, { cause });
     }
