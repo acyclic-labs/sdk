@@ -10,11 +10,8 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     std::fs::create_dir(&directory).map_err(storage)?;
     std::fs::create_dir(&foreign).map_err(storage)?;
     let state = temporary_directory()?;
-    let model = Model::new("scripted".into(), "execution-grants".into(), "1".into())?;
-    let provider = Arc::new(crate::test_support::ScriptedModelProvider::new([]));
     let fixture = LocalHarness::open(
-        crate::test_support::local_harness_config(&directory, (model, provider))?
-            .state_directory(state.path()),
+        LocalHarnessConfig::native_host(&directory).state_directory(state.path()),
     )
     .await?;
     let workspace = fixture.workspace.as_ref().expect("checkout");
@@ -107,9 +104,10 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                     grant,
                 )
                 .await?;
-            let context = ToolContext::new(task.clone(), OperationId::new(), "host-grant")?;
-            let refused =
-                if hook {
+            // Reuse this same installed grant through two independent child calls.
+            for _ in 0..2 {
+                let context = ToolContext::new(task.clone(), OperationId::new(), "host-grant")?;
+                let refused = if hook {
                     let output = executor
                         .run_hooks(
                             (&hooks, [1; 32]),
@@ -127,14 +125,6 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                             "execution working directory escapes the granted workspace"
                         ));
                         assert!(output.blocks());
-                        true
-                    } else if access.is_some()
-                        && matches!(output.diagnostics.as_slice(), [crate::hooks::HookDiagnostic {
-                        cause: crate::ProcessError::Io { exit_code: None, message },
-                        blocking: true,
-                    }] if message.starts_with("unsupported capability: Landlock "))
-                    {
-                        assert!(output.additional_context.is_empty());
                         true
                     } else {
                         assert!(output.diagnostics.is_empty(), "{output:?}");
@@ -157,12 +147,6 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                             );
                             true
                         }
-                        Err(Error::Unsupported(reason))
-                            if access.is_some() && reason.starts_with("Landlock ") =>
-                        {
-                            assert!(!wrong_workspace);
-                            true
-                        }
                         other => {
                             let result = other?;
                             assert!(!wrong_workspace, "{result:?}");
@@ -171,18 +155,19 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
                         }
                     }
                 };
-            assert_eq!(
-                std::fs::read_to_string(&outside).map_err(storage)?,
-                if access.is_none() {
-                    "changed"
-                } else {
-                    "original"
-                }
-            );
-            assert_eq!(
-                inside.exists(),
-                !refused && access != Some(ExecutionAccess::ReadOnly)
-            );
+                assert_eq!(
+                    std::fs::read_to_string(&outside).map_err(storage)?,
+                    if access.is_none() {
+                        "changed"
+                    } else {
+                        "original"
+                    }
+                );
+                assert_eq!(
+                    inside.exists(),
+                    !refused && access != Some(ExecutionAccess::ReadOnly)
+                );
+            }
         }
     }
     Ok(())
