@@ -16,8 +16,10 @@ pub struct Settlement {
 
 /// `agent`'s settlement if it has settled every inbox record committed before this
 /// call ([`Phase::Idle`] or [`Phase::Done`]), else `None`: one read of its
-/// inbox tail and its original actor state, never a wait. `within` selects
+/// inbox tail and its original actor state, read concurrently. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
+/// An inbox cut newer than the actor checkpoint can only defer settlement:
+/// the checkpoint must cover that cut before an idle agent is returned.
 ///
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
@@ -27,11 +29,10 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
 ) -> Result<Option<Settlement>, Error> {
-    let inbox = inbox_tail(&**provider, agent).await?;
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
-    let (state, cursor) = super::handler::Agents::new(super::actor_store(provider)?)
-        .state(&actor, agent)
-        .await?;
+    let agents = super::handler::Agents::new(super::actor_store(provider)?);
+    let (inbox, (state, cursor)) =
+        futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
     if matches!(state.phase, Phase::Done { .. })
         || state.phase == Phase::Idle && state.settled_before(cursor) >= inbox
     {
