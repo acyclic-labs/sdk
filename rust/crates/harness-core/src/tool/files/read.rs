@@ -12,32 +12,53 @@ impl FileTool {
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let invalid = |reason| rejection(work, reason);
         let mut input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
-            let layer = context.effective_tool_path(&input.0.path, io).await?;
-            input.0.path = layer.into_owned();
-        }
+        let layer = if let Some(relative) = input.0.path.strip_prefix(crate::layers::EFFECTIVE_PATH)
+        {
+            let (path, selected) = context.effective_tool_path(relative, io).await?;
+            input.0.path = path;
+            selected
+        } else {
+            None
+        };
+        let selected = layer
+            .as_ref()
+            .filter(|_| input.0.version.is_none())
+            .map(|(selected, _)| selected);
         if input.0.range.is_some() && input.0.selection.is_some() {
             return Err(invalid(
                 "byte ranges and projections are mutually exclusive",
             ));
         }
         if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
-            return super::lines::read(context, &input.0, offset, limit, work, io).await;
+            return super::lines::read(context, &input.0, selected, offset, limit, work, io).await;
         }
         if let Some(ReadSelection::Cells { offset, limit }) = input.0.selection {
-            return super::notebook_read::read(context, &input.0, offset, limit, work, io).await;
+            return super::notebook_read::read(
+                context, &input.0, selected, offset, limit, work, io,
+            )
+            .await;
         }
         if input.0.selection.is_none()
             && input.0.range.is_none()
             && input.0.path.ends_with(".ipynb")
         {
-            return super::notebook_read::read(context, &input.0, 0, None, work, io).await;
+            return super::notebook_read::read(context, &input.0, selected, 0, None, work, io)
+                .await;
         }
         if input.0.selection.is_none() {
-            return self.read_path_range(context, &input.0, work, io).await;
+            return self
+                .read_path_range(context, &input.0, selected, work, io)
+                .await;
         }
         let source = self
-            .source(context, &input.0.path, input.0.version.as_deref(), work, io)
+            .source(
+                context,
+                &input.0.path,
+                input.0.version.as_deref(),
+                selected,
+                work,
+                io,
+            )
             .await?;
         self.media_result(source.file, input.0.selection.clone(), work)
     }
@@ -46,6 +67,7 @@ impl FileTool {
         &self,
         context: &ToolContext,
         input: &ReadFileInput,
+        selected: Option<&crate::conversation::FilePathSelection>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
@@ -66,6 +88,7 @@ impl FileTool {
         let window = super::window::Window::first(
             context,
             input,
+            selected,
             acyclic_fs::ByteRange {
                 offset: start,
                 length: count.min(window).max(1),
@@ -94,13 +117,8 @@ impl FileTool {
                 };
                 // Native input needs complete bytes. Resolve only this already
                 // selected generation; a concurrent head cannot substitute it.
-                let source = super::executor::Source::read(
-                    context,
-                    &input.path,
-                    Some(&selected.generation),
-                    io,
-                )
-                .await?;
+                let source =
+                    super::executor::Source::selected(context, &input.path, &selected, io).await?;
                 return self.media_result(source.file, media, work);
             }
         }

@@ -223,6 +223,27 @@ const claims = {
       { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
     ] },
   ],
+  "effective-read-selection": [
+    "rust/crates/harness-core/src/tool/files/read.rs", "acyclic-harness-core",
+    "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+    "projection reselected head after its original home probe", ["--features", "filesystem"],
+    {
+      oracle: "rust/crates/harness-core/src/filesystem/memory/tests/layered_reads.rs",
+      mutations: [
+        { source: "rust/crates/harness-core/src/tool/files/executor.rs", patch: "rust/proofs/effective-read-selection/preflight.patch", label: "physical-preflight-before-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { patch: "rust/proofs/effective-read-selection/selection.patch", label: "discarded-original-layer-selection", diagnostic: "projection reselected head after its original home probe" },
+        { source: "rust/crates/harness-core/src/tool/files/authorization.rs", patch: "rust/proofs/effective-read-selection/token.patch", label: "bypassed-original-content-token-grant", diagnostic: "virtual path lost the original content token grant",
+          command: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority", "--", "--exact", "--nocapture"] },
+      ],
+      positiveCommand: ["test", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem", "--lib", "--", "--exact", "--nocapture",
+        "filesystem::memory::tests::layered_reads::every_effective_projection_keeps_the_original_probe_generation",
+        "filesystem::memory::tests::layered_reads::explicit_versions_keep_their_selection_across_a_new_home_probe",
+        "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
+        "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
+        "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
+      completed: ["5 passed; 0 failed"],
+    },
+  ],
   "task-binding-selection": [
     "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
     "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
