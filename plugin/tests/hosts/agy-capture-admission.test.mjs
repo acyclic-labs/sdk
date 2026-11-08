@@ -142,6 +142,9 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const coordinationPrompt = "Spawn the managed native AGY child, wait for its reply, then return the coordination marker.";
       const childPrompt = "Return the model-coordinated native AGY child marker.", childAnswer = "native-agy-coordinated-child";
       const coordinationAnswer = "native-agy-coordination-completed";
+      const childCommand = process.platform === "win32"
+        ? "Set-Content -NoNewline -LiteralPath native-command.txt -Value native-agy-command-write"
+        : "printf native-agy-command-write > native-command.txt";
       const coordinate = (id, name, Arguments) => ({ id, name: "call_mcp_tool",
         arguments: { ServerName: "acyclic_sessions", ToolName: name, Arguments } });
       const script = join(root, "model.json"), recorded = join(root, "model-requests.jsonl");
@@ -153,7 +156,9 @@ test("native AGY fences capture, executes tools and settles managed children", a
         ...children.map(child => ({ when: { user: child.prompt }, text: [child.answer] })),
         { when: { user: coordinationPrompt }, tools: [coordinate("native-spawn", "spawn",
           { reference: "model-child", prompt: childPrompt })] },
-        { when: { user: childPrompt }, tools: [{ id: "child-write", name: "write_file",
+        { when: { user: childPrompt }, tools: [{ id: "child-command", name: "run_command",
+          arguments: { CommandLine: childCommand, toolSummary: "Write child marker", WaitMsBeforeAsync: 500 } }] },
+        { when: { user: childPrompt, contains: "\"functionResponse\"" }, tools: [{ id: "child-write", name: "write_file",
           arguments: { Path: { $request_line: { pointer: "/systemInstruction/parts/0/text",
             prefix: "Command Working Directory: ", suffix: "/native-child.txt" } }, Content: "native-agy-child-write" } }] },
         { when: { user: childPrompt, contains: "\"functionResponse\"" }, text: [childAnswer] },
@@ -188,7 +193,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
 
       step = "settle two original native children through the shared process owner";
       env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits",
-        "--settings", JSON.stringify({ modelProvider: "gemini" })]);
+        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: { allow: [`command(${childCommand})`] } })]);
       const bridge = scope.start(staged.executable, ["__mcp", "agy"], { cwd: workspace, env });
       const client = new McpClient(bridge.child, { name: "native-agy-conformance", version: "1", recovery });
       const call = async (name, args) => {
@@ -235,7 +240,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       assert.equal(coordinatedTerminal?.status, "SUCCESS", JSON.stringify(coordinatedTerminal));
       assert.equal(coordinatedTerminal.response.trimEnd(), coordinationAnswer);
       assert.deepEqual(coordinatedCalls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
-        Array.from({ length: 9 }, (_, step) => [200, step]), "native spawn and wait must each return before the final model step");
+        Array.from({ length: 10 }, (_, step) => [200, step]), "native spawn and wait must each return before the final model step");
       const waitResponse = coordinatedCalls.at(-1).body.contents.flatMap(content => content.parts)
         .findLast(part => part.functionResponse?.id === "native-wait").functionResponse.response.output;
       const childReply = JSON.parse(waitResponse.trimEnd().split("\n").at(-1));
@@ -243,13 +248,17 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const childRequest = coordinatedCalls.find(call => call.step === 5);
       assert.ok(!childRequest.body.systemInstruction.parts.some(part =>
         part.text?.includes(`Command Working Directory: ${workspace}\n`)), "native child selected the parent workspace as its command cwd");
-      const childWriteResult = coordinatedCalls.find(call => call.step === 6).body.contents
+      const childWriteResult = coordinatedCalls.find(call => call.step === 7).body.contents
         .flatMap(content => content.parts).findLast(part => part.functionResponse?.id === "child-write")?.functionResponse;
       assert.equal(childWriteResult?.name, "write_file");
       assert.ok(!childWriteResult?.response.error, JSON.stringify(childWriteResult));
       const reopened = await request({ kind: "reopen", task: childReply.task });
       assert.equal(await readFile(join(reopened.cwd, "native-child.txt"), "utf8"), "native-agy-child-write",
         "writing native child did not capture its file in the admitted view");
+      const commandResult = coordinatedCalls.find(call => call.step === 6).body.contents
+        .flatMap(content => content.parts).findLast(part => part.functionResponse?.id === "child-command")?.functionResponse;
+      assert.match(JSON.stringify(commandResult?.response), /Command exited with code 0/, JSON.stringify(commandResult));
+      assert.equal(await readFile(join(reopened.cwd, "native-command.txt"), "utf8"), "native-agy-command-write");
       step = "inspect native profile session storage after physical settlement";
       const profileFiles = await readdir(join(profile, ".gemini"), { recursive: true });
       t.diagnostic(JSON.stringify({ role: "native-profile-paths", files: profileFiles }));
