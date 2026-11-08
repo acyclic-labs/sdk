@@ -4,13 +4,11 @@
 # reads PR metadata through the API and never checks out PR code. There is no
 # review trigger (it would run the PR's copy): after approving, the reviewer
 # ticks the checkbox, and that edit re-runs the check.
-# Manual dispatch applies the same API-only guard to the exact PR head commit.
 name: README guard
 
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -24,23 +22,8 @@ jobs:
         with:
           script: |
             const owners = ['ramstar3000', 'Var1377'];
+            const pr = context.payload.pull_request;
             const { owner, repo } = context.repo;
-            let pr = context.payload.pull_request;
-            if (context.eventName === 'workflow_dispatch') {
-              const recovery = `gh pr list --repo ${owner}/${repo} --state open`;
-              if (!context.ref.startsWith('refs/heads/')) {
-                return core.setFailed(`step=dispatch-head: select a PR head branch. Recovery: ${recovery}`);
-              }
-              const branch = context.ref.slice('refs/heads/'.length);
-              // Two results distinguish a unique PR from an ambiguous branch.
-              const { data: pulls } = await github.rest.pulls.list({
-                owner, repo, state: 'open', head: `${owner}:${branch}`, per_page: 2,
-              });
-              if (pulls.length !== 1 || pulls[0].head.sha !== context.sha) {
-                return core.setFailed(`step=dispatch-head: expected one open PR at the dispatched commit. Recovery: ${recovery}`);
-              }
-              pr = pulls[0];
-            }
 
             // Only the top-level README (any extension), including the old name of a renamed one.
             // A deleted README adds no README text, so deletions need no review.
