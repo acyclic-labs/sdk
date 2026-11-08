@@ -111,27 +111,38 @@ for (const [path, matcher] of [
   }
 }
 
-// The `acyclic-plugin` command must link to an interpreter-less placeholder that the
-// installer replaces with the native executable; an interpreter line would make
-// Windows package managers wrap the command in that interpreter.
-const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
-if (JSON.stringify(packageJson.bin) !== JSON.stringify({ "acyclic-plugin": "bin/acyclic" })) {
-  fail("the acyclic-plugin command must link to bin/acyclic");
-}
-const placeholder = join(plugin, "bin", "acyclic");
-if (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096
-  || readFileSync(placeholder, "utf8").startsWith("#!")) {
-  fail(`invalid acyclic command placeholder: ${placeholder}`);
-}
-for (const installed of ["acyclic.exe", "installed-binary.json", "install-transaction.json"]) {
-  if (existsSync(join(plugin, "bin", installed))) fail(`package contains installed state: bin/${installed}`);
-}
-
 const manifest = JSON.parse(readFileSync(join(plugin, "bin", "platform-binaries.json"), "utf8"));
 if (manifest.version !== 1 || !manifest.targets || typeof manifest.targets !== "object" || Array.isArray(manifest.targets)) {
   fail("unsupported platform binary manifest");
 }
 const targets = new Set(Object.keys(manifest.targets));
+const standalone = targets.size === 1 ? [...targets][0] : undefined;
+
+// Universal packages use the interpreter-less installer placeholder. A single
+// platform additionally ships the native launch path for extract-only hosts.
+const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
+if (JSON.stringify(packageJson.bin) !== JSON.stringify({ "acyclic-plugin": "bin/acyclic" })) {
+  fail("the acyclic-plugin command must link to bin/acyclic");
+}
+const placeholder = join(plugin, "bin", "acyclic");
+if ((!standalone || standalone.startsWith("win32-")) &&
+  (!existsSync(placeholder) || !statSync(placeholder).isFile() || statSync(placeholder).size > 4096
+  || readFileSync(placeholder, "utf8").startsWith("#!"))) {
+  fail(`invalid acyclic command placeholder: ${placeholder}`);
+}
+if (standalone) {
+  const native = join(plugin, "bin", standalone.startsWith("win32-") ? "acyclic.exe" : "acyclic");
+  if (!existsSync(native) || !statSync(native).isFile()
+    || sha256File(native) !== manifest.targets[standalone].sha256
+    || (!standalone.startsWith("win32-") && (statSync(native).mode & 0o111) !== 0o111)) {
+    fail(`step=validate extract-only executable: ${native}; recovery: node plugin/scripts/package.mjs --binary <target>=<executable> --out ${JSON.stringify(root)}`);
+  }
+}
+for (const installed of ["installed-binary.json", "install-transaction.json",
+  ...(!standalone?.startsWith("win32-") ? ["acyclic.exe"] : [])]) {
+  if (existsSync(join(plugin, "bin", installed))) fail(`package contains installed state: bin/${installed}`);
+}
+
 if (args.require_universal && (targets.size !== SUPPORTED_TARGETS.size || [...SUPPORTED_TARGETS].some(target => !targets.has(target)))) {
   const missing = [...SUPPORTED_TARGETS].filter(target => !targets.has(target)).sort();
   const extra = [...targets].filter(target => !SUPPORTED_TARGETS.has(target)).sort();
