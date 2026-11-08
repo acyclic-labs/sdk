@@ -20,6 +20,11 @@ const claims = {
     "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
     "a node change must not detach its unchanged name: RenamedFile",
     ["--no-default-features", "--features", "memory,native-mount"],
+    { positive: [
+      "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
+      "native_mount::fuse::tests::detach::prepared_rename_cannot_resurrect_a_concurrent_forget",
+      "native_mount::fuse::tests::detach::forgotten_inode_negative_control",
+    ] },
   ],
   "native-hard-link-detached-facts": [
     "rust/crates/filesystem/src/native_mount/lazy/mutations.rs", "acyclic-fs",
