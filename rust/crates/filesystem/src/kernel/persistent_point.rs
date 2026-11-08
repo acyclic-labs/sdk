@@ -273,12 +273,7 @@ pub(crate) fn reserve_native_buffer<B: GrowableBuffer>(
         unreachable!("native buffer retains its original guard")
     };
     *allocation = original;
-    result.map_err(|error| match error {
-        crate::FsError::NativeKernel(error) => error,
-        crate::FsError::Work(error) => error.into(),
-        crate::FsError::Cancelled(_) => crate::NativeTreeMaterializationError::Cancelled,
-        error => crate::NativeTreeMaterializationError::Io(std::io::Error::other(error)),
-    })
+    result.map_err(super::allocation::writer::native_error)
 }
 
 impl Owned<Vec<u8>> {

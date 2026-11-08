@@ -186,97 +186,31 @@ impl NativeMaterializationWork {
         &self,
         bytes: &[u8],
     ) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
-        let mut writer = ImageWriter::new(self)?;
-        writer.append(bytes)?;
-        Ok((writer.bytes, writer.allocation))
+        let copied = bytes
+            .len()
+            .min(usize::try_from(self.remaining()?.bytes_copied).unwrap_or(usize::MAX));
+        let output = crate::kernel::allocation::writer::native_image(self, |writer| {
+            writer.append(bytes.get(..copied).ok_or(crate::WorkError::Overflow)?)
+        })?;
+        if copied != bytes.len() {
+            self.admit(NativeResourceCredit::Copy.delta(1))?;
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        Ok(output)
     }
     /// Formats directly into admitted capacity.
     pub fn display<T: std::fmt::Display + ?Sized>(
         &self,
         value: &T,
     ) -> Result<(String, NativeAllocation), NativeTreeMaterializationError> {
-        let mut writer = ImageWriter::new(self)?;
-        if std::fmt::write(&mut writer, format_args!("{value}")).is_err() {
-            return Err(writer
-                .failure
-                .take()
-                .unwrap_or(NativeTreeMaterializationError::InvalidLayout));
-        }
+        let (bytes, allocation) =
+            crate::kernel::allocation::writer::native_image(self, |writer| {
+                std::fmt::write(writer, format_args!("{value}"))
+                    .map_err(|_| NativeTreeMaterializationError::InvalidLayout.into())
+            })?;
         Ok((
-            String::from_utf8(writer.bytes)
-                .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
-            writer.allocation,
+            String::from_utf8(bytes).map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
+            allocation,
         ))
-    }
-}
-pub(super) struct ImageWriter {
-    pub(super) bytes: Vec<u8>,
-    pub(super) allocation: NativeAllocation,
-    pub(super) failure: Option<NativeTreeMaterializationError>,
-}
-impl ImageWriter {
-    pub(super) fn new(
-        work: &NativeMaterializationWork,
-    ) -> Result<Self, NativeTreeMaterializationError> {
-        Ok(Self {
-            bytes: Vec::new(),
-            allocation: work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-            failure: None,
-        })
-    }
-    pub(super) fn append(&mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
-        let work = self.allocation.work().clone();
-        let copied = bytes
-            .len()
-            .min(usize::try_from(work.remaining()?.bytes_copied).unwrap_or(usize::MAX));
-        if copied == 0 && !bytes.is_empty() {
-            work.admit(NativeResourceCredit::Copy.delta(1))?;
-        }
-        let delta = NativeResourceCredit::Copy.delta(copied as u64);
-        let reserved = work.reserve_work(delta)?;
-        let length = self
-            .bytes
-            .len()
-            .checked_add(copied)
-            .ok_or(crate::WorkError::Overflow)?;
-        reserve_buffer(&mut self.bytes, length, &mut self.allocation)?;
-        self.bytes.extend_from_slice(
-            bytes
-                .get(..copied)
-                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        );
-        reserved.record_completed(delta)?;
-        if copied != bytes.len() {
-            work.admit(NativeResourceCredit::Copy.delta(1))?;
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-        Ok(())
-    }
-}
-impl std::fmt::Write for ImageWriter {
-    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        self.append(value.as_bytes()).map_err(|error| {
-            self.failure = Some(error);
-            std::fmt::Error
-        })
-    }
-}
-impl std::io::Write for ImageWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.allocation
-            .work()
-            .charge(crate::WorkCounters {
-                bytes_encoded: bytes.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })
-            .and_then(|()| self.append(bytes))
-            .map(|()| bytes.len())
-            .map_err(|error| {
-                self.failure = Some(error);
-                std::io::ErrorKind::Other.into()
-            })
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
