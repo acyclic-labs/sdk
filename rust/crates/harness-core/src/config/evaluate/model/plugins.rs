@@ -217,7 +217,7 @@ pub(super) async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
     let layers = [Layer {
         name: "home",
         generation: "original",
-        bytes: Some(b"import input from 'sys/plugin.json'; export default {};"),
+        bytes: Some(b"import input from 'sys/plugin.json'; export default input.enabled ?? {};"),
     }];
     for failure in [None, Some((0, false)), Some((0, true))] {
         let observed = Observed {
