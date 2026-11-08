@@ -15,10 +15,11 @@ pub(crate) struct ImageWriter<'w, 'a> {
 impl ImageWriter<'_, '_> {
     /// The scope retires failed output after its physical storage drops,
     /// including during unwind. Successful output keeps its original guard.
-    pub(crate) fn produce<E: From<FsError>>(
+    pub(crate) fn produce<E: From<FsError>, F>(
         accounting: &mut KernelAccounting<'_>,
         initial_capacity: usize,
-        write: impl FnOnce(&mut ImageWriter<'_, '_>) -> Result<(), E>,
+        write: impl FnOnce(&mut ImageWriter<'_, '_>) -> Result<(), F>,
+        convert_error: impl FnOnce(F) -> E,
     ) -> Result<Owned<Vec<u8>>, E> {
         let mut scope = accounting.allocation_scope().map_err(E::from)?;
         let bytes = Owned::allocate(initial_capacity, &mut scope).map_err(E::from)?;
@@ -31,7 +32,7 @@ impl ImageWriter<'_, '_> {
         if let Some(error) = writer.failure.take() {
             return Err(error.into());
         }
-        result?;
+        result.map_err(convert_error)?;
         let bytes = writer.bytes;
         scope.keep();
         Ok(bytes)
@@ -114,7 +115,8 @@ pub(crate) fn native_image(
     write: impl FnOnce(&mut ImageWriter<'_, '_>) -> Result<(), FsError>,
 ) -> Result<(Vec<u8>, crate::NativeAllocation), crate::NativeTreeMaterializationError> {
     let mut accounting = KernelAccounting::native(work, work.cancellation());
-    let bytes = ImageWriter::produce(&mut accounting, 0, write).map_err(native_error)?;
+    let bytes = ImageWriter::produce(&mut accounting, 0, write, std::convert::identity)
+        .map_err(native_error)?;
     let KernelOwnedAllocation::NativeOriginal(allocation) = bytes.allocation else {
         unreachable!("native output retains the original allocation guard")
     };
