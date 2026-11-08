@@ -29,10 +29,6 @@ required-features = ["http"]
 name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 
-[[example]]
-name = "status-corpus"
-required-features = ["grpc", "test-support"]
-
 [[bin]]
 name = "stream-rpc-inventory"
 path = "src/bin/stream-rpc-inventory.rs"

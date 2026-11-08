@@ -1,6 +1,6 @@
---- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
-+++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
-@@ -181,7 +181,7 @@
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -180,7 +180,7 @@
          #[cfg(any(test, feature = "test-support"))]
          model::dependency_checked();
          if let Some((_, active)) = modules.get(next) {

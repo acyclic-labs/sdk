@@ -89,24 +89,36 @@ impl BackingPool {
         locked(&self.0).bytes
     }
 
-    pub(crate) fn retain(&self, value: OwnedBytes, budget: usize) -> RecordBytes {
-        let (value, backing) = value.into_backed(budget);
+    pub(crate) fn retain(&self, mut value: OwnedBytes, budget: usize) -> RecordBytes {
+        // Unknown transport capacity cannot be charged from its visible length.
+        // A small slice must also not pin an allocation larger than the entire
+        // cache budget, even when an older view still holds that allocation.
+        if value
+            .retained_capacity()
+            .is_none_or(|capacity| capacity > budget && capacity > value.len())
+        {
+            value = OwnedBytes::copy_from_slice(value.as_slice());
+        }
+        let backing = value
+            .backing()
+            .expect("copied payloads retain their original capacity");
         let mut state = locked(&self.0);
-        let charge = if let Some(charge) = state.owners.get(&backing).and_then(Weak::upgrade) {
-            charge
-        } else {
-            // A last-owner destructor may be waiting for this lock. Its
-            // replacement takes over the existing charge; that destructor
-            // must neither remove the replacement nor subtract its bytes.
-            if !state.owners.contains_key(&backing) {
-                state.bytes += backing.capacity();
+        let charge = match state.owners.get(&backing).and_then(Weak::upgrade) {
+            Some(charge) => charge,
+            None => {
+                // A last-owner destructor may be waiting for this lock. Its
+                // replacement takes over the existing charge; that destructor
+                // must neither remove the replacement nor subtract its bytes.
+                if !state.owners.contains_key(&backing) {
+                    state.bytes += backing.capacity();
+                }
+                let charge = Arc::new(Charge {
+                    backing: backing.clone(),
+                    state: Arc::clone(&self.0),
+                });
+                state.owners.insert(backing, Arc::downgrade(&charge));
+                charge
             }
-            let charge = Arc::new(Charge {
-                backing: backing.clone(),
-                state: Arc::clone(&self.0),
-            });
-            state.owners.insert(backing, Arc::downgrade(&charge));
-            charge
         };
         RecordBytes { value, charge }
     }

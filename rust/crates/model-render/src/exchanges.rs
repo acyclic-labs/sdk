@@ -136,7 +136,8 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
             match part {
                 Part::Call { id, .. } => {
                     let entry = pending
-                        .matches(id.as_bytes(), |_| false, work)?
+                        .matches(id.as_bytes(), |_| false, work)
+                        .map_err(Work)?
                         .exact
                         .map(|matched| matched.entry);
                     let Some((_, slot)) = entry else {
@@ -152,7 +153,8 @@ pub fn exchange_groups<M: Message, W: IndexWork>(
                 }
                 Part::Result { id } => {
                     match pending
-                        .matches(id.as_bytes(), |_| false, work)?
+                        .matches(id.as_bytes(), |_| false, work)
+                        .map_err(Work)?
                         .exact
                         .and_then(|matched| matched.entry.1.take())
                     {

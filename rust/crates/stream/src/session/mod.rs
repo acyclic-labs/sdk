@@ -44,7 +44,7 @@ mod connection;
 mod local;
 pub use connection::Connections;
 #[cfg(loom)]
-pub use connection::{verify_connection_retirement, verify_connections};
+pub use connection::verify_connections;
 mod frame;
 mod gate;
 mod interest;
@@ -294,10 +294,7 @@ pub(crate) struct Products {
     pub(crate) sockets: Option<Arc<dyn SocketProvider>>,
 }
 
-fn serve_on_with_products<
-    P: StreamProvider + ?Sized,
-    E: From<StreamError> + crate::ProviderTask + 'static,
->(
+fn serve_on_with_products<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
     authority: Arc<Authority>,
     products: Products,
@@ -305,7 +302,7 @@ fn serve_on_with_products<
     limits: Limits,
     incoming: transport::WireResponses,
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
-) -> Result<transport::Responses<E>, StreamError> {
+) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
         || limits.channels == 0
         || limits.pending_frames == 0
@@ -352,55 +349,52 @@ fn serve_on_with_products<
         #[cfg(test)]
         head_visits: 0,
     };
-    Ok(Box::pin(
-        stream::try_unfold(
-            ServingSession::Active(session, shutdown),
-            |state| async move {
-                let (mut session, mut shutdown) = match state {
-                    ServingSession::Active(session, shutdown) => (session, shutdown),
-                    ServingSession::Closing(channels, controls) => {
-                        return Ok(ServingSession::close(channels, controls));
+    Ok(Box::pin(stream::try_unfold(
+        ServingSession::Active(session, shutdown),
+        |state| async move {
+            let (mut session, mut shutdown) = match state {
+                ServingSession::Active(session, shutdown) => (session, shutdown),
+                ServingSession::Closing(channels, controls) => {
+                    return Ok(ServingSession::close(channels, controls));
+                }
+            };
+            let frame = if let Some(stopped) = shutdown.as_mut() {
+                let next = match future::select(stopped, Box::pin(session.next_frame())).await {
+                    future::Either::Right((frame, _)) => Some(frame?),
+                    future::Either::Left(((), pending)) => {
+                        drop(pending);
+                        None
                     }
                 };
-                let frame = if let Some(stopped) = shutdown.as_mut() {
-                    let next = match future::select(stopped, Box::pin(session.next_frame())).await {
-                        future::Either::Right((frame, _)) => Some(frame?),
-                        future::Either::Left(((), pending)) => {
-                            drop(pending);
-                            None
-                        }
-                    };
-                    match next {
-                        Some(frame) => frame,
-                        None => {
-                            // Drop input, calls and follows before publishing closure.
-                            // Socket owners must see shutdown even if the peer stops
-                            // reading before the queued terminal responses drain.
-                            for channel in session.channels.values_mut() {
-                                channel.socket.take();
-                                if let Some(input) = &mut channel.input {
-                                    let _ = input.finish(Err(StreamError::Unavailable));
-                                }
+                match next {
+                    Some(frame) => frame,
+                    None => {
+                        // Drop input, calls and follows before publishing closure.
+                        // Socket owners must see shutdown even if the peer stops
+                        // reading before the queued terminal responses drain.
+                        for channel in session.channels.values_mut() {
+                            channel.socket.take();
+                            if let Some(input) = &mut channel.input {
+                                let _ = input.finish(Err(StreamError::Unavailable));
                             }
-                            // Preserve terminal responses for channels already removed.
-                            // Reuse both collections without allocating a shutdown queue.
-                            session
-                                .controls
-                                .retain(|frame| matches!(frame.body, Some(Body::Closed(_))));
-                            return Ok(ServingSession::close(
-                                session.channels.into_iter(),
-                                session.controls.into_iter(),
-                            ));
                         }
+                        // Preserve terminal responses for channels already removed.
+                        // Reuse both collections without allocating a shutdown queue.
+                        session
+                            .controls
+                            .retain(|frame| matches!(frame.body, Some(Body::Closed(_))));
+                        return Ok(ServingSession::close(
+                            session.channels.into_iter(),
+                            session.controls.into_iter(),
+                        ));
                     }
-                } else {
-                    session.next_frame().await?
-                };
-                Ok(frame.map(|frame| (frame, ServingSession::Active(session, shutdown))))
-            },
-        )
-        .map(|frame| frame.map_err(E::from)),
-    ))
+                }
+            } else {
+                session.next_frame().await?
+            };
+            Ok(frame.map(|frame| (frame, ServingSession::Active(session, shutdown))))
+        },
+    )))
 }
 
 impl<P: StreamProvider + ?Sized> Session<P> {

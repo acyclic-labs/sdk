@@ -37,6 +37,12 @@ extern "C" {
     #[wasm_bindgen(method, catch)]
     fn read(this: &HostJournal, index: u32, page: u32) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(method, catch)]
+    fn changed(
+        this: &HostJournal,
+        after: u32,
+        callback: &js_sys::Function,
+    ) -> Result<js_sys::Function, JsValue>;
+    #[wasm_bindgen(method, catch)]
     fn append(
         this: &HostJournal,
         index: u32,
@@ -303,56 +309,15 @@ impl JournalStream {
 
     fn retain<T: 'static>(
         &self,
-        stream: BoxProviderStream<'static, Result<T, StreamError>>,
-    ) -> BoxProviderStream<'static, Result<T, StreamError>> {
+        stream: BoxProviderStream<'static, T>,
+    ) -> BoxProviderStream<'static, T> {
         let owner = self.clone();
-        RetainedFollow {
-            stream,
-            retired: async move {
-                if let Ok(cache) = owner.cache().await {
-                    cache.revisions.closed().await;
-                }
-            },
-            done: false,
-        }
-        .boxed_local()
-    }
-}
-
-pin_project_lite::pin_project! {
-    struct RetainedFollow<S, F> {
-        #[pin]
-        stream: S,
-        #[pin]
-        retired: F,
-        done: bool,
-    }
-}
-
-impl<T, S, F> futures::Stream for RetainedFollow<S, F>
-where
-    S: futures::Stream<Item = Result<T, StreamError>>,
-    F: Future<Output = ()>,
-{
-    type Item = Result<T, StreamError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.project();
-        if *this.done {
-            return std::task::Poll::Ready(None);
-        }
-        if this.retired.poll(context).is_ready() {
-            *this.done = true;
-            return std::task::Poll::Ready(Some(Err(StreamError::Unavailable)));
-        }
-        let result = this.stream.poll_next(context);
-        if matches!(result, std::task::Poll::Ready(None | Some(Err(_)))) {
-            *this.done = true;
-        }
-        result
+        stream
+            .map(move |item| {
+                let _owner = &owner;
+                item
+            })
+            .boxed_local()
     }
 }
 

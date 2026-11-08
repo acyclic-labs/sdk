@@ -92,25 +92,6 @@ These finite MemoryStream publications cover the persisted codec and Store
 transition path; physical restart, membership and runtime scheduling remain
 separate obligations.
 
-The existing `stream_persistence` target also checks typed change projection
-through `FollowFilter::project` after actual append, record and batch ingress.
-It compares selected entries with the canonical full decoder, preserves context,
-attributes and publication identity, and checks idempotence. Three-entry v1,
-v2 and opaque writer outputs exercise partial selection and whole-record
-authority. Refresh only those additions with
-`cargo run --locked --example capture -- --only-stream-projection --extend-goldens`.
-The retained production mutation and scoped replay command are documented in
-[`projection-fuzz`](../proofs/projection-fuzz/README.md).
-The [whole-record](../proofs/projection-cost/README.md) and
-[partial-copy](../proofs/partial-projection-cost/README.md) controls challenge
-the same property through the current shared decoder. The kept
-`negative-controls/change_projection_authority.patch` changes the original
-entry predicate from every clause to any clause. Apply it and run the selected
-property command in `projection-fuzz`; the disjoint lower-prefix request and
-upper-suffix authority must refuse, since different entries cannot collectively
-satisfy their conjunction. Reverse the patch before the positive run. Compiler
-or patch-anchor failures are not successful negative controls.
-
 The existing `stream_persistence` target also checks typed refusal before a
 fixed header is complete. Its corpus contains actual retained-fact encoder
 output captured by `acyclic_stream::codec_fuzz::seeds`; the persisted-version

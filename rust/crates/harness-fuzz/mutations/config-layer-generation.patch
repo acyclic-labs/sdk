@@ -1,11 +1,11 @@
---- a/rust/crates/harness-core/src/config/evaluate/composition.rs
-+++ b/rust/crates/harness-core/src/config/evaluate/composition.rs
-@@ -194,7 +194,7 @@
-             Ok(evaluated) => {
-                 chain.push(Link {
-                     layer: layer.name.to_owned(),
--                    generation: layer.generation.to_owned(),
-+                    generation: String::new(),
-                     module_digest: blake3::Hash::from_bytes(evaluated.digest)
-                         .to_hex()
-                         .to_string(),
+--- a/rust/crates/harness-core/src/config/evaluate.rs
++++ b/rust/crates/harness-core/src/config/evaluate.rs
+@@ -122,7 +122,7 @@
+         let evaluated = evaluate(path, source, tree, &value, Surface::Compose).await?;
+         chain.push(Link {
+             layer: layer.name.to_owned(),
+-            generation: layer.generation.to_owned(),
++            generation: String::new(),
+             module_digest: blake3::Hash::from_bytes(evaluated.digest)
+                 .to_hex()
+                 .to_string(),

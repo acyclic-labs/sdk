@@ -117,10 +117,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Selection, optional finite end and LATEST bootstrap are atomic with
     /// registration. Quiet and initially absent paths expose the opening receipt
     /// without waiting for an append. Finite cursors retain their original history.
-    /// Loss of a pending snapshot producer ends the follow with
-    /// [`StreamError::Unavailable`]; it does not silently restart the read.
-    /// Native in-process snapshot reads that cannot finish immediately require
-    /// an active Tokio runtime; without one they refuse before scheduling work.
     async fn follow(
         &self,
         request: FollowRequest,

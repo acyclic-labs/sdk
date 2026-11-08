@@ -2,8 +2,21 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { ErrorCode, ObjectsV1Provider, blobDigest, verified } from "@acyclic-labs/objects";
 import { WasmObjects } from "../generated/wasm/acyclic_harness_wasm.js";
-import { SqliteMedium } from "../src/cloudflare-storage.js";
-import { sqlite } from "./support/sqlite.js";
+import { SqliteMedium, type SqlValue, type SqliteStorage } from "../src/cloudflare-storage.js";
+
+/** Durable Objects SQLite semantics over bun:sqlite, counting durability waits. */
+function sqlite(database: Database) {
+  const storage = {
+    barriers: 0,
+    sql: { exec<Row extends Record<string, SqlValue>>(query: string, ...bindings: SqlValue[]): Iterable<Row> {
+      return database.query(query).all(...bindings.map(value => value instanceof ArrayBuffer ? new Uint8Array(value) : value)).map(row =>
+        Object.fromEntries(Object.entries(row as Record<string, unknown>).map(([key, value]) => [key, value instanceof Uint8Array ? value.slice().buffer : value])) as Row);
+    } },
+    transactionSync<T>(operation: () => T): T { return database.transaction(operation)(); },
+    async sync() { storage.barriers++; },
+  } satisfies SqliteStorage & { barriers: number };
+  return storage;
+}
 
 /** The typed client over any port, verifying each reply by the Rust rules. */
 class Client extends ObjectsV1Provider {

@@ -17,7 +17,7 @@ async fn immutable_commit_reads_bypass_pending_publication_but_absence_does_not(
     // The former path takes the unrelated publication lock even for a hit.
     assert!(
         provider
-            .accepted(|| provider.inner.provider.read_commit(receipt.commit_id))
+            .accepted(provider.inner.provider.read_commit(receipt.commit_id))
             .now_or_never()
             .is_none()
     );

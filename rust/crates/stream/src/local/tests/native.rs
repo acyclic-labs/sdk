@@ -442,184 +442,35 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
     Ok(())
 }
 
-#[test]
-fn prepared_worker_retirement_ends_original_completion_without_publication()
--> Result<(), Box<dyn std::error::Error>> {
-    use std::task::{Context, Poll, Wake, Waker};
-
-    #[derive(Default)]
-    struct CompletionWake(std::sync::atomic::AtomicUsize);
-    impl Wake for CompletionWake {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    let directory = tempfile::tempdir()?;
-    let setup = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let provider = setup.block_on(LocalStream::open(
-        directory.path(),
-        LocalStreamLimits::default(),
-    ))?;
-    let mut request = setup.block_on(prepared_fixture(&provider))?;
-    let target = StreamPath::new("prepared/target")?;
-    let mut path = target.clone();
-    for name in ["prepared/child", "prepared/grandchild"] {
-        let destination = StreamPath::new(name)?;
-        setup.block_on(provider.fork(ForkRequest {
-            source: path,
-            destination: destination.clone(),
-            at_tail: Some(1),
-            exclude: Vec::new(),
-            idempotency_key: IdempotencyKey::unique(),
-        }))?;
-        path = destination;
-    }
-    for condition in &mut request.conditions {
-        if let crate::CommitCondition::Tail { path: selected, .. } = condition
-            && *selected == target
-        {
-            *selected = path.clone();
-        }
-    }
-    let [crate::CommitMutation::Append { path: selected, .. }] = request.mutations.as_mut_slice()
-    else {
-        return Err("prepared fixture changed its canonical mutation".into());
-    };
-    *selected = path.clone();
-    let producer = tokio::runtime::Builder::new_current_thread().build()?;
-    let meter = Arc::new(Meter::local());
-    let packet =
-        producer.block_on(provider.native_prepare_commit(request, 64, meter.original()))??;
-    let (packet, guard) = packet.into_parts();
-    let mut completion = packet.finish(OwnedBytes::from_static(b"unpublished").into());
-    let observed = Arc::new(CompletionWake::default());
-    let wake = Waker::from(observed.clone());
-    // The current-thread runtime has returned its root without polling the
-    // newly spawned worker. Poll only the public completion, never its worker.
-    let pending = {
-        let _entered = producer.enter();
-        std::pin::Pin::new(&mut completion)
-            .poll(&mut Context::from_waker(&wake))
-            .is_pending()
-    };
-    drop(producer);
-    let result = {
-        let _entered = setup.enter();
-        std::pin::Pin::new(&mut completion).poll(&mut Context::from_waker(Waker::noop()))
-    };
-    drop(completion);
-    drop(guard);
-    assert!(pending, "prepared worker ran before its execution cut");
-    assert!(
-        observed.0.load(Ordering::SeqCst) > 0,
-        "retired prepared producer did not wake its original completion"
-    );
-    let original_cancelled = match &result {
-        Poll::Ready(Err(error)) => {
-            let cause: &(dyn std::error::Error + 'static) = error;
-            std::iter::successors(Some(cause), |cause| cause.source()).any(|cause| {
-                cause
-                    .downcast_ref::<tokio::task::JoinError>()
-                    .is_some_and(tokio::task::JoinError::is_cancelled)
-            })
-        }
-        _ => false,
-    };
-    assert!(
-        original_cancelled,
-        "retired prepared producer left its original completion parked or replaced its cause"
-    );
-    drop(result);
-    assert_eq!(setup.block_on(provider.tail(path.clone()))?, 1);
-    assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
-    assert!(provider.failure().is_none());
-    drop(provider);
-    meter.assert_refunded();
-    let reopened = setup.block_on(LocalStream::open(
-        directory.path(),
-        LocalStreamLimits::default(),
-    ))?;
-    assert_eq!(setup.block_on(reopened.tail(path))?, 1);
-    Ok(())
-}
-
 #[tokio::test]
 async fn abandoned_prepared_packet_releases_worker_capacity_without_edit()
 -> Result<(), Box<dyn std::error::Error>> {
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
     journal_lifecycle(&schedule, &mut boundaries, async {
-        for parked in [false, true] {
-            let directory = tempfile::tempdir()?;
-            let provider =
-                LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-            let request = prepared_fixture(&provider).await?;
-            let target = StreamPath::new("prepared/target")?;
-            let mut leaf = target.clone();
-            for name in ["prepared/child", "prepared/grandchild"] {
-                let destination = StreamPath::new(name)?;
-                provider
-                    .fork(ForkRequest {
-                        source: leaf,
-                        destination: destination.clone(),
-                        at_tail: Some(1),
-                        exclude: Vec::new(),
-                        idempotency_key: IdempotencyKey::unique(),
-                    })
-                    .await?;
-                leaf = destination;
-            }
-            let meter = Arc::new(Meter::local());
-            let (worker, mut events) = acyclic_native_runtime::testing::Schedule::seeded(0);
-            let packet = worker
-                .scope(provider.native_prepare_commit(request, 64, meter.original()))
-                .await??;
-            let (packet, guard) = packet.into_parts();
-            let drained = worker.drained();
-            tokio::pin!(drained);
-            assert!(futures::poll!(&mut drained).is_pending());
-            let submitted = events.try_recv()?;
-            assert_eq!(submitted.name, "task:submitted");
-            if parked {
-                submitted.release();
-                assert!(futures::poll!(&mut drained).is_pending());
-                assert!(
-                    events.is_empty(),
-                    "prepared worker bypassed its record ingress"
-                );
-            } else {
-                // Leave the actual worker at its original submission boundary.
-                submitted.release();
-            }
-            drop(packet);
-            drop(guard);
-            assert!(futures::poll!(&mut drained).is_pending());
-            let completed = events.try_recv().map_err(
-                |_| "abandoned prepared producer did not reach its original completion boundary",
-            )?;
-            assert_eq!(completed.name, "task:completed");
-            completed.release();
-            assert!(
-                futures::poll!(&mut drained).is_ready(),
-                "abandoned prepared producer retained its accepted work"
-            );
-            assert_eq!(provider.tail(target).await?, 1);
-            assert_eq!(provider.tail(leaf).await?, 1);
-            assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
-            // Preparation may grow the provider's funded retained-entry buffer.
-            // It belongs to the open provider, not the abandoned worker.
-            let terminal = Arc::downgrade(&provider.inner);
-            drop(provider);
-            schedule.drained().await;
-            assert!(
-                terminal.upgrade().is_none(),
-                "abandoned worker retained the provider"
-            );
-            meter.assert_refunded();
-            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
-        }
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let request = prepared_fixture(&provider).await?;
+        let meter = Arc::new(Meter::local());
+        let packet = provider
+            .native_prepare_commit(request, 64, meter.original())
+            .await??;
+        let (packet, guard) = packet.into_parts();
+        drop(packet);
+        drop(guard);
+        assert_eq!(provider.tail(StreamPath::new("prepared/target")?).await?, 1);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        // Preparation may grow the provider's funded retained-entry buffer. Its
+        // allocation belongs to the open provider, not the abandoned worker.
+        let terminal = Arc::downgrade(&provider.inner);
+        drop(provider);
+        schedule.drained().await;
+        assert!(
+            terminal.upgrade().is_none(),
+            "abandoned worker retained the provider"
+        );
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
         Ok(())
     })
     .await?

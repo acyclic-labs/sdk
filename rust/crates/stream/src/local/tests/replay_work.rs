@@ -67,11 +67,10 @@ proptest! {
         count in 1usize..8, bytes in proptest::collection::vec(any::<u8>(), 0..32),
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let ((before, after), (control_before, control_after)) = runtime.block_on(async {
-            futures::join!(replay::<true>(count, bytes.clone()), replay::<false>(count, bytes))
-        });
+        let (before, after) = runtime.block_on(replay::<true>(count, bytes.clone()));
         unchanged_frames(before, after)?;
-        prop_assert!(unchanged_frames(control_before, control_after).is_err(), "replay-write control escaped the same bound");
+        let (before, after) = runtime.block_on(replay::<false>(count, bytes));
+        prop_assert!(unchanged_frames(before, after).is_err(), "replay-write control escaped the same bound");
     }
 }
 

@@ -20,17 +20,15 @@ impl LocalStream {
             let prepare = std::pin::pin!(async {
                 let failed = self.inner.failed.subscribe();
                 let prepared = self
-                    .accepted(|| {
-                        self.inner.provider.prepare_follow(
-                            &path,
-                            from,
-                            anchor,
-                            when_absent,
-                            filter.clone(),
-                            bootstrap_head,
-                            until,
-                        )
-                    })
+                    .accepted(self.inner.provider.prepare_follow(
+                        &path,
+                        from,
+                        anchor,
+                        when_absent,
+                        filter.clone(),
+                        bootstrap_head,
+                        until,
+                    ))
                     .await
                     .and_then(std::convert::identity);
                 let (snapshot, selection, changed, cursor) = prepared.inspect_err(|error| {

@@ -89,6 +89,20 @@ pub(in crate::session) fn slots() -> Slots {
     .unwrap();
     slots
 }
+#[cfg(test)]
+pub(in crate::session) fn binding() -> Binding {
+    authority()
+        .bind(
+            &slots(),
+            0,
+            &StreamPath::new("model").unwrap(),
+            Default::default(),
+            1,
+        )
+        .unwrap()
+        .0
+}
+
 /// Verifies a deterministic test credential through the real session admission
 /// path. Product-provider tests receive the same unforgeable context as hosts.
 pub fn resource_authorization(

@@ -169,13 +169,13 @@ impl OwnedBytes {
     pub const fn new() -> Self {
         Self::from_static(b"")
     }
-    /// Borrows static bytes with zero retained heap capacity.
+    /// Borrows static bytes.
     #[must_use]
     pub const fn from_static(bytes: &'static [u8]) -> Self {
         Self {
             data: Data::Plain(Bytes::from_static(bytes)),
             range: 0..bytes.len(),
-            retained_capacity: Some(0),
+            retained_capacity: None,
         }
     }
     /// Copies ordinary bytes.
@@ -341,8 +341,7 @@ impl OwnedBytes {
     pub fn is_empty(&self) -> bool {
         self.range.is_empty()
     }
-    /// Actual retained heap capacity, when known. Static storage retains zero;
-    /// vectors and boxed slices retain their original allocation capacity.
+    /// Actual original vector or boxed-slice capacity, when known.
     #[must_use]
     pub const fn retained_capacity(&self) -> Option<usize> {
         self.retained_capacity
@@ -357,32 +356,6 @@ impl OwnedBytes {
             data: self.data.clone(),
             capacity: self.retained_capacity?,
         })
-    }
-
-    /// Returns the visible bytes with their guaranteed allocation owner.
-    ///
-    /// Known backing is shared without copying unless its capacity exceeds both
-    /// `budget` and the visible length. Unknown or oversized backing is replaced
-    /// with one copy of the visible bytes. The budget controls spare retention;
-    /// it does not reject a visible payload larger than the budget.
-    ///
-    /// Owner bookkeeping is constant work. Copying, when necessary, is linear
-    /// only in the visible length. This operation performs no I/O or waits.
-    #[must_use]
-    pub fn into_backed(self, budget: usize) -> (Self, OwnedBytesBacking) {
-        let (value, capacity) = match self.retained_capacity {
-            Some(capacity) if capacity <= budget || capacity <= self.len() => (self, capacity),
-            _ => {
-                let bytes = self.as_slice().to_vec();
-                let capacity = bytes.capacity();
-                (Self::from(bytes), capacity)
-            }
-        };
-        let backing = OwnedBytesBacking {
-            data: value.data.clone(),
-            capacity,
-        };
-        (value, backing)
     }
     /// Recovers unique ordinary vector storage without copying.
     pub fn try_into_ordinary_vec(self) -> Result<Vec<u8>, Self> {

@@ -1,9 +1,0 @@
-diff --git a/rust/crates/stream/src/owned_bytes/mod.rs b/rust/crates/stream/src/owned_bytes/mod.rs
---- a/rust/crates/stream/src/owned_bytes/mod.rs
-+++ b/rust/crates/stream/src/owned_bytes/mod.rs
-@@ -176,4 +176,4 @@
-             data: Data::Plain(Bytes::from_static(bytes)),
-             range: 0..bytes.len(),
--            retained_capacity: Some(0),
-+            retained_capacity: None,
-         }

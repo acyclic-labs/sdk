@@ -43,7 +43,8 @@ impl MemoryStream {
         if let Some(result) = self.replay_append(&state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned((result, Default::default())));
         }
-        let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
+        let mut probes =
+            self.reserve_replay_probes(u64::from(state.replay_height(state.replay_root)))?;
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
@@ -109,7 +110,7 @@ impl MemoryStream {
                 state.last_committed_at_micros = time;
                 retain(
                     state,
-                    &mut |items| self.record_replay_probe(&mut probes, items),
+                    &mut || self.record_replay_probe(&mut probes),
                     Some(envelope),
                     Some(request.idempotency_key.clone()),
                     digest,

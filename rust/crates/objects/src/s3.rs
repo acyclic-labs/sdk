@@ -17,8 +17,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 #[cfg(test)]
-mod capability;
-#[cfg(test)]
 mod tests;
 
 /// The request types a [`Signer`] names.

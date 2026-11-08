@@ -27,7 +27,7 @@ pub(super) struct Dispatch {
     provider: BrowserStream,
     pub(super) keys: Changes,
     pub(super) repair: bool,
-    pub(super) failed: Option<bool>,
+    pub(super) failed: bool,
 }
 impl Dispatch {
     pub(super) fn new(provider: &BrowserStream) -> Self {
@@ -35,16 +35,13 @@ impl Dispatch {
             provider: provider.clone(),
             keys: Changes::default(),
             repair: false,
-            failed: None,
+            failed: false,
         }
     }
 }
 impl Drop for Dispatch {
     fn drop(&mut self) {
-        if let Some(unavailable) = self.failed {
-            if unavailable {
-                self.provider.inner.revisions.close();
-            }
+        if self.failed {
             let _ = self.provider.inner.publications.interests.notify_all();
             self.provider.inner.publications.invalidate_follows();
         } else {
@@ -61,7 +58,10 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    crate::follow_index::FollowIndex::created(&index, *tail);
+                    index
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .created(*tail);
                 }
             }
             for (path, (records, tail)) in &self.keys.records {
@@ -74,7 +74,10 @@ impl Drop for Dispatch {
                     .ok()
                     .flatten();
                 if let Some(index) = index {
-                    crate::follow_index::FollowIndex::publish(&index, records, *tail);
+                    index
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .publish(records, *tail);
                 }
             }
         }
@@ -201,7 +204,7 @@ impl BrowserStream {
         }
         #[cfg(test)]
         self.inner.refreshes.set(self.inner.refreshes.get() + 1);
-        self.refresh_observation(&mut cache, &mut dispatch).await?;
+        self.refresh(&mut cache, &mut dispatch.keys).await?;
         Ok(())
     }
     pub(super) async fn with_cached_provider<T>(

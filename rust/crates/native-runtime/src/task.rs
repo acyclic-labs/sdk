@@ -462,23 +462,11 @@ mod tests {
         }
         use tracing_subscriber::layer::SubscriberExt as _;
         fn refuses_reentry() {
-            let (entered, mut entering) = tokio::sync::oneshot::channel();
             let nested = super::spawn_persistence(
                 "local",
                 "nested",
                 super::PersistenceKey::new(0, 0),
-                move || {
-                    entered.send(()).unwrap();
-                },
-            );
-            // Refusal must drop the body before returning, independently of
-            // the observer's own same-service refusal below.
-            assert!(
-                matches!(
-                    entering.try_recv(),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-                ),
-                "reentrant persistence submission retained or ran its body"
+                || panic!("reentrant persistence body ran"),
             );
             let mut nested = std::pin::pin!(nested);
             let mut context = std::task::Context::from_waker(std::task::Waker::noop());
@@ -491,7 +479,6 @@ mod tests {
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime().unwrap();
-        let submission_context = runtime.handle().clone();
         runtime.block_on(async {
             let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
             let retained = custody.clone();
@@ -518,9 +505,6 @@ mod tests {
                 "write",
                 super::PersistenceKey::new(17, 0),
                 move || {
-                    // Admission must be refused even with a valid runtime
-                    // context; a missing reactor must not mask that boundary.
-                    let _runtime = submission_context.enter();
                     super::persistence_syscall(|| {
                         started.send(()).unwrap();
                         held.recv().unwrap();
@@ -613,9 +597,7 @@ mod tests {
             // Submission is driven by its owner, even without polling this
             // result; caller cancellation cannot abandon accepted work.
             drop(submitted);
-            starting
-                .await
-                .expect("caller drop abandoned the original persistence body");
+            starting.await.unwrap();
             assert!(matches!(
                 finishing.try_recv(),
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty)

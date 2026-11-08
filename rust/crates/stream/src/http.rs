@@ -574,7 +574,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_http_failure_does_not_record_on_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{StreamError, StreamPath, StreamProviderExt as _};
+        use crate::{CommitId, StreamError, StreamProvider as _};
         use tracing::{Instrument, instrument::WithSubscriber};
         use tracing_subscriber::{Layer, layer::Context, prelude::*};
 
@@ -623,14 +623,13 @@ mod tests {
                 bytes = 777_u64,
                 http.status = 777_u64
             );
+            // Commit reads are one physical HTTP request; heads use the session.
             let result = provider
-                .tail(StreamPath::new("filtered/test")?)
+                .read_commit(CommitId::from_bytes([7; 32]))
                 .instrument(parent)
                 .await;
             server.await?;
-            let error = result.expect_err("the closed connection cannot return a tail");
-            assert_eq!(error.code(), StreamError::Unavailable.code());
-            assert!(error.uncertain());
+            assert_eq!(result, Err(StreamError::Unavailable));
             Ok(())
         }
         .with_subscriber(subscriber)

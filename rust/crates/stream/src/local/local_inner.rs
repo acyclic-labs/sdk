@@ -78,20 +78,6 @@ impl LocalInner {
         }
     }
 
-    // Keep a completed result when failure races its observation. Dropping an
-    // observer never cancels the owned mutation or takes its physical error.
-    async fn observe<T>(
-        failed: &mut watch::Receiver<Option<LocalStreamFailure>>,
-        pending: impl Future<Output = T>,
-    ) -> Result<T, StreamError> {
-        let pending = std::pin::pin!(pending);
-        let unavailable = std::pin::pin!(Self::unavailable(failed));
-        match futures::future::select(pending, unavailable).await {
-            futures::future::Either::Left((result, _)) => Ok(result),
-            futures::future::Either::Right((error, _)) => Err(error),
-        }
-    }
-
     /// Publishes only the strength completed by the device operation.
     fn publish_synced(&self, journal: &mut Journal, target: u64, completion: SyncCompletion) {
         #[cfg(loom)]

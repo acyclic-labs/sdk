@@ -75,6 +75,7 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
  */
 export class SqliteJournal {
   private maximumFrameBytes = 0;
+  private readonly subscribers = new Set<{ after: number; ready: () => void }>();
   constructor(private readonly storage: SqliteStorage, private readonly domain: string, private readonly appended?: (changes: readonly StreamChange[]) => void) {
     if (domain.length === 0 || domain.length > 256) {
       throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain of at most 256 characters");
@@ -145,6 +146,15 @@ export class SqliteJournal {
     return output;
   }
 
+  changed(after: number, ready: () => void): () => void {
+    const [metadata] = this.storage.sql.exec("SELECT count FROM acyclic_stream_domains WHERE domain = ?", this.domain);
+    if (!metadata) throw new Error("STEP sqlite-changed failed: missing domain; recovery: reopen the original domain");
+    if (count(metadata.count) > after) { ready(); return () => {}; }
+    const subscriber = { after, ready };
+    this.subscribers.add(subscriber);
+    return () => { this.subscribers.delete(subscriber); };
+  }
+
   async append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]): Promise<number> {
     const accepted = this.storage.transactionSync(() => {
       const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
@@ -171,6 +181,9 @@ export class SqliteJournal {
     });
     if (accepted.accepted) {
       await this.storage.sync();
+      for (const subscriber of this.subscribers) {
+        if (accepted.head > subscriber.after) { this.subscribers.delete(subscriber); subscriber.ready(); }
+      }
     }
     return accepted.head;
   }

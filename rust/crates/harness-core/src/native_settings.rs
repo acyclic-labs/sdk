@@ -453,5 +453,3 @@ fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod validation;

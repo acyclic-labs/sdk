@@ -1,16 +1,5 @@
 experimental = ["setup-scripts"]
 
-# Live storage is selected only when its real service is available.
-# The capability profiles require their prerequisites rather than skipping tests.
-[profile.default]
-default-filter = 'not ((package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)))'
-
-[profile.postgres]
-default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'
-
-[profile.s3]
-default-filter = 'package(=acyclic-objects) & test(s3::capability::)'
-
 # The transport models execute the packaged TypeScript and WASM implementation.
 # Prepare its ignored artifacts once, before any selected model starts.
 [scripts.setup.stream-typescript]

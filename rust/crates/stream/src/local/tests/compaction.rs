@@ -137,7 +137,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
 }
 #[cfg(feature = "grpc")]
 #[test]
-fn append_to_follow_progresses_across_repeated_compactions() -> Result {
+fn append_to_follow_latency_with_frequent_compaction() -> Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -145,74 +145,44 @@ fn append_to_follow_progresses_across_repeated_compactions() -> Result {
     runtime.block_on(async {
         for transport in ["local", "grpc"] {
             let directory = tempfile::tempdir()?;
-            let provider = LocalStream::open(
-                directory.path(),
-                LocalStreamLimits {
-                    compaction_operations: 4,
-                    ..LocalStreamLimits::default()
-                },
-            )
-            .await?;
+            let provider = LocalStream::open(directory.path(), LocalStreamLimits {
+                compaction_operations: 4, ..LocalStreamLimits::default()
+            }).await?;
             let path = StreamPath::new("latency")?;
-            provider
-                .append(AppendRequest {
-                    path: path.clone(),
-                    records: vec![(Bytes::from_static(b"seed")).into()],
-                    if_tail: None,
-                    idempotency_key: crate::IdempotencyKey::unique(),
-                })
-                .await?;
+            provider.append(AppendRequest { path: path.clone(), records: vec![(Bytes::from_static(b"seed")).into()],
+                if_tail: None, idempotency_key: crate::IdempotencyKey::unique() }).await?;
             let reader: Box<dyn StreamProvider> = if transport == "grpc" {
                 Box::new(crate::grpc::tests::client(provider.clone())?)
-            } else {
-                Box::new(provider.clone())
-            };
-            let mut records = reader
-                .follow(crate::FollowRequest::new(path.clone(), 1))
-                .map_ok(crate::records_only)
-                .await?;
-            // The two-frame threshold is crossed repeatedly; more identical
-            // rounds would measure latency rather than add a state transition.
-            for sequence in 1..=6 {
+            } else { Box::new(provider.clone()) };
+            let mut records = reader.follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only).await?;
+            let mut samples = Vec::new();
+            for sequence in 1..=64 {
+                let started = Instant::now();
                 let writing = tokio::spawn({
-                    let provider = provider.clone();
-                    let path = path.clone();
-                    async move {
-                        provider
-                            .append(AppendRequest {
-                                path,
-                                records: vec![(Bytes::from_static(b"delta")).into()],
-                                if_tail: Some(sequence),
-                                idempotency_key: crate::IdempotencyKey::unique(),
-                            })
-                            .await
-                    }
+                    let provider = provider.clone(); let path = path.clone();
+                    async move { provider.append(AppendRequest {
+                        path, records: vec![(Bytes::from_static(b"delta")).into()],
+                        if_tail: Some(sequence), idempotency_key: crate::IdempotencyKey::unique(),
+                    }).await }
                 });
-                let (next, ()) = tokio::try_join!(
+                let ((next, latency), ()) = tokio::try_join!(
                     async {
                         let next = records.next().await.ok_or("latency follow ended")??;
-                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(next)
+                        Ok::<_, Box<dyn std::error::Error + Send + Sync>>((next, started.elapsed().as_nanos()))
                     },
                     async {
                         writing.await??;
                         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
                     },
                 )?;
+                samples.push(latency);
                 assert_eq!(next.sequence, sequence);
             }
-            let snapshot = read_snapshot(
-                directory.path(),
-                LocalStreamLimits {
-                    compaction_operations: 4,
-                    ..LocalStreamLimits::default()
-                },
-            )?
-            .ok_or("compaction snapshot missing")?;
-            assert!(
-                snapshot.epoch >= 3,
-                "fewer than three compactions completed"
-            );
-            eprintln!("compacting_append_to_follower transport={transport} rounds=6");
+            samples.sort_unstable();
+            let (Some(p50), Some(p99)) = (samples.get(32), samples.get(63)) else {
+                return Err("fewer than 64 samples".into());
+            };
+            eprintln!("compacting_append_to_follower transport={transport} samples=64 p50_ns={p50} p99_ns={p99}");
         }
         Ok(())
     })

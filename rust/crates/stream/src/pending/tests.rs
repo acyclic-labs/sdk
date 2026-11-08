@@ -152,7 +152,7 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     meter.assert_refunded();
 
     // Producer loss before first poll must terminate both registered waiters.
-    // The first waiter remains unpolled while the second must progress.
+    // Cancelling the selected waiter must pass its event to the next waiter.
     let meter = Arc::new(Meter::default());
     let (retained, storage) = request.try_clone_native(&meter.original())?.into_parts();
     let (pending, producer) = NativePending::prepare_native(
@@ -179,16 +179,13 @@ async fn commit_custody_keeps_exact_results_and_terminates_on_producer_loss()
     assert!(second.as_mut().poll(&mut second_context).is_pending());
     drop(producer);
     assert_eq!(first_wake.0.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        second_wake.0.load(Ordering::SeqCst),
-        1,
-        "retained pending observer blocked another observer's retirement"
-    );
+    assert_eq!(second_wake.0.load(Ordering::SeqCst), 0);
+    drop(first);
+    assert_eq!(second_wake.0.load(Ordering::SeqCst), 1);
     assert!(matches!(
         second.as_mut().poll(&mut second_context),
         std::task::Poll::Ready(Err(StreamError::Unavailable))
     ));
-    drop(first);
     drop(second);
     assert!(matches!(
         pending.result().now_or_never(),

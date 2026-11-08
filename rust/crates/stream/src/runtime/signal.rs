@@ -1,13 +1,9 @@
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-use super::sync::Arc;
-use super::sync::Mutex;
+use super::sync::{Arc, Mutex};
 use crate::StreamError;
 use std::{
     collections::VecDeque,
-    task::{Context, Waker},
+    future::poll_fn,
+    task::{Context, Poll, Waker},
 };
 
 pub(crate) struct Signal<T> {
@@ -17,18 +13,10 @@ pub(crate) struct Signal<T> {
 }
 
 /// The original release observation follows the backing's final owner.
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) struct Guard<T> {
     sender: Arc<Signal<T>>,
     value: Option<T>,
 }
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 impl<T> Guard<T> {
     pub(crate) fn new(sender: Arc<Signal<T>>, value: T) -> Self {
         Self {
@@ -37,10 +25,6 @@ impl<T> Guard<T> {
         }
     }
 }
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 impl<T> Drop for Guard<T> {
     fn drop(&mut self) {
         if let Some(value) = self.value.take() {
@@ -78,34 +62,7 @@ impl<T> Signal<T> {
             .0
             .pop_front())
     }
-    /// Receives at most one event and arms the next publication atomically.
-    /// The second result names buffered work that needs another owner turn.
-    pub(crate) fn take_and_listen(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Result<(Option<T>, bool), StreamError> {
-        let wake = cx.waker().clone();
-        let (value, buffered, previous) = {
-            let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
-            let value = state.0.pop_front();
-            (value, !state.0.is_empty(), state.1.replace(wake))
-        };
-        drop(previous);
-        Ok((value, buffered))
-    }
-    #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
-    pub(crate) fn pending(&self) -> usize {
-        self.state.lock().unwrap().0.len()
-    }
-}
-
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-impl<T> Signal<T> {
-    pub(crate) fn poll(&self, cx: &mut Context<'_>) -> std::task::Poll<Result<T, StreamError>> {
-        use std::task::Poll;
+    pub(crate) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
@@ -120,6 +77,6 @@ impl<T> Signal<T> {
         Poll::Pending
     }
     pub(crate) async fn next(&self) -> Result<T, StreamError> {
-        std::future::poll_fn(|cx| self.poll(cx)).await
+        poll_fn(|cx| self.poll(cx)).await
     }
 }

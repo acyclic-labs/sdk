@@ -24,11 +24,11 @@ impl StreamProvider for LocalStream {
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                self.accepted(|| {
+                self.accepted(
                     self.inner
                         .provider
-                        .inspect_idempotency_inner(idempotency_key)
-                })
+                        .inspect_idempotency_inner(idempotency_key),
+                )
                 .await?
             }
         )
@@ -49,7 +49,7 @@ impl StreamProvider for LocalStream {
                 let projection = request.projection;
                 let through = request.durable_through;
                 let (mut view, revision) = self
-                    .accepted(|| async {
+                    .accepted(async {
                         let mut view = self.inner.provider.capture_heads(&request, false).await?;
                         let revision = *self.inner.revision.borrow();
                         if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
@@ -190,7 +190,7 @@ impl StreamProvider for LocalStream {
                     .revisions
                     .wait(&request.request().at_least)
                     .await?;
-                self.accepted(|| self.inner.provider.read_inner(request))
+                self.accepted(self.inner.provider.read_inner(request))
                     .await?
             })
             .await;
@@ -262,7 +262,7 @@ impl StreamProvider for LocalStream {
                 }
                 // A retained envelope is immutable. Only absence must join publication
                 // before it can be reported as authoritative.
-                self.accepted(|| self.inner.provider.read_commit_inner(commit_id))
+                self.accepted(self.inner.provider.read_commit_inner(commit_id))
                     .await?
             }
         )
@@ -295,7 +295,7 @@ impl crate::NativeStreamProvider for LocalStream {
                         .revisions
                         .wait(&request.at_least)
                         .await?;
-                    self.accepted(|| self.inner.provider.capture_native_heads(&request, &work))
+                    self.accepted(self.inner.provider.capture_native_heads(&request, &work))
                         .await?
                 }
                 .await;
@@ -366,7 +366,7 @@ impl crate::NativeStreamProvider for LocalStream {
             &original,
             crate::native::span!("acyclic.stream.tail"),
             async move {
-                self.accepted(|| self.inner.provider.native_tail_inner(path, meter))
+                self.accepted(self.inner.provider.native_tail_inner(path, meter))
                     .await
                     .unwrap_or_else(|error| Ok(Err(error)))
             },
@@ -396,7 +396,7 @@ impl crate::NativeStreamProvider for LocalStream {
                 {
                     return Ok(Err(error));
                 }
-                self.accepted(|| self.inner.provider.native_read_inner(request, meter))
+                self.accepted(self.inner.provider.native_read_inner(request, meter))
                     .await
                     .unwrap_or_else(|error| Ok(Err(error)))
             },
@@ -413,11 +413,11 @@ impl crate::NativeStreamProvider for LocalStream {
             &original,
             crate::native::span!("acyclic.stream.inspect_idempotency"),
             async move {
-                self.accepted(|| {
+                self.accepted(
                     self.inner
                         .provider
-                        .native_inspect_idempotency_inner(key, meter)
-                })
+                        .native_inspect_idempotency_inner(key, meter),
+                )
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
             },

@@ -26,7 +26,7 @@ fn owned_frame_batches_reopen_in_order_and_release_original_work()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        for count in [1, 4, 16] {
+        for count in [1, 16, 256] {
             let root = tempfile::tempdir()?;
             let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
             let meter = Arc::new(crate::test_meter::Meter::local());

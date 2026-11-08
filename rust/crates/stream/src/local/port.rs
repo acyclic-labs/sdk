@@ -210,4 +210,39 @@ impl CommandJournal for LocalPort {
             at_millis,
         })
     }
+
+    fn changed(
+        &mut self,
+        after: u64,
+    ) -> crate::BoxProviderFuture<'static, Result<(), StreamError>> {
+        let mut changed = self.stream.inner.revision.subscribe();
+        let mut failed = self.stream.inner.failed.subscribe();
+        let stream = self.stream.worker();
+        Box::pin(async move {
+            loop {
+                stream.check_available()?;
+                changed.borrow_and_update();
+                let head = stream
+                    .inner
+                    .journal
+                    .lock()
+                    .map_err(|_| stream.inner.poison())?
+                    .bytes;
+                if head != after {
+                    return Ok(());
+                }
+                match futures::future::select(
+                    Box::pin(changed.changed()),
+                    Box::pin(LocalInner::unavailable(&mut failed)),
+                )
+                .await
+                {
+                    futures::future::Either::Left((result, _)) => {
+                        result.map_err(|_| StreamError::Unavailable)?
+                    }
+                    futures::future::Either::Right((error, _)) => return Err(error),
+                }
+            }
+        })
+    }
 }

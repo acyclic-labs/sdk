@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use std::ffi::OsString;
+use std::{ffi::OsString, path::Path};
 
 use acyclic_native_runtime::ExecutableSearch;
 
@@ -16,7 +16,7 @@ fuzz_target!(|input: &str| {
     {
         assert!(resolved.is_absolute());
         #[cfg(unix)]
-        if std::path::Path::new(program).is_absolute() {
+        if Path::new(program).is_absolute() {
             assert_eq!(resolved.as_os_str(), program);
         }
         if let Ok(repeated) = ExecutableSearch::new(&cwd, None, None).resolve(&resolved) {

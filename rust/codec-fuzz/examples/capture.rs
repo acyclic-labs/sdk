@@ -179,23 +179,6 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
-    if std::env::args().any(|arg| arg == "--only-stream-projection") {
-        let prefix = "stream_persistence/projection-";
-        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?;
-        for (name, bytes) in futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())?
-            .into_iter()
-            .filter(|(name, _)| name.starts_with("projection-"))
-        {
-            save(
-                "stream_persistence",
-                &name,
-                &bytes,
-                "acyclic_stream::codec_fuzz::seeds via original v1 protobuf, current v2 changes and transport writers",
-                &mut manifest,
-            )?;
-        }
-        return finish_latest(&manifest, prefix);
-    }
     if std::env::args().any(|arg| arg == "--only-agent-controls") {
         let prefix = "agent_controls/";
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?

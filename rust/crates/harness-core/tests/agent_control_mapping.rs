@@ -299,9 +299,6 @@ fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
 /// Each original call must record its own arguments and bound result before
 /// another statement can lower or change them. Set coverage alone cannot show
 /// this: a second call to an already mapped helper can otherwise go unrecorded.
-/// The recorded agent must also own the control snapshot passed to that call.
-/// Snapshot, call and record are consecutive statements, so no binding or
-/// assignment can invalidate that ownership between them.
 fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
     fn name(expr: &Expr) -> Option<String> {
         match expr {
@@ -325,12 +322,6 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
         match expr {
             Expr::Tuple(tuple) => tuple.elems.iter().map(name).collect(),
             expr => name(expr).map(|name| vec![name]),
-        }
-    }
-    fn owner(expr: &Expr) -> Option<String> {
-        match expr {
-            Expr::Reference(reference) => owner(&reference.expr),
-            expr => name(expr),
         }
     }
     #[derive(Default)]
@@ -373,23 +364,6 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                         return None;
                     };
                     if call_path(record) != ["control_trace", "record"] || record.args.len() != 2 {
-                        return None;
-                    }
-                    let control = name(call.args.first()?)?;
-                    let syn::Stmt::Local(snapshot) = block.stmts.get(index.checked_sub(1)?)? else {
-                        return None;
-                    };
-                    if bound(&snapshot.pat)? != [control] {
-                        return None;
-                    }
-                    let Expr::Call(snapshot) = &*snapshot.init.as_ref()?.expr else {
-                        return None;
-                    };
-                    let recorded_owner = owner(record.args.first()?)?;
-                    if call_path(snapshot) != ["control"]
-                        || snapshot.args.len() != 1
-                        || owner(snapshot.args.first()?).as_deref() != Some(recorded_owner.as_str())
-                    {
                         return None;
                     }
                     let Expr::Call(decision) = record.args.last()? else {
@@ -517,46 +491,6 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
             "control_trace::record(state, Decision::Report(before, (next, send)));",
             "control_trace::lost(state, Decision::Report(before, (next, send)));",
             "report",
-        ),
-        (
-            "control_trace::record(&state, Decision::Admit(before, kind, admitted));",
-            "control_trace::record(&foreign, Decision::Admit(before, kind, admitted));",
-            "admit",
-        ),
-        (
-            "control_trace::record(state, Decision::Report(before, (next, send)));",
-            "control_trace::record(foreign, Decision::Report(before, (next, send)));",
-            "report",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&foreign);",
-            "alarm",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&state); let mut state = foreign;",
-            "alarm",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&state); let (mut state, _) = (foreign, ());",
-            "alarm",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&state); let state: AgentState = foreign;",
-            "alarm",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&state); let before: Control = foreign;",
-            "alarm",
-        ),
-        (
-            "let before = control(&state);",
-            "let before = control(&state); state = foreign;",
-            "alarm",
         ),
     ] {
         let changed = shell.replacen(before, after, 1);

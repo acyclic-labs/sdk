@@ -1,5 +1,6 @@
 use super::*;
 use crate::interest::Interests;
+use futures::StreamExt as _;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))

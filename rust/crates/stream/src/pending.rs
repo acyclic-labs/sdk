@@ -1,8 +1,11 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
-use crate::operation_claim::Signal;
-use crate::{CommitOutcome, CommitRequest, OperationTermination, StreamError, StreamProvider};
-use std::sync::{Arc, OnceLock};
+use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+use tokio::sync::Notify;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
@@ -14,7 +17,8 @@ pub use native::NativePending;
 struct Completion<R, H> {
     request: CommitRequest,
     result: OnceLock<R>,
-    terminal: Signal,
+    finished: AtomicBool,
+    changed: Notify,
     // Request, result and event storage retire before their original funding.
     _storage: H,
 }
@@ -28,11 +32,8 @@ impl<R, H> Producer<R, H> {
 }
 impl<R, H> Drop for Producer<R, H> {
     fn drop(&mut self) {
-        self.0.terminal.publish(if self.0.result.get().is_some() {
-            OperationTermination::Released
-        } else {
-            OperationTermination::ProducerDropped
-        });
+        self.0.finished.store(true, Ordering::Release);
+        self.0.changed.notify_one();
     }
 }
 
@@ -56,7 +57,8 @@ impl<R, H> Pending<R, H> {
         let completion = Arc::new(Completion {
             request,
             result: OnceLock::new(),
-            terminal: Signal::new(),
+            finished: AtomicBool::new(false),
+            changed: Notify::new(),
             _storage: storage,
         });
         (
@@ -76,7 +78,7 @@ impl<R, H> Pending<R, H> {
     /// owner. A live producer or another observer leaves this handle intact.
     /// No native error, receipt or allocation guard is cloned.
     pub fn try_take(self) -> Result<(CommitRequest, Option<R>, H), Self> {
-        if !self.completion.terminal.is_terminated() {
+        if !self.completion.finished.load(Ordering::Acquire) {
             return Err(self);
         }
         match Arc::try_unwrap(self.completion) {
@@ -91,12 +93,18 @@ impl<R, H> Pending<R, H> {
 
     /// Borrows the original result without copying its receipt or native error.
     /// Cancelling a wait never cancels the producer or consumes its result.
-    /// Completion wakes every registered observer independently, with constant
-    /// work per observer and no dependency on another observer being polled.
+    /// Each completion wakes one waiter, which passes the wake onward in O(1).
     pub async fn result(&self) -> Result<&R, StreamError> {
         let completion = &self.completion;
-        completion.terminal.terminated().await;
-        completion.result.get().ok_or(StreamError::Unavailable)
+        let notified = completion.changed.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !completion.finished.load(Ordering::Acquire) {
+            notified.await;
+        }
+        let result = completion.result.get().ok_or(StreamError::Unavailable);
+        completion.changed.notify_one();
+        result
     }
 }
 impl Pending {

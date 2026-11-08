@@ -50,17 +50,11 @@ fn partition(sources: &Sources) -> Result<(), TestCaseError> {
         }
         prop_assert_eq!(queue.last, before);
     }
-    // The generated schedule below owns exactly these three channel ids.
-    let mut retained = 0;
-    for id in 1..=3 {
-        if let Some(entry) = sources.entries.get(&id) {
-            retained += 1;
-            let runnable = entry.ready && (entry.opening || entry.mode.is_some());
-            prop_assert_eq!(seen.contains(&id), runnable);
-            prop_assert_eq!(entry.links.is_some(), runnable);
-        }
+    for (id, entry) in &sources.entries {
+        let runnable = entry.ready && (entry.opening || entry.mode.is_some());
+        prop_assert_eq!(seen.contains(id), runnable);
+        prop_assert_eq!(entry.links.is_some(), runnable);
     }
-    prop_assert_eq!(retained, sources.len());
     Ok(())
 }
 fn mode(value: u8) -> Option<usize> {
@@ -201,21 +195,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let slots = testing::slots();
     for (binding, lookahead) in [
         (None, false),
-        (
-            Some(
-                authority
-                    .bind(
-                        &slots,
-                        0,
-                        &StreamPath::new("model").unwrap(),
-                        Default::default(),
-                        1,
-                    )
-                    .unwrap()
-                    .0,
-            ),
-            true,
-        ),
+        (Some(testing::binding()), true),
         (
             Some(authority.bind_list(&slots, 0, None, 1).unwrap().0),
             false,

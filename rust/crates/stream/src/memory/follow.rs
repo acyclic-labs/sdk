@@ -198,8 +198,8 @@ struct MemoryFollow {
     done: bool,
 }
 impl crate::snapshot::Snapshot for Box<MemoryFollow> {
-    type Output = Option<Record>;
-    async fn read(&mut self) -> Result<Self::Output, StreamError> {
+    type Output = Result<Option<Record>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
         let state = &mut **self;
         state
             .provider

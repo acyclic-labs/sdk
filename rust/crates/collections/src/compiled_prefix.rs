@@ -26,20 +26,19 @@ impl<V: AsRef<[u8]>> PrefixKey<V> for EntryBytes {
     }
 }
 
-/// A compilation or lookup refusal, before publishing any result.
+/// A compilation refusal, before publishing any index.
 #[derive(Debug)]
 pub enum CompiledPrefixError<E> {
     /// The original caller's admission error.
     Work(E),
-    /// Keys must be distinct; `from_sorted` also requires unsigned byte order.
+    /// A distinct-key constructor found a duplicate, or `from_sorted` found
+    /// keys outside unsigned byte order.
     /// The position identifies an entry in the original input vector.
     Order(usize),
     /// The supplied table cannot be represented by the native address space.
     Capacity,
     /// The allocator refused the admitted node backing.
     Allocation(std::collections::TryReserveError),
-    /// An internal coordinate is inconsistent with the retained key view.
-    Invariant,
 }
 
 #[derive(Debug)]
@@ -97,7 +96,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         work.check().map_err(CompiledPrefixError::Work)?;
-        Self::compile(entries, EntryBytes, Some, true, work)
+        Self::compile(entries, EntryBytes, |position| position, true, work)
     }
 }
 
@@ -114,8 +113,10 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         Self::from_keyed_entries(entries, key, true, work)
     }
 
-    /// Compiles repeated keys through the same retained table and traversal.
-    /// Matches select the first original entry for that key.
+    /// Compiles repeated borrowed keys through the same table and traversal.
+    /// Every match returns the first original entry with that key; all entries
+    /// retain their original positions. Prefix acceptance examines only that
+    /// representative. Funding and key stability follow `from_entries`.
     pub fn from_repeated_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
         entries: Vec<V>,
         key: K,
@@ -147,19 +148,14 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         work.charge_items(entries.len() as u64).map_err(Work)?;
         order.extend(0..entries.len());
         sort(&mut order, &mut |&left, &right| {
-            let left_key = key.bytes(entries.get(left).ok_or(CompiledPrefixError::Invariant)?);
-            let right_key = key.bytes(entries.get(right).ok_or(CompiledPrefixError::Invariant)?);
-            work.charge_items(left_key.len().min(right_key.len()) as u64 + 1)
-                .map_err(Work)?;
-            Ok(left_key.cmp(right_key).then_with(|| left.cmp(&right)))
-        })?;
-        let index = CompiledPrefixIndex::compile(
-            entries,
-            key,
-            |position| order.get(position).copied(),
-            distinct,
-            work,
-        )?;
+            let left_key = key.bytes(&entries[left]);
+            let right_key = key.bytes(&entries[right]);
+            work.charge_items(left_key.len().min(right_key.len()) as u64 + 1)?;
+            Ok::<_, W::Error>(left_key.cmp(right_key).then_with(|| left.cmp(&right)))
+        })
+        .map_err(Work)?;
+        let index =
+            CompiledPrefixIndex::compile(entries, key, |position| order[position], distinct, work)?;
         drop(order);
         drop(allocation);
         Ok(index)
@@ -170,27 +166,19 @@ impl<V, A> CompiledPrefixIndex<V, A> {
 // An infallible comparator cannot stop work safely when its admission is lost.
 fn sort<T, E>(
     items: &mut [T],
-    compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, CompiledPrefixError<E>>,
-) -> Result<(), CompiledPrefixError<E>> {
+    compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+) -> Result<(), E> {
     fn sift<T, E>(
         items: &mut [T],
         mut root: usize,
-        compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, CompiledPrefixError<E>>,
-    ) -> Result<(), CompiledPrefixError<E>> {
-        use CompiledPrefixError::Invariant;
+        compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
+    ) -> Result<(), E> {
         while root < items.len() / 2 {
             let mut child = root * 2 + 1;
-            if let Some(right) = items.get(child + 1)
-                && compare(items.get(child).ok_or(Invariant)?, right)?.is_lt()
-            {
+            if child + 1 < items.len() && compare(&items[child], &items[child + 1])?.is_lt() {
                 child += 1;
             }
-            if !compare(
-                items.get(root).ok_or(Invariant)?,
-                items.get(child).ok_or(Invariant)?,
-            )?
-            .is_lt()
-            {
+            if !compare(&items[root], &items[child])?.is_lt() {
                 break;
             }
             items.swap(root, child);
@@ -203,60 +191,34 @@ fn sort<T, E>(
     }
     for end in (1..items.len()).rev() {
         items.swap(0, end);
-        sift(
-            items.get_mut(..end).ok_or(CompiledPrefixError::Invariant)?,
-            0,
-            compare,
-        )?;
+        sift(&mut items[..end], 0, compare)?;
     }
     Ok(())
 }
 
 impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
-    fn key<E>(&self, position: usize) -> Result<&[u8], CompiledPrefixError<E>> {
-        self.entries
-            .get(position)
-            .map(|entry| self.key.bytes(entry))
-            .ok_or(CompiledPrefixError::Invariant)
-    }
-
-    fn validate_order<W: IndexWork<Allocation = A>>(
-        entries: &[V],
-        key: &K,
-        position: &impl Fn(usize) -> Option<usize>,
-        distinct: bool,
-        work: &mut W,
-    ) -> Result<(), CompiledPrefixError<W::Error>> {
-        use CompiledPrefixError::{Invariant, Order, Work};
-        for index in 1..entries.len() {
-            let left = key.bytes(
-                entries
-                    .get(position(index - 1).ok_or(Invariant)?)
-                    .ok_or(Invariant)?,
-            );
-            let right = key.bytes(
-                entries
-                    .get(position(index).ok_or(Invariant)?)
-                    .ok_or(Invariant)?,
-            );
-            work.charge_items(left.len().min(right.len()) as u64 + 1)
-                .map_err(Work)?;
-            if left > right || (distinct && left == right) {
-                return Err(Order(position(index).ok_or(Invariant)?));
-            }
-        }
-        Ok(())
+    fn key(&self, position: usize) -> &[u8] {
+        self.key.bytes(&self.entries[position])
     }
 
     fn compile<W: IndexWork<Allocation = A>>(
         entries: Vec<V>,
         key: K,
-        position: impl Fn(usize) -> Option<usize>,
+        position: impl Fn(usize) -> usize,
         distinct: bool,
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
-        use CompiledPrefixError::{Allocation, Capacity, Invariant, Work};
-        Self::validate_order(&entries, &key, &position, distinct, work)?;
+        use CompiledPrefixError::{Allocation, Capacity, Order, Work};
+        for index in 1..entries.len() {
+            let left = key.bytes(&entries[position(index - 1)]);
+            let right = key.bytes(&entries[position(index)]);
+            work.charge_items(left.len().min(right.len()) as u64 + 1)
+                .map_err(Work)?;
+            let order = left.cmp(right);
+            if order.is_gt() || (distinct && order.is_eq()) {
+                return Err(Order(position(index)));
+            }
+        }
         let capacity = entries.len().checked_mul(2).ok_or(Capacity)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Node>())
@@ -289,45 +251,30 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         let mut cursor = 0;
         while cursor < result.nodes.len() {
             work.charge_items(1).map_err(Work)?;
-            let node = result.nodes.get(cursor).ok_or(Invariant)?;
+            let node = &result.nodes[cursor];
             let end = node.end;
             let before = node.children.end;
             let mut from = node.children.start;
-            while from < before
-                && result
-                    .key::<W::Error>(position(from).ok_or(Invariant)?)?
-                    .len()
-                    == end
-            {
+            while from < before && result.key(position(from)).len() == end {
                 work.charge_items(1).map_err(Work)?;
                 from += 1;
             }
             let first_child = result.nodes.len();
             while from < before {
-                let first = result.key::<W::Error>(position(from).ok_or(Invariant)?)?;
+                let first = result.key(position(from));
                 let mut to = from + 1;
                 while to < before {
                     work.charge_items(1).map_err(Work)?;
-                    if result
-                        .key::<W::Error>(position(to).ok_or(Invariant)?)?
-                        .get(end)
-                        .ok_or(Invariant)?
-                        != first.get(end).ok_or(Invariant)?
-                    {
+                    if result.key(position(to))[end] != first[end] {
                         break;
                     }
                     to += 1;
                 }
-                let last = result.key::<W::Error>(position(to - 1).ok_or(Invariant)?)?;
+                let last = result.key(position(to - 1));
                 let mut common = end;
-                for (left, right) in first
-                    .get(end..)
-                    .ok_or(Invariant)?
-                    .iter()
-                    .zip(last.get(end..).ok_or(Invariant)?)
-                {
+                while common < first.len().min(last.len()) {
                     work.charge_items(1).map_err(Work)?;
-                    if left != right {
+                    if first[common] != last[common] {
                         break;
                     }
                     common += 1;
@@ -339,10 +286,8 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
                 });
                 from = to;
             }
-            let after = result.nodes.len();
-            let node = result.nodes.get_mut(cursor).ok_or(Invariant)?;
-            node.children = first_child..after;
-            node.key = position(node.key).ok_or(Invariant)?;
+            result.nodes[cursor].children = first_child..result.nodes.len();
+            result.nodes[cursor].key = position(result.nodes[cursor].key);
             cursor += 1;
         }
         Ok(result)
@@ -358,16 +303,13 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
     /// components); its own cost is the caller's responsibility. It runs only
     /// until the first accepted prefix. Every node/label/edge examination is
     /// admitted by the same read owner, including a check on an empty table.
-    /// Inconsistent internal coordinates or shortened key views return
-    /// [`CompiledPrefixError::Invariant`], never a successful absence.
     pub fn matches<W: IndexReadWork>(
         &self,
         query: &[u8],
         mut accept: impl FnMut(&V) -> bool,
         work: &mut W,
-    ) -> Result<PrefixMatches<'_, V>, CompiledPrefixError<W::Error>> {
-        use CompiledPrefixError::{Invariant, Work};
-        work.validate().map_err(Work)?;
+    ) -> Result<PrefixMatches<'_, V>, W::Error> {
+        work.validate()?;
         let mut result = PrefixMatches {
             exact: None,
             shortest: None,
@@ -378,16 +320,13 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         let mut cursor = 0;
         let mut from = 0;
         loop {
-            work.examine(1).map_err(Work)?;
-            let node = self.nodes.get(cursor).ok_or(Invariant)?;
-            let entry = self.entries.get(node.key).ok_or(Invariant)?;
+            work.examine(1)?;
+            let node = &self.nodes[cursor];
+            let entry = &self.entries[node.key];
             let key = self.key.bytes(entry);
             let end = node.end.min(query.len());
-            work.examine(end.checked_sub(from).ok_or(Invariant)? as u64)
-                .map_err(Work)?;
-            if query.get(from..end).ok_or(Invariant)? != key.get(from..end).ok_or(Invariant)?
-                || query.len() < node.end
-            {
+            work.examine((end - from) as u64)?;
+            if query[from..end] != key[from..end] || query.len() < node.end {
                 return Ok(result);
             }
             if key.len() == node.end {
@@ -414,11 +353,8 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
                     return Ok(result);
                 }
                 let middle = children.start + children.len() / 2;
-                work.examine(1).map_err(Work)?;
-                let observed = *self
-                    .key::<W::Error>(self.nodes.get(middle).ok_or(Invariant)?.key)?
-                    .get(node.end)
-                    .ok_or(Invariant)?;
+                work.examine(1)?;
+                let observed = self.key(self.nodes[middle].key)[node.end];
                 match byte.cmp(&observed) {
                     std::cmp::Ordering::Less => children.end = middle,
                     std::cmp::Ordering::Greater => children.start = middle + 1,

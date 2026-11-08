@@ -1,11 +1,11 @@
 diff --git a/rust/crates/stream/src/runtime/sources.rs b/rust/crates/stream/src/runtime/sources.rs
 --- a/rust/crates/stream/src/runtime/sources.rs
 +++ b/rust/crates/stream/src/runtime/sources.rs
-@@ -316,6 +316,7 @@
-                 Poll::Ready(Some(event)) => {
-                     entry.opening = false;
-                     entry.ready = true;
-+                    drop(std::hint::black_box(Box::new([0_u8; 17])));
-                     self.enqueue(id);
-                     return Poll::Ready(Ok(Some(event)));
-                 }
+@@ -320,6 +320,7 @@
+                     Poll::Ready(Some(event)) => {
+                         entry.opening = false;
+                         entry.ready = true;
++                        drop(std::hint::black_box(Box::new([0_u8; 17])));
+                         self.enqueue(id);
+                         return Poll::Ready(Ok(Some(event)));
+                     }

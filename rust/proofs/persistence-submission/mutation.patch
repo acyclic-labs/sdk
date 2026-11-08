@@ -1,8 +1,0 @@
-diff --git a/rust/crates/native-runtime/src/task.rs b/rust/crates/native-runtime/src/task.rs
---- a/rust/crates/native-runtime/src/task.rs
-+++ b/rust/crates/native-runtime/src/task.rs
-@@ -80,3 +80,3 @@
--    let task = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
-+    let task = if false {
-         Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
-     } else {

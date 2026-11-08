@@ -44,7 +44,7 @@ fn release_order<const RAW_DROP: bool>(length: usize) {
                 previous
                     .next
                     .set(RetainedLink {
-                        _fact: fact.downgrade(),
+                        fact: fact.downgrade(),
                         _allocation: charge,
                     })
                     .unwrap_or_else(|_| unreachable!("one successor"));
@@ -59,7 +59,7 @@ fn release_order<const RAW_DROP: bool>(length: usize) {
         let upgraded = first
             .as_ref()
             .and_then(|first| first.next.get())
-            .and_then(|link| link._fact.upgrade());
+            .and_then(|link| link.fact.upgrade());
         if RAW_DROP {
             // The former ordinary Arc destructor releases the inline charge
             // before its implicit weak reference retires the allocation.

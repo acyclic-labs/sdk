@@ -2,17 +2,11 @@
 //
 // A Patricia branch belongs to the newly inserted leaf's Retained slot, so
 // indexing never allocates or grows a second inventory after publication.
-use acyclic_collections::radix::{self, BranchBit, RadixCursor};
-
-// The shared insertion bound plus the original new-leaf identity observation.
 #[cfg(not(target_arch = "wasm32"))]
-const COMMIT_INDEX_PROBES: u64 = match radix::insertion_examinations(32) {
-    Some(bound) => bound + 1,
-    None => unreachable!(),
-};
+const COMMIT_INDEX_PROBES: u64 = 2 * 257;
 
 #[derive(Clone, Copy)]
-enum RetainedIndexLink {
+enum CommitLink {
     Leaf(usize),
     Branch(usize),
 }
@@ -20,41 +14,33 @@ enum RetainedIndexLink {
 #[derive(Clone, Copy)]
 struct CommitBranch {
     bit: usize,
-    left: RetainedIndexLink,
-    right: RetainedIndexLink,
+    left: CommitLink,
+    right: CommitLink,
 }
 
-// This adapter borrows only the original inventory. Selection and bit/key
-// interpretation are the same implementation used by the boxed FixedIndex.
-struct CommitCursor<'a> {
-    state: &'a State,
-    link: Option<RetainedIndexLink>,
-    parent: Option<(usize, bool)>,
+fn commit_bit(key: &[u8; 32], bit: usize) -> bool {
+    key.get(bit / 8)
+        .is_some_and(|byte| byte & (0x80 >> (bit % 8)) != 0)
 }
 
-impl RadixCursor for CommitCursor<'_> {
-    fn is_empty(&self) -> bool {
-        self.link.is_none()
-    }
-
-    fn branch_bit(&self) -> Option<BranchBit> {
-        match self.link {
-            Some(RetainedIndexLink::Branch(index)) => {
-                Some(BranchBit::from_bit(self.state.commit_branch(index).bit))
+fn commit_difference(left: &[u8; 32], right: &[u8; 32]) -> Option<usize> {
+    for (byte, (left, right)) in left.iter().zip(right).enumerate() {
+        let different = left ^ right;
+        for bit in 0..8 {
+            if different & (0x80 >> bit) != 0 {
+                return Some(byte * 8 + bit);
             }
-            _ => None,
         }
     }
+    None
+}
 
-    fn child(self, high: bool) -> Self {
-        let Some(RetainedIndexLink::Branch(index)) = self.link else {
-            unreachable!("selection descends from an existing branch")
-        };
-        let branch = self.state.commit_branch(index);
-        Self {
-            state: self.state,
-            link: Some(if high { branch.right } else { branch.left }),
-            parent: Some((index, high)),
+impl CommitBranch {
+    fn child(self, key: &[u8; 32]) -> CommitLink {
+        if commit_bit(key, self.bit) {
+            self.right
+        } else {
+            self.left
         }
     }
 }
@@ -74,88 +60,69 @@ impl State {
             .commit_id
     }
 
-    fn commit_cursor(&self) -> CommitCursor<'_> {
-        CommitCursor {
-            state: self,
-            link: self.commit_root,
-            parent: None,
-        }
-    }
-
     fn find_commit<E>(
         &self,
         id: &CommitId,
-        mut probe: impl FnMut(u64) -> Result<(), E>,
+        mut probe: impl FnMut() -> Result<(), E>,
     ) -> Result<Option<&CommittedEnvelope>, E> {
-        let mut observe = |items| {
-            probe(items)?;
+        let mut next = self.commit_root;
+        while let Some(link) = next {
+            probe()?;
             #[cfg(test)]
-            COMMIT_VISITS.with(|count| count.set(count.get() + items as usize));
-            Ok(())
-        };
-        let (selected, _) = radix::select(self.commit_cursor(), id.as_bytes(), None, &mut observe)?;
-        match selected.link {
-            Some(RetainedIndexLink::Leaf(index)) => {
-                observe(32)?;
-                Ok(self
-                    .replay_entry(index)
-                    .envelope()
-                    .filter(|envelope| envelope.commit_id == *id))
+            COMMIT_VISITS.with(|count| count.set(count.get() + 1));
+            match link {
+                CommitLink::Leaf(index) => {
+                    return Ok(self
+                        .replay_entry(index)
+                        .envelope()
+                        .filter(|envelope| envelope.commit_id == *id));
+                }
+                CommitLink::Branch(index) => {
+                    next = Some(self.commit_branch(index).child(id.as_bytes()));
+                }
             }
-            None => Ok(None),
-            _ => unreachable!("selection returns a retained commit leaf"),
         }
+        Ok(None)
     }
 
-    fn insert_commit(&mut self, index: usize, probe: &mut impl FnMut(u64)) {
-        if self.commit_root.is_none() {
-            self.commit_root = Some(RetainedIndexLink::Leaf(index));
+    fn insert_commit(&mut self, index: usize, probe: &mut impl FnMut()) {
+        let Some(root) = self.commit_root else {
+            self.commit_root = Some(CommitLink::Leaf(index));
             return;
-        }
-        probe(1);
+        };
+        probe();
         let key = self.commit_identity(index);
-        let mut observe = |items| {
-            probe(items);
-            Ok::<_, std::convert::Infallible>(())
+        let mut next = root;
+        let other = loop {
+            probe();
+            match next {
+                CommitLink::Leaf(index) => break self.commit_identity(index),
+                CommitLink::Branch(index) => next = self.commit_branch(index).child(key.as_bytes()),
+            }
         };
-        let (selected, _) =
-            match radix::select(self.commit_cursor(), key.as_bytes(), None, &mut observe) {
-                Ok(selected) => selected,
-                Err(never) => match never {},
-            };
-        let Some(RetainedIndexLink::Leaf(other)) = selected.link else {
-            unreachable!("selection returns a retained commit leaf")
-        };
-        observe(32).unwrap_or_else(|never| match never {});
-        let bit = BranchBit::difference(key.as_bytes(), self.commit_identity(other).as_bytes())
+        let bit = commit_difference(key.as_bytes(), other.as_bytes())
             .unwrap_or_else(|| unreachable!("duplicate retained commit identity"));
-        let (selected, _) = match radix::select(
-            self.commit_cursor(),
-            key.as_bytes(),
-            Some(bit),
-            &mut observe,
-        ) {
-            Ok(selected) => selected,
-            Err(never) => match never {},
-        };
-        let next = selected
-            .link
-            .unwrap_or_else(|| unreachable!("a selected subtree is nonempty"));
-        let parent = selected.parent;
-        let leaf = RetainedIndexLink::Leaf(index);
-        let (left, right) = if bit.high(key.as_bytes()) {
+        let mut parent = None;
+        next = root;
+        loop {
+            probe();
+            match next {
+                CommitLink::Branch(index) if self.commit_branch(index).bit < bit => {
+                    let branch = *self.commit_branch(index);
+                    parent = Some((index, commit_bit(key.as_bytes(), branch.bit)));
+                    next = branch.child(key.as_bytes());
+                }
+                _ => break,
+            }
+        }
+        let leaf = CommitLink::Leaf(index);
+        let (left, right) = if commit_bit(key.as_bytes(), bit) {
             (next, leaf)
         } else {
             (leaf, next)
         };
-        self.replay_entry_mut(index).commit_branch = Some(CommitBranch {
-            bit: bit
-                .bit_index()
-                .unwrap_or_else(|| unreachable!("a commit key has 256 bits")),
-            left,
-            right,
-        });
-        let link = RetainedIndexLink::Branch(index);
+        self.replay_entry_mut(index).commit_branch = Some(CommitBranch { bit, left, right });
+        let link = CommitLink::Branch(index);
         if let Some((index, right)) = parent {
             let branch = self
                 .replay_entry_mut(index)
@@ -176,7 +143,7 @@ impl State {
 impl MemoryStream {
     fn reserve_commit_index(&self, probes: &mut ReplayProbes) -> Result<(), StreamError> {
         // Prepared completion can run after other commits, cancellation and
-        // caller budget exhaustion. Reserve shared traversal and complete key comparison now;
+        // caller budget exhaustion. Reserve both complete 256-bit walks now;
         // retain only records already admitted probes and refunds the unused tail.
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {

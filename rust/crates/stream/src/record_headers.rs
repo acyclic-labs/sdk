@@ -157,7 +157,6 @@ impl RecordHeaders {
     }
 
     /// Memory retained by unmetered ingress, excluding shared byte owners.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn owned_bytes(&self) -> usize {
         self.0.as_ref().map_or(0, |data| {
             Self::control_bytes()

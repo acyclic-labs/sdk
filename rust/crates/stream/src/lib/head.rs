@@ -159,7 +159,12 @@ impl Heads {
             }
         }
         if let (Some(page), Some(selected)) = (&self.children, &request.children) {
-            page.validate_for(selected)?;
+            for child in &page.children {
+                child.validate_tail()?;
+                if selected.tail_stream.is_none() && child.tail.is_some() {
+                    return Err(StreamError::InvalidResponse);
+                }
+            }
         }
         Ok(())
     }

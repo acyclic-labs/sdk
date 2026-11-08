@@ -41,7 +41,7 @@ impl transport::Transport for HeldInputTerminal {
                 }
                 Some((Ok(frame), (source, held)))
             });
-            serve_on_with_products(
+            let response = serve_on_with_products(
                 Arc::new(MemoryStream::default()),
                 testing::authority(),
                 Products {
@@ -54,8 +54,9 @@ impl transport::Transport for HeldInputTerminal {
                 Some(Box::pin(async move {
                     let _ = lifetime.changed().await;
                 })),
-            )
-            .map_err(Into::into)
+            )?;
+            Ok(Box::pin(response.map(|frame| frame.map_err(Into::into)))
+                as transport::Responses<transport::Failure>)
         })
     }
 }

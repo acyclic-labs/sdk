@@ -370,9 +370,7 @@ async fn verify_read_open_failures(
     Ok(())
 }
 
-/// Rejects a stale fork without spending its key or publishing its destination.
-/// The supplied source must contain exactly two records.
-pub async fn verify_stale_tail_condition(
+async fn verify_stale_tail_condition(
     provider: &(impl StreamProvider + ?Sized),
     source: StreamPath,
 ) -> Result<(), Failure> {
@@ -943,29 +941,22 @@ pub async fn verify_page_tail_bytes(
     let value = Bytes::from(vec![0; crate::MAX_RECORD_BYTES / 2]);
     let headers = crate::RecordHeaders::new(vec![vec![1; 512].into()], vec![])?;
     let count = crate::MAX_COMMAND_BYTES / value.len();
-    // Every path and key is independent. Admit the original writes together
-    // so a durable provider can share its barrier; await all before paging.
-    let outcomes = futures::future::try_join_all((0..count).map(|index| {
-        let value = value.clone();
-        let headers = headers.clone();
-        async move {
-            let target = path(&format!("conformance/page-bytes/{index:04}/status"))?;
-            provider
-                .append(AppendRequest {
-                    idempotency_key: IdempotencyKey::new(target.as_str().as_bytes().to_vec())?,
-                    path: target,
-                    records: vec![crate::AppendRecord { value, headers }],
-                    if_tail: Some(0),
-                })
-                .await
+    for index in 0..count {
+        let target = path(&format!("conformance/page-bytes/{index:04}/status"))?;
+        let outcome = provider
+            .append(AppendRequest {
+                idempotency_key: IdempotencyKey::new(target.as_str().as_bytes().to_vec())?,
+                path: target,
+                records: vec![crate::AppendRecord {
+                    value: value.clone(),
+                    headers: headers.clone(),
+                }],
+                if_tail: Some(0),
+            })
+            .await?;
+        if !matches!(outcome, AppendOutcome::Committed(_)) {
+            return Err(violated!());
         }
-    }))
-    .await?;
-    if outcomes
-        .iter()
-        .any(|outcome| !matches!(outcome, AppendOutcome::Committed(_)))
-    {
-        return Err(violated!());
     }
     let page = match provider
         .children_page(ChildrenPageRequest {

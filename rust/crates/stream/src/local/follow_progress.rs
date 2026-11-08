@@ -11,16 +11,14 @@ impl LocalStream {
     ) -> Result<crate::FollowStream, StreamError> {
         let failed = self.inner.failed.subscribe();
         let (snapshot, selection, changed, cursor) = self
-            .accepted(|| {
-                self.inner.provider.prepare_progress(
-                    &path,
-                    from,
-                    anchor,
-                    when_absent,
-                    bootstrap_head,
-                    until,
-                )
-            })
+            .accepted(self.inner.provider.prepare_progress(
+                &path,
+                from,
+                anchor,
+                when_absent,
+                bootstrap_head,
+                until,
+            ))
             .await??;
         let anchor = selection.preceding;
         let state = Box::new(LocalProgress {
@@ -83,19 +81,17 @@ struct LocalProgress {
 impl crate::snapshot::Snapshot for Box<LocalProgress> {
     #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
-    type Output = Option<crate::FollowUpdate>;
-    async fn read(&mut self) -> Result<Self::Output, StreamError> {
+    type Output = Result<Option<crate::FollowUpdate>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
         let state = &mut **self;
         state
             .provider
-            .accepted_snapshot(|| {
-                state.provider.inner.provider.next_follow_update(
-                    &state.path,
-                    &mut state.cursor,
-                    &mut state.anchor,
-                    &state.filter,
-                )
-            })
+            .accepted_snapshot(state.provider.inner.provider.next_follow_update(
+                &state.path,
+                &mut state.cursor,
+                &mut state.anchor,
+                &state.filter,
+            ))
             .await?
     }
 }

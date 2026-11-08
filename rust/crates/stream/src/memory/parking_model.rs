@@ -167,8 +167,8 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
 }
 
 // Capture tasks at the real snapshot dispatch boundary, then destroy the worker
-// future like executor shutdown. A retained writer must not hide producer loss.
-// Consumer cancellation also races writer release and a granted reservation.
+// future like executor shutdown. Race its drop (and optional consumer drop) with
+// releasing the state writer, including fair handoff to a granted read.
 pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: bool) {
     loom::model(move || {
         let provider = MemoryStream::default();
@@ -244,17 +244,6 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                 drop(ManuallyDrop::into_inner(follow))
             }))
         } else {
-            shutdown.join().unwrap();
-            assert!(
-                matches!(
-                    follow
-                        .as_mut()
-                        .poll_next(&mut Context::from_waker(Waker::noop())),
-                    std::task::Poll::Ready(Some(Err(StreamError::Unavailable)))
-                ),
-                "lost snapshot producer left its public follow parked"
-            );
-            drop(ManuallyDrop::into_inner(follow));
             drop(held);
             park(provider.append(AppendRequest {
                 path: path.clone(),
@@ -263,6 +252,9 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                 idempotency_key: crate::IdempotencyKey::unique(),
             }))
             .unwrap();
+            assert_eq!(park(follow.next()), Some(Ok(())));
+            drop(ManuallyDrop::into_inner(follow));
+            shutdown.join().unwrap();
             drop(ManuallyDrop::into_inner(keeper));
             return;
         };

@@ -93,7 +93,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)", 'c
 [features]
 default = ["runtime"]
 mcp-stdio-codec = ["dep:acyclic-mcp", "dep:bytes", "dep:rmcp", "dep:tokio-util"]
-reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 native-answer = ["core", "dep:acyclic-native-runtime"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
@@ -387,15 +386,3 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
-
-[[bin]]
-name = "reader_snapshot"
-path = "fuzz_targets/reader_snapshot.rs"
-required-features = ["reader"]
-test = false
-doc = false
-bench = false
-
-[[example]]
-name = "reader_snapshot_corpus"
-required-features = ["reader"]

@@ -89,7 +89,7 @@ fn admit_replay(state: &State, limits: MemoryLimits) -> Result<(), StreamError> 
 /// Retains a mutation envelope and its replay result indefinitely.
 fn retain(
     state: &mut State,
-    probe: &mut impl FnMut(u64),
+    probe: &mut impl FnMut(),
     envelope: Option<CommittedEnvelope>,
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
@@ -113,13 +113,9 @@ fn retain(
     };
     let entry = Retained {
         fact,
-        // A first leaf has no branch. Its dormant original slot is populated
-        // before any Branch link can select it; there is no second allocation.
-        replay_branch: ReplayBranch {
-            bit: 0,
-            left: RetainedIndexLink::Leaf(0),
-            right: RetainedIndexLink::Leaf(0),
-        },
+        replay_left: None,
+        replay_right: None,
+        replay_height: 1,
         commit_branch: None,
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
@@ -127,7 +123,7 @@ fn retain(
             previous
                 .next
                 .set(RetainedLink {
-                    _fact: entry.fact.downgrade(),
+                    fact: entry.fact.downgrade(),
                     _allocation: header,
                 })
                 .unwrap_or_else(|_| unreachable!("the retained tail has one successor"));
@@ -140,7 +136,7 @@ fn retain(
             state.insert_commit(index, probe);
         }
         if keyed {
-            state.insert_replay(index, probe);
+            state.replay_root = Some(state.insert_replay(state.replay_root, index, probe));
             state.replay_count += 1;
         }
     }

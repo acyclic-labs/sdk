@@ -16,22 +16,17 @@ mod checked {
     pub(crate) struct Mutex<T>(loom::sync::Mutex<T>);
     pub(crate) struct Guard<'a, T>(loom::sync::MutexGuard<'a, T>);
     pub(crate) fn assert_unlocked() {
-        assert!(
-            !HELD.with(Cell::get),
-            "wake must run outside the publication lock"
-        );
+        HELD.with(|held| assert!(!held.get(), "wake must run outside the publication lock"));
     }
     impl<T> Mutex<T> {
         pub(crate) fn new(value: T) -> Self {
             Self(loom::sync::Mutex::new(value))
         }
-        pub(crate) fn lock(&self) -> std::sync::LockResult<Guard<'_, T>> {
+        pub(crate) fn lock(&self) -> Result<Guard<'_, T>, ()> {
             assert_unlocked();
-            let guard = self.0.lock();
+            let guard = self.0.lock().map_err(|_| ())?;
             HELD.with(|held| held.set(true));
-            guard
-                .map(Guard)
-                .map_err(|poison| std::sync::PoisonError::new(Guard(poison.into_inner())))
+            Ok(Guard(guard))
         }
     }
     impl<T> Deref for Guard<'_, T> {

@@ -2,113 +2,18 @@
 use super::signal;
 use super::sync::{AtomicU64, Ordering};
 use crate::{StreamError, wire};
-use acyclic_collections::{FixedIndex, IndexWork};
 use futures::{Stream, task::ArcWake};
 use std::{
+    collections::BTreeMap,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-
-// Source registration, like its existing stream and wake owners, is constructed
-// by the event-loop owner without a separate allocation ledger. Reads and
-// retirement use the same fixed-width index as the other primitive indexes.
-#[derive(Default)]
-struct SourceIndexWork {
-    #[cfg(test)]
-    examined: u64,
-}
-impl IndexWork for SourceIndexWork {
-    type Error = std::convert::Infallible;
-    type Allocation = ();
-
-    fn check(&mut self) -> Result<(), Self::Error> {
-        Ok(())
-    }
-    fn charge_items(&mut self, _items: u64) -> Result<(), Self::Error> {
-        #[cfg(test)]
-        {
-            self.examined += _items;
-        }
-        Ok(())
-    }
-    fn claim(&mut self, _: u64) -> Result<(), Self::Error> {
-        Ok(())
-    }
-}
-
-fn infallible<T>(result: Result<T, std::convert::Infallible>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(impossible) => match impossible {},
-    }
-}
-
-pub(crate) struct SourceIndex<S> {
-    entries: FixedIndex<Entry<S>, (), 8>,
-    length: usize,
-}
-impl<S> SourceIndex<S> {
-    fn new() -> Self {
-        Self {
-            entries: FixedIndex::default(),
-            length: 0,
-        }
-    }
-    pub(crate) fn get(&self, id: &u64) -> Option<&Entry<S>> {
-        let mut work = SourceIndexWork::default();
-        let entry = infallible(self.entries.get(id.to_be_bytes(), &mut work));
-        #[cfg(test)]
-        assert!(
-            work.examined <= 73,
-            "source lookup exceeded the fixed key width"
-        );
-        entry
-    }
-    pub(crate) fn get_mut(&mut self, id: &u64) -> Option<&mut Entry<S>> {
-        let mut work = SourceIndexWork::default();
-        let entry = infallible(self.entries.get_mut(id.to_be_bytes(), &mut work));
-        #[cfg(test)]
-        assert!(
-            work.examined <= 73,
-            "source lookup exceeded the fixed key width"
-        );
-        entry
-    }
-    fn insert(&mut self, id: u64, entry: Entry<S>) {
-        // The owning insertion path has already removed this exact channel.
-        infallible(self.entries.get_or_try_insert_with(
-            id.to_be_bytes(),
-            &mut SourceIndexWork::default(),
-            |_| Ok(entry),
-        ));
-        self.length += 1;
-    }
-    fn remove(&mut self, id: &u64) -> Option<Entry<S>> {
-        let removed = self.entries.remove_if(id.to_be_bytes(), |_| true)?;
-        self.length -= 1;
-        Some(removed.into_parts().1)
-    }
-    fn len(&self) -> usize {
-        self.length
-    }
-    fn is_empty(&self) -> bool {
-        self.length == 0
-    }
-}
 #[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
 mod tests;
 pub(crate) const OPENING: usize = 0;
 pub(crate) const ALL: usize = 1;
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) const LATEST: usize = 2;
-#[cfg(any(
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 pub(crate) const EITHER: usize = 3;
 
 pub(crate) struct Wake {
@@ -200,7 +105,7 @@ pub struct ReadySources<S> {
     // Streams, links and modes belong exclusively to the session event loop.
     // A provider waker touches only its atomic and the existing Signal lock;
     // it never polls a provider or acquires another lock while signaling.
-    pub(crate) entries: SourceIndex<S>,
+    pub(crate) entries: BTreeMap<u64, Entry<S>>,
     pub(crate) queues: [Queue; 4],
     pub(crate) signal: Arc<signal::Signal<wire::SessionChannel>>,
     preferred: usize,
@@ -212,7 +117,7 @@ impl<S: Stream + Unpin> ReadySources<S> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            entries: SourceIndex::new(),
+            entries: BTreeMap::new(),
             queues: Default::default(),
             signal: Arc::new(signal::Signal::new()),
             preferred: 0,
@@ -226,10 +131,6 @@ impl<S: Stream + Unpin> ReadySources<S> {
         self.entries.is_empty()
     }
 
-    #[cfg(any(
-        all(feature = "session", not(target_arch = "wasm32")),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
     pub(crate) fn insert(
         &mut self,
         identity: wire::SessionChannel,
@@ -269,11 +170,6 @@ impl<S: Stream + Unpin> ReadySources<S> {
         );
         self.enqueue(identity.channel_id);
     }
-    #[cfg(any(
-        test,
-        all(feature = "session", not(target_arch = "wasm32")),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
     pub(crate) fn mode(&mut self, id: u64, mode: Option<usize>) {
         if self.entries.get(&id).is_none_or(|entry| entry.mode == mode) {
             return;
@@ -378,10 +274,6 @@ impl<S: Stream + Unpin> ReadySources<S> {
         }
         None
     }
-    #[cfg(any(
-        all(feature = "session", not(target_arch = "wasm32")),
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
     pub(crate) fn next_with_control(
         &mut self,
         control: &mut Self,
@@ -409,50 +301,62 @@ impl<S: Stream + Unpin> ReadySources<S> {
         room: (bool, bool, bool),
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<S::Item>, StreamError>> {
-        if let Some(identity) = self.signal.try_next()? {
-            self.wake(identity);
-        }
-        if let Some(id) = self.pop(room) {
-            // A queued id always names a live entry.
-            let Some(entry) = self.entries.get_mut(&id) else {
-                return Poll::Ready(Err(StreamError::Unavailable));
-            };
-            entry.ready = false;
-            let waker = futures::task::waker_ref(&entry.wake);
-            match entry
-                .wake
-                .recheck(|| Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker)))
-            {
-                Poll::Ready(Some(event)) => {
-                    entry.opening = false;
-                    entry.ready = true;
-                    self.enqueue(id);
-                    return Poll::Ready(Ok(Some(event)));
+        let mut polled = 0;
+        loop {
+            while let Some(identity) = self.signal.try_next()? {
+                self.wake(identity);
+            }
+            if let Some(id) = self.pop(room) {
+                // A queued id always names a live entry.
+                let Some(entry) = self.entries.get_mut(&id) else {
+                    continue;
+                };
+                entry.ready = false;
+                let waker = futures::task::waker_ref(&entry.wake);
+                match entry.wake.recheck(|| {
+                    Pin::new(&mut entry.stream).poll_next(&mut Context::from_waker(&waker))
+                }) {
+                    Poll::Ready(Some(event)) => {
+                        entry.opening = false;
+                        entry.ready = true;
+                        self.enqueue(id);
+                        return Poll::Ready(Ok(Some(event)));
+                    }
+                    Poll::Ready(None) => self.remove(id),
+                    Poll::Pending => {}
                 }
-                Poll::Ready(None) => self.remove(id),
-                Poll::Pending => {}
+                polled += 1;
+                if polled >= self.entries.len().max(1) {
+                    // Register the parent before yielding a provider's Pending.
+                    // Otherwise a last source can lose its producer while the
+                    // only parent wake still names an earlier cooperative turn.
+                    loop {
+                        match self.signal.poll(cx) {
+                            Poll::Ready(Ok(identity)) => self.wake(identity),
+                            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                            Poll::Pending => break,
+                        }
+                    }
+                    if self
+                        .queues
+                        .iter()
+                        .zip(Self::enabled(room))
+                        .any(|(queue, enabled)| enabled && queue.first.is_some())
+                    {
+                        cx.waker().wake_by_ref();
+                    }
+                    return Poll::Pending;
+                }
+            } else if self.entries.is_empty() {
+                return Poll::Ready(Ok(None));
+            } else {
+                match self.signal.poll(cx) {
+                    Poll::Ready(Ok(identity)) => self.wake(identity),
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => return Poll::Pending,
+                }
             }
         }
-        if self.is_empty() {
-            return Poll::Ready(Ok(None));
-        }
-        // A provider can publish while being polled, including through an old
-        // cancelled callback. Consume one hint and retain the parent under the
-        // same signal lock, without draining the other sources' publications.
-        let (identity, buffered) = self.signal.take_and_listen(cx)?;
-        if let Some(identity) = identity {
-            self.wake(identity);
-        }
-        if buffered
-            || self
-                .queues
-                .iter()
-                .zip(Self::enabled(room))
-                .any(|(queue, enabled)| enabled && queue.first.is_some())
-        {
-            cx.waker().wake_by_ref();
-        }
-        Poll::Pending
     }
 }
 
@@ -490,8 +394,6 @@ impl<S: Stream + Unpin> ReadySources<S> {
 
     /// Polls one ready source, with round-robin service among ready peers.
     /// Pending sources remain asleep until their provider's registered wake.
-    /// Each call consumes at most two wake hints and polls at most one provider.
-    /// Buffered hints and runnable peers fund a subsequent cooperative turn.
     pub fn poll_next(
         &mut self,
         cx: &mut Context<'_>,

@@ -5,7 +5,7 @@ use std::{
 
 mod job;
 #[cfg(all(test, not(loom)))]
-pub(crate) use job::inspection::{Cut, Probe, observe};
+pub(crate) use job::inspection::{Cut, observe};
 #[cfg(loom)]
 pub(crate) mod model;
 
@@ -17,15 +17,13 @@ pub(crate) trait Snapshot: Send + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
     type Output: Send + 'static;
-    fn read(
-        &mut self,
-    ) -> impl Future<Output = Result<Self::Output, crate::StreamError>> + crate::ProviderTask;
+    fn read(&mut self) -> impl Future<Output = Self::Output> + crate::ProviderTask;
 }
 
 pub(crate) fn read<S: Snapshot>(
     state: S,
     #[cfg(loom)] retain_pending: bool,
-) -> impl Future<Output = (S, Result<S::Output, crate::StreamError>)> + crate::ProviderTask {
+) -> impl Future<Output = (S, S::Output)> + crate::ProviderTask {
     let read = read_owned(
         state,
         #[cfg(loom)]
@@ -45,35 +43,39 @@ pub(crate) fn read<S: Snapshot>(
 async fn read_owned<S: Snapshot>(
     mut state: S,
     #[cfg(loom)] retain_pending: bool,
-) -> (S, Result<S::Output, crate::StreamError>) {
+) -> (S, S::Output) {
     #[cfg(loom)]
     if retain_pending {
         let result = state.read().await;
         return (state, result);
     }
-    let ready = poll_fn(|cx| {
-        let future = std::pin::pin!(state.read());
-        Poll::Ready(future.poll(cx))
-    })
-    .await;
-    if let Poll::Ready(result) = ready {
-        return (state, result);
+    loop {
+        let ready = poll_fn(|cx| {
+            let future = std::pin::pin!(state.read());
+            Poll::Ready(future.poll(cx))
+        })
+        .await;
+        if let Poll::Ready(result) = ready {
+            return (state, result);
+        }
+        let (job, completed) = job::new(state);
+        let worker = job.run();
+        #[cfg(loom)]
+        model::spawn(worker);
+        #[cfg(all(not(loom), not(target_arch = "wasm32")))]
+        if let Err(worker) = acyclic_native_runtime::try_spawn(worker) {
+            std::thread::spawn(move || futures::executor::block_on(worker));
+        }
+        #[cfg(all(not(loom), target_arch = "wasm32"))]
+        wasm_bindgen_futures::spawn_local(worker);
+        let (returned, result) = completed.await;
+        if let Some(result) = result {
+            return (returned, result);
+        }
+        // Executor shutdown cancelled the read, after dropping its lock future.
+        // The next consumer poll owns the cursor again and may use any executor.
+        state = returned;
     }
-    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
-    if tokio::runtime::Handle::try_current().is_err() {
-        return (state, Err(crate::StreamError::Unavailable));
-    }
-    let (job, completed) = job::new(state);
-    let worker = job.run();
-    #[cfg(loom)]
-    model::spawn(worker);
-    #[cfg(all(not(loom), not(target_arch = "wasm32")))]
-    drop(acyclic_native_runtime::spawn(worker));
-    #[cfg(all(not(loom), target_arch = "wasm32"))]
-    wasm_bindgen_futures::spawn_local(worker);
-    // Job retirement publishes Unavailable after its lock future has retired.
-    // A still-held writer cannot make an implicit replacement worker finish.
-    completed.await
 }
 
 #[cfg(loom)]

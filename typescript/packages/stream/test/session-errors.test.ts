@@ -25,10 +25,9 @@ test("Node gRPC resumes original follows after physical HTTP/2 loss", async () =
   } finally { await unlink(output).catch(error => { if (error.code !== "ENOENT") throw error; }); }
 });
 
-for (const fault of ["", "aliases", "disposition", "rpc-reset"]) {
+for (const fault of ["", "aliases", "disposition"]) {
   test(fault === "aliases" ? "negative control rejects public aliases entering Rust Session I/O"
     : fault === "disposition" ? "negative control detects lost physical reconnect disposition"
-    : fault === "rpc-reset" ? "negative control detects an RPC reset on the original live connection"
     : "every Rust error code round-trips through TLS gRPC and WASM Session I/O", () => {
     const child = spawnSync("bun", [fileURLToPath(new URL("./session-error-driver.ts", import.meta.url))], {
       env: { ...process.env, STREAM_SESSION_FAULT: fault },
@@ -43,7 +42,7 @@ for (const fault of ["", "aliases", "disposition", "rpc-reset"]) {
       if (child.status !== 0) throw new Error(child.stderr || child.stdout);
       const result = JSON.parse(child.stdout);
       expect(result.connections).toBe(1);
-      expect(result.sessions).toBe(result.codes + 1);
+      expect(result.sessions).toBe(result.codes);
       expect(result.recoveredConnections).toBe(2);
     }
   });

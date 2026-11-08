@@ -38,6 +38,38 @@ pub(super) fn changes() -> AppendRecord {
     .unwrap()
 }
 
+#[test]
+fn typed_projection_removes_outside_entries_while_opaque_mixed_keys_are_denied() {
+    let body = changes();
+    let opaque = RecordHeaders::new(body.headers.keys().to_vec(), vec![]).unwrap();
+    assert!(!filter().matches(&opaque));
+    let record = crate::Record {
+        sequence: 4,
+        value: body.value,
+        headers: body.headers,
+        commit_id: crate::CommitId::from_bytes([1; 32]),
+        committed_at_micros: 42,
+        origin: crate::StreamPath::new("origin").unwrap(),
+    };
+    assert!(filter().matches(&record.headers));
+    let projected = filter().project(record.clone()).unwrap().unwrap();
+    let value = decode(&projected.value, &projected.headers).unwrap();
+    assert_eq!(value.entries.len(), 1);
+    assert_eq!(value.entries.first().unwrap().key.as_ref(), b"b");
+    assert_eq!(projected.sequence, record.sequence);
+    assert_eq!(projected.commit_id, record.commit_id);
+    assert_eq!(projected.committed_at_micros, record.committed_at_micros);
+    let omitted = FollowFilter::default().project(record).unwrap().unwrap();
+    assert_eq!(
+        decode(&omitted.value, &omitted.headers)
+            .unwrap()
+            .entries
+            .len(),
+        2,
+        "omitting authority projection discloses the outside path"
+    );
+}
+
 /// The value `changes()` would have with its first key replaced, under the
 /// original headers: a forged index.
 fn forged() -> AppendRecord {
@@ -50,19 +82,27 @@ fn forged() -> AppendRecord {
     body
 }
 
+#[test]
+fn malformed_typed_lists_never_disagree_with_the_immutable_index() {
+    let body = forged();
+    assert_eq!(
+        validate(&body.value, &body.headers),
+        Err(StreamError::InvalidArgument)
+    );
+    assert!(crate::request::validate_records(std::slice::from_ref(&body)).is_err());
+    assert!(AppendRecord::changes(&[], &[], vec![]).is_err());
+}
+
 /// No wire or persisted form carries a change record's keys: every ingress
 /// derives them from the value, so a disagreeing copy cannot cross one.
 #[test]
 fn every_wire_form_stores_each_key_once_and_derives_the_index() {
-    assert!(AppendRecord::changes(&[], &[], vec![]).is_err());
     let body = changes();
     let wire = crate::wire_codec::append_record_wire(body.clone());
     assert!(wire.keys.is_empty());
     assert_eq!(crate::wire_codec::append_record(wire).unwrap(), body);
-    let forged = forged();
-    assert!(crate::request::validate_records(std::slice::from_ref(&forged)).is_err());
     let forged =
-        crate::wire_codec::append_record(crate::wire_codec::append_record_wire(forged)).unwrap();
+        crate::wire_codec::append_record(crate::wire_codec::append_record_wire(forged())).unwrap();
     assert_eq!(
         forged
             .headers
@@ -188,35 +228,73 @@ fn canonical_change_validation_rejects_wire_malleability() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
+    use acyclic_test_support::differential;
     use prost::Message as _;
 
-    fn measure<T>(run: impl FnOnce() -> T) -> (T, acyclic_test_support::AllocationInfo, usize) {
-        take_parsed_bytes();
-        let mut result = None;
-        let allocations = acyclic_test_support::measure(|| result = Some(run()));
-        (result.unwrap(), allocations, take_parsed_bytes())
+    // Original materialization from 571bc685bd: validation first, then an
+    // initially empty vector growing as the original reader visits entries.
+    fn original(
+        bytes: &[u8],
+        headers: Option<&RecordHeaders>,
+    ) -> Result<wire::ChangeRecord, StreamError> {
+        let format = match headers {
+            Some(headers) => validated_format(bytes, headers)?,
+            None => Some(FORMAT),
+        };
+        let mut entries = Vec::new();
+        let context = parse_record(bytes, format, |key, operation, metadata| {
+            entries.push(wire::ChangeEntry {
+                key: bytes::Bytes::copy_from_slice(key),
+                operation: operation.into(),
+                metadata: bytes::Bytes::copy_from_slice(metadata),
+            });
+            Ok(())
+        })?;
+        Ok(wire::ChangeRecord {
+            context: bytes::Bytes::copy_from_slice(context),
+            entries,
+        })
     }
 
     fn compare(body: &AppendRecord, expected: &wire::ChangeRecord, typed: bool) {
-        let (decoded, allocations, parsed) = measure(|| decode(&body.value, &body.headers));
+        take_parsed_bytes();
+        let (decoded, [before, after]) = differential(
+            || original(&body.value, Some(&body.headers)),
+            || decode(&body.value, &body.headers),
+        );
         assert_eq!(decoded.unwrap(), *expected);
-        assert_eq!(parsed, body.value.len() * if typed { 2 } else { 1 });
+        assert_eq!(
+            take_parsed_bytes(),
+            body.value.len() * if typed { 4 } else { 2 }
+        );
         if typed {
-            assert_eq!(
-                i128::from(allocations.bytes_total),
-                i128::from(allocations.bytes_current),
-                "validated decode must not allocate discarded storage"
-            );
+            assert!(after.count_total <= before.count_total);
+            assert!(after.bytes_total <= before.bytes_total);
+            assert!(after.bytes_current <= before.bytes_current);
+            assert!(after.bytes_max <= before.bytes_max);
+            if expected.entries.len() == crate::MAX_RECORD_KEYS {
+                assert!(after.count_total < before.count_total);
+                assert!(after.bytes_total < before.bytes_total);
+            }
+            if expected.entries.len() == 1 {
+                assert!(after.bytes_current < before.bytes_current);
+            }
         } else {
-            let (without_index, baseline, parsed) =
-                measure(|| decode(&body.value, &RecordHeaders::default()));
-            assert_eq!(without_index.unwrap(), *expected);
-            assert_eq!(parsed, body.value.len());
             assert_eq!(
-                allocations, baseline,
+                before, after,
                 "opaque headers do not establish a body count"
             );
         }
+        eprintln!(
+            "typed={typed}, {} entries: allocations {} -> {}, bytes {} -> {}, retained {} -> {}",
+            expected.entries.len(),
+            before.count_total,
+            after.count_total,
+            before.bytes_total,
+            after.bytes_total,
+            before.bytes_current,
+            after.bytes_current
+        );
     }
 
     // The retained reader uses the original compatibility corpus, unchanged.
@@ -257,9 +335,15 @@ fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
             entries,
         };
         compare(&body, &expected, true);
-        let (raw, _, parsed) = measure(|| decode_changes(&body.value));
+        let (raw, [before, after]) = differential(
+            || original(&body.value, None),
+            || decode_changes(&body.value),
+        );
         assert_eq!(raw.unwrap(), expected);
-        assert_eq!(parsed, body.value.len());
+        assert_eq!(
+            before, after,
+            "raw decode retains its original allocation behavior"
+        );
         if count == 1 {
             let forged =
                 RecordHeaders::new(keys.clone(), body.headers.attributes().to_vec()).unwrap();
@@ -277,16 +361,20 @@ fn admitted_decode_reserves_once_without_trusting_opaque_or_forged_keys() {
                 (b"".as_slice(), &body.headers),
                 (b"".as_slice(), &retained.headers),
             ] {
-                let (validation, validation_cost, validation_parsed) =
-                    measure(|| validate(bytes, headers));
-                let (refused, decode_cost, decode_parsed) = measure(|| decode(bytes, headers));
-                assert_eq!(validation, Err(StreamError::InvalidArgument));
+                let (refused, [before, after]) =
+                    differential(|| original(bytes, Some(headers)), || decode(bytes, headers));
                 assert_eq!(refused, Err(StreamError::InvalidArgument));
                 assert_eq!(
-                    decode_cost, validation_cost,
+                    before, after,
                     "capacity admission must add no allocation before validation"
                 );
-                assert_eq!(decode_parsed, validation_parsed);
+                eprintln!(
+                    "refused {:?}, {} bytes: allocations {} -> {}",
+                    reader_format(headers),
+                    bytes.len(),
+                    before.count_total,
+                    after.count_total
+                );
             }
         }
     }
