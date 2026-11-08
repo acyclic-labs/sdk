@@ -23,6 +23,7 @@ if [[ -z "${VIRTIOFS_VMM_BINARY:-}" || -z "${VIRTIOFS_VMM_SHA256:-}" ]]; then
     exit 1
 fi
 guest_artifacts="${ACYCLIC_FS_GUEST_ARTIFACTS:-${TMPDIR:-/tmp}/acyclic-guest}"
+guest_artifacts="$(run 'resolve guest artifact directory' realpath -m -- "$guest_artifacts")" || exit "$?"
 run 'prepare real guest artifacts' python3 -B scripts/prepare-virtiofs-guest.py --output "$guest_artifacts" \
     --vmm "$VIRTIOFS_VMM_BINARY" --vmm-sha256 "$VIRTIOFS_VMM_SHA256" || exit "$?"
 export ACYCLIC_FS_GUEST_ARTIFACTS="$guest_artifacts"
