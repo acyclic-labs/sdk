@@ -3,9 +3,11 @@ pub(crate) mod trace;
 
 use codec_ledger::CodecLedger;
 
-use acyclic_native_runtime::{NativeCodecWork, NativeOperationKind, NativeReadMeter};
+use acyclic_native_runtime::{
+    InlineMutex as Mutex, NativeCodecWork, NativeOperationKind, NativeReadMeter,
+};
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
