@@ -154,9 +154,9 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
     Ok(())
 }
 
-#[test]
-fn rename_completion_retains_credit_after_source_acceptance()
--> Result<(), Box<dyn std::error::Error>> {
+fn completion_retains_credit_after_source_acceptance(
+    rename: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     #[derive(Default)]
     struct CompletionPressure {
@@ -236,16 +236,32 @@ fn rename_completion_retains_credit_after_source_acceptance()
             original.cancellation(),
         )?,
     };
+    let retained = if rename {
+        None
+    } else {
+        source.write_range(&name("before"), 0, Bytes::from_static(b"original"))?;
+        let inode = projection
+            .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("before"), &original)?
+            .attr
+            .ino
+            .0;
+        let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &original)?;
+        Some((inode, handle))
+    };
     let observer: Arc<dyn ViewObserver> = pressure.clone();
     source.observe_view(Arc::downgrade(&observer))?;
-    let result = projection.rename_name(
-        ROOT_INODE,
-        std::ffi::OsStr::new("before"),
-        ROOT_INODE,
-        std::ffi::OsStr::new("after"),
-        RENAME_NOREPLACE,
-        &original,
-    );
+    let result = if rename {
+        projection.rename_name(
+            ROOT_INODE,
+            std::ffi::OsStr::new("before"),
+            ROOT_INODE,
+            std::ffi::OsStr::new("after"),
+            RENAME_NOREPLACE,
+            &original,
+        )
+    } else {
+        projection.remove_name(ROOT_INODE, std::ffi::OsStr::new("before"), &original)
+    };
     assert!(pressure.accepted.load(Ordering::Acquire));
     assert!(pressure.held.lock().is_some());
     assert!(matches!(
@@ -262,13 +278,38 @@ fn rename_completion_retains_credit_after_source_acceptance()
     ));
     drop(pressure.held.lock().take());
     assert!(source.lookup(&name("before"))?.is_none());
-    assert!(source.lookup(&name("after"))?.is_some());
+    if let Some((inode, handle)) = retained {
+        let file = projection
+            .core
+            .state()
+            .map_err(NativeMountError::from)?
+            .file_handle(inode, handle)
+            .map_err(NativeMountError::from)?
+            .open_file
+            .clone();
+        assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
+    } else {
+        assert!(source.lookup(&name("after"))?.is_some());
+    }
     assert!(
         result.is_ok(),
-        "rename refused after its source was accepted: {result:?}"
+        "{} refused after its source was accepted: {result:?}",
+        if rename { "rename" } else { "unlink" }
     );
     original.admit(crate::WorkCounters::UNCHARGED)?;
     Ok(())
+}
+
+#[test]
+fn rename_completion_retains_credit_after_source_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
+    completion_retains_credit_after_source_acceptance(true)
+}
+
+#[test]
+fn unlink_completion_retains_credit_after_source_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
+    completion_retains_credit_after_source_acceptance(false)
 }
 
 #[test]
