@@ -24,6 +24,11 @@ child proves independent answer reads start together while the first original
 answer is held. The result retains the selected sequence, reference order and
 actual bytes of both children. Dropping an answer producer ends the original
 preparation with the actor failure instead of a successful replacement.
+Two consecutive waits leave real child work queued and use the original actor
+clock's controlled producer. Advancing to the first deadline must release only
+the first wait; the second commits its own later deadline. Advancing short of
+that deadline admits no model request. Its own deadline publishes the second
+running result without consuming the child's queued work.
 The wait argument is
 derived from the recorded input under `harness-fuzz/corpus/agent_wait_selection`;
 the actor schedule and canonical event wrapper are generated simulation inputs.
@@ -31,7 +36,8 @@ the actor schedule and canonical event wrapper are generated simulation inputs.
 Apply each `mutations/preparation_*.patch` independently, run the same control,
 and reverse the patch. They respectively restore a duplicate status read,
 substitute a newer answer position, lose cancellation, bypass actor deferral,
-serialize independent answer reads and mask an answer producer failure.
+serialize independent answer reads, mask an answer producer failure, reuse a
+deadline release and drop an original deadline.
 Each must fail the corresponding explicit invariant before publication passes.
 The approval mutations remain applicable to the separate original-request
 control in `approval-request.md`.

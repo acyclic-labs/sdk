@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -524,7 +524,7 @@
+         Ok(Some(crate::conversation::BoundedContentFuture::new(
+             io,
+             || async move {
+-                let released = self.turn.released.swap(false, Ordering::AcqRel);
++                let released = self.turn.released.load(Ordering::Acquire);
+                 self.prepare_wait(&invocation.arguments, released)
+                     .await
+                     .map(|prepared| (prepared, None))

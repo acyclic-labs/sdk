@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -385,7 +385,7 @@
+         }
+         if !released && need != 0 {
+             return Ok(ToolPreparation::Deferred(
+-                crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
++                crate::agent::Until::quorum(unsettled, need).within(None),
+             ));
+         }
+         let mut running = Vec::new();
