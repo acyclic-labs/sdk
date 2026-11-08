@@ -67,108 +67,7 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
         current.record(&event);
         same(&current, &after);
 
-        match event.get("type").and_then(Value::as_str) {
-            Some("turn.started") => same(&current, &NativeAnswer::default()),
-            Some("item.completed") => {
-                assert_eq!(current.outcome, before.outcome, "preview completed a turn");
-                if before.outcome.is_none()
-                    && event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
-                {
-                    match event.pointer("/item/text").and_then(Value::as_str) {
-                        Some(text) => {
-                            prefix(text, current.pending.as_deref().expect("lost preview"))
-                        }
-                        None => assert!(current.pending.is_none()),
-                    }
-                }
-            }
-            Some("turn.completed") => {
-                assert_eq!(
-                    current.outcome,
-                    before
-                        .outcome
-                        .or_else(|| before.pending.map(Outcome::Succeeded))
-                );
-            }
-            Some("turn.failed" | "error") => {
-                assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
-                assert!(current.pending.is_none());
-                if let Some(message) = event
-                    .pointer("/error/message")
-                    .or_else(|| event.get("message"))
-                    .and_then(Value::as_str)
-                {
-                    assert_eq!(
-                        current.outcome,
-                        Some(Outcome::Failed {
-                            message: message.into()
-                        })
-                    );
-                }
-            }
-            Some("result") => {
-                if event.get("subtype").and_then(Value::as_str) == Some("success")
-                    && event.get("is_error").and_then(Value::as_bool) == Some(false)
-                {
-                    match event.get("result").and_then(Value::as_str) {
-                        Some(text) => match &current.outcome {
-                            Some(Outcome::Succeeded(retained)) => prefix(text, retained),
-                            _ => panic!("successful native result lost"),
-                        },
-                        None => assert!(current.outcome.is_none()),
-                    }
-                } else {
-                    assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
-                    if let Some(message) = event.get("result").and_then(Value::as_str) {
-                        assert_eq!(
-                            current.outcome,
-                            Some(Outcome::Failed {
-                                message: message.into()
-                            })
-                        );
-                    }
-                }
-            }
-            Some("message_end")
-                if event.pointer("/message/role").and_then(Value::as_str) == Some("assistant") =>
-            {
-                match event.pointer("/message/stopReason").and_then(Value::as_str) {
-                    Some("stop") => {
-                        if let Some(parts) =
-                            event.pointer("/message/content").and_then(Value::as_array)
-                        {
-                            let text: String = parts
-                                .iter()
-                                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                                .collect();
-                            match &current.outcome {
-                                Some(Outcome::Succeeded(retained)) => prefix(&text, retained),
-                                _ => panic!("successful native message lost"),
-                            }
-                        } else {
-                            assert!(current.outcome.is_none());
-                        }
-                    }
-                    Some("error") => {
-                        assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
-                        if let Some(message) = event
-                            .pointer("/message/errorMessage")
-                            .and_then(Value::as_str)
-                        {
-                            assert_eq!(
-                                current.outcome,
-                                Some(Outcome::Failed {
-                                    message: message.into()
-                                })
-                            );
-                        }
-                    }
-                    Some("aborted") => assert_eq!(current.outcome, Some(Outcome::Cancelled)),
-                    _ => assert!(current.outcome.is_none()),
-                }
-            }
-            _ => same(&current, &before),
-        }
+        check_event(&event, &current, before);
         if let Some(Outcome::Succeeded(text)) = &current.outcome {
             assert!(text.len() <= ANSWER_LIMIT);
         }
@@ -203,4 +102,120 @@ pub fn check_prefix_work() {
     );
     assert_eq!(retained, original);
     assert_eq!(visits, 2, "truncation visited the unread tail");
+}
+
+fn successful_prefix(text: &str, current: &NativeAnswer, message: &str) {
+    assert!(
+        matches!(&current.outcome, Some(Outcome::Succeeded(_))),
+        "{message}"
+    );
+    if let Some(Outcome::Succeeded(retained)) = &current.outcome {
+        prefix(text, retained);
+    }
+}
+
+fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
+    match event.get("type").and_then(Value::as_str) {
+        Some("turn.started") => same(current, &NativeAnswer::default()),
+        Some("item.completed") => {
+            assert_eq!(current.outcome, before.outcome, "preview completed a turn");
+            if before.outcome.is_none()
+                && event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message")
+            {
+                match event.pointer("/item/text").and_then(Value::as_str) {
+                    Some(text) => {
+                        assert!(current.pending.is_some(), "lost preview");
+                        if let Some(retained) = current.pending.as_deref() {
+                            prefix(text, retained);
+                        }
+                    }
+                    None => assert!(current.pending.is_none()),
+                }
+            }
+        }
+        Some("turn.completed") => {
+            assert_eq!(
+                current.outcome,
+                before
+                    .outcome
+                    .or_else(|| before.pending.map(Outcome::Succeeded))
+            );
+        }
+        Some("turn.failed" | "error") => {
+            assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+            assert!(current.pending.is_none());
+            if let Some(message) = event
+                .pointer("/error/message")
+                .or_else(|| event.get("message"))
+                .and_then(Value::as_str)
+            {
+                assert_eq!(
+                    current.outcome,
+                    Some(Outcome::Failed {
+                        message: message.into()
+                    })
+                );
+            }
+        }
+        Some("result") => check_result(event, current),
+        Some("message_end")
+            if event.pointer("/message/role").and_then(Value::as_str) == Some("assistant") =>
+        {
+            check_message(event, current);
+        }
+        _ => same(current, &before),
+    }
+}
+
+fn check_result(event: &Value, current: &NativeAnswer) {
+    if event.get("subtype").and_then(Value::as_str) == Some("success")
+        && event.get("is_error").and_then(Value::as_bool) == Some(false)
+    {
+        match event.get("result").and_then(Value::as_str) {
+            Some(text) => successful_prefix(text, current, "successful native result lost"),
+            None => assert!(current.outcome.is_none()),
+        }
+    } else {
+        assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+        if let Some(message) = event.get("result").and_then(Value::as_str) {
+            assert_eq!(
+                current.outcome,
+                Some(Outcome::Failed {
+                    message: message.into()
+                })
+            );
+        }
+    }
+}
+
+fn check_message(event: &Value, current: &NativeAnswer) {
+    match event.pointer("/message/stopReason").and_then(Value::as_str) {
+        Some("stop") => {
+            if let Some(parts) = event.pointer("/message/content").and_then(Value::as_array) {
+                let text: String = parts
+                    .iter()
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect();
+                successful_prefix(&text, current, "successful native message lost");
+            } else {
+                assert!(current.outcome.is_none());
+            }
+        }
+        Some("error") => {
+            assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
+            if let Some(message) = event
+                .pointer("/message/errorMessage")
+                .and_then(Value::as_str)
+            {
+                assert_eq!(
+                    current.outcome,
+                    Some(Outcome::Failed {
+                        message: message.into()
+                    })
+                );
+            }
+        }
+        Some("aborted") => assert_eq!(current.outcome, Some(Outcome::Cancelled)),
+        _ => assert!(current.outcome.is_none()),
+    }
 }

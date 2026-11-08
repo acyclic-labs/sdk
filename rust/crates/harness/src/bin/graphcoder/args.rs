@@ -2,20 +2,27 @@ use acyclic_harness::client::AgentPageRequest;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+/// Encoding of requests supplied through standard input.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum InputFormat {
+    /// Read one task as plain text.
     #[default]
     Text,
+    /// Read one request per JSON line.
     Jsonl,
 }
 
+/// Encoding of conversation output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
+    /// Render answers as plain text.
     #[default]
     Text,
+    /// Emit versioned events as JSON lines.
     Jsonl,
 }
 
+/// `GraphCoder`'s shipping command-line arguments.
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -29,17 +36,22 @@ pub struct Args {
     /// Explicit durable storage for the local owner or a selected agent.
     #[arg(long, conflicts_with = "endpoint")]
     pub host_state_directory: Option<PathBuf>,
+    /// Root directory of the selected workspace.
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
     /// Instruction scope relative to the workspace root.
     #[arg(long)]
     pub directory: Option<String>,
+    /// Explicit model selection, overriding configured selection.
     #[arg(long, env = "GRAPHCODER_MODEL")]
     pub model: Option<String>,
+    /// Model catalog file to load before dispatch.
     #[arg(long)]
     pub catalog: Option<PathBuf>,
+    /// Explicit provider credentials file.
     #[arg(long)]
     pub credentials: Option<PathBuf>,
+    /// Root directory for user settings discovery.
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
     /// Use shipped defaults and explicit inputs only; ignore user settings,
@@ -71,8 +83,10 @@ pub struct Args {
     /// coordination tools, and defaults to leaving them to the host.
     #[arg(long)]
     pub approval_policy: Option<PathBuf>,
+    /// One task supplied directly on the command line.
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]
     pub prompt: Option<String>,
+    /// Request encoding for standard input.
     #[arg(long, value_enum, default_value_t, requires_if("jsonl", "operation"))]
     pub input_format: InputFormat,
     /// Project every committed event with source cursors as versioned JSONL.
@@ -104,6 +118,7 @@ pub struct Args {
     /// Version-one continuation JSON: {"version":1,"override_item":...}.
     #[arg(long = "override", value_name = "FILE", requires = "fork_from")]
     pub override_file: Option<PathBuf>,
+    /// Render the interactive conversation without a full-screen terminal.
     #[arg(long)]
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's
@@ -111,6 +126,7 @@ pub struct Args {
     /// default, with `ACYCLIC_API_KEY` as the credential.
     #[arg(long, num_args = 0..=1, conflicts_with = "host_workspace")]
     pub endpoint: Option<Option<String>>,
+    /// Optional operation in place of the default conversation.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -289,6 +305,7 @@ impl Args {
     }
 }
 
+/// Operations accepted by the shipping command-line parser.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Execute through the same conversation driver used by prompt mode.
