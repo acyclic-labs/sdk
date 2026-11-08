@@ -357,18 +357,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
         } else {
             format!("{path}.resolve.json")
         };
-        let bytes = {
-            let mut accounting = self.preview.accounting()?;
-            read_selected_with_accounting(
-                &generation.workspace,
-                GenerationSelector::Exact(generation.id),
-                &path,
-                self.staging.volume.config.limits.maximum_read_bytes,
-                &mut accounting,
-                &cancellation,
-            )
-            .await?
-        };
+        let mut accounting = self.preview.accounting()?;
+        let mut scope = accounting.allocation_scope()?;
+        let bytes = read_selected_with_accounting(
+            &generation.workspace,
+            GenerationSelector::Exact(generation.id),
+            &path,
+            self.staging.volume.config.limits.maximum_read_bytes,
+            &mut scope,
+            &cancellation,
+        )
+        .await?;
         cancellation.check().map_err(WorkspaceError::from)?;
         decode_resolution(&bytes, view)
     }
