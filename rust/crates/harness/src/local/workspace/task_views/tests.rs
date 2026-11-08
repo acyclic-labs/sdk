@@ -73,7 +73,7 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
         harness.signed.copy(&mut None)?,
     );
     let (entered, observed) = oneshot::channel();
-    let (_release, released) = oneshot::channel();
+    let (release, released) = oneshot::channel();
     let owner = PausedOwner {
         original: AgentOwner(crate::agent::AgentPath::root(
             &crate::agent::AgentId::from_bytes([1; 16]),
@@ -99,10 +99,28 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
                 result.map_err(|_| Error::Conflict("binding producer disappeared".into()))?;
             }
         }
-        workspace.state.try_lock().is_ok()
+        let checkout_available = workspace.state.try_lock().is_ok();
+        // Register the real selection while its original producer is paused.
+        // Its successful workspace can retire before this observer is polled.
+        let key = *blake3::hash(harness.project.storage_name(&mut None)?.as_bytes()).as_bytes();
+        let (observer, duplicate) =
+            bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation)?;
+        assert!(duplicate.is_none(), "observer created another producer");
+        release
+            .send(())
+            .map_err(|_| Error::Conflict("binding producer stopped before release".into()))?;
+        let bound = binding.await?;
+        drop(bound);
+        let mounts = observer.mounts().await;
+        assert!(
+            mounts.is_ok(),
+            "registered binding observer lost its successful preparation"
+        );
+        drop(mounts);
+        drop(observer);
+        checkout_available
     };
-    // Destroy the actual preparation future before reporting the assertion, so
-    // failure also exercises its normal cancellation cleanup.
+    // Complete and retire the actual preparation before reporting the assertion.
     assert!(
         checkout_available,
         "binding preparation retains the unrelated checkout owner"
