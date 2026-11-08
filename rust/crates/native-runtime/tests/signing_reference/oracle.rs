@@ -11,12 +11,13 @@ pub fn check(bytes: &[u8]) {
         serde_json::from_slice::<SigningKeyReference>(&encoded).unwrap(),
         reference
     );
-    let first = reference.validate_custody(SigningCustody::PrivateFile(Path::new(
-        "/reference-oracle/first",
-    )));
-    let second = reference.validate_custody(SigningCustody::PrivateFile(Path::new(
-        "/reference-oracle/second",
-    )));
+    let root = Path::new(if cfg!(windows) {
+        r"C:\reference-oracle"
+    } else {
+        "/reference-oracle"
+    });
+    let first = reference.validate_custody(SigningCustody::PrivateFile(&root.join("first")));
+    let second = reference.validate_custody(SigningCustody::PrivateFile(&root.join("second")));
     assert!(
         !(first.is_ok() && second.is_ok()),
         "one signing reference admitted different custody stores"

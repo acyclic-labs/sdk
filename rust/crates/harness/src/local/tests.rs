@@ -253,12 +253,20 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
     for defaults in [true, false] {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let project = volume(directory.path()).await?;
-        let mut config =
-            volume_config(directory.path(), project, text())?.tools(vec![tool("test.custom")]);
-        if !defaults {
-            config = config.without_default_tools();
-        }
-        let harness = LocalHarness::open(config).await?;
+        let configured = || -> Result<LocalHarnessConfig> {
+            let mut config = volume_config(directory.path(), project.clone(), text())?
+                .tools(vec![tool("test.custom")]);
+            config.state_directory = None;
+            if !defaults {
+                config = config.without_default_tools();
+            }
+            Ok(config)
+        };
+        let allocations = super::config::TEMPORARY_STATES.get();
+        let refusals = LocalHarness::doctor(configured()?).await;
+        assert!(refusals.is_empty(), "{refusals:?}");
+        assert_eq!(super::config::TEMPORARY_STATES.get(), allocations);
+        let harness = LocalHarness::open(configured()?).await?;
         assert_eq!(
             harness.tools().get("write", None, None)?.is_some(),
             defaults

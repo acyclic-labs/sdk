@@ -235,16 +235,20 @@ impl Opening {
                 path.display()
             )));
         }
-        let location = self.config.state_location().and_then(|location| {
-            let (config::StateLocation::Directory(directory)
-            | config::StateLocation::ProjectRoot(directory)) = location;
-            let checkout = match &self.config.project {
-                LocalProject::Workspace(path) => Some(path.as_path()),
-                LocalProject::Volume { .. } => None,
-            };
-            owner::planned_separated_directory(&directory, checkout).map(drop)
-        });
-        refusals.extend(location.err());
+        // Hermetic state may be allocated lazily by actual opening. There is
+        // no selected directory to inspect until that allocation happens.
+        if !self.config.hermetic || self.config.state_directory.is_some() {
+            let location = self.config.state_location().and_then(|location| {
+                let (config::StateLocation::Directory(directory)
+                | config::StateLocation::ProjectRoot(directory)) = location;
+                let checkout = match &self.config.project {
+                    LocalProject::Workspace(path) => Some(path.as_path()),
+                    LocalProject::Volume { .. } => None,
+                };
+                owner::planned_separated_directory(&directory, checkout).map(drop)
+            });
+            refusals.extend(location.err());
+        }
         if !self.config.without_user_settings {
             refusals.extend(
                 acyclic_native_runtime::signing_key::SigningCustody::Configured
