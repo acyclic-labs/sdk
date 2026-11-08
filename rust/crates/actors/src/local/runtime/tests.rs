@@ -354,7 +354,14 @@ async fn durable_backend() -> Result<DurableBackend, Box<dyn std::error::Error>>
     })
 }
 
-conformance::suite!(conformance_suite_passes_on_memory_runtime, memory_backend);
+#[tokio::test(start_paused = true)]
+async fn conformance_suite_passes_on_memory_runtime() -> TestResult {
+    let target = memory_backend().await?;
+    let wall = tokio::time::Instant::now();
+    conformance::verify(&target).await?;
+    assert_eq!(tokio::time::Instant::now(), wall);
+    Ok(())
+}
 conformance::suite!(
     conformance_suite_passes_on_durable_local_runtime,
     durable_backend
