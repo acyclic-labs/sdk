@@ -26,11 +26,14 @@ const claims = {
   ],
   "native-rename-completion-credit": [
     "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
-    "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
-    "namespace changed before a refused completion",
+    "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+    "rename refused after its source was accepted",
     ["--no-default-features", "--features", "memory,native-mount"],
     { mutations: [
-      { patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "namespace changed before a refused completion" },
+      { patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "rename refused after its source was accepted" },
+    ], positive: [
+      "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
     ] },
   ],
   "native-rename-binding-completion": [

@@ -1,3 +1,4 @@
+use super::super::RENAME_NOREPLACE;
 use super::*;
 
 fn preserved(source: &MemorySource, path: &MountPath) -> Result<bool, MountSourceError> {
@@ -11,7 +12,6 @@ fn operation(
     original: &MemoryCheckout,
     rename: bool,
     allowance: Option<u64>,
-    item_budget: bool,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
     let setup = fuse_fixture_work();
     let cancellation = crate::CancellationToken::new();
@@ -45,16 +45,7 @@ fn operation(
     let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &setup)?;
     let work = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
-            allocation_operations: if item_budget {
-                u64::MAX
-            } else {
-                allowance.unwrap_or(u64::MAX)
-            },
-            items_examined: if item_budget {
-                allowance.unwrap_or(u64::MAX)
-            } else {
-                u64::MAX
-            },
+            allocation_operations: allowance.unwrap_or(u64::MAX),
             ..crate::WorkBudget::UNBOUNDED
         },
         &crate::CancellationToken::new(),
@@ -65,7 +56,7 @@ fn operation(
             assert!(matches!(error,
                 crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
                     counter, maximum, ..
-                }) if Some(maximum) == allowance && counter == if item_budget { "items_examined" } else { "allocation_operations" }
+                }) if Some(maximum) == allowance && counter == "allocation_operations"
             ));
             assert!(
                 preserved(source.as_ref(), &path)?,
@@ -97,7 +88,7 @@ fn operation(
         assert!(
             matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
                 counter, maximum, observed,
-            })) if allowance.is_some_and(|allowance| maximum <= allowance) && observed > maximum && counter == if item_budget { "items_examined" } else { "allocation_operations" }),
+            })) if allowance.is_some_and(|allowance| maximum <= allowance) && observed > maximum && counter == "allocation_operations"),
             "allowance {allowance:?}: {error:?}; source {:?}",
             std::error::Error::source(&error)
         );
@@ -112,11 +103,7 @@ fn operation(
             .open_file
             .clone();
         assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
-        Ok(Some(if item_budget {
-            work.receipt().items_examined
-        } else {
-            work.receipt().allocation_operations
-        }))
+        Ok(Some(work.receipt().allocation_operations))
     }
 }
 
@@ -158,19 +145,128 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
     })?;
     for rename in [false, true] {
         let required =
-            operation(&original, rename, None, false)?.ok_or("unbounded fixture was refused")?;
+            operation(&original, rename, None)?.ok_or("unbounded fixture was refused")?;
         for allowance in 0..required {
-            operation(&original, rename, Some(allowance), false)?;
+            operation(&original, rename, Some(allowance))?;
         }
-        assert!(operation(&original, rename, Some(required), false)?.is_some());
+        assert!(operation(&original, rename, Some(required))?.is_some());
     }
-    let required = operation(&original, true, None, true)?.ok_or("unbounded rename was refused")?;
-    // Replicas share provider caches, and unused reservations are refunded.
-    // Check safety at each cut without assuming an identical cost or outcome.
-    // The finite allocation replay above independently checks progress.
-    for allowance in 0..=required {
-        operation(&original, true, Some(allowance), true)?;
+    Ok(())
+}
+
+#[test]
+fn rename_completion_retains_credit_after_source_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Default)]
+    struct CompletionPressure {
+        accepted: AtomicBool,
+        held: parking_lot::Mutex<Option<crate::NativeWorkReservation>>,
     }
+    impl ViewObserver for CompletionPressure {
+        fn view_changed(&self, _: ViewStamp, _: crate::native_mount::ViewOrigin) {
+            self.accepted.store(true, Ordering::Release);
+        }
+    }
+    impl crate::native_mount::NativeMountCallbackGuard for CompletionPressure {
+        fn check<'a>(
+            &'a self,
+            work: &'a crate::NativeMaterializationWork,
+        ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
+            crate::native_mount::NativeMountCallbackFuture::new(work, || async { Ok(()) })
+        }
+
+        fn check_write<'a>(
+            &'a self,
+            work: &'a crate::NativeMaterializationWork,
+        ) -> Result<crate::native_mount::NativeMountCallbackFuture<'a>, NativeMountError> {
+            crate::native_mount::NativeMountCallbackFuture::new(work, || async {
+                if self.accepted.load(Ordering::Acquire) {
+                    let mut held = self.held.lock();
+                    if held.is_none() {
+                        // The real source has adopted and returned to its policy
+                        // fence. Another accepted operation takes all free credit.
+                        let available = {
+                            let state = work.state.lock();
+                            state.budget.items_examined - state.work.items_examined
+                        };
+                        *held = Some(work.reserve_work(crate::WorkCounters {
+                            items_examined: available,
+                            ..crate::WorkCounters::UNCHARGED
+                        })?);
+                    }
+                }
+                Ok(())
+            })
+        }
+    }
+    let config = posix_config();
+    let checkout = memory_checkout(
+        config,
+        crate::model::CheckoutMode::tracking_transaction(),
+        1,
+    )?
+    .pop()
+    .ok_or("one checkout")?;
+    let original = crate::NativeMaterializationWork::new(
+        FINITE_HANDLER_POLICY,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let pressure = Arc::new(CompletionPressure::default());
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new_at_meter(
+            Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
+            config,
+            crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+            &original,
+            Some(&original),
+        )?,
+        vec![],
+        None,
+    )?
+    .with_native_callback_guard(pressure.clone())
+    .into_arc_meter(&original)?;
+    source.create_file(&name("before"), FileMetadata::default(), None, &original)?;
+    let projection = super::super::FuseProjection {
+        core: projection_core(
+            source.clone(),
+            FINITE_HANDLER_POLICY,
+            original.cancellation(),
+        )?,
+    };
+    let observer: Arc<dyn ViewObserver> = pressure.clone();
+    source.observe_view(Arc::downgrade(&observer))?;
+    let result = projection.rename_name(
+        ROOT_INODE,
+        std::ffi::OsStr::new("before"),
+        ROOT_INODE,
+        std::ffi::OsStr::new("after"),
+        RENAME_NOREPLACE,
+        &original,
+    );
+    assert!(pressure.accepted.load(Ordering::Acquire));
+    assert!(pressure.held.lock().is_some());
+    assert!(matches!(
+        original.reserve_work(crate::WorkCounters {
+            items_examined: 1,
+            ..crate::WorkCounters::UNCHARGED
+        }),
+        Err(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }
+        ))
+    ));
+    drop(pressure.held.lock().take());
+    assert!(source.lookup(&name("before"))?.is_none());
+    assert!(source.lookup(&name("after"))?.is_some());
+    assert!(
+        result.is_ok(),
+        "rename refused after its source was accepted: {result:?}"
+    );
+    original.admit(crate::WorkCounters::UNCHARGED)?;
     Ok(())
 }
 
