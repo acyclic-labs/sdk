@@ -28,7 +28,9 @@ impl Runtime {
             tokio::select! {
                 error = server.run(|actor, error| {
                     tracing::error!(?actor, %error, "actor delivery failed");
-                    failure.send_replace(Some(error.to_string()));
+                    // The retained cause names the failing actor: a tree's
+                    // failure is diagnosable from this one line.
+                    failure.send_replace(Some(format!("{error} (actor {actor:?})")));
                 }) => { failure.send_replace(Some(error.to_string())); }
                 _ = failed.changed() => {}
             }

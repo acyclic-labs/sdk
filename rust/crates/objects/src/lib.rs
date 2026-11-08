@@ -27,6 +27,7 @@ mod counted;
 pub mod grpc;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
+mod identity;
 #[cfg(feature = "json")]
 pub mod json;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]

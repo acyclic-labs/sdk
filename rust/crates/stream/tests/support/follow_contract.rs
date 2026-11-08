@@ -53,7 +53,8 @@ fn guard(
     if fault == Fault::AcceptShortGuard && follow.preceding_commit_id.len() == 31 {
         // Deliberately broken codec pads an invalid guard and accepts it.
         let mut padded = [0; 32];
-        padded[..31].copy_from_slice(&follow.preceding_commit_id);
+        let [prefix @ .., _] = &mut padded;
+        prefix.copy_from_slice(&follow.preceding_commit_id);
         actual = Ok(Some(padded));
     }
     if fault == Fault::DropChecked {
@@ -62,7 +63,8 @@ fn guard(
     require(actual == expected, "checked guard")?;
     if let Ok(Some(anchor)) = expected {
         let mut mismatched = anchor;
-        mismatched[0] ^= 1;
+        let [first, ..] = &mut mismatched;
+        *first ^= 1;
         for echo in [anchor.to_vec(), Vec::new(), mismatched.to_vec()] {
             let opened = wire::SessionOpened {
                 selection: None,
@@ -136,9 +138,6 @@ pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
     let Some((&kind, input)) = input.split_first() else {
         return Ok(());
     };
-    if input.len() > 4096 {
-        return Ok(());
-    }
     match kind % 3 {
         0 => {
             let Ok(subscription) = wire::SessionSubscription::decode(input) else {

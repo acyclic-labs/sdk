@@ -16,15 +16,20 @@ fn record(arguments: Value, metadata: Value) -> Record {
             arguments,
         },
         metadata,
+        target: None,
+        filesystem: None,
     }
 }
 
 #[test]
 fn valid_record_is_admitted_and_projects_with_exact_metadata() {
-    let record = record(
+    let mut record = record(
         json!({"path":"λ\0🦀"}),
         json!({"signature":"opaque", "blocks":[{"thinking":"plan"}]}),
     );
+    record.target = Some("original target".into());
+    record.filesystem = Some([19; 32]);
+    input::assert_envelope(&record);
     assert!(
         record
             .invocation
@@ -37,14 +42,19 @@ fn valid_record_is_admitted_and_projects_with_exact_metadata() {
 #[test]
 fn complete_depth_and_numeric_bounds_apply_before_recording() {
     let mut deep = json!(0);
-    for _ in 0..127 {
+    for _ in 0..140 {
         deep = json!([deep]);
     }
+    // Arguments use the literal-value decoder's record bound. Metadata uses
+    // Value directly, so it also exercises the wider bounded input domain.
+    input::assert_envelope(&record(json!({}), deep.clone()));
     for record in [
+        record(json!({}), deep.clone()),
         record(deep, Value::Null),
         record(json!({}), json!(u64::MAX)),
         record(json!({"value":u64::MAX}), Value::Null),
     ] {
+        input::check(&serde_json::to_vec(&record).unwrap());
         assert!(
             record
                 .invocation
@@ -60,13 +70,21 @@ proptest! {
     // and every admitted complete record survives actual history projection/replay.
     #[test]
     fn admitted_records_always_project_and_replay(
-        text in ".{0,96}", signature in ".{0,96}", depth in 0usize..140,
+        text in ".{0,96}", signature in ".{0,96}",
+        depth in 0usize..crate::executor::json::RECORD_MAXIMUM_DEPTH as usize,
+        metadata_depth in 0usize..140,
         file_bytes in 128u64..4096, render_bytes in 128u64..4096,
         reserved in prop::option::of((any::<bool>(), any::<bool>(), 0usize..8)),
+        target in prop::option::of(".{0,32}"), filesystem in prop::option::of(any::<[u8;32]>()),
     ) {
         let mut nested = json!(0);
         for _ in 0..depth { nested = json!([nested]); }
-        let mut record = record(json!({"data":text, "nested":nested}), json!({"signature":signature}));
+        let mut metadata = json!(0);
+        for _ in 0..metadata_depth { metadata = json!([metadata]); }
+        let mut record = record(json!({"data":text, "nested":nested}), json!({"signature":signature, "nested":metadata}));
+        record.target = target;
+        record.filesystem = filesystem;
+        input::assert_envelope(&record);
         if let Some((in_arguments, number_marker, nesting)) = reserved {
             let key = if number_marker { "$serde_json::private::Number" } else { "$serde_json::private::RawValue" };
             let mut marker = json!({"signature":"opaque", key:"null"});
@@ -74,6 +92,7 @@ proptest! {
             if in_arguments { record.invocation.arguments["marker"] = marker; }
             else { record.metadata["marker"] = marker; }
         }
+        input::check(&serde_json::to_vec(&record).unwrap());
         let limits = Limits {file_bytes, render_bytes, ..Limits::default()};
         let admitted = record.invocation.validate_recorded(&record.metadata, limits, None).is_ok();
         if reserved.is_some() { prop_assert!(!admitted); }

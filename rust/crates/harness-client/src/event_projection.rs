@@ -64,6 +64,66 @@ pub struct ExecutionPosition {
     pub after: u64,
 }
 
+/// One bounded original execution page and its actor-owned settlement fence.
+/// Shared by local conversations and public Session consumers.
+pub struct ExecutionQuery {
+    /// Exact input, at or after this agent's adoption cut.
+    pub input: u64,
+    /// Admitted inbox cut; later inputs cannot extend a finite export.
+    pub inbox_tail: u64,
+    /// Original journal page, or the current inbox tail.
+    pub page: Option<acyclic_harness_core::executor::ExecutionEventPage>,
+    /// The actor consumed this input and retains no earlier work.
+    pub settled: bool,
+}
+
+impl ExecutionQuery {
+    /// Exclusive position after every observation in this page was consumed.
+    /// A short page cannot retire an input without its original actor fence.
+    /// No source read, allocation, wait or history scan is performed here.
+    pub fn continuation(&self) -> acyclic_harness_core::Result<ExecutionPosition> {
+        match &self.page {
+            Some(page) if self.settled && page.next.is_none() => Ok(ExecutionPosition {
+                input: self.input.checked_add(1).ok_or_else(|| {
+                    acyclic_harness_core::Error::Invalid(
+                        "execution input continuation overflows; recovery: resume with the original representable input cursor".into(),
+                    )
+                })?,
+                after: 0,
+            }),
+            Some(page) => Ok(ExecutionPosition {
+                input: self.input,
+                after: page.end,
+            }),
+            None => Ok(ExecutionPosition {
+                input: self.input,
+                after: 0,
+            }),
+        }
+    }
+}
+
+impl TryFrom<crate::AgentReply> for ExecutionQuery {
+    type Error = crate::CommandError;
+
+    fn try_from(reply: crate::AgentReply) -> Result<Self, Self::Error> {
+        match reply {
+            crate::AgentReply::Events {
+                input,
+                inbox_tail,
+                page,
+                settled,
+            } => Ok(Self {
+                input,
+                inbox_tail,
+                page,
+                settled,
+            }),
+            _ => Err(crate::CommandError::Invalid),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecutionSelection {

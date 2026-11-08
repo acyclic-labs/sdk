@@ -167,8 +167,7 @@ impl AvailabilitySource {
             let sender = match keys.entry(digest) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    let mut incarnation = [0; 16];
-                    getrandom::fill(&mut incarnation).map_err(|_| unavailable())?;
+                    let incarnation = crate::identity::fresh().map_err(|_| unavailable())?;
                     let cursor = AvailabilityCursor::new(incarnation, 0)?;
                     entry.insert(watch::channel(Ok(cursor)).0)
                 }
