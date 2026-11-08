@@ -57,7 +57,8 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    acyclic_fs::initialize_native_mount_services()
+    acyclic_fs::initialize_native_mount_services_async()
+        .await
         .map_err(|error| Error::Invalid(error.to_string()))?;
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = acyclic_fs::CancellationToken::new();

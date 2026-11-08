@@ -22,7 +22,7 @@ where
                 "prepared native working sets require manual publication",
             ));
         }
-        let original = mount.work(capture_budget, cancellation)?;
+        let original = mount.work(capture_budget, cancellation).await?;
         let work = &original;
         if !options.destination.is_absolute() {
             return Err(MountLifecycleError::NativePolicy(
@@ -74,11 +74,13 @@ where
         destination: MountDestination<'_>,
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
-        let _startup = super::super::admit_mount_startup().await?;
-        let work = options.work(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )?;
+        let startup = super::super::admit_mount_startup().await?;
+        let work = options
+            .work(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await?;
         let work = &work;
         let funded = work.path(destination.path(), None)?;
         let issued = destination.into_issued();
@@ -143,12 +145,15 @@ where
             },
         );
         let owner = CustomerSession::new(None, work)?;
-        let session = prepared.start(
-            request,
-            source.clone() as Arc<dyn MountFilesystem>,
-            work,
-            Some(session_destination.1),
-        )?;
+        let session = prepared
+            .start_async(
+                request,
+                source.clone() as Arc<dyn MountFilesystem>,
+                work.clone(),
+                Some(session_destination.1),
+                startup,
+            )
+            .await?;
         *owner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);

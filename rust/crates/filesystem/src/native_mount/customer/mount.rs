@@ -231,11 +231,13 @@ where
         destination: MountDestination<'_>,
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
-        let _startup = super::super::admit_mount_startup().await?;
-        let work = options.work(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )?;
+        let startup = super::super::admit_mount_startup().await?;
+        let work = options
+            .work(
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await?;
         let funded = work.path(destination.path(), None)?;
         let issued = destination.into_issued();
         let destination = funded;
@@ -250,18 +252,21 @@ where
             .map_err(NativeMountError::from)?
             .with_view_destination(issued);
         let owner = CustomerSession::new(None, &work)?;
-        let session = prepared.start(
-            NativeMountRequest {
-                mount_id: MountId::new(),
-                volume_id: self.id().volume_id(),
-                destination: session_destination.0,
-                writable: options.writable,
-                shared: options.shared,
-            },
-            Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
-            &work,
-            Some(session_destination.1),
-        )?;
+        let session = prepared
+            .start_async(
+                NativeMountRequest {
+                    mount_id: MountId::new(),
+                    volume_id: self.id().volume_id(),
+                    destination: session_destination.0,
+                    writable: options.writable,
+                    shared: options.shared,
+                },
+                Arc::clone(&source) as Arc<dyn super::MountFilesystem>,
+                work.clone(),
+                Some(session_destination.1),
+                startup,
+            )
+            .await?;
         *owner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);

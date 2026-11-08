@@ -19,7 +19,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let work = mount.work(budget, cancellation)?;
+        let work = mount.work(budget, cancellation).await?;
         let selection =
             AdmittedSelection::admit(mount, &self.workspace(), self.id(), &work).await?;
         self.prepare_working_set(selection, options, budget, cancellation, None, &work)
@@ -35,7 +35,7 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let work = mount.work(budget, cancellation)?;
+        let work = mount.work(budget, cancellation).await?;
         let selection =
             AdmittedSelection::admit(mount, &self.workspace(), self.id(), &work).await?;
         self.prepare_working_set(
