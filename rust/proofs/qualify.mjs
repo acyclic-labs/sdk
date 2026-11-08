@@ -15,6 +15,22 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "recovered-metadata-custody": [
+    "rust/crates/filesystem/src/kernel/serde_decode/original.rs", "acyclic-fs",
+    "core_state::codec_fuzz::production_metadata_corpus_preserves_original_decode_custody",
+    "metadata decoder replaced original accounting ledger", ["--no-default-features", "--features", "local,memory,test-support"],
+    { oracle: "rust/crates/filesystem/src/core_state/codec_fuzz.rs", mutations: [
+      { patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_detached_frame.patch", label: "detached-decoder", diagnostic: "metadata decoder replaced original accounting ledger" },
+      { source: "rust/crates/filesystem/src/kernel/serde_decode.rs", patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_unfunded_bytes.patch", label: "unfunded-bytes", diagnostic: "metadata decoder omitted owned byte payload funding" },
+    ] },
+  ],
+  "recovered-record-retirement": [
+    "rust/crates/filesystem/src/record_store.rs", "acyclic-fs",
+    "record_store::tests::record_retirement_never_holds_the_record_lock",
+    "record backing retired while its record lock was held", ["--no-default-features", "--features", "local,memory,test-support"],
+    { mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/record_retirement_lock.patch", label: "locked-retirement", diagnostic: "record backing retired while its record lock was held" }] },
+  ],
+
   "query-navigation": [
     "rust/crates/harness-tui/src/query_controller.rs", "acyclic-harness-tui",
     "query_page::tests::wrapped_query_pages_reveal_every_row_before_the_source_continuation",
