@@ -61,7 +61,7 @@ wasm = ["js-bytes", "serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindg
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-collections = { version = "=0.2.0", path = "../collections" }
 web-time = { version = "1.1.0", optional = true }
-loom = { version = "0.7.2", features = ["futures"], optional = true }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
 tempfile = { version = "3.27.0", optional = true }
 acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

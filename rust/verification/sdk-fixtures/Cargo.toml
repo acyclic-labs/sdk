@@ -14,7 +14,7 @@ path = "model.rs"
 required-features = ["model-checking"]
 
 [dependencies]
-loom = "=0.7.2"
+loom = "=0.7.3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

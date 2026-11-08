@@ -74,7 +74,7 @@ acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = 
 # The paused clock drives the exchange deadline properties without wall time.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.27.0"
-loom = "0.7.2"
+loom = "0.7.3"
 proptest.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]

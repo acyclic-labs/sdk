@@ -30,7 +30,7 @@ rustix = { workspace = true, features = ["fs", "net"] }
 [dev-dependencies]
 futures.workspace = true
 proptest.workspace = true
-loom = "0.7"
+loom = "0.7.3"
 
 [[test]]
 name = "model"

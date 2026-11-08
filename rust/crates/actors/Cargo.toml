@@ -30,7 +30,7 @@ test-support = [
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
-loom = { version = "0.7.2", features = ["futures"], optional = true }
+loom = { version = "0.7.3", features = ["futures"], optional = true }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 uuid.workspace = true
