@@ -13,7 +13,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -21,7 +21,7 @@ struct Cut {
     stage: usize,
     events: [AtomicU64; 3],
     crashes: AtomicU64,
-    simulation_error: AtomicU64,
+    simulation_failed: AtomicBool,
 }
 
 impl Cut {
@@ -30,7 +30,7 @@ impl Cut {
             stage,
             events: std::array::from_fn(|_| AtomicU64::new(0)),
             crashes: AtomicU64::new(0),
-            simulation_error: AtomicU64::new(0),
+            simulation_failed: AtomicBool::new(false),
         }
     }
 
@@ -47,7 +47,7 @@ impl Cut {
         let expected = std::array::from_fn(|stage| u64::from(stage <= self.stage));
         if self.counts() != expected
             || self.crashes.load(Ordering::SeqCst) != 1
-            || self.simulation_error.load(Ordering::SeqCst) != 0
+            || self.simulation_failed.load(Ordering::SeqCst)
         {
             return Err("root crash did not faithfully cut its original journal frame".into());
         }
@@ -70,15 +70,8 @@ impl PersistenceCut for Cut {
 
     fn crashed(&self, simulation: std::result::Result<(), CutSimulationError>) {
         self.crashes.fetch_add(1, Ordering::SeqCst);
-        self.simulation_error.store(
-            match simulation {
-                Ok(()) => 0,
-                Err(CutSimulationError::Lock) => 1,
-                Err(CutSimulationError::Truncate(_)) => 2,
-                Err(CutSimulationError::Task) => 3,
-            },
-            Ordering::SeqCst,
-        );
+        self.simulation_failed
+            .store(simulation.is_err(), Ordering::SeqCst);
     }
 }
 
