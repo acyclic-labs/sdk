@@ -1,4 +1,5 @@
 //! Shrinking stateful FIFO/reference ownership property over the actual JS queue.
+use super::super::field;
 use super::driver;
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -83,16 +84,28 @@ fn dequeue_work_is_one_slot_write_per_record_and_shift_fails_the_same_bound() ->
         let request = json!({"action":"work","capacity":capacity});
         let before = shift.call(&request)?;
         let after = shared.call(&request)?;
-        let bound = |value: &Value| value["writes"].as_u64().unwrap() <= capacity;
-        assert!(bound(&after), "dequeue must write only the consumed slot");
+        let writes = |value: &Value| -> std::io::Result<u64> {
+            field(value, "writes")?.as_u64().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("queue slot-write count is not unsigned: {value}"),
+                )
+            })
+        };
+        let before_writes = writes(&before)?;
+        let after_writes = writes(&after)?;
         assert!(
-            !bound(&before),
+            after_writes <= capacity,
+            "dequeue must write only the consumed slot"
+        );
+        assert!(
+            before_writes > capacity,
             "shift control passed the same slot-write bound"
         );
-        assert_eq!(after["writes"], capacity);
-        assert_eq!(before["writes"], capacity * (capacity - 1) / 2);
-        assert_eq!(after["retained"], 0);
-        assert_eq!(before["retained"], 0);
+        assert_eq!(after_writes, capacity);
+        assert_eq!(before_writes, capacity * (capacity - 1) / 2);
+        assert_eq!(*field(&after, "retained")?, 0);
+        assert_eq!(*field(&before, "retained")?, 0);
         eprintln!("queue_dequeue capacity={capacity} shift={before} ring={after}");
     }
     Ok(())
