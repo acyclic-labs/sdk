@@ -49,6 +49,7 @@ try {
     }
   }
   node("validate plugin", "plugin/scripts/validate-package.mjs", [staging, ...(universal ? ["--require-universal"] : [])]);
+  const manifest = JSON.parse(readFileSync(join(plugin, "bin/platform-binaries.json"), "utf8"));
   temporary = mkdtempSync(join(tmpdir(), "acyclic-release-"));
   const prefix = join(temporary, "prefix");
   const state = join(temporary, "state");
@@ -64,25 +65,43 @@ try {
   npm("install plugin offline into empty prefix", ["install", "--offline", "--global", "--prefix", prefix, "--no-audit", "--no-fund", archive], { env });
   const installed = process.platform === "win32" ? join(prefix, "node_modules", "@acyclic-labs/plugin") : join(prefix, "lib", "node_modules", "@acyclic-labs/plugin");
   const launcher = process.platform === "win32" ? join(installed, "bin/acyclic.exe") : join(prefix, "bin/acyclic-plugin");
-  run("smoke installed launcher", launcher, ["--help"], { env });
   step = "verify installed assets";
   for (const name of ["plugin.json", ".agents/plugins/marketplace.json"]) {
     if (!existsSync(join(installed, name))) throw new Error(`missing installed asset: ${name}`);
   }
   if (existsSync(join(installed, "src"))) throw new Error("installed package contains native sources");
   const version = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8")).version;
-  const installedVersion = run("verify installed native version", launcher, ["--version"], { env, stdio: ["ignore", "pipe", "inherit"] }).trim();
-  if (installedVersion !== `acyclic ${version}`) throw new Error(`installed native version differs from package ${version}: ${installedVersion}`);
+  const smoke = (label, executable) => {
+    run(`smoke ${label} launcher`, executable, ["--help"], { env });
+    const actual = run(`verify ${label} native version`, executable, ["--version"], { env, stdio: ["ignore", "pipe", "inherit"] }).trim();
+    if (actual !== `acyclic ${version}`) throw new Error(`${label} native version differs from package ${version}: ${actual}`);
+  };
+  smoke("installed", launcher);
+  const marketplaceArchive = join(temporary, "acyclic-plugin.tar.gz");
+  run("archive marketplace", "tar", ["--sort=name", "--mtime=UTC 1970-01-01", "--owner=0", "--group=0", "--numeric-owner", "--format=ustar", "-C", staging, "-czf", marketplaceArchive, "."]);
+  const archives = [[archive, "acyclic-plugin-npm.tgz", "package"], [marketplaceArchive, "acyclic-plugin.tar.gz", "plugin"]];
+  if (Object.keys(manifest.targets).length === 1) {
+    for (const [source, name, directory] of archives) {
+      step = `prepare extract-only ${name}`;
+      const extracted = join(temporary, `extracted-${name}`);
+      mkdirSync(extracted);
+      run(`extract ${name}`, "tar", ["-xzf", source, "-C", extracted]);
+      const bin = join(extracted, directory, "bin");
+      smoke(`extracted ${name}`, join(bin, process.platform === "win32" ? "acyclic.exe" : "acyclic"));
+      step = `verify extract-only ${name}`;
+      if (existsSync(join(bin, "installed-binary.json")) || existsSync(join(bin, "install-transaction.json"))) {
+        throw new Error("extracted launcher performed installation");
+      }
+    }
+  }
   step = "assemble release assets";
-  const manifest = JSON.parse(readFileSync(join(plugin, "bin/platform-binaries.json"), "utf8"));
   copyFileSync(join(plugin, "bin/platform-binaries.json"), join(output, "platform-binaries.json"));
   copyFileSync(join(plugin, "bin/verify.js"), join(output, "verify.js"));
   for (const [target, entry] of Object.entries(manifest.targets)) {
     copyFileSync(join(plugin, "bin", entry.path), join(output, `acyclic-${target}${target.startsWith("win32-") ? ".exe" : ""}`));
   }
-  run("archive marketplace", "tar", ["--sort=name", "--mtime=UTC 1970-01-01", "--owner=0", "--group=0", "--numeric-owner", "--format=ustar", "-C", staging, "-czf", join(temporary, "acyclic-plugin.tar.gz"), "."]);
-  // Publish distributable archives only after the installed executable passes.
-  for (const [source, name] of [[archive, "acyclic-plugin-npm.tgz"], [join(temporary, "acyclic-plugin.tar.gz"), "acyclic-plugin.tar.gz"]]) {
+  // Publish only after installation and platform-specific extract-only launch.
+  for (const [source, name] of archives) {
     const pending = join(output, `.${name}.tmp`);
     copyFileSync(source, pending);
     renameSync(pending, join(output, name));

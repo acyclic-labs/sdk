@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +46,25 @@ test("release assembly publishes only runnable packages and retires installation
     assert.equal(accepted.status, 0, accepted.stderr);
     const published = archives.map(name => readFileSync(join(output, name)));
     for (const archive of published) assert.ok(archive.length > 0, "published archive is empty");
+
+    // Exercise the distributable bytes without npm or the install script.
+    for (const [index, name] of archives.entries()) {
+      const extracted = join(root, `extracted-${index}`);
+      mkdirSync(extracted);
+      const unpacked = spawnSync("tar", ["-xzf", join(output, name), "-C", extracted],
+        { env, encoding: "utf8", windowsHide: true });
+      assert.ifError(unpacked.error);
+      assert.equal(unpacked.status, 0, unpacked.stderr);
+      const bin = join(extracted, index === 0 ? "package" : "plugin", "bin");
+      const executable = join(bin, process.platform === "win32" ? "acyclic.exe" : "acyclic");
+      const digest = contents => createHash("sha256").update(contents).digest("hex");
+      assert.equal(digest(readFileSync(executable)), digest(bytes), "extracted launcher is not the native executable");
+      const ran = spawnSync(executable, ["--help"], { env, encoding: "utf8", windowsHide: true });
+      assert.ifError(ran.error);
+      assert.equal(ran.status, 0, ran.stderr);
+      assert.equal(readdirSync(bin).some(file => file.startsWith("install-") || file === "installed-binary.json"), false,
+        "extract-only launch wrote installation state");
+    }
 
     const rebuild = assemble(truncated);
     assert.notEqual(rebuild.status, 0, rebuild.stdout);
