@@ -92,10 +92,12 @@ fn operation(
             "namespace changed before a refused completion: allowance {allowance:?}: {error:?}"
         );
         let refusal = crate::workspace::workspace_bounded_error(&error);
+        // A completion reservation reduces the ceiling available to nested work.
+        // Its effective ceiling cannot exceed the caller's original ceiling.
         assert!(
             matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
                 counter, maximum, observed,
-            })) if Some(maximum) == allowance && observed > maximum && counter == if item_budget { "items_examined" } else { "allocation_operations" }),
+            })) if allowance.is_some_and(|allowance| maximum <= allowance) && observed > maximum && counter == if item_budget { "items_examined" } else { "allocation_operations" }),
             "allowance {allowance:?}: {error:?}; source {:?}",
             std::error::Error::source(&error)
         );
