@@ -352,11 +352,10 @@ impl ProjectionState {
                     .get(&child_inode)
                     .map(|entry| entry.kernel_content);
                 let superseding = self.superseded_attributes.len();
-                let ttl = if counts_lookups {
-                    self.admit_entry(source, child_inode, child, current, work)?
+                let (ttl, child) = if counts_lookups {
+                    self.prepare_entry(source, child_inode, child, current, work)?
                 } else {
-                    self.retain_spelling(child_inode, child)?;
-                    Duration::ZERO
+                    (Duration::ZERO, self.retain_spelling(child_inode, child)?)
                 };
                 work.admit(Copy.delta(entry.name.len() as u64))?;
                 if listing.as_mut().ok_or(libc::EIO)?.push(
@@ -375,6 +374,9 @@ impl ProjectionState {
                         self.release_lookup_reference(inode, 1);
                     }
                     return Ok(());
+                }
+                if counts_lookups {
+                    self.accept_entry(inode, &child, work)?;
                 }
                 work.record_admitted(Copy.delta(entry.name.len() as u64))?;
                 if counts_lookups && let Some(handed) = self.by_inode.get_mut(&child_inode) {

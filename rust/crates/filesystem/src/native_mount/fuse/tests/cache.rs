@@ -1,26 +1,25 @@
 use super::*;
+use crate::native_mount::fuse::invalidation::{KernelCacheNotifier, shared_invalidation_pass};
+use std::cell::RefCell;
+
+#[derive(Default)]
+struct Notifications {
+    inodes: RefCell<Vec<u64>>,
+    entries: RefCell<Vec<(u64, Vec<u8>)>>,
+}
+impl KernelCacheNotifier for Notifications {
+    fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
+        self.inodes.borrow_mut().push(inode);
+        Ok(())
+    }
+    fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
+        self.entries.borrow_mut().push((parent, name.to_vec()));
+        Ok(())
+    }
+}
 
 #[test]
 fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error::Error>> {
-    use crate::native_mount::fuse::invalidation::{KernelCacheNotifier, shared_invalidation_pass};
-    use std::cell::RefCell;
-
-    #[derive(Default)]
-    struct Notifications {
-        inodes: RefCell<Vec<u64>>,
-        entries: RefCell<Vec<(u64, Vec<u8>)>>,
-    }
-    impl KernelCacheNotifier for Notifications {
-        fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
-            self.inodes.borrow_mut().push(inode);
-            Ok(())
-        }
-        fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
-            self.entries.borrow_mut().push((parent, name.to_vec()));
-            Ok(())
-        }
-    }
-
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum Creation {
         ExistingFile,
@@ -28,6 +27,7 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         RenamedFile,
         RenamedDirectory,
         ReplacedFile,
+        Lookup,
         File,
         Directory,
         SymbolicLink,
@@ -40,6 +40,7 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         Creation::RenamedFile,
         Creation::RenamedDirectory,
         Creation::ReplacedFile,
+        Creation::Lookup,
         Creation::File,
         Creation::Directory,
         Creation::SymbolicLink,
@@ -90,7 +91,17 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
         let entry = core
             .request(|work| {
-                if existing {
+                if !existing {
+                    let absent =
+                        projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)?;
+                    assert_eq!(absent.attr.ino.0, 0);
+                }
+                if creation == Creation::Lookup {
+                    crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                        around.create_file(&path, FileMetadata::default(), None, work)
+                    })?;
+                }
+                if existing || creation == Creation::Lookup {
                     projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)
                 } else if creation == Creation::HardLink {
                     let original = projection.lookup_entry(
@@ -228,6 +239,69 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         assert!(notifications.entries.borrow().iter().any(|(parent, name)| {
             *parent == ROOT_INODE && *name == *path.components().last().expect("named binding")
         }));
+    }
+    Ok(())
+}
+
+#[test]
+fn readdirplus_acceptance_supersedes_cached_name_misses() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::native_mount::fuse::packet::PacketOutput;
+
+    for accepted in [false, true] {
+        let (source, around) = shared_sources(posix_config())?;
+        let source = Arc::new(source);
+        let core = projection_core(
+            source.clone(),
+            FINITE_HANDLER_POLICY,
+            &crate::CancellationToken::new(),
+        )?;
+        let observer: Arc<dyn ViewObserver> = core.clone();
+        source.observe_view(Arc::downgrade(&observer))?;
+        let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
+        let path = name("held");
+        core.request(|work| {
+            let absent = projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)?;
+            assert_eq!(absent.attr.ino.0, 0);
+            Ok(())
+        })
+        .map_err(|(cause, _)| cause)?;
+        crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+            around.create_file(&path, FileMetadata::default(), None, work)
+        })?;
+        core.request(|work| {
+            let mut bytes = [0; 512];
+            let mut output = PacketOutput::new(&mut bytes, 0)?;
+            output.plus = true;
+            if !accepted {
+                output.limit_payload(0)?;
+            }
+            let capacity = output.remaining();
+            projection.list_directory(ROOT_INODE, 2, &mut Some(&mut output), work)?;
+            assert!(output.complete);
+            assert_eq!(output.remaining() < capacity, accepted);
+            Ok(())
+        })
+        .map_err(|(cause, _)| cause)?;
+        around.write_range(&path, 0, Bytes::from_static(b"changed"))?;
+        let notifications = Notifications::default();
+        shared_invalidation_pass(&core, &notifications);
+        assert!(
+            !core
+                .state()
+                .map_err(NativeMountError::from)?
+                .invalidation
+                .denied
+        );
+        assert_eq!(
+            notifications
+                .entries
+                .borrow()
+                .iter()
+                .any(|(parent, name)| { *parent == ROOT_INODE && name == b"held" }),
+            !accepted,
+            "only an accepted directory reply supersedes the cached miss"
+        );
     }
     Ok(())
 }
