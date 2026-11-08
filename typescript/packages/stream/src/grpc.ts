@@ -17,7 +17,7 @@ import * as wire from "../generated/proto/stream/v1/stream_pb.js";
 import { grpcStatusError, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
+import { StreamError, type StreamRefusal } from "./types.js";
 import { streamError } from "./wasm-error.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
@@ -295,32 +295,18 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 }
 /** Rust owns status categories and retention of original member diagnostics. */
 function grpcStatus(error: ConnectError): Error {
-  const metadata: string[] = [];
-  error.metadata.forEach((value, name) => { metadata.push(name, value); });
-  return grpcStatusError(error.code, error.rawMessage, metadata) as Error;
+  const refusal = grpcRefusal(error);
+  return Object.assign(grpcStatusError(refusal.status, refusal.message, []) as Error, { refusal });
 }
 
 /** Public Stream failure for a gRPC call. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const refusal = grpcRefusal(error);
-  const reason = refusal.message;
-  let code: StreamFailureCode = "unavailable";
-  switch (refusal.status) {
-    case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
-    case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
-    case Code.AlreadyExists: code = "destination_exists"; break;
-    case Code.OutOfRange: code = "out_of_range"; break;
-    case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
-    case Code.ResourceExhausted: code = "capacity_exhausted"; break;
-    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
-    case Code.FailedPrecondition:
-      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed" || reason === "revision_foreign") code = reason;
-      break;
-  }
-  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason, undefined, refusal);
+  const failure = streamError(grpcStatus(error), operation);
+  return failure instanceof StreamError && failure.code === "capacity"
+    ? new StreamError("capacity_exhausted", failure.message, failure.status, failure.refusal)
+    : failure;
 }
 
 const peerRefusal = Symbol("original peer refusal");
@@ -349,9 +335,7 @@ function grpcRefusal(error: PeerError): StreamRefusal {
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown, signal: AbortSignal): unknown {
   if (!(error instanceof ConnectError)) return error;
-  const refusal = grpcRefusal(error);
-  return Object.assign(new Error(refusal.message), {
-    code: grpcErrorCode(refusal.status, refusal.message),
-    transient: !signal.aborted && (error as PeerError)[peerInterrupted] === true, refusal,
+  return Object.assign(grpcStatus(error), {
+    cause: error, transient: !signal.aborted && (error as PeerError)[peerInterrupted] === true,
   });
 }

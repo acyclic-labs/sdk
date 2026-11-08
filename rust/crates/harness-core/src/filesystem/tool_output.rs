@@ -161,6 +161,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 None => vec![
                     (observed.as_str(), false, follow),
                     (status.as_str(), false, follow),
+                    (membership.as_str(), tree, follow),
                     (resource.as_str(), true, read),
                 ],
             };

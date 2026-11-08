@@ -25,7 +25,6 @@ use crate::wire_codec::{
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
-
 };
 #[cfg(test)]
 use crate::{AppendRequest, CommitOutcome, CommitRequest, ForkReceipt};

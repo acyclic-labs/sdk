@@ -120,7 +120,10 @@ impl Future for Next<'_> {
                 Err(error)
                     if error.category() == StreamError::AccessDenied && this.key.is_some() =>
                 {
-                    (Event::Refused(this.anchor.take()), futures::stream::empty().boxed())
+                    (
+                        Event::Refused(this.anchor.take()),
+                        futures::stream::empty().boxed(),
+                    )
                 }
                 Err(error) => (Event::Ended(error), futures::stream::empty().boxed()),
             },

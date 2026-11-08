@@ -589,7 +589,6 @@ async fn selected_discovery_survives_a_serving_process_restart() {
             "stopped serving process returned {:?}",
             stopped.as_ref().err()
         );
-
     }
     assert!(model.steps.lock().unwrap().is_empty());
 }
