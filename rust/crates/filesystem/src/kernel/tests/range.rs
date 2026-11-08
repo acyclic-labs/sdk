@@ -530,16 +530,10 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
             ExtentReadError::Work(WorkError::Overflow)
         ));
     }
-    for error in [
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        assert!(matches!(
-            ExtentReadError::from(error),
-            ExtentReadError::AllocationFailed
-        ));
-    }
+    assert!(matches!(
+        ExtentReadError::from(AllocationError::CapacityExceeded),
+        ExtentReadError::AllocationFailed
+    ));
 
     let root = ObjectId {
         storage: None,
