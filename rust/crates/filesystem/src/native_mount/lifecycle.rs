@@ -1,5 +1,23 @@
 use super::*;
 
+/// Runs an owned physical control without parking its asynchronous caller.
+pub(super) async fn run_native_control<T: Send + 'static>(
+    operation: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, NativeMountError> {
+    acyclic_native_runtime::spawn_blocking(move || {
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        operation()
+    })
+    .await
+    .map_err(Into::into)
+}
+
+/// Initializes the same native services without blocking callback producers.
+/// Recovery retains its worker if the awaiting caller is cancelled.
+pub async fn initialize_native_mount_services_async() -> Result<(), NativeMountError> {
+    run_native_control(initialize_native_mount_services).await?
+}
+
 /// Probes the target's one canonical native namespace mechanism.
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {

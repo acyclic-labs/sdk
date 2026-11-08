@@ -251,7 +251,9 @@ impl Opening {
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
-            acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+            acyclic_fs::initialize_native_mount_services_async()
+                .await
+                .map_err(storage)?;
         }
         let (directory, checkout) = self.checkout()?;
         #[cfg(test)]
