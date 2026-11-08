@@ -291,6 +291,12 @@ fn completion_retains_credit_after_source_acceptance(
         })) if counter == expected
     ));
     drop(pressure.held.lock().take());
+    let health = original.admit(crate::WorkCounters::UNCHARGED);
+    assert!(
+        health.is_ok(),
+        "completion corrupted its original ledger: {health:?}; recorded {:?}",
+        original.take_native_io_failure()
+    );
     assert!(source.lookup(&name("before"))?.is_none());
     if let Some((inode, handle)) = retained {
         let file = projection
@@ -322,7 +328,6 @@ fn completion_retains_credit_after_source_acceptance(
         assert_eq!(entry.bindings.len(), 1);
         assert_eq!(*entry.bindings[0].path, name("survivor"));
     }
-    original.admit(crate::WorkCounters::UNCHARGED)?;
     Ok(())
 }
 
@@ -342,53 +347,6 @@ fn unlink_completion_retains_credit_after_source_acceptance()
 fn unlink_completion_retains_copy_credit_after_source_acceptance()
 -> Result<(), Box<dyn std::error::Error>> {
     completion_retains_credit_after_source_acceptance(false, true)
-}
-
-#[test]
-fn post_unlink_allocation_negative_control() -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = shared_sources(posix_config())?;
-    let source = Arc::new(source);
-    let setup = fuse_fixture_work();
-    let path = name("retained");
-    source.create_file(&path, FileMetadata::default(), None, &setup)?;
-    source.write_range(&path, 0, Bytes::from_static(b"original"))?;
-    let projection = super::super::FuseProjection {
-        core: projection_core(
-            source.clone(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )?,
-    };
-    let inode = projection
-        .lookup_entry(ROOT_INODE, std::ffi::OsStr::new("retained"), &setup)?
-        .attr
-        .ino
-        .0;
-    projection.open_node(inode, libc::O_RDONLY, &setup)?;
-    let detached = super::super::FuseOpenFile(super::super::fuse_open_file(
-        source.detach_file_with_meter(&path, &setup)?,
-        &setup,
-    )?);
-    source.remove(&path, None, &setup)?;
-    let refused = fuse_fixture_work();
-    // The ledger itself is already funded. Admit no further allocations.
-    {
-        let mut state = refused.state.lock();
-        state.budget.allocation_operations = state.work.allocation_operations;
-    }
-    assert!(
-        projection
-            .core
-            .state()
-            .map_err(NativeMountError::from)?
-            .prepare_detached_handles(inode, &detached, &refused)
-            .is_err()
-    );
-    assert!(
-        !preserved(source.as_ref(), &path)?,
-        "the old ordering must violate namespace preservation on refusal"
-    );
-    Ok(())
 }
 
 fn rename_and_forget(resurrect: bool) -> Result<(), Box<dyn std::error::Error>> {

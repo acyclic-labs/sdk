@@ -22,6 +22,7 @@ const claims = {
     ["--no-default-features", "--features", "memory,native-mount"],
     { mutations: [
       { patch: "rust/proofs/native-unlink-completion-credit/late-preparation.patch", label: "late-preparation", diagnostic: "unlink refused after its source was accepted" },
+      { source: "rust/crates/filesystem/src/demand/reservations.rs", patch: "rust/proofs/native-unlink-completion-credit/early-refund.patch", label: "early-refund", diagnostic: "completion corrupted its original ledger" },
     ], positive: [
       "native_mount::fuse::tests::detach::unlink_completion_retains_credit_after_source_acceptance",
       "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",

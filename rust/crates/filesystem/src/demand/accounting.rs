@@ -189,21 +189,25 @@ impl DemandWork {
         })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let reconciled = self
+            .reconcile_cancellation_registry()
+            .map_err(DemandError::from);
+        let recorded = self.record_reconciled(delta);
+        reconciled.and(recorded)
+    }
+    pub(super) fn record_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         #[cfg(test)]
         self.probe_write(delta);
         let delta = self.item_charge(delta);
         let resource = self
             .resource()
             .map_or(Ok(()), |resource| resource.completed(delta, 0));
-        let reconciled = self
-            .reconcile_cancellation_registry()
-            .map_err(DemandError::from);
         let recorded = self
             .work
             .try_add_assign(&delta)
             .map_err(DemandError::from)
             .and_then(|()| self.work.verify(self.budget).map_err(DemandError::from));
-        reconciled.and(recorded).and(resource)
+        recorded.and(resource)
     }
     pub(crate) fn spent(&mut self, mut delta: WorkCounters) -> Result<(), DemandError> {
         delta = self.item_charge(delta);
