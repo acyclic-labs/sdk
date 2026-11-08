@@ -333,20 +333,45 @@ test("screen conditions require rendered styles and reject literal markdown", as
   screen.dispose();
 });
 
-test("expected interrupted recovery still requires its retained transcript and exact failure", async () => {
-  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
-  const write = data => new Promise(resolve => screen.write(data, resolve));
-  const expected = { task_failure: "model provider unavailable (co", contains: ["RECOVERED_E2E"] };
-  const failure = "task 00000000-0000-0000-0000-000000000001 failed: ";
-  await write("RECOVERED_E2E");
-  assert.ok(!matches(screen, raw(""), expected), "replayed prefix alone is not settled recovery");
-  await write("\r\n" + failure + "unauthorized");
-  assert.ok(!matches(screen, raw(""), expected), "another error cannot satisfy interrupted recovery");
-  await write("\r\x1b[2K" + failure + "model provider unavailable (connection interrupted)");
-  assert.ok(matches(screen, raw(""), expected));
-  await write("\x1b[H\x1b[2K");
-  assert.ok(!matches(screen, raw(""), expected), "settlement must preserve the partial transcript");
-  screen.dispose();
+test("captured interrupted recovery admits its wrapped diagnostic through original completion", async () => {
+  class TerminalProcess extends Processes {
+    startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
+  }
+  const fixture = fileURLToPath(new URL("./fixtures/interrupted-terminal.json", import.meta.url));
+  const retained = JSON.parse(readFileSync(fixture, "utf8"));
+  const root = mkdtempSync(join(tmpdir(), "terminal-recovery-"));
+  try {
+    for (const width of [0, 1, 63]) {
+      const processes = new TerminalProcess();
+      try {
+        let captured;
+        const result = await pty(processes, process.execPath, {
+          id: "retained-interrupted-recovery", workspace: root,
+          // Replay original native bytes, with the final diagnostic released
+          // by the same input action as the real kill-and-resume journey.
+          args: ["-e", `
+            const captured = JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'));
+            const bytes = Buffer.from(captured.stdout), marker = Buffer.from('\\x1b[?2026l');
+            const end = bytes.lastIndexOf(marker) + marker.length;
+            process.stdout.write(bytes.subarray(0, end));
+            process.stdin.once('data', () => {
+              let offset = end;
+              function write() {
+                if (offset === bytes.length) { process.exitCode = 1; process.stdin.destroy(); return; }
+                const next = Math.min(bytes.length, offset + (Number(process.argv[2]) || bytes.length));
+                const chunk = bytes.subarray(offset, next); offset = next;
+                process.stdout.write(chunk, write);
+              }
+              write();
+            });`, fixture, String(width)],
+          onRequest() { return () => {}; },
+        }, { actions: [{ when: retained.condition, send: "\x04" }], exit: 1 }, value => { captured = value; });
+        assert.equal(result.code, 1, "the admitted failure must reach its original nonzero exit");
+        assert.equal(captured.actions, 1);
+        assert.equal(captured.stdout, retained.stdout, "retain every original terminal byte");
+      } finally { await processes.close(); }
+    }
+  } finally { rmSync(root, { recursive: true }); }
 });
 
 test("real children are killed and reaped on scope cleanup", async t => {
