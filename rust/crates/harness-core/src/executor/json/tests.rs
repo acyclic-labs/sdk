@@ -855,6 +855,10 @@ mod object_work {
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_limit"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_empty"),
             include_bytes!("../../../../harness-fuzz/corpus/bounded_json/raw_depth_refused"),
+            include_bytes!("../../../../harness-fuzz/corpus/bounded_json/signing_reference_map"),
+            include_bytes!(
+                "../../../../harness-fuzz/corpus/bounded_json/signing_reference_sequence"
+            ),
         ] {
             oracle::check(bytes);
         }

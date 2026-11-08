@@ -250,13 +250,14 @@ pub(super) async fn volume(directory: &Path) -> Result<VolumeRef> {
 
 #[tokio::test]
 async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> {
-    for defaults in [true, false] {
+    for (defaults, explicit_state) in [(true, false), (false, false), (true, true), (false, true)] {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let project = volume(directory.path()).await?;
+        let state = directory.path().join("new").join("..").join("state");
         let configured = || -> Result<LocalHarnessConfig> {
             let mut config = volume_config(directory.path(), project.clone(), text())?
                 .tools(vec![tool("test.custom")]);
-            config.state_directory = None;
+            config.state_directory = explicit_state.then(|| state.clone());
             if !defaults {
                 config = config.without_default_tools();
             }
@@ -266,6 +267,10 @@ async fn defaults_are_additive_and_opt_out_retains_custom_tools() -> Result<()> 
         let refusals = LocalHarness::doctor(configured()?).await;
         assert!(refusals.is_empty(), "{refusals:?}");
         assert_eq!(super::config::TEMPORARY_STATES.get(), allocations);
+        assert!(
+            !directory.path().join("new").exists(),
+            "doctor created state"
+        );
         let harness = LocalHarness::open(configured()?).await?;
         assert_eq!(
             harness.tools().get("write", None, None)?.is_some(),
