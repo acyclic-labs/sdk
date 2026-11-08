@@ -136,14 +136,6 @@ where
     async fn detach_async(&self) -> Result<(), MountLifecycleError> {
         #[cfg(all(test, not(loom)))]
         super::command_tests::record("detach");
-        if self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_none()
-        {
-            return Ok(());
-        }
         self.retiring
             .store(true, std::sync::atomic::Ordering::Release);
         let source = self.source.clone();
