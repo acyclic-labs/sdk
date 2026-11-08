@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+    "merge-json-refusal": [
+      "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
+      "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
+      "refused JSON allocated a diagnostic", ["--no-default-features", "--features", "memory,native-mount"],
+    ],
   "merge-json-admission": [
     "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
     "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
