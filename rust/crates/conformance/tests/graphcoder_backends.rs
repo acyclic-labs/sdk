@@ -22,7 +22,6 @@ use std::{
     path::{Path, PathBuf},
     process::{ChildStdin, ExitStatus},
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 const SCENARIO: &str = "conformance scenario";
@@ -31,8 +30,6 @@ const CHILD: &str = "conformance child";
 const CHILD_REPLY: &str = "child reply";
 const FOLLOWUP: &str = "conformance follow-up";
 const WRITTEN: &str = "conformance write";
-/// How long the follow-up waits for the child before answering anyway.
-const CHILD_WAIT: Duration = Duration::from_secs(10);
 
 /// The binary every backend runs.
 fn executable() -> PathBuf {
@@ -110,22 +107,11 @@ type Outputs = std::collections::BTreeMap<String, String>;
 /// results it already held.
 type Step = (&'static str, usize);
 
-/// One scripted generation, sent once `after_child` holds if it is set.
-struct Reply {
-    events: String,
-    after_child: bool,
-}
-
 /// The scripted turns, told apart by their newest user message: the root's
 /// scenario turn calls shell, write and spawn, then answers; the child
 /// answers at once; the root acknowledges its child's report; the root's
-/// follow-up answers once the child ran.
-fn answer(
-    request: &Value,
-    steps: &Mutex<BTreeSet<Step>>,
-    outputs: &Mutex<Outputs>,
-    child: &tokio::sync::watch::Sender<bool>,
-) -> Reply {
+/// follow-up waits for the child's original completed reply, then answers.
+fn answer(request: &Value, steps: &Mutex<BTreeSet<Step>>, outputs: &Mutex<Outputs>) -> String {
     let input = request["input"].as_array().cloned().unwrap_or_default();
     for item in &input {
         if item["type"] == "function_call_output"
@@ -146,30 +132,26 @@ fn answer(
         .iter()
         .filter(|item| item["type"] == "function_call_output")
         .count();
-    let reply = |events| Reply {
-        events,
-        after_child: false,
-    };
     if prompt.contains(CHILD) {
         steps.lock().unwrap().insert(("child", results));
-        child.send_replace(true);
-        return reply(events(&[text(CHILD_REPLY)]));
+        return events(&[text(CHILD_REPLY)]);
     }
     // The root's report of its child's result, which carries the child's
     // reply. The child decides when it arrives, before or after the
     // follow-up, so it records no step.
     if prompt.contains(CHILD_REPLY) {
-        return reply(events(&[text("child noted")]));
+        return events(&[text("child noted")]);
     }
     if prompt.contains(FOLLOWUP) {
         steps.lock().unwrap().insert(("followup", results));
-        return Reply {
-            events: events(&[text("followup answer")]),
-            after_child: true,
-        };
+        return events(&[if results == 0 {
+            call("wait", "wait", &json!({"agents": ["child"]}))
+        } else {
+            text("followup answer")
+        }]);
     }
     steps.lock().unwrap().insert(("root", results));
-    reply(events(&[match results {
+    events(&[match results {
         0 => call(
             "shell",
             "shell",
@@ -182,7 +164,7 @@ fn answer(
             &json!({"task": CHILD, "name": "child", "role": "worker"}),
         ),
         _ => text("root answer"),
-    }]))
+    }])
 }
 
 /// The loopback Responses endpoint and its catalog.
@@ -200,7 +182,6 @@ async fn model(directory: &Path) -> Model {
     let recorded = Arc::clone(&steps);
     let outputs = Arc::new(Mutex::new(Outputs::new()));
     let seen = Arc::clone(&outputs);
-    let (child, ran) = tokio::sync::watch::channel(false);
     let app = Router::new()
         .route(
             "/count",
@@ -209,14 +190,8 @@ async fn model(directory: &Path) -> Model {
         .route(
             "/responses",
             post(move |Json(body): Json<Value>| {
-                let reply = answer(&body, &recorded, &seen, &child);
-                let mut ran = ran.clone();
-                async move {
-                    if reply.after_child {
-                        let _ = tokio::time::timeout(CHILD_WAIT, ran.wait_for(|ran| *ran)).await;
-                    }
-                    ([("content-type", "text/event-stream")], reply.events)
-                }
+                let reply = answer(&body, &recorded, &seen);
+                async move { ([("content-type", "text/event-stream")], reply) }
             }),
         );
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -617,8 +592,7 @@ async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) 
     second.answer("y\n");
     let (answer, stderr) = second.finish().await;
     assert!(stderr.contains("approve request"), "{stderr}");
-    // The spawned child runs once its parent's turn settled; the follow-up
-    // answers after it did.
+    // The original agent wait resumes only once the child's own reply settled.
     let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish().await;
     format!("{}\n{}", answer.trim(), followup.trim())
 }
@@ -650,6 +624,14 @@ impl Shape {
         );
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
+        let waited = parsed("wait");
+        let settled = waited["settled"]
+            .as_array()
+            .expect("wait named no settlement");
+        assert_eq!(settled.len(), 1, "{waited}");
+        assert_eq!(settled[0]["agent"], spawned["agent"]);
+        let completed = json!([settled[0]["phase"], settled[0]["answer"], waited["running"]]);
+        assert_eq!(completed, json!(["idle", CHILD_REPLY, []]));
         let child: Vec<&str> = spawned["agent"]
             .as_str()
             .unwrap_or_else(|| panic!("spawn named no child: {spawned}"))
@@ -664,7 +646,12 @@ impl Shape {
             .collect();
         Self {
             answer: answer.trim().to_owned(),
-            results: vec![parsed("shell"), written["path"].clone(), child.into()],
+            results: vec![
+                parsed("shell"),
+                written["path"].clone(),
+                child.into(),
+                completed,
+            ],
             steps,
         }
     }
@@ -725,6 +712,16 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         }
         let steps = model.steps.lock().unwrap().clone();
         let outputs = model.outputs.lock().unwrap().clone();
+        // A real completed process without the original child reply is no
+        // success. Plant that omission in its actual retained tool result.
+        let mut missing = outputs.clone();
+        let mut waited: Value = serde_json::from_str(&missing["wait"]).unwrap();
+        waited["settled"][0]["answer"] = Value::Null;
+        missing.insert("wait".into(), waited.to_string());
+        assert!(
+            std::panic::catch_unwind(|| Shape::of(answer.clone(), &missing, steps.clone()))
+                .is_err()
+        );
         shapes.push((name, Shape::of(answer, &outputs, steps)));
     }
     let (_, local) = &shapes[0];
@@ -739,15 +736,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     assert_eq!(local.results[1], "conformance.txt");
     assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
     for (name, shape) in &shapes[1..] {
-        assert_eq!(shape.answer, local.answer, "{name} answered otherwise");
-        assert_eq!(shape.steps, local.steps, "{name} took other steps");
-        for (index, (theirs, ours)) in shape.results.iter().zip(&local.results).enumerate() {
-            assert_eq!(
-                theirs.to_string(),
-                ours.to_string(),
-                "{name} result {index}"
-            );
-        }
         assert_eq!(shape, local, "{name} committed another history");
     }
 }

@@ -18,6 +18,17 @@ pub const LIST: &str = "secrets/list";
 /// Catalog action for deletion.
 pub const DELETE: &str = "secrets/delete";
 
+pub(crate) const PUT_PATH: &str = "/v1/identity/secrets/put";
+pub(crate) const LIST_PATH: &str = "/v1/identity/secrets/list";
+pub(crate) const DELETE_PATH: &str = "/v1/identity/secrets/delete";
+
+// The client and descriptor renderer share the actual HTTP operation identity.
+pub(crate) const HTTP_ROUTES: &[(&str, &str, &str)] = &[
+    (PUT_PATH, PUT, "secrets:/{scope}/{name}"),
+    (LIST_PATH, LIST, "secrets:/{scope}"),
+    (DELETE_PATH, DELETE, "secrets:/{scope}/{name}"),
+];
+
 /// Canonical resource of a whole scope: `secrets:/<scope>`. A prefix grant on
 /// it covers every name in the scope.
 pub fn scope_resource(scope: &str) -> String {
@@ -470,7 +481,7 @@ impl<T: Transport> Client<T> {
     /// automatic retry can turn a conflict into a successful overwrite.
     pub async fn put(&self, request: &SecretPutRequest) -> Result<SecretMutationReply, Error> {
         validate_put(request).map_err(|_| Error::InvalidRequest)?;
-        let reply: SecretMutationReply = self.post("/v1/identity/secrets/put", request).await?;
+        let reply: SecretMutationReply = self.post(PUT_PATH, request).await?;
         mutation(
             reply,
             &request.name,
@@ -489,7 +500,7 @@ impl<T: Transport> Client<T> {
         if let Some(cursor) = &request.cursor {
             validate_cursor(cursor).map_err(|_| Error::InvalidRequest)?;
         }
-        let reply: SecretListReply = match self.post("/v1/identity/secrets/list", request).await {
+        let reply: SecretListReply = match self.post(LIST_PATH, request).await {
             Err(Error::Conflict) => return Err(Error::ListingChanged),
             reply => reply?,
         };
@@ -502,7 +513,7 @@ impl<T: Transport> Client<T> {
         request: &SecretDeleteRequest,
     ) -> Result<SecretMutationReply, Error> {
         validate_delete(request).map_err(|_| Error::InvalidRequest)?;
-        let reply: SecretMutationReply = self.post("/v1/identity/secrets/delete", request).await?;
+        let reply: SecretMutationReply = self.post(DELETE_PATH, request).await?;
         mutation(
             reply,
             &request.name,

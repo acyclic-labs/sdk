@@ -1063,7 +1063,7 @@ mod isolation_tests {
         assert_eq!(medium.counts(), (0, 1));
     }
 
-    /// A crash keeps every whole frame and cuts the torn one, at every byte.
+    /// Every crash prefix recovers whole frames and can commit a clean successor.
     #[tokio::test]
     async fn a_crash_keeps_exactly_the_whole_frames_at_every_cut() {
         let root = tempfile::tempdir().unwrap();
@@ -1126,6 +1126,26 @@ mod isolation_tests {
                 std::fs::metadata(copy.path().join(LOG)).unwrap().len(),
                 *end
             );
+            let mut committed = expected.clone();
+            assert!(
+                reopened
+                    .create("after/recovery", bytes(b"committed"))
+                    .await
+                    .unwrap()
+            );
+            committed.insert("after/recovery".to_owned(), b"committed".to_vec());
+            reopened.flush(&[]).await.unwrap();
+            reopened.settle();
+            assert_eq!(reopened.close().await.unwrap(), LocalClose::Released);
+            let clean = LocalMedium::open(copy.path(), LocalObjectsLimits::default(), None)
+                .await
+                .unwrap();
+            assert!(
+                !clean.recovered(),
+                "settled successor reopened unclean at cut {cut}"
+            );
+            assert_eq!(contents(&clean).await, committed, "successor at cut {cut}");
+            assert_eq!(clean.close().await.unwrap(), LocalClose::Released);
         }
     }
 

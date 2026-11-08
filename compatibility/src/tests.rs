@@ -23,8 +23,8 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
             &[input],
             &[
                 root.path().to_owned(),
-                shared_protocols(),
-                protoc_bin_vendored::include_path()?,
+                acyclic_test_support::source_path("compatibility/proto"),
+                protoc_include()?,
             ],
         )?;
         let bytes = std::fs::read(&output)?;
@@ -45,13 +45,16 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
 #[test]
 fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
 -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("missing workspace root")?;
+    let root = acyclic_test_support::source_path("");
     let output = tempfile::tempdir()?;
     for (family, baseline, protos) in FAMILIES {
         let destination = output.path().join(baseline);
-        descriptor(&root.join("rust/crates").join(family), protos, &destination)?;
+        descriptor(
+            &root.join("rust/crates").join(family),
+            &root.join("compatibility/proto"),
+            protos,
+            &destination,
+        )?;
         let actual = std::fs::read(&destination)?;
         let expected = std::fs::read(root.join("compatibility/descriptors").join(baseline))?;
         assert!(

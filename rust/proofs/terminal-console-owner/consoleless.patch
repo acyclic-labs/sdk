@@ -1,0 +1,27 @@
+diff --git a/rust/crates/harness-tui/tests/terminal_frames.rs b/rust/crates/harness-tui/tests/terminal_frames.rs
+index cc002eb8260..31470e74d21 100644
+--- a/rust/crates/harness-tui/tests/terminal_frames.rs
++++ b/rust/crates/harness-tui/tests/terminal_frames.rs
+@@ -454,2 +454,22 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+ fn real_terminal_frame_cost() -> io::Result<()> {
++    #[cfg(windows)]
++    #[allow(
++        unsafe_code,
++        reason = "the native fixture detaches only its own console"
++    )]
++    if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
++        #[link(name = "kernel32")]
++        unsafe extern "system" {
++            #[link_name = "FreeConsole"]
++            fn free_console() -> i32;
++        }
++        // SAFETY: this releases only this process's inherited console. The
++        // existing host and its process tree retain their original ownership.
++        if unsafe { free_console() } == 0 {
++            return Err(io::Error::other(format!(
++                "consoleless fixture could not detach its console: {}; recovery: run the retained consoleless qualification from the proof README",
++                io::Error::last_os_error()
++            )));
++        }
++    }
+     use std::fmt::Write as _;

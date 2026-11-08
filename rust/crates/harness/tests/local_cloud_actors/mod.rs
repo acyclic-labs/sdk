@@ -547,189 +547,190 @@ async fn delete_all_and_check_absence(actors: &mut grpc::Client) -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full"]
-async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
-    let endpoints = endpoints()?;
-    let phase = std::time::Instant::now();
-    let (actors, events) = futures::join!(published_actor(&endpoints), event_stream(&endpoints));
-    let mut actors = actors?;
-    let (_streams, start) = events?;
-    println!("Actors setup: {:.3}s", phase.elapsed().as_secs_f64());
-    let phase = std::time::Instant::now();
-    let deployed = actors
-        .deploy_namespace(create())
-        .await?
-        .into_inner()
-        .deployment
-        .ok_or("missing deployment")?;
-    assert_eq!(deployed.name, NAMESPACE);
-    assert_eq!(deployed.revision, 1);
-    let mut retrier = actors.clone();
-    let repeated = retrier
-        .deploy_namespace(create())
-        .await?
-        .into_inner()
-        .deployment
-        .ok_or("missing deployment")?;
-    assert_eq!(repeated, deployed);
-    // Deploying code never creates an instance; first access activates it.
-    invoke(&mut actors, None, 0).await?;
-    let activated = observation(
-        actors
-            .inspect_actor(wire::InspectActorRequest {
-                namespace: Some(NAMESPACE.into()),
-                account_id: Vec::new(),
-                actor_id: ACTOR.into(),
-            })
+mod full_cloud {
+    use super::*;
+
+    #[tokio::test]
+    async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
+        let endpoints = endpoints()?;
+        let phase = std::time::Instant::now();
+        let (actors, events) =
+            futures::join!(published_actor(&endpoints), event_stream(&endpoints));
+        let mut actors = actors?;
+        let (_streams, start) = events?;
+        println!("Actors setup: {:.3}s", phase.elapsed().as_secs_f64());
+        let phase = std::time::Instant::now();
+        let deployed = actors
+            .deploy_namespace(create())
             .await?
             .into_inner()
-            .actor,
-        1,
-    )?;
-    assert_eq!(activated.state, wire::ActorState::Active as i32);
-    for (add, counter) in [(2, 2), (-1, 1), (4, 5)] {
-        invoke(&mut actors, Some(add), counter).await?;
+            .deployment
+            .ok_or("missing deployment")?;
+        assert_eq!(deployed.name, NAMESPACE);
+        assert_eq!(deployed.revision, 1);
+        let mut retrier = actors.clone();
+        let repeated = retrier
+            .deploy_namespace(create())
+            .await?
+            .into_inner()
+            .deployment
+            .ok_or("missing deployment")?;
+        assert_eq!(repeated, deployed);
+        // Deploying code never creates an instance; first access activates it.
+        invoke(&mut actors, None, 0).await?;
+        let activated = observation(
+            actors
+                .inspect_actor(wire::InspectActorRequest {
+                    namespace: Some(NAMESPACE.into()),
+                    account_id: Vec::new(),
+                    actor_id: ACTOR.into(),
+                })
+                .await?
+                .into_inner()
+                .actor,
+            1,
+        )?;
+        assert_eq!(activated.state, wire::ActorState::Active as i32);
+        for (add, counter) in [(2, 2), (-1, 1), (4, 5)] {
+            invoke(&mut actors, Some(add), counter).await?;
+        }
+        let checkpoint = wire::CheckpointActorRequest {
+            namespace: Some(NAMESPACE.into()),
+            account_id: Vec::new(),
+            actor_id: ACTOR.into(),
+            idempotency_key: "sdk-checkpoint".into(),
+        };
+        let saved = observation(
+            actors
+                .checkpoint_actor(checkpoint.clone())
+                .await?
+                .into_inner()
+                .actor,
+            1,
+        )?;
+        assert!(saved.checkpoint_epoch > 0);
+        assert!(saved.checkpoint_unix_millis.is_some());
+        assert_eq!(saved.state, wire::ActorState::Active as i32);
+        let (retry, invoked) = futures::join!(
+            retrier.checkpoint_actor(checkpoint),
+            invoke(&mut actors, None, 5)
+        );
+        assert_eq!(observation(retry?.into_inner().actor, 1)?, saved);
+        invoked?;
+        println!(
+            "Actors counter/checkpoint: {:.3}s",
+            phase.elapsed().as_secs_f64()
+        );
+        let phase = std::time::Instant::now();
+
+        let expected_subscriptions = subscription_controls(&mut actors, start).await?;
+        migrate_namespace(&mut actors, &endpoints, &expected_subscriptions).await?;
+        println!(
+            "Actors subscriptions/migration: {:.3}s",
+            phase.elapsed().as_secs_f64()
+        );
+        let phase = std::time::Instant::now();
+        delete_all_and_check_absence(&mut actors).await?;
+        println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
+        Ok(())
     }
-    let checkpoint = wire::CheckpointActorRequest {
-        namespace: Some(NAMESPACE.into()),
-        account_id: Vec::new(),
-        actor_id: ACTOR.into(),
-        idempotency_key: "sdk-checkpoint".into(),
-    };
-    let saved = observation(
+
+    #[tokio::test]
+    async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
+        let endpoints = endpoints()?;
+        let mut actors = published_actor(&endpoints).await?;
         actors
-            .checkpoint_actor(checkpoint.clone())
+            .deploy_namespace(create())
             .await?
             .into_inner()
-            .actor,
-        1,
-    )?;
-    assert!(saved.checkpoint_epoch > 0);
-    assert!(saved.checkpoint_unix_millis.is_some());
-    assert_eq!(saved.state, wire::ActorState::Active as i32);
-    let (retry, invoked) = futures::join!(
-        retrier.checkpoint_actor(checkpoint),
-        invoke(&mut actors, None, 5)
-    );
-    assert_eq!(observation(retry?.into_inner().actor, 1)?, saved);
-    invoked?;
-    println!(
-        "Actors counter/checkpoint: {:.3}s",
-        phase.elapsed().as_secs_f64()
-    );
-    let phase = std::time::Instant::now();
-
-    let expected_subscriptions = subscription_controls(&mut actors, start).await?;
-    migrate_namespace(&mut actors, &endpoints, &expected_subscriptions).await?;
-    println!(
-        "Actors subscriptions/migration: {:.3}s",
-        phase.elapsed().as_secs_f64()
-    );
-    let phase = std::time::Instant::now();
-    delete_all_and_check_absence(&mut actors).await?;
-    println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
-async fn subscription_delivery_advances_cursors_and_preserves_event_order() -> TestResult {
-    let endpoints = endpoints()?;
-    let mut actors = published_actor(&endpoints).await?;
-    actors
-        .deploy_namespace(create())
+            .deployment
+            .ok_or("missing deployment")?;
+        invoke(&mut actors, None, 0).await?;
+        let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+            &endpoints.streams.endpoint,
+            &endpoints.streams.bearer,
+            std::fs::read(&endpoints.streams.ca_file)?,
+        )
+        .await?;
+        let start = append_events(
+            &streams,
+            vec![acyclic_stream::OwnedBytes::from_static(
+                b"before-subscription",
+            )],
+        )
         .await?
-        .into_inner()
-        .deployment
-        .ok_or("missing deployment")?;
-    invoke(&mut actors, None, 0).await?;
-    let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
-        &endpoints.streams.endpoint,
-        &endpoints.streams.bearer,
-        std::fs::read(&endpoints.streams.ca_file)?,
-    )
-    .await?;
-    let start = append_events(
-        &streams,
-        vec![acyclic_stream::OwnedBytes::from_static(
-            b"before-subscription",
-        )],
-    )
-    .await?
-    .end;
-    let added = observation(
-        actors
-            .add_subscription(add_subscription("sdk-delivery-add"))
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
-    subscriptions(&added, &[subscription(start)])?;
-    let boundary = streams
-        .tail(observation_path(&mut actors, NAMESPACE, ACTOR).await?)
+        .end;
+        let added = observation(
+            actors
+                .add_subscription(add_subscription("sdk-delivery-add"))
+                .await?
+                .into_inner()
+                .actor,
+            2,
+        )?;
+        subscriptions(&added, &[subscription(start)])?;
+        let boundary = streams
+            .tail(observation_path(&mut actors, NAMESPACE, ACTOR).await?)
+            .await?;
+        let receipt = append_events(
+            &streams,
+            vec![
+                acyclic_stream::OwnedBytes::from_static(b"event-a"),
+                acyclic_stream::OwnedBytes::from_static(b"event-b"),
+            ],
+        )
         .await?;
-    let receipt = append_events(
-        &streams,
-        vec![
-            acyclic_stream::OwnedBytes::from_static(b"event-a"),
-            acyclic_stream::OwnedBytes::from_static(b"event-b"),
-        ],
-    )
-    .await?;
-    assert_eq!(receipt.start, start);
-    assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
-    let (delivered, next) =
-        followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, boundary, |actor| {
-            actor
-                .subscriptions
-                .iter()
-                .any(|sub| sub.subscription_id == "events" && sub.completed_cursor >= receipt.end)
-        })
-        .await?;
-    let delivered = observation(Some(delivered), 2)?;
-    let mut expected = subscription(receipt.end);
-    expected.recoverable_cursor = start;
-    subscriptions(&delivered, &[expected])?;
-    let events = vec![
-        format!("v1:{}:event-a", receipt.start),
-        format!("v1:{}:event-b", receipt.end - 1),
-    ];
-    state_with_events(&invoke_response(&mut actors, None).await?, 0, 1, &events)?;
-    let saved = observation(
-        actors
-            .checkpoint_actor(wire::CheckpointActorRequest {
-                namespace: Some(NAMESPACE.into()),
-                account_id: Vec::new(),
-                actor_id: ACTOR.into(),
-                idempotency_key: "sdk-delivery-checkpoint".into(),
+        assert_eq!(receipt.start, start);
+        assert_eq!(receipt.end.checked_sub(receipt.start), Some(2));
+        let (delivered, next) =
+            followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, boundary, |actor| {
+                actor.subscriptions.iter().any(|sub| {
+                    sub.subscription_id == "events" && sub.completed_cursor >= receipt.end
+                })
             })
-            .await?
-            .into_inner()
-            .actor,
-        2,
-    )?;
-    subscriptions(&saved, &[subscription(receipt.end)])?;
-    let (followed, _) =
-        followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, next, |actor| {
-            actor == &saved
-        })
-        .await?;
-    assert_eq!(
-        followed, saved,
-        "checkpoint reply differs from the retained observation"
-    );
-    eprintln!(
-        "Cloud5326 PASS remote Session delivery, ordered events, exact checkpoint observation, and resumed cursor"
-    );
-    Ok(())
-}
+            .await?;
+        let delivered = observation(Some(delivered), 2)?;
+        let mut expected = subscription(receipt.end);
+        expected.recoverable_cursor = start;
+        subscriptions(&delivered, &[expected])?;
+        let events = vec![
+            format!("v1:{}:event-a", receipt.start),
+            format!("v1:{}:event-b", receipt.end - 1),
+        ];
+        state_with_events(&invoke_response(&mut actors, None).await?, 0, 1, &events)?;
+        let saved = observation(
+            actors
+                .checkpoint_actor(wire::CheckpointActorRequest {
+                    namespace: Some(NAMESPACE.into()),
+                    account_id: Vec::new(),
+                    actor_id: ACTOR.into(),
+                    idempotency_key: "sdk-delivery-checkpoint".into(),
+                })
+                .await?
+                .into_inner()
+                .actor,
+            2,
+        )?;
+        subscriptions(&saved, &[subscription(receipt.end)])?;
+        let (followed, _) =
+            followed_observation(&streams, &mut actors, NAMESPACE, ACTOR, next, |actor| {
+                actor == &saved
+            })
+            .await?;
+        assert_eq!(
+            followed, saved,
+            "checkpoint reply differs from the retained observation"
+        );
+        eprintln!(
+            "Cloud5326 PASS remote Session delivery, ordered events, exact checkpoint observation, and resumed cursor"
+        );
+        Ok(())
+    }
 
-#[tokio::test]
-#[ignore = "needs node scripts/local-cloud.mjs --topology full (Cloud bf5d555a0e)"]
-async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
-    paused::qualify().await
+    #[tokio::test]
+    async fn paused_subscription_resumes_with_exact_cursor_preservation() -> TestResult {
+        paused::qualify().await
+    }
 }
 
 async fn migrate_namespace(
