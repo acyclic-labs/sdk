@@ -264,6 +264,12 @@ fn check_merge_file_roundtrip<T: serde::de::DeserializeOwned + Serialize>(bytes:
 
 #[cfg(any(test, feature = "fuzzing"))]
 fn check_resolution_roundtrip(bytes: &[u8]) {
+    if let Ok(decoded) = serde_json::from_slice::<MergeResolution>(bytes) {
+        let canonical = serde_json::to_vec(&decoded).expect("serializable public resolution");
+        let restored: MergeResolution =
+            serde_json::from_slice(&canonical).expect("canonical public resolution");
+        assert_eq!(decoded, restored);
+    }
     if let Ok(decoded) = parse_resolution(bytes) {
         let canonical = serde_json::to_vec(&decoded).expect("serializable resolution");
         let restored = parse_resolution(&canonical).expect("canonical resolution");
