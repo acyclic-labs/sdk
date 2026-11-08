@@ -243,3 +243,26 @@ a new mutation. List returns one page. `--page-size N` sets its chunk, and
 `--cursor-generation G --after NAME` continues from the page's `nextCursor`. If the
 scope changed in between, list fails `listing changed`; restart without a cursor.
 There is no account selector, get, reveal or export command.
+
+## Assemble a release package locally
+
+Build the native executable with `node scripts/build-product.mjs`, then assemble
+and smoke-test the package using the same entry point as the release workflow:
+
+```sh
+node scripts/assemble-plugin-release.mjs --binary linux-x64-gnu=target/dist/acyclic --out release
+```
+
+Run from the repository root with Node.js, npm and GNU tar available. Select the
+actual target and binary path for your build; cross builds include the target
+triple under `target/`. Repeat `--binary target=path` to bundle more platforms.
+The bundle must include the assembly host's target so it can be installed and
+executed. Assembly uses a fresh npm cache and prefix, installs offline, and runs
+`acyclic-plugin --help` and `--version` before publishing either archive.
+The resulting npm archive is `release/acyclic-plugin-npm.tgz`; the marketplace
+archive is `release/acyclic-plugin.tar.gz`.
+
+Universal releases additionally use `--require-universal --certification DIR`,
+where `DIR` contains the original `linux-fuse.json`, `macos-nfs.json` and
+`windows-projfs.json` qualification receipts. The existing validator checks each
+receipt against the bundled executable before packaging.
