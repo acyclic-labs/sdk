@@ -70,6 +70,15 @@ acyclic install opencode
 acyclic host opencode -- --model provider/model
 ```
 
+For AGY terminal writes, select a native session policy containing
+`"permissions":{"allow":["write_file(.)"]}` using `--settings` (a JSON file
+or inline JSON). The shared launcher resolves relative `read_file` and
+`write_file` targets in all three native permission lists (`allow`, `ask`,
+`deny`) against the current admitted view before each invocation. Absolute
+targets, wildcard and home references, execution mode and unrelated settings
+retain their native meanings. It adds no permission grants. The parent policy
+keeps its relative targets so each child uses its own view.
+
 AGY's `plan` mode is for investigation and planning; `accept-edits` permits file
 edits in the workspace while retaining native terminal permissions. Headless MCP
 coordination also needs the native policy to allow `mcp(acyclic_sessions/spawn)`

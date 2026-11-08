@@ -150,6 +150,29 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
         inherited,
         "native policy decoder changed root argument vector"
     );
+    // Arbitrary external settings filenames are not opened by this in-memory
+    // fuzzer. Relative inline permissions have their semantic oracle below;
+    // the real-file property covers the same production argument boundary.
+    if host == "agy" {
+        let mut values = flags.iter();
+        while let Some(name) = values.next() {
+            if name == "--sandbox" {
+                continue;
+            }
+            let value = values.next().expect("validated option value");
+            if name == "--settings" {
+                if value.trim_start().starts_with('{') {
+                    let result = launch::child_arguments(host, &inherited, cwd, None);
+                    if serde_json::from_str::<serde_json::Value>(value).is_err() {
+                        assert!(matches!(result, Err(Error::Invalid(_))));
+                    } else {
+                        assert!(result.is_ok());
+                    }
+                }
+                return;
+            }
+        }
+    }
     let file = format!("{reference}.jsonl");
     for session in [
         None,
@@ -242,6 +265,57 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
     Ok(())
 }
 
+fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(), String> {
+    let target = format!("./{input}");
+    let mut original = serde_json::json!({
+        "permissions": {}, "provider": serde_json::from_str::<serde_json::Value>(input).ok(),
+        "unrelated": input,
+    });
+    for list in ["allow", "ask", "deny"] {
+        original["permissions"][list] = serde_json::json!([
+            format!("read_file({target})"),
+            format!("write_file({target})"),
+            "write_file(*)",
+            "read_file(~/.config)",
+            "command(git diff)",
+            format!("write_file({})", cwd.display()),
+        ]);
+    }
+    let flags = [
+        "--sandbox".into(),
+        "--mode".into(),
+        "plan".into(),
+        "--settings".into(),
+        original.to_string(),
+    ];
+    let args = launch::child_arguments("agy", &flags, cwd, None)
+        .map_err(|error| format!("relative inline policy was refused: {flags:?}: {error}"))?;
+    let settings = args
+        .array_windows::<2>()
+        .find(|[option, _]| option == "--settings")
+        .map(|[_, value]| value)
+        .ok_or_else(|| format!("native settings value absent: {args:?}"))?;
+    let actual: serde_json::Value = serde_json::from_str(
+        settings.to_str().ok_or_else(|| format!("native settings are not Unicode: {settings:?}"))?,
+    ).map_err(|error| format!("native settings JSON is invalid: {settings:?}: {error}"))?;
+    let mut expected = original;
+    for list in ["allow", "ask", "deny"] {
+        for (index, action) in ["read_file", "write_file"].iter().enumerate() {
+            expected["permissions"][list][index] =
+                format!("{action}({})", cwd.join(&target).display()).into();
+        }
+    }
+    assert_eq!(
+        actual, expected,
+        "relative permissions changed authority or workspace"
+    );
+    assert!(matches!(
+        launch::child_arguments("agy", &flags, non_unicode, None),
+        Err(Error::Invalid(_))
+    ));
+    Ok(())
+}
+
 libfuzzer_sys::fuzz_target!(|input: &[u8]| assert_eq!(check(input), Ok(())));
 
 fn check(input: &[u8]) -> Result<(), String> {
@@ -279,6 +353,7 @@ fn check(input: &[u8]) -> Result<(), String> {
     });
     let reference = format!("native-{encoded}");
     let non_unicode = non_unicode_root(input);
+    relative_permissions(encoded, cwd, &non_unicode)?;
     for (host, required_groups) in [
         (
             "codex",
