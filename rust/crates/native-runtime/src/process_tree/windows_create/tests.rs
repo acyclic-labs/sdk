@@ -8,7 +8,7 @@ use std::os::windows::process::CommandExt as _;
 use std::time::Duration;
 use windows_sys::Wdk::System::Threading::NtQueryInformationProcess;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, CompareObjectHandles, UNICODE_STRING, WAIT_OBJECT_0,
+    CompareObjectHandles, ERROR_INVALID_HANDLE, UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
@@ -496,18 +496,30 @@ fn probe() -> io::Result<()> {
             let name = std::env::var_os("ACYCLIC_PROBE_NAME").ok_or(io::ErrorKind::NotFound)?;
             let name: Vec<u16> = name.encode_wide().chain([0]).collect();
             let inherited: usize = value.parse().map_err(io::Error::other)?;
+            // Retain the candidate before opening the comparison event: a
+            // missing inherited slot can be reused by that very open.
+            let inherited =
+                match uninheritable_duplicate(std::ptr::with_exposed_provenance_mut(inherited)) {
+                    Ok(handle) => Some(handle),
+                    Err(error)
+                        if error.raw_os_error() == Some(ERROR_INVALID_HANDLE.cast_signed()) =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
             // SAFETY: a NUL-terminated name.
             let own = unsafe { OpenEventW(SYNCHRONIZE, 0, name.as_ptr()) };
             if own.is_null() {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: `own` is live; an invalid `inherited` only compares false.
-            let seen = unsafe {
-                CompareObjectHandles(own, std::ptr::with_exposed_provenance_mut(inherited))
-            };
-            // SAFETY: closing the handle opened above.
-            unsafe { CloseHandle(own) };
-            writeln!(out, "PROBE=seen {}", seen != 0)?;
+            // SAFETY: the successful open transfers one owned event handle.
+            let own = unsafe { OwnedHandle::from_raw_handle(own) };
+            let seen = inherited.is_some_and(|inherited| {
+                // SAFETY: both owned handles remain live through comparison.
+                unsafe { CompareObjectHandles(own.as_raw_handle(), inherited.as_raw_handle()) != 0 }
+            });
+            writeln!(out, "PROBE=seen {seen}")?;
         }
         "hold" => {
             writeln!(out, "PROBE=held {}", std::process::id())?;
