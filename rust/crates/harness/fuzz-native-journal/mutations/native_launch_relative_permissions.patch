@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/host_process/launch/agy.rs
++++ b/rust/crates/harness/src/local/host_process/launch/agy.rs
+@@ -37,7 +37,7 @@
+                     if !target.is_empty()
+                         && target != "*"
+                         && !target.starts_with('~')
+-                        && Path::new(target).is_relative()
++                        && false
+                     {
+                         let path = cwd.join(target);
+                         let path = path.to_str().ok_or_else(|| {
