@@ -193,7 +193,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
 
       step = "settle two original native children through the shared process owner";
       env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits",
-        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: { allow: ["write_file(.)", `command(${childCommand})`] } })]);
+        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: { allow: [`write_file(${workspace})`, `command(${childCommand})`] } })]);
       const bridge = scope.start(staged.executable, ["__mcp", "agy"], { cwd: workspace, env });
       const client = new McpClient(bridge.child, { name: "native-agy-conformance", version: "1", recovery });
       const call = async (name, args) => {
