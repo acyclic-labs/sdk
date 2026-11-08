@@ -11,15 +11,26 @@ impl ResourceProvider for RefusingResources {
             return Err(self.error.clone());
         };
         let error = self.error.clone();
+        let (send, receive) = futures::channel::oneshot::channel();
         Ok(ResourceSubscription {
             revalidate: Arc::new(|| Ok(())),
-            terminal: Box::pin(future::pending()),
+            terminal: Box::pin(async move { receive.await.unwrap_or(StreamError::Unavailable) }),
             open: Box::pin(async move {
                 let mut request = crate::FollowRequest::new(StreamPath::new("healthy")?, 0);
                 request.until = Some(1);
                 Ok(provider.follow(request).await?.map_cursor(|cursor| {
+                    let mut send = Some(send);
                     cursor
-                        .chain(stream::once(future::ready(Err(error))))
+                        .map(move |update| {
+                            // The original record enters the queue before the
+                            // independent owning-policy terminal is observed.
+                            if matches!(&update, Ok(crate::FollowUpdate::Record(_)))
+                                && let Some(send) = send.take()
+                            {
+                                let _ = send.send(error.clone());
+                            }
+                            update
+                        })
                         .boxed()
                 }))
             }),
@@ -104,7 +115,7 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
         };
         body.credentials = vec![credential.clone().into()];
         sender.unbounded_send(Ok(greeting))?;
-        let mut resource = subscribe(3, "unused", 0, true);
+        let mut resource = subscribe(3, "unused", 0, false);
         let Some(Kind::Follow(follow)) = resource.kind.as_mut() else {
             unreachable!()
         };
