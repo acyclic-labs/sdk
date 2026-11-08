@@ -41,10 +41,10 @@ pub(super) fn agy_hook(
         let paths = input.get("workspacePaths")?.as_array()?;
         if paths.len() != 1 { return None; }
         paths.first()?.as_str().filter(|path| !path.is_empty())
-    }).ok_or("step=admit Antigravity workspace: exact workspace absent; recovery=acyclic host agy -- --sandbox --mode plan")?.to_owned();
+    }).ok_or("step=admit Antigravity workspace: exact workspace absent; recovery=acyclic host agy -- --sandbox --mode accept-edits")?.to_owned();
     let session = input.get("conversationId").and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .ok_or("step=admit Antigravity session: conversationId absent; recovery=acyclic host agy -- --sandbox --mode plan")?.to_owned();
+        .ok_or("step=admit Antigravity session: conversationId absent; recovery=acyclic host agy -- --sandbox --mode accept-edits")?.to_owned();
     let object = input
         .as_object_mut()
         .ok_or("native hook input must be an object")?;

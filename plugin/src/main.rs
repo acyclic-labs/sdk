@@ -279,7 +279,7 @@ fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
     // carries refusal. Stop must not re-enter a failed PreInvocation; the root
     // launcher retains the final capture error after the native process exits.
     let reason = format!(
-        "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode plan"
+        "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode accept-edits"
     );
     match event {
         "PreInvocation" => {

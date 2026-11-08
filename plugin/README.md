@@ -19,7 +19,9 @@ versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
 OpenCode installs one extension in `OPENCODE_CONFIG_DIR/plugins/acyclic.js`
 (otherwise the native XDG configuration directory). `--settings PATH` selects
 that extension file explicitly. Antigravity (`agy`) installs a complete package
-through its native plugin manager and does not accept `--settings`.
+through its native plugin manager into the launching HOME profile.
+`acyclic install agy` does not accept `--settings`; native session launch still
+accepts AGY's `--settings` file or inline JSON.
 Both adapters share the workspace owner and native process supervision; the
 host continues to own its tools, model loop and permissions. The retained native
 controls target OpenCode 1.19.5 and Antigravity 1.5.2.
@@ -33,6 +35,10 @@ lifecycle. Pi uses its own native OAuth login; `CODEX_HOME` does not select it.
 The plugin's `spawn` tool starts a separate native host process in the admitted
 lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
 `pi --mode json -p`. Native instruction/config discovery and tools run there.
+OpenCode children use `opencode run --format json --dir VIEW`; AGY children use
+stream-JSON input and output in that view. Both inherit the launching environment,
+including provider credentials and endpoint selectors, without an environment
+allowlist. Native configuration and session storage remain owned by the host.
 Native built-in subagents keep their host behavior and **are not harness forks**.
 
 Codex and Claude permission hooks consult the harness approval chain only for
@@ -54,6 +60,36 @@ acyclic host claude-code -- --model claude-haiku-5-5 \
   --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
 acyclic host pi --
 ```
+
+For writing AGY swarms, select the native `accept-edits` mode explicitly:
+
+```sh
+acyclic install agy
+acyclic host agy -- --sandbox --mode accept-edits
+acyclic install opencode
+acyclic host opencode -- --model provider/model
+```
+
+AGY's `plan` mode is for investigation and planning; `accept-edits` permits file
+edits in the workspace while retaining native terminal permissions. Headless MCP
+coordination also needs the native policy to allow `mcp(acyclic_sessions/spawn)`
+and `mcp(acyclic_sessions/wait)`. The launcher forwards the selected mode and
+settings to every managed child.
+
+Use the same absolute per-trial HOME for AGY installation and launch; on Windows
+select the same USERPROFILE too. Its native profile is
+`$HOME/.gemini/antigravity-cli`. Keep provider environment variables when selecting
+a fresh profile. For ADC, a credential file selected by
+`GOOGLE_APPLICATION_CREDENTIALS` must remain reachable outside agent volumes;
+a fresh HOME does not copy a login or default credential file.
+
+For OpenCode, select an absolute `OPENCODE_CONFIG_DIR` before installation and
+launch. Put the native `opencode.json` provider configuration there, including
+`provider.options.baseURL`; managed children inherit that directory while their
+cwd changes to the admitted view. Select per-trial XDG data, state and cache
+directories too: the configuration selector alone does not isolate native session
+storage. The shared owner retains each native session ID and passes it back to
+that host on resume, independently of the view directory's lifetime.
 
 Direct native sessions continue to work normally. Managed spawn requires the
 launcher context; host metadata does not provide the effective security policy,

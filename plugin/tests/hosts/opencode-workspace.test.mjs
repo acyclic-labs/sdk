@@ -5,23 +5,23 @@ import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
+import { Processes, Spool } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
 import { environment, nativeEnvironment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
 import { withOwnedCase } from "../../../scripts/graphcoder-e2e/suite.mjs";
 import { nativePackage } from "./native-model.mjs";
 import { startWorkspaceOwner } from "./workspace-owner.mjs";
 
-const recovery = "Set ACYCLIC_TEST_BINARY, E2E_GRAPHCODER and E2E_OPENCODE to matching absolute executables; run node --test --test-concurrency=1 plugin/tests/hosts/opencode-workspace.test.mjs";
+const recovery = "Set ACYCLIC_TEST_BINARY, E2E_GRAPHCODER and E2E_OPENCODE and E2E_MOCK_MODEL to matching absolute executables; run node --test --test-concurrency=1 plugin/tests/hosts/opencode-workspace.test.mjs";
 
 test("installed native OpenCode records its original session through the shared workspace", async t => {
-  const [binary, graphcoder, native] = ["ACYCLIC_TEST_BINARY", "E2E_GRAPHCODER", "E2E_OPENCODE"].map(name => {
+  const [binary, graphcoder, native, mock] = ["ACYCLIC_TEST_BINARY", "E2E_GRAPHCODER", "E2E_OPENCODE", "E2E_MOCK_MODEL"].map(name => {
     const path = process.env[name];
     assert.ok(isAbsolute(path ?? ""), `step=admit ${name}; recovery=${recovery}`);
     return path;
   });
   const scope = new Processes();
-  let root, provider, step = "admit original recorded provider bytes";
+  let root, provider, succeeded = false, step = "admit original recorded provider bytes";
   try {
     // Original llama.cpp capture, also consumed by the shared conformance
     // suite and native terminal corpus. No generated provider responses.
@@ -35,6 +35,9 @@ test("installed native OpenCode records its original session through the shared 
     const opencode = join(bins, process.platform === "win32" ? "opencode.exe" : "opencode");
     await copyFile(native, opencode); await chmod(opencode, 0o700);
     const env = environment(profile, nativeEnvironment());
+    const config = join(profile, "explicit opencode config");
+    await mkdir(config);
+    env.OPENCODE_CONFIG_DIR = config;
     env.PATH = dirname(opencode) + delimiter + env.PATH;
     const run = async (program, args, input) => {
       const result = input === undefined
@@ -69,7 +72,7 @@ test("installed native OpenCode records its original session through the shared 
       assert.equal(opened.code, 0, opened.stderr);
       const { task } = JSON.parse(opened.stdout);
       Object.assign(env, { ACYCLIC_TASK: task, ACYCLIC_WORKSPACE: workspace });
-      await writeFile(join(workspace, "opencode.json"), JSON.stringify({
+      await writeFile(join(config, "opencode.json"), JSON.stringify({
         enabled_providers: ["fixture"], small_model: "fixture/tiny",
         provider: { fixture: { npm: "@ai-sdk/openai-compatible", name: "Recorded conformance",
           options: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` },
@@ -95,18 +98,72 @@ test("installed native OpenCode records its original session through the shared 
       assert.equal(info.id, terminal.sessionID);
       const admission = await run(process.execPath, [
         fileURLToPath(new URL("./opencode-admission.mjs", import.meta.url)),
-        join(profile, "opencode", "plugins", "acyclic.js"), workspace, JSON.stringify(info),
+        join(config, "plugins", "acyclic.js"), workspace, JSON.stringify(info),
       ]);
       assert.equal(admission.code, 0, admission.stderr);
+      step = "exercise native MCP spawn with the same isolated provider profile";
+      const toolNames = requests[0].body.tools.map(tool => tool.function.name);
+      const tool = name => {
+        const matches = toolNames.filter(tool => tool === `acyclic-sessions_${name}`);
+        assert.equal(matches.length, 1, "installed native MCP tool absent: " + name);
+        return matches[0];
+      };
+      const prompt = "Spawn the writing OpenCode child, wait for its result, then return the parent marker.";
+      const childPrompt = "Write the OpenCode child marker file, then return the child marker.";
+      const childAnswer = "native-opencode-child-completed", answer = "native-opencode-parent-completed";
+      const script = join(root, "model.json"), record = join(root, "model-requests.jsonl");
+      await writeFile(script, JSON.stringify({ cases: { native: { steps: [
+        { when: { user: prompt }, tools: [{ id: "native-spawn", name: tool("spawn"),
+          arguments: { reference: "writing-child", prompt: childPrompt } }] },
+        { when: { user: childPrompt }, tools: [{ id: "child-write", name: "write",
+          arguments: { filePath: "native-child.txt", content: "native-opencode-child-write" } }] },
+        { when: { user: childPrompt, tool_result: "Wrote file successfully" }, text: [childAnswer] },
+        { when: { user: prompt, tool_result: "native:spawn" }, tools: [{ id: "native-wait", name: tool("wait"),
+          arguments: { reference: "writing-child" } }] },
+        { when: { user: prompt, tool_result: childAnswer }, text: [answer] },
+      ] } } }));
+      const model = scope.start(mock, ["--script", script, "--record", record], { env });
+      const modelEvents = new Spool(model.child.stdout, model.closed, {
+        key: event => event.event === "ready" ? ["ready"] : [], unique: true,
+      });
+      const { port } = await modelEvents.keyed("ready");
+      const configured = JSON.parse(await readFile(join(config, "opencode.json"), "utf8"));
+      configured.provider.fixture.options.baseURL = `http://127.0.0.1:${port}/native/v1`;
+      configured.permission = { edit: "allow", [tool("spawn")]: "allow", [tool("wait")]: "allow" };
+      await writeFile(join(config, "opencode.json"), JSON.stringify(configured));
+      env.ACYCLIC_HOST_ARGS = JSON.stringify(["--model", "fixture/tiny"]);
+      const coordinated = await run(opencode, ["run", "--format", "json", "--model", "fixture/tiny", prompt]);
+      assert.equal(coordinated.code, 0, coordinated.stderr + coordinated.stdout);
+      assert.ok(coordinated.stdout.includes(answer), "native parent omitted the completed child reply");
+      const calls = (await readFile(record, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      t.diagnostic(JSON.stringify({ role: "native-model-coordination", requests: calls }));
+      assert.deepEqual(calls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
+        Array.from({ length: 5 }, (_, step) => [200, step]), "native child dropped the selected provider configuration");
+      const waited = calls.at(-1).body.messages.findLast(message => message.role === "tool" && message.tool_call_id === "native-wait");
+      assert.ok(waited, "native wait response absent");
+      const childReply = JSON.parse(waited.content);
+      assert.equal(childReply.status.settled, true);
+      assert.equal(await readFile(join(childReply.cwd, "native-child.txt"), "utf8"), "native-opencode-child-write");
+      const session = await request({ kind: "hook", host: "opencode", event: "NativeSession", input: { task: childReply.task } });
+      assert.equal(session.code, 0, session.stderr);
+      const childId = JSON.parse(session.stdout).id;
+      const childExport = await run(opencode, ["export", childId]);
+      assert.equal(childExport.code, 0, "child session did not remain in the inherited trial data directory: " + childExport.stderr);
+      t.diagnostic(JSON.stringify({ role: "native-child-session", info: JSON.parse(childExport.stdout).info }));
+      const paths = await run(opencode, ["debug", "paths"]);
+      assert.equal(paths.code, 0, paths.stderr);
+      t.diagnostic(JSON.stringify({ role: "native-profile-paths", stdout: paths.stdout }));
       step = "capture after the physically retired native process";
       const captured = await request({ kind: "capture", task });
       assert.equal(captured.code, 0, captured.stderr);
+      succeeded = true;
     } });
   } catch (cause) {
     throw new Error(`step=${step}: ${cause.message}; recovery=${recovery}`, { cause });
   } finally {
     await scope.close();
     if (provider) { provider.closeAllConnections(); await new Promise(resolve => provider.close(resolve)); }
-    if (root) await rm(root, { recursive: true });
+    if (root && succeeded) await rm(root, { recursive: true });
+    else if (root) t.diagnostic(JSON.stringify({ retained_native_fixture: root }));
   }
 });
