@@ -121,9 +121,12 @@ fn save(
         // A schema insertion can move the generated table slot without
         // changing this named producer's packet. Refresh only that selector;
         // the original payload must still compare equal through its decoder.
-        if std::env::args()
-            .any(|arg| matches!(arg.as_str(), "--only-protobuf" | "--only-objects-protobuf"))
-        {
+        if std::env::args().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--only-protobuf" | "--only-objects-protobuf" | "--only-actors-protobuf"
+            )
+        }) {
             let (selector, _) = bytes
                 .split_first_chunk::<8>()
                 .ok_or("protobuf producer has no selector")?;
@@ -202,8 +205,17 @@ fn capture() -> Result<(), Box<dyn Error>> {
         capture_resources(&mut manifest)?;
         return finish(&manifest, prefix);
     }
-    if std::env::args().any(|arg| arg == "--only-objects-protobuf") {
-        let semantic = acyclic_codec_fuzz::object_semantic_seeds()?;
+    if let Some(selected) = std::env::args().find(|arg| {
+        matches!(
+            arg.as_str(),
+            "--only-objects-protobuf" | "--only-actors-protobuf"
+        )
+    }) {
+        let semantic = if selected == "--only-objects-protobuf" {
+            acyclic_codec_fuzz::object_semantic_seeds()?
+        } else {
+            acyclic_codec_fuzz::actor_semantic_seeds()?
+        };
         let names = semantic
             .iter()
             .flat_map(|(message, variant, _)| {

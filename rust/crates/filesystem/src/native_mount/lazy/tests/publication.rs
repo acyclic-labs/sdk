@@ -14,6 +14,7 @@ async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks(
         let second = mounted(&["second"]);
         let file = view
             .create_file(&first, FileMetadata::default(), None, &work)?
+            .lookup
             .node
             .file_id;
         view.create_file(&second, FileMetadata::default(), None, &work)?;
@@ -436,7 +437,9 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     assert_eq!(view.lookup(&b)?, None);
 
     // A create through the view replaces the remembered absence.
-    let created = view.create_file(&b, FileMetadata::default(), None, &work)?;
+    let created = view
+        .create_file(&b, FileMetadata::default(), None, &work)?
+        .lookup;
     assert_eq!(
         view.lookup(&b)?.map(|lookup| lookup.node.file_id),
         Some(created.node.file_id)
@@ -464,7 +467,9 @@ async fn remembered_resolutions_follow_every_change_to_the_view()
     assert_eq!(view.lookup(&fresh)?, None);
     view.create_directory(&fresh, FileMetadata::default(), &work)?;
     assert_eq!(view.lookup(&inner)?, None);
-    let created = view.create_file(&inner, FileMetadata::default(), None, &work)?;
+    let created = view
+        .create_file(&inner, FileMetadata::default(), None, &work)?
+        .lookup;
     assert_eq!(
         view.lookup(&inner)?.map(|lookup| lookup.node.file_id),
         Some(created.node.file_id)
@@ -615,6 +620,19 @@ async fn source_hard_link_open_unlink_write_preserves_surviving_alias()
         assert_eq!(view.lookup(&b)?.expect("alias").node.logical_bytes, 7);
         assert_eq!(view.read_range(&b, 0, 7)?.as_ref(), b"second!");
         assert_eq!(view.open_file(&b)?.read_range(0, 7)?.as_ref(), b"second!");
+        let c = mounted(&["c"]);
+        let linked = view.hard_link(&b, &c, Some(identity), true, &work)?;
+        let facts = linked.facts.expect("authorized hard-link facts");
+        assert_eq!(
+            facts.lookup.node.logical_bytes, 7,
+            "hard-link reply discarded current detached file facts"
+        );
+        assert_eq!(facts.lookup.node.file_id, identity);
+        assert_eq!(facts.lookup.metadata, open.lookup()?.metadata);
+        assert_eq!(facts.lookup.node.link_count, 2);
+        assert_eq!(facts.stamp, linked.stamp);
+        assert_eq!(view.open_file(&c)?.read_range(0, 7)?.as_ref(), b"second!");
+        view.remove(&c, Some(identity), &work)?;
         if write_before_unlink {
             view.remove(&b, Some(identity), &work)?;
             open.write_range(0, Bytes::from_static(b"orphan!"))?;

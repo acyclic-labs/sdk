@@ -41,6 +41,30 @@ later goal or expose uncommitted output. Cancellation that abandons the run
 returns `Dropped`; closing its observation returns the existing typed closure
 error. No current GOAL.md or latest-conversation lookup selects the reply.
 
+Tool results are selected through the same original execution journal. Retain
+the accepted inbox sequence, then send `AgentCommand::Events` with that `input`,
+an exclusive journal `after` (initially zero), and `wait: true`. Consume every
+page at its returned `end`. A full page's `next` continues that journal; a short
+page reaches only its current tail. Complete selection requires both
+`next: None` and the actor's `settled: true` input fence. Quiet reads wait on the
+original journal and actor producers. A filesystem change delivery watermark
+does not establish this fence.
+
+Each `ToolStarted` observation selects its admitted invocation; each
+`ToolCompleted` selects its validated result. Read those bytes with
+`ReadTarget::Execution { input, sequence, field }` and ordinary bounded `Read`
+ranges. Join the original operation, step and call identity across admission
+and completion. These references remain under the selected agent's private
+grant. An absent observation, an unrelated payload field, or an inherited input
+cannot authorize a private payload read. Reopening the same execution cursor
+replays the same positions and immutable references without another prompt.
+
+`AgentControls::select(agent)` discovers a descendant's own tool resource using
+the existing Session and credential slot. A root's tool resource does not select
+a child's volume. Original tool results and `FileRef` values establish logical
+publication; physical Machine execution and workspace isolation require the
+owning host's corresponding execution evidence.
+
 The public TS client exports actor/session views rather than `FileClient`,
 `TaskVolume` or `ClientViews`. Native `FilesystemFileQuery`,
 `MemoryHarnessStorage::file_query`, `LocalHarness::scratch_files` and

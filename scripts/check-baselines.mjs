@@ -1,18 +1,12 @@
 import "./check-compatibility-digests.mjs";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { compatibilityArtifacts, nativeWasmVector, packagedSourceCopies } from "./generated-bindings.mjs";
+import { generate } from "./proto-codegen.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-export function generate(args) {
-  const binary = process.env.SDK_PROTO_CODEGEN;
-  return execFileSync(binary ?? "cargo", binary ? args : ["run", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", ...args],
-    { cwd: root, encoding: "utf8", windowsHide: true });
-}
 
 export function checkDescriptors(sourceRoot = root) {
   const output = mkdtempSync(join(tmpdir(), "sdk-descriptors-"));

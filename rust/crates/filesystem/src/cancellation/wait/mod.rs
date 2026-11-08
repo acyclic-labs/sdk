@@ -64,7 +64,9 @@ impl Cancelled<'_> {
         if self.token.is_cancelled() {
             return Ok(());
         }
-        let bytes = std::mem::size_of::<CancellationWaiter>() as u64;
+        let bytes =
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationWaiter>())
+                .map_err(|_| crate::WorkError::Overflow)? as u64;
         #[cfg(not(target_arch = "wasm32"))]
         let (native_allocation, cleanup) = if let Some(original) = original {
             original.admit(crate::WorkCounters {

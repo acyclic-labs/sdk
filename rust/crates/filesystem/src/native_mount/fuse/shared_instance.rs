@@ -26,6 +26,8 @@ thread_local! {
 
 pub(in crate::native_mount) struct SharedFuseInstance {
     pub(super) views: Arc<SharedViews>,
+    // The mounted root's device, which every view's root shares.
+    device: u64,
     invalidator: Option<std::thread::JoinHandle<()>>,
     #[cfg(test)]
     worker_lifetime: std::sync::Weak<()>,
@@ -104,7 +106,7 @@ impl InstanceState {
 pub(in crate::native_mount) struct SharedFuseView {
     // Field order: the view retires before its instance reference drops.
     pub(super) entry: SharedViewEntry,
-    pub(super) _instance: Arc<SharedFuseInstance>,
+    pub(super) instance: Arc<SharedFuseInstance>,
 }
 
 impl SharedFuseInstance {
@@ -173,6 +175,9 @@ impl SharedFuseInstance {
         let worker_lifetime = session.worker_lifetime();
         state.worker =
             Some(session.start(std::thread::Builder::new().name("acyclic-fuse".to_owned()))?);
+        // The router answers the root itself, from no view's state, so this
+        // one query cannot wait on any view's owner.
+        let device = std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(root)?);
         let invalidator = std::thread::Builder::new()
             .name("acyclic-fuse-invalidator".to_owned())
             .spawn(move || {
@@ -183,6 +188,7 @@ impl SharedFuseInstance {
             })?;
         Ok(Self {
             views,
+            device,
             invalidator: Some(invalidator),
             #[cfg(test)]
             worker_lifetime,
@@ -254,14 +260,21 @@ impl SharedFuseView {
         };
         let instance = INSTANCES.acquire(root, SharedFuseInstance::start)?;
         let entry = instance.views.insert(name.as_bytes(), build)?;
-        Ok(Self {
-            entry,
-            _instance: instance,
-        })
+        Ok(Self { entry, instance })
     }
 
     pub(super) fn core(&self) -> &Arc<ProjectionCore> {
         self.entry.core()
+    }
+
+    /// The identity the kernel reports for this view's root, known without
+    /// asking the kernel: a request into the view could wait on the very
+    /// owner that serves it.
+    pub(super) fn root_identity(&self) -> crate::NativeRootIdentity {
+        crate::NativeRootIdentity {
+            device: self.instance.device,
+            object: self.entry.root_inode(),
+        }
     }
 
     /// Retires the view; the instance stays up while other views hold it.

@@ -58,7 +58,8 @@ fn run() -> Result<()> {
             host_files::request(
                 &env::current_dir()?,
                 HostAction::Locate {
-                    cwd: env::current_dir()?,
+                    // The owner serves this view, so the client resolves it.
+                    cwd: std::fs::canonicalize(env::current_dir()?)?,
                 },
             )?
             .get("task")

@@ -1,3 +1,4 @@
+//! Compare production mount exclusion admission with framed byte matching.
 #![no_main]
 #[path = "../../src/local/workspace/volumes/exclude/pattern.rs"]
 mod pattern;

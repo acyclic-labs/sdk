@@ -281,7 +281,9 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
         if profile == native && publishes {
             source.create_file(&native_test_path("published.bin"), metadata(), None, &work)?;
         }
-        let created = source.create_directory(&directory, metadata(), &work)?;
+        let created = source
+            .create_directory(&directory, metadata(), &work)?
+            .lookup;
         assert_eq!(source.lookup(&directory)?, Some(created));
         source.flush(&work)?;
         assert_eq!(checkout_state(&source).0 != before, publishes);
@@ -363,7 +365,9 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
         let original = native_test_path("original");
         let alias = native_test_path("alias");
         let renamed = native_test_path("renamed");
-        let created = source.create_file(&original, metadata(), None, &work)?;
+        let created = source
+            .create_file(&original, metadata(), None, &work)?
+            .lookup;
         source.resize(&original, 64)?;
         source.write_range(&original, 8, Bytes::from_static(b"visible"))?;
         let file = if detached {
@@ -372,7 +376,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
             source.open_file(&original)?
         };
         if !detached {
-            source.hard_link(&original, &alias, &work)?;
+            source.hard_link(&original, &alias, None, false, &work)?;
         }
         source.remove(&original, Some(created.node.file_id), &work)?;
         assert!(source.lookup(&original)?.is_none());
@@ -496,16 +500,20 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
     assert_eq!(source.seek(&file, 100, MountSeekTarget::Hole)?, Some(100));
 
     let fifo = MountPath::root().child(b"fifo".to_vec());
-    let created = source.create_special(&fifo, MountNodeKind::Fifo, None, metadata(), &work)?;
+    let created = source
+        .create_special(&fifo, MountNodeKind::Fifo, None, metadata(), &work)?
+        .lookup;
     assert_eq!(created.node.kind, MountNodeKind::Fifo);
     let device = MountPath::root().child(b"device".to_vec());
-    let created = source.create_special(
-        &device,
-        MountNodeKind::CharacterDevice,
-        Some((12, 34)),
-        metadata(),
-        &work,
-    )?;
+    let created = source
+        .create_special(
+            &device,
+            MountNodeKind::CharacterDevice,
+            Some((12, 34)),
+            metadata(),
+            &work,
+        )?
+        .lookup;
     assert_eq!(created.node.device, Some((12, 34)));
     assert_eq!(source.lookup(&device)?, Some(created));
     Ok(())

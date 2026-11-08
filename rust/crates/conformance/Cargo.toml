@@ -77,11 +77,13 @@ test = false
 [[bin]]
 name = "inference-qualify"
 path = "src/bin/inference_qualify.rs"
+test = false
 required-features = ["inference"]
 
 [[bin]]
 name = "qualify"
 path = "src/bin/qualify.rs"
+test = false
 required-features = ["local-runner"]
 
 [[bin]]

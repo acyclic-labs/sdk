@@ -206,7 +206,9 @@ async fn native_access_lazy_created_handle_keeps_authority_after_unlink()
     let work =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-    let created = view.create_file(&path, FileMetadata::default(), None, &work)?;
+    let created = view
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     let file = view.open_created(&path, &created)?;
     file.write_range(0, Bytes::from_static(b"contents"))?;
     assert!(matches!(

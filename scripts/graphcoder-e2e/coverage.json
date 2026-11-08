@@ -49,8 +49,6 @@
       "target": "Checkout/git consistency and namespace isolation",
       "owner": "filesystem",
       "cases": [
-        "fs-status-git",
-        "fs-status-plain",
         "fs-conflict-continue-git",
         "fs-conflict-continue-plain"
       ]
@@ -243,7 +241,8 @@
       "target": "Installed Claude Code plugin parity",
       "owner": "plugins (#1407)",
       "cases": [
-        "installed-claude"
+        "installed-claude",
+        "installed-claude-fanout"
       ],
       "gaps": [
         "Mock-model child round trip only; real-login model-session parity remains outside this matrix."

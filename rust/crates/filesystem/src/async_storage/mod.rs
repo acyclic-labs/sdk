@@ -7,7 +7,8 @@ use crate::foundation::{
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
     AppendOutcome, CreateAuthorityOutcome, FenceOutcome, GuardedAppend, ObjectId, ObjectRead,
-    ObjectReadRequest, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    ObjectReadRequest, ObjectResult, PublicationPermit, PublicationReservation, ReplayLimit,
+    ReservationOutcome,
 };
 use acyclic_stream::{ProviderPlatform, ProviderTask};
 use std::any::{Any, TypeId};
@@ -46,16 +47,8 @@ pub use policy::{PolicyCut, PolicyOwner};
 mod objects;
 pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
-pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
-#[cfg(any(
-    test,
-    all(
-        any(feature = "local", feature = "conformance"),
-        not(target_arch = "wasm32")
-    )
-))]
-pub(crate) use read_batch::read_many_stored_sequential;
+pub(crate) use read_batch::{Decoded, ReadRepresentation, Stored, admit_read_batch, object_error};
 
 #[cfg(test)]
 #[path = "../tests/async_storage.rs"]

@@ -202,20 +202,21 @@ pub trait MountFilesystem: Send + Sync + 'static {
         work: &NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
     /// Creates an empty file, preserving an optional absent-since proof.
+    /// Creation results retain the original binding stamp from installation.
     fn create_file(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
         absent_since: Option<ViewStamp>,
         work: &NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError>;
+    ) -> Result<MountWriteFacts, MountSourceError>;
     /// Creates an actual directory through the same source engine.
     fn create_directory(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
         work: &NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError>;
+    ) -> Result<MountWriteFacts, MountSourceError>;
     /// Consumes the exact already-admitted opaque symbolic-link target.
     fn create_symbolic_link(
         &self,
@@ -223,7 +224,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata,
         work: &NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError>;
+    ) -> Result<MountWriteFacts, MountSourceError>;
     /// Creates the exact native special-file kind and device identity.
     fn create_special(
         &self,
@@ -232,7 +233,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         device: Option<(u32, u32)>,
         metadata: FileMetadata,
         work: &NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError>;
+    ) -> Result<MountWriteFacts, MountSourceError>;
     /// Reads the exact owned attribute on the operative source invocation.
     fn read_attribute(
         &self,
@@ -264,13 +265,19 @@ pub trait MountFilesystem: Send + Sync + 'static {
         name: &[u8],
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
-    /// Creates the actual same-volume hard-link binding.
+    /// Creates a same-volume hard link and returns its original binding stamp.
+    /// When supplied, `expected` fences the source identity before any mutation.
+    /// `facts` requires List authority before mutation and requests adopted
+    /// metadata. Revocation before return withholds those optional facts without
+    /// discarding the installed completion stamp.
     fn hard_link(
         &self,
         source: &MountPath,
         destination: &MountPath,
+        expected: Option<FileId>,
+        facts: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
+    ) -> Result<MountMutationResult, MountSourceError>;
     /// Folds the actual source representation and reports exact owned capacity.
     fn folded_path_with_meter(
         &self,
@@ -297,6 +304,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         path: &MountPath,
         file_id: Option<FileId>,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
+    /// Whether this name and its ancestors retain their bindings, regardless
+    /// of changes to node data or the directory's own children.
+    fn binding_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
         stamp: ViewStamp,
         work: &NativeMaterializationWork,
     ) -> Result<bool, MountSourceError>;

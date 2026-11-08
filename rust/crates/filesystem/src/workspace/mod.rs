@@ -3,7 +3,6 @@
 use crate::CancellationToken;
 use crate::foundation::{FileId, GenerationId, OperationId, VolumeId};
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-use crate::kernel::binary_search_with_accounting;
 use crate::kernel::{
     ExtentKind, FileKind, FileMetadata, FilePayload, LogicalName, MetadataField, NamespacePath,
 };
@@ -69,6 +68,7 @@ mod restore;
 #[cfg(all(test, feature = "memory"))]
 mod retention_accounting_tests;
 mod reverse_paths;
+pub use reverse_paths::FileIdentityPaths;
 mod reverse_traversal;
 mod transaction;
 mod transaction_create;

@@ -1,3 +1,5 @@
+//! Creates a durable local filesystem volume under the configured root.
+
 use acyclic_fs::model::{Lifecycle, VolumeConfig};
 use acyclic_fs::{CancellationToken, Fs, LocalOptions, WorkBudget};
 

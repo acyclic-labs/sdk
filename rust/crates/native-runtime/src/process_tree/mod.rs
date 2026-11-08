@@ -53,10 +53,12 @@ pub use launch::{CaptureRequest, CaptureStop, LaunchFailure};
 mod pump;
 mod stream;
 pub use stream::{ProcessCaptureStream, ProcessChunk};
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 mod stdio;
+#[cfg(any(unix, windows))]
+pub use stdio::ProcessPipeReader;
 #[cfg(windows)]
-pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
+pub use stdio::ProcessPipeWriter;
 #[cfg(windows)]
 mod spawner;
 pub use pump::{
@@ -427,6 +429,8 @@ impl ProcessTree {
     }
 
     /// Starts a closed-stream Unix child using borrowed, terminated arguments, and retains it in this same process-tree owner before spawn cleanup.
+    /// Temporary argument capacity stays on the original meter until storage is
+    /// destroyed, including examination or cleanup callback unwinds.
     #[cfg(unix)]
     pub fn spawn_closed_measured(
         program: &std::ffi::CStr,

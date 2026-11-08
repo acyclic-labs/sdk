@@ -144,7 +144,8 @@ impl CancellationToken {
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, crate::NativeTreeMaterializationError> {
         let allocation = original.claim(
-            std::mem::size_of::<CancellationState>() as u64,
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationState>())
+                .map_err(|_| crate::WorkError::Overflow)? as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
@@ -175,7 +176,8 @@ impl CancellationToken {
             .prepare_cancelled_with_native_work(original)
             .map_err(CancellationWaitError::into_native)?;
         let allocation = original.claim(
-            std::mem::size_of::<CancellationState>() as u64,
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CancellationState>())
+                .map_err(|_| crate::WorkError::Overflow)? as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
@@ -187,7 +189,8 @@ impl CancellationToken {
             }),
         };
         let allocation = original.claim(
-            std::mem::size_of::<ChildCancellationWake>() as u64,
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<ChildCancellationWake>())
+                .map_err(|_| crate::WorkError::Overflow)? as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;

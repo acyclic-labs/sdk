@@ -2,6 +2,8 @@
 #![cfg(loom)]
 #[path = "../src/process_tree/events/outcome.rs"]
 mod outcome;
+#[path = "../src/sync/locks.rs"]
+pub mod sync;
 use outcome::ProcessWaitOutcome;
 #[path = "../src/process_tree/events/signal.rs"]
 mod signal;
@@ -14,16 +16,25 @@ use std::task::{Context, Poll, Waker};
 
 #[test]
 fn settlement_cannot_pass_waker_registration() {
+    struct Notified(loom::sync::atomic::AtomicBool);
+    impl std::task::Wake for Notified {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.store(true, loom::sync::atomic::Ordering::Release);
+        }
+    }
     loom::model(|| {
         let signal = Arc::new(Signal::default());
         let producer = Arc::clone(&signal);
         let thread = loom::thread::spawn(move || producer.settle(ProcessWaitOutcome::Ready));
-        let wake = std::sync::Arc::new(wake::NativeWake::default());
+        let wake = std::sync::Arc::new(Notified(loom::sync::atomic::AtomicBool::new(false)));
         let waker = Waker::from(std::sync::Arc::clone(&wake));
         let mut context = Context::from_waker(&waker);
-        if signal.poll(&mut context).is_pending() {
-            wake.wait(None);
-        }
+        let pending = signal.poll(&mut context).is_pending();
+        thread.join().unwrap();
+        assert!(
+            !pending || wake.0.load(loom::sync::atomic::Ordering::Acquire),
+            "original terminal passed observer registration without a wake"
+        );
         assert!(
             matches!(
                 signal.poll(&mut context),
@@ -31,7 +42,6 @@ fn settlement_cannot_pass_waker_registration() {
             ),
             "first terminal event changed"
         );
-        thread.join().unwrap();
         signal.settle(ProcessWaitOutcome::Cancelled);
         assert!(
             matches!(

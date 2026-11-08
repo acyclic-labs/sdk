@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::kernel::GenerationRoot;
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::{GenerationRoot, clone_generation_root_with_accounting};
 use crate::performance::WorkCounters;
 use crate::storage::{ObjectId, ObjectStoreError};
 
@@ -164,8 +164,12 @@ impl Collection {
         closure: &[ObjectId],
         staged: impl Fn(&ObjectId) -> bool,
         proven_at: u64,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Unswept, ObjectStoreError> {
-        let hold = self.unswept().await;
+        let hold = self
+            .unswept(accounting)
+            .await
+            .map_err(crate::async_storage::object_error)?;
         let mut state = self.state();
         let refused = proven_at < state.sweeps
             && (proven_at < state.forgotten
@@ -268,7 +272,13 @@ impl Collection {
     /// Admits into the current generation. A retired generation is skipped,
     /// so this retries once per collection that begins meanwhile, and waits
     /// only while a sweep batch holds the current one.
-    pub(crate) async fn unswept(&self) -> Unswept {
+    /// A blocked admission observes the original caller/native cancellation;
+    /// dropping it releases only its queued acquisition, before publication.
+    pub(crate) async fn unswept(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Unswept, crate::FsError> {
+        accounting.check()?;
         loop {
             let gate = self.gate();
             let guard = match Arc::clone(&gate).try_read_owned() {
@@ -276,12 +286,12 @@ impl Collection {
                 Err(_) if Arc::ptr_eq(&gate, &self.gate()) => {
                     #[cfg(test)]
                     self.gate_waits.notify_one();
-                    Arc::clone(&gate).read_owned().await
+                    accounting.wait_for(Arc::clone(&gate).read_owned()).await?
                 }
                 Err(_) => continue,
             };
             if Arc::ptr_eq(&gate, &self.gate()) {
-                return Unswept(guard);
+                return Ok(Unswept(guard));
             }
         }
     }
@@ -342,7 +352,7 @@ mod epoch;
 mod holds;
 mod roots;
 mod sweep;
-pub(crate) use buffers::{clone_generation_root, clone_generation_root_with_accounting};
+pub(crate) use buffers::clone_generation_root;
 use buffers::{held_owned_bytes, root_parent_bytes};
 pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::{GenerationHold, Hold};

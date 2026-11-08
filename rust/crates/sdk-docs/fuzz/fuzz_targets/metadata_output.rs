@@ -1,3 +1,4 @@
+//! Check the production Cargo output decoder against its original wire bytes.
 #![no_main]
 use sdk_docs as child;
 #[path = "../metadata_output.rs"]

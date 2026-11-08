@@ -1,0 +1,8 @@
+diff --git a/rust/crates/actors/src/client.rs b/rust/crates/actors/src/client.rs
+--- a/rust/crates/actors/src/client.rs
++++ b/rust/crates/actors/src/client.rs
+@@ -143,3 +143,3 @@
+                     metadata.cause = acyclic_auth::refusal::Cause::reported(
+-                        detail.component,
++                        detail.component.clone(),
+                         detail.reason,

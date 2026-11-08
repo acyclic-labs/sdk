@@ -727,7 +727,9 @@ fn physical_cleanup_joins_last_lease(
 fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let root = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    let created = source.create_file(&native_test_path("detached"), metadata(), None, &root)?;
+    let created = source
+        .create_file(&native_test_path("detached"), metadata(), None, &root)?
+        .lookup;
     let owner = ViewGate::callback_owner()?;
     let record = source.runtime.wait(|| async {
         source
@@ -781,7 +783,8 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     let path = native_test_path("qualified-guard-original");
     let created = boundary(borrowed.cancellation(), |work| {
         borrowed.create_file(&path, metadata(), None, work)
-    })?;
+    })?
+    .lookup;
     let file = borrowed.open_created(&path, &created)?;
     let root_stop = CancellationToken::new();
     let root = capture_meter(BOUNDARY_BUDGET, &root_stop)?;

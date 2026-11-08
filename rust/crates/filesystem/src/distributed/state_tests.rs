@@ -799,7 +799,13 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
             .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let collection = Arc::new(crate::collection::Collection::default());
-    let hold = collection.unswept().await.into_hold();
+    let hold = collection
+        .unswept(&mut crate::kernel::allocation::KernelAccounting::native(
+            &original,
+            &cancellation,
+        ))
+        .await?
+        .into_hold();
     let path = StreamPath::new("agent/files/lost")?;
     let mut preparation = AuthorityWork::native(&original, &cancellation);
     let cut = store.authorized_observation(CommitCondition::Absent { path: path.clone() })?;
@@ -1079,8 +1085,14 @@ async fn final_state_fence_refusal_preserves_original_request_and_collection_cus
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
     let collection = Arc::new(crate::collection::Collection::default());
-    let original_hold = collection.unswept().await.into_hold();
-    let staged_hold = collection.unswept().await.into_hold();
+    let original_hold = collection
+        .unswept(&mut work.accounting())
+        .await?
+        .into_hold();
+    let staged_hold = collection
+        .unswept(&mut work.accounting())
+        .await?
+        .into_hold();
     let original_path = StreamPath::new("actor/files/original")?;
     let staged_path = StreamPath::new("actor/files/staged")?;
     let original_cut = store
@@ -1379,7 +1391,13 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
             .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
     let collection = Arc::new(crate::collection::Collection::default());
-    let hold = collection.unswept().await.into_hold();
+    let hold = collection
+        .unswept(&mut crate::kernel::allocation::KernelAccounting::native(
+            &original,
+            &cancellation,
+        ))
+        .await?
+        .into_hold();
     let mut preparation = AuthorityWork::native(&original, &cancellation);
     let observed = store.authorized_observation(CommitCondition::Absent {
         path: StreamPath::new("actor/files/held")?,

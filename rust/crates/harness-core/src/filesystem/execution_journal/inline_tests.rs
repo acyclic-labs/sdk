@@ -174,9 +174,6 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
     let setup_bytes = work.live_allocation_bytes();
     let bytes = read.await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
-    // Residency includes a bounded authenticated chunk and policy metadata.
-    // A whole-payload load then slice would exceed this measured bound.
-    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     {
         // Fund the actual ledger and read frame, then leave less credit than
         // the output requires, independently of provider chunks or caching.
@@ -216,6 +213,13 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         );
     }
     let length = file.descriptor().byte_length();
+    let receipt = work.receipt();
+    // Authenticate the whole intersecting chunk even when storage lends its
+    // backing. Reading the whole payload then slicing must also fail this
+    // work bound when shared aliases do not allocate new chunk backing.
+    assert!(receipt.bytes_hashed >= 1024 * 1024);
+    assert!(receipt.object_bytes_read < length);
+    assert!(receipt.peak_allocation_bytes < length);
     assert!(
         journal
             .load_range(
@@ -722,7 +726,7 @@ async fn private_payloads_reject_inline_bodies_at_every_append_entry_point() -> 
 
 #[tokio::test]
 async fn private_payloads_require_original_read_and_write_grants() -> Result<()> {
-    let (mut journal, _issuer) = test_support::journal().await?;
+    let (mut journal, original_issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
     let original = journal.scope.clone();
@@ -753,7 +757,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "missing opposite grant for {grant:?}"
         );
     }
-    journal.scope = original;
+    journal.scope = original.clone();
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     crate::executor::append_model_event(
         &journal,
@@ -778,5 +782,25 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "cached replay requires read authority"
         );
     }
+    journal.scope = original;
+    assert!(journal.records(operation, 0, 64, None).await.is_ok());
+    original_issuer.revoke_workload(&journal.scope)?;
+    assert!(matches!(
+        journal.records(operation, 0, 64, None).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "model:0:1",
+            (0, ModelPurpose::Response),
+            &events().remove(0),
+            None,
+            None,
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
     Ok(())
 }

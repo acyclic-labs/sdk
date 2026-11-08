@@ -467,11 +467,11 @@ impl AllocationLedger {
 
     pub(crate) fn shares_retained_ledger(
         &self,
-        ledger: &std::sync::Weak<std::sync::Mutex<SharedAllocationBytes>>,
+        ledger: *const std::sync::Mutex<SharedAllocationBytes>,
     ) -> bool {
         match &self.state {
             LedgerState::Shared(state) | LedgerState::Suspended(state) => {
-                std::ptr::eq(ledger.as_ptr(), std::sync::Arc::as_ptr(state))
+                std::ptr::eq(ledger, std::sync::Arc::as_ptr(state))
             }
             LedgerState::Empty | LedgerState::Inline(_) => false,
         }

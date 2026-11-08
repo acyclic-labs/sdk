@@ -18,6 +18,7 @@ mod positional;
 mod positional_interrupted;
 mod prepared_order;
 mod range;
+mod reservations;
 mod source;
 mod spare;
 use source::SourceFixture;
@@ -234,6 +235,12 @@ pub(super) struct ReadBudgetMeter {
     pub(super) operation_recorded: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
     /// Observes the actual refund of unused native cleanup credit.
     pub(super) cleanup_cancelled: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Observes a completed original-ledger refund, including unwind cuts.
+    credit_returned: Option<Box<dyn Fn(reservations::Credit) + Send + Sync>>,
+    /// Observes the original completed examination, including unwind cuts.
+    pub(super) examination_recorded: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
+    /// Observes original ledger-owner selection before allocation admission.
+    owner_selected: Option<Box<dyn Fn() + Send + Sync>>,
     memory_limit: u64,
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
@@ -245,6 +252,15 @@ pub(super) struct ReadBudgetMeter {
 }
 
 impl ReadBudgetMeter {
+    #[cfg(unix)]
+    pub(super) fn on_allocation_returned(&mut self, returned: impl Fn() + Send + Sync + 'static) {
+        self.credit_returned = Some(Box::new(move |credit| {
+            if credit == reservations::Credit::Allocation {
+                returned();
+            }
+        }));
+    }
+
     /// After the original operation ends, await its final allocation release.
     /// The release callback and this registration share one mutex, including
     /// the already-retired case, so neither ordering loses the terminal event.
@@ -314,11 +330,20 @@ impl ReadBudgetMeter {
 }
 
 impl NativeReadMeter for ReadBudgetMeter {
-    #[cfg(windows)]
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
-        self.shared_owner
-            .upgrade()
-            .map(|owner| owner as Arc<dyn NativeReadMeter>)
+        if let Some(selected) = &self.owner_selected {
+            selected();
+        }
+        #[cfg(windows)]
+        {
+            self.shared_owner
+                .upgrade()
+                .map(|owner| owner as Arc<dyn NativeReadMeter>)
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     }
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
@@ -336,6 +361,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn cancel_reserved_operations(&self, _: NativeOperationKind, count: u64) {
         assert!(self.used_operations.fetch_sub(count, Ordering::AcqRel) >= count);
+        if let Some(returned) = &self.credit_returned {
+            returned(reservations::Credit::Operations);
+        }
     }
     fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
         if kind == NativeOperationKind::Read {
@@ -362,6 +390,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn cancel_reserved_bytes(&self, _: NativeOperationKind, maximum: u64) {
         assert!(self.used_bytes.fetch_sub(maximum, Ordering::AcqRel) >= maximum);
+        if let Some(returned) = &self.credit_returned {
+            returned(reservations::Credit::Bytes);
+        }
     }
     fn record_reserved_bytes(
         &self,
@@ -412,6 +443,9 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn cancel_reserved_allocation(&self, bytes: u64) {
         assert!(self.used_allocations.fetch_sub(1, Ordering::AcqRel) != 0);
         self.release(bytes);
+        if let Some(returned) = &self.credit_returned {
+            returned(reservations::Credit::AllocationReservation);
+        }
     }
     fn record_reserved_allocation(&self, _: u64) -> io::Result<()> {
         Ok(())
@@ -438,6 +472,25 @@ impl NativeReadMeter for ReadBudgetMeter {
         ] {
             Self::charge(counter, bytes, u64::MAX)?;
         }
+        Ok(())
+    }
+    fn reserve_codec(&self, maximum: NativeCodecWork) -> io::Result<()> {
+        self.admit_codec(maximum.encoded, maximum.copied, maximum.hashed)?;
+        self.record_codec(maximum.encoded, maximum.copied, maximum.hashed)
+    }
+    fn cancel_reserved_codec(&self, unused: NativeCodecWork) {
+        for (counter, bytes) in [
+            (&self.encoded, unused.encoded),
+            (&self.copied, unused.copied),
+            (&self.hashed, unused.hashed),
+        ] {
+            assert!(counter.fetch_sub(bytes, Ordering::AcqRel) >= bytes);
+        }
+        if let Some(returned) = &self.credit_returned {
+            returned(reservations::Credit::Codec);
+        }
+    }
+    fn record_reserved_codec(&self, _: NativeCodecWork) -> io::Result<()> {
         Ok(())
     }
     fn allocate_refcount_header(&self) -> io::Result<()> {
@@ -472,6 +525,9 @@ impl NativeReadMeter for ReadBudgetMeter {
         {
             let _ = retired.send(());
         }
+        if let Some(returned) = &self.credit_returned {
+            returned(reservations::Credit::Allocation);
+        }
     }
     fn examine(&self, items: u64, _: u64) -> io::Result<()> {
         self.check()?;
@@ -485,6 +541,9 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
     }
     fn record_examination(&self, items: u64, _: u64) -> io::Result<()> {
+        if let Some(recorded) = &self.examination_recorded {
+            recorded()?;
+        }
         match self.item_limit {
             Some(limit) => Self::charge(&self.examined_items, items, limit).map(|_| ()),
             None => Ok(()),

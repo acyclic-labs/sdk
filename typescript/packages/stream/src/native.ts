@@ -14,7 +14,7 @@ import { normalizeWireCommitBytes, validateWireRequest, wireInspectIdempotencyRe
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
 import { nativeCredentials } from "./native-credentials.js";
-import { StreamError, type StreamFailureCode } from "./types.js";
+import { StreamError, type StreamFailureCode, type StreamRefusal } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
 let modulePromise: Promise<typeof GeneratedNative> | undefined;
@@ -313,5 +313,7 @@ function nativeError(error: unknown, operation: string): Error {
     "commit_not_found", "destination_exists", "capacity_exhausted", "configuration", "invalid_cursor",
     "invalid_page", "invalid_response", "provider_mismatch", "response_too_large", "transport", "revision_foreign",
   ]);
-  return new StreamError(knownCodes.has(mappedCode as StreamFailureCode) ? mappedCode as StreamFailureCode : "unavailable", message);
+  const raw = typeof error === "object" && error !== null ? (error as { readonly refusal?: unknown }).refusal : undefined;
+  const refusal = typeof raw === "object" && raw !== null ? raw as StreamRefusal : undefined;
+  return new StreamError(knownCodes.has(mappedCode as StreamFailureCode) ? mappedCode as StreamFailureCode : "unavailable", message, undefined, refusal);
 }

@@ -14,7 +14,6 @@ use acyclic_native_runtime::testing::DurableWrite;
 use std::sync::Arc;
 use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod clocks;
 mod digest;
 mod driver;
@@ -248,6 +247,7 @@ fn scenario(directory: &Path) -> EntryFuture<'_, Result<(Vec<u8>, Vec<u8>, Vec<u
                 directory.join("filesystem"),
                 (model.clone(), provider.clone()),
             )?
+            .without_user_settings()
             .volume(volume.clone())
             .state_directory(directory.join("state")))
         };
@@ -308,7 +308,7 @@ fn replay_with_directory_times(
             panic!("uncut replay crashed");
         };
         let (requests, dispatches, records) = result?;
-        Ok(Trace {
+        let trace = Trace {
             polls: driver.schedule.polls(),
             boundaries: driver.boundaries,
             writes: driver.schedule.durable_writes(),
@@ -316,16 +316,15 @@ fn replay_with_directory_times(
             dispatches,
             records,
             durable: durable_bytes(directory.path())?,
-        })
+        };
+        digest::record_replay(&trace, seed, erase_source, directory_time);
+        Ok(trace)
     })
 }
 
 #[test]
 fn scripted_native_directory_times_reach_durable_replay_bytes() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         tokio::time::pause();
         let first_time = 1_700_000_000_000_000_017_i64;
@@ -356,10 +355,7 @@ fn scripted_native_directory_times_reach_durable_replay_bytes() -> Result<()> {
 fn seeded_production_turn_and_reopen_trace_controls() -> Result<()> {
     digest::startup_value();
     let started = std::time::Instant::now();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     let result = runtime.block_on(async {
         tokio::time::pause();
         // The same-seed peer and entropy-erasure world run in the other process

@@ -11,6 +11,8 @@ artifact is `worker.mjs` and whose module assets include `worker_bg.wasm`.
 `worker.mjs` exports `default.fetch`. No mutation is automatically retried.
 
 ```rust,no_run
+//! Publishes, invokes and retires a deployment through Workers and Objects.
+
 use acyclic_actors::{http, wire};
 use acyclic_objects::{HttpObjects, RootId};
 use acyclic_workers::{

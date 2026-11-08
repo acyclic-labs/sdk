@@ -18,10 +18,6 @@ pub struct ProcessResources {
     /// Open descriptors on Unix; open kernel handles of every kind on
     /// Windows.
     pub descriptors: u64,
-    /// Mounted filesystems this process sees: its mount namespace's mounts
-    /// on Linux, the mounted filesystems on macOS, and the drive volumes on
-    /// Windows.
-    pub mounts: u64,
     /// Kernel watches beyond their descriptors: inotify watches on Linux.
     /// macOS `kqueue` and `FSEvents` and Windows directory watches each hold a
     /// descriptor or handle, which `descriptors` already counts.
@@ -48,6 +44,9 @@ trait Sampler {
     fn watches() -> io::Result<u64>;
     /// This process's open descriptors or handles.
     fn descriptors() -> io::Result<Vec<Descriptor>>;
+    /// Every mount point this process sees, in the form `canonicalize`
+    /// returns.
+    fn mount_points() -> io::Result<Vec<PathBuf>>;
 }
 
 #[cfg(target_os = "linux")]
@@ -85,10 +84,54 @@ pub fn descriptors() -> io::Result<Vec<Descriptor>> {
     Native::descriptors()
 }
 
+/// How many filesystems are mounted at `root` or beneath it.
+///
+/// The mount table is shared: a Linux mount namespace with every process in
+/// it, and the whole system on macOS and Windows. Its total changes whenever
+/// any other process mounts, so only the mounts beneath a root its owner
+/// serves are that owner's cost.
+pub fn mounts_beneath(root: &Path) -> io::Result<u64> {
+    let root = std::fs::canonicalize(root)?;
+    Ok(Native::mount_points()?
+        .iter()
+        .filter(|point| point.starts_with(&root))
+        .count() as u64)
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{Descriptor, ProcessResources, Sampler};
+    use std::ffi::OsString;
     use std::io;
+    use std::os::unix::ffi::OsStringExt as _;
+    use std::path::PathBuf;
+
+    /// A mountinfo path field, whose space, tab, newline and backslash bytes
+    /// are written as three octal digits after a backslash.
+    pub(super) fn unescape(field: &[u8]) -> PathBuf {
+        let mut path = Vec::with_capacity(field.len());
+        let mut rest = field;
+        loop {
+            rest = match rest {
+                [
+                    b'\\',
+                    high @ b'0'..=b'3',
+                    middle @ b'0'..=b'7',
+                    low @ b'0'..=b'7',
+                    after @ ..,
+                ] => {
+                    path.push(((high - b'0') << 6) | ((middle - b'0') << 3) | (low - b'0'));
+                    after
+                }
+                [byte, after @ ..] => {
+                    path.push(*byte);
+                    after
+                }
+                [] => break,
+            };
+        }
+        PathBuf::from(OsString::from_vec(path))
+    }
 
     pub(super) struct Procfs;
 
@@ -115,9 +158,6 @@ mod linux {
                 memory_bytes: field("VmRSS:")? * 1024,
                 threads: field("Threads:")?,
                 descriptors: std::fs::read_dir("/proc/self/fd")?.count() as u64,
-                mounts: std::fs::read_to_string("/proc/self/mountinfo")?
-                    .lines()
-                    .count() as u64,
                 watches: 0,
                 cpu_centiseconds: cpu,
             })
@@ -148,6 +188,15 @@ mod linux {
                 });
             }
             Ok(descriptors)
+        }
+
+        fn mount_points() -> io::Result<Vec<PathBuf>> {
+            // The fifth field of each mountinfo row is its mount point.
+            Ok(std::fs::read("/proc/self/mountinfo")?
+                .split(|byte| *byte == b'\n')
+                .filter_map(|row| row.split(|byte| *byte == b' ').nth(4))
+                .map(unescape)
+                .collect())
         }
     }
 }
@@ -246,16 +295,10 @@ mod apple {
                 u64::try_from(time.tv_sec).unwrap_or(0) * 100
                     + u64::try_from(time.tv_usec).unwrap_or(0) / 10_000
             };
-            // SAFETY: a null buffer only asks for the number of mounts.
-            let mounts = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-            if mounts < 0 {
-                return Err(io::Error::last_os_error());
-            }
             Ok(ProcessResources {
                 memory_bytes: task.pti_resident_size,
                 threads: u64::try_from(task.pti_threadnum).unwrap_or(0),
                 descriptors: descriptors()?.len() as u64,
-                mounts: u64::try_from(mounts).unwrap_or(0),
                 watches: 0,
                 cpu_centiseconds: centiseconds(usage.ru_utime) + centiseconds(usage.ru_stime),
             })
@@ -293,13 +336,36 @@ mod apple {
             }
             Ok(named)
         }
+
+        fn mount_points() -> io::Result<Vec<PathBuf>> {
+            // SAFETY: a null buffer only asks for the number of mounts.
+            let mounted = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+            // Room for mounts added since, so the table is never cut short.
+            let capacity = usize::try_from(mounted).map_err(|_| io::Error::last_os_error())? + 16;
+            let mut table = Vec::<libc::statfs>::with_capacity(capacity);
+            let bytes = libc::c_int::try_from(capacity * std::mem::size_of::<libc::statfs>())
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+            // SAFETY: getfsstat writes at most `bytes` bytes, the capacity.
+            let written = unsafe { libc::getfsstat(table.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+            let count = usize::try_from(written).map_err(|_| io::Error::last_os_error())?;
+            // SAFETY: the kernel initialized `count` whole entries.
+            unsafe { table.set_len(count.min(capacity)) };
+            Ok(table
+                .iter()
+                .map(|entry| {
+                    // SAFETY: the kernel terminates `f_mntonname` within it.
+                    let point = unsafe { CStr::from_ptr(entry.f_mntonname.as_ptr()) };
+                    PathBuf::from(std::ffi::OsStr::from_bytes(point.to_bytes()))
+                })
+                .collect())
+        }
     }
 }
 
 #[cfg(windows)]
 #[allow(
     unsafe_code,
-    reason = "FFI: process counters, the handle snapshot and handles' final paths"
+    reason = "FFI: process counters, the handle snapshot, handles' final paths and volume mount points"
 )]
 mod windows {
     use super::{Descriptor, ProcessResources, Sampler};
@@ -311,10 +377,12 @@ mod windows {
         NtQueryInformationProcess, ProcessHandleInformation,
     };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, STATUS_INFO_LENGTH_MISMATCH,
+        CloseHandle, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, FILETIME, HANDLE, INVALID_HANDLE_VALUE,
+        STATUS_INFO_LENGTH_MISMATCH,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        FILE_TYPE_DISK, GetFileType, GetFinalPathNameByHandleW, GetLogicalDrives, VOLUME_NAME_DOS,
+        FILE_TYPE_DISK, FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetFileType,
+        GetFinalPathNameByHandleW, GetVolumePathNamesForVolumeNameW, VOLUME_NAME_DOS,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -527,13 +595,10 @@ mod windows {
             let units = |time: FILETIME| {
                 ((u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)) / 100_000
             };
-            // SAFETY: no preconditions.
-            let drives = unsafe { GetLogicalDrives() };
             Ok(ProcessResources {
                 memory_bytes: memory.PrivateUsage as u64,
                 threads: threads()?,
                 descriptors: u64::from(handles),
-                mounts: u64::from(drives.count_ones()),
                 watches: 0,
                 cpu_centiseconds: units(kernel) + units(user),
             })
@@ -552,6 +617,78 @@ mod windows {
                 })
                 .collect())
         }
+
+        fn mount_points() -> io::Result<Vec<PathBuf>> {
+            // A volume GUID path, `\\?\Volume{GUID}\`, is 49 characters.
+            let mut volume = [0u16; 64];
+            let length = u32::try_from(volume.len()).unwrap_or(u32::MAX);
+            // SAFETY: writes a terminated name of at most `length` units.
+            let search = unsafe { FindFirstVolumeW(volume.as_mut_ptr(), length) };
+            if search == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            let mut points = Vec::new();
+            let listed = loop {
+                if let Err(error) = volume_paths(&volume, &mut points) {
+                    break Err(error);
+                }
+                // SAFETY: `search` is open; writes at most `length` units.
+                if unsafe { FindNextVolumeW(search, volume.as_mut_ptr(), length) } == 0 {
+                    let error = io::Error::last_os_error();
+                    break if error.raw_os_error() == i32::try_from(ERROR_NO_MORE_FILES).ok() {
+                        Ok(points)
+                    } else {
+                        Err(error)
+                    };
+                }
+            };
+            // SAFETY: closes the search opened above, once.
+            unsafe { FindVolumeClose(search) };
+            listed
+        }
+    }
+
+    /// Appends the paths `volume` is mounted at, in the verbatim form
+    /// `canonicalize` returns.
+    fn volume_paths(volume: &[u16], points: &mut Vec<PathBuf>) -> io::Result<()> {
+        let mut needed = 0u32;
+        // SAFETY: an empty buffer only asks for the length needed.
+        if unsafe {
+            GetVolumePathNamesForVolumeNameW(volume.as_ptr(), std::ptr::null_mut(), 0, &mut needed)
+        } != 0
+        {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != i32::try_from(ERROR_MORE_DATA).ok() {
+            return Err(error);
+        }
+        let units =
+            usize::try_from(needed).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        let mut names = vec![0u16; units];
+        // SAFETY: writes at most `needed` units into `names`.
+        if unsafe {
+            GetVolumePathNamesForVolumeNameW(
+                volume.as_ptr(),
+                names.as_mut_ptr(),
+                needed,
+                &mut needed,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        points.extend(
+            names
+                .split(|unit| *unit == 0)
+                .filter(|name| !name.is_empty())
+                .map(|name| {
+                    let mut point = std::ffi::OsString::from(r"\\?\");
+                    point.push(std::ffi::OsString::from_wide(name));
+                    PathBuf::from(point)
+                }),
+        );
+        Ok(())
     }
 }
 
@@ -579,7 +716,32 @@ mod tests {
         drop(files);
         assert_eq!(descriptors_naming(&path)?, 0);
         assert!(open.memory_bytes > 0 && open.threads > 0, "{open:?}");
-        assert!(process_resources()?.mounts > 0);
         Ok(())
+    }
+
+    /// The filesystem root is mounted on every platform, and a fresh
+    /// directory beneath it has no mount: only mounts beneath the root count.
+    #[test]
+    fn only_mounts_beneath_the_root_count() -> io::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let top = directory
+            .path()
+            .ancestors()
+            .last()
+            .unwrap_or(directory.path());
+        assert!(mounts_beneath(top)? > 0, "{top:?}");
+        assert_eq!(mounts_beneath(directory.path())?, 0);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mountinfo_paths_decode_their_octal_escapes() {
+        assert_eq!(
+            linux::unescape(br"/a\040b\134c\011"),
+            Path::new("/a b\\c\t")
+        );
+        // A backslash that starts no escape is kept as written.
+        assert_eq!(linux::unescape(br"/a\9b\04"), Path::new(r"/a\9b\04"));
     }
 }

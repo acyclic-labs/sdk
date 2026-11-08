@@ -38,6 +38,30 @@ temporary scratch retires at scope exit. The transfer uses one checked addition
 and one live-byte comparison, with no allocation, scan, wait, copy or admission.
 Reading a batch still takes work proportional to its requested objects.
 
+Object providers count each successful batch's results once. Staged batches
+count only private members, including a drained member's scalar fallback; the
+provider counts durable misses. Cached batches count only members beyond their
+completed provider leaders, including hits, followers and duplicates. Both use
+counts already produced by their existing classification, with no counter
+snapshots, allocation, wait, provider request or additional result scan.
+`durable_reads_do_not_wait_for_the_private_spill_publication_gate` exercises the
+real memory provider's native and sequential stored reads, with a prior real
+result and exactly enough remaining returned-item budget for durable, mixed and
+resident batches. Each completes in one poll while the unrelated spill lease
+stays held, then refuses another batch on the exhausted budget. The existing
+native staged-batch property exercises the same exact budget with LocalObjects,
+including a separate physical read on the same original ledger while the batch
+is pending. Its result cannot pay for the suspended batch's private members.
+The ordinary and native cache ownership properties likewise use exact budgets
+through real providers and duplicate requests. LogicalObjects and OPFS now
+admit and record their own returned batch counts. Scalar reads leave the batch
+count to their caller; forwarding adapters preserve it.
+`mutations/staged_returned_items.patch` restores the unconditional staged charge;
+the memory-provider property must fail its exact-budget assertion.
+`mutations/cached_returned_items.patch` restores the duplicate cache charge;
+the ordinary and native cache ownership properties must reject their exact
+budgets. Restore both patches before requiring the ownership properties to pass.
+
 The kept `mutations/object_read_custody.patch` plants three independent omissions
 in the actual shared read and scope producers. Only the planted source reads
 `ACYCLIC_READ_CUSTODY_OMISSION`; select one omission per run of the same command:
@@ -185,6 +209,8 @@ and paged leaf admission share this distinction; residency is never inferred
 from the leaf's total live bytes. One weak ledger identity and one byte total
 describe the operation cache without retaining additional funding or scanning
 entries. A different original source cannot be attached to the same proof owner.
+Identity checks borrow the retained source; only the initial binding creates a
+weak reference, which retires with the last original cache allocation.
 
 `mutations/operation_cache_duplicate_charge.patch` removes that exclusion from
 the production observer. The exact-peak relation must reject the duplicate

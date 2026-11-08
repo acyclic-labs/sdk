@@ -169,6 +169,28 @@ impl Drop for CancelOnDrop {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn native_allocation_matches_backing<T>(
+    original: &crate::NativeMaterializationWork,
+    allocate: impl FnOnce() -> T,
+) -> T {
+    let before = original.live_allocation_bytes();
+    let operations = original.receipt().allocation_operations;
+    let mut value = None;
+    let physical = acyclic_test_support::measure(|| value = Some(allocate()));
+    assert_eq!(
+        original.live_allocation_bytes() - before,
+        u64::try_from(physical.bytes_current).unwrap(),
+        "original cancellation credit omits live allocator backing"
+    );
+    assert_eq!(
+        original.receipt().allocation_operations - operations,
+        physical.count_total,
+        "cancellation allocation operations differ from the allocator"
+    );
+    value.unwrap()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_waiter_replacement_is_reentrant_and_releases_its_original_owner() {
     let token = CancellationToken::new();
@@ -181,9 +203,17 @@ fn native_waiter_replacement_is_reentrant_and_releases_its_original_owner() {
     )
     .map_err(|(error, _)| error)
     .unwrap();
+    let baseline = work.live_allocation_bytes();
+    let owned = native_allocation_matches_backing(&work, || {
+        CancellationToken::new_with_native_work(&work).unwrap()
+    });
+    drop(owned);
+    assert_eq!(work.live_allocation_bytes(), baseline);
     let state = Arc::downgrade(&token.state);
     let accounting = Arc::downgrade(&work.state);
-    let mut prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
+    let mut prepared = native_allocation_matches_backing(&work, || {
+        token.prepare_cancelled_with_native_work(&work).unwrap()
+    });
     let waker = Waker::from(Arc::new(CancelOnDrop(token.clone())));
     assert!(
         Pin::new(&mut prepared)
@@ -213,7 +243,9 @@ fn linked_children_preserve_local_stop_parent_propagation_and_release_their_owne
         let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &parent)
             .map_err(|(error, _)| error)
             .unwrap();
-        let child = CancellationToken::linked_child_with_native_work(&parent, &original).unwrap();
+        let child = native_allocation_matches_backing(&original, || {
+            CancellationToken::linked_child_with_native_work(&parent, &original).unwrap()
+        });
         let parent_state = Arc::downgrade(&parent.state);
         let child_state = Arc::downgrade(&child.state);
         let accounting = Arc::downgrade(&original.state);
@@ -288,10 +320,23 @@ fn measured_waiter_credit_follows_the_last_node_alias_after_detach()
     drop(ledger.retain(0, &mut work, budget)?);
     let baseline = ledger.live_bytes();
     for cancel in [false, true] {
-        let future = token.prepare_cancelled_measured(&mut ledger, &mut work, budget)?;
+        let operations = work.allocation_operations;
+        let mut future = None;
+        let physical = acyclic_test_support::measure(|| {
+            future = Some(token.prepare_cancelled_measured(&mut ledger, &mut work, budget));
+        });
+        let future = future.ok_or("waiter construction")??;
         let alias = Arc::clone(future.waiter.as_ref().ok_or("registered node")?);
         let funded = ledger.live_bytes();
-        assert!(funded > baseline);
+        assert_eq!(
+            funded - baseline,
+            u64::try_from(physical.bytes_current)?,
+            "original cancellation credit omits live allocator backing"
+        );
+        assert_eq!(
+            work.allocation_operations - operations,
+            physical.count_total
+        );
         if cancel {
             token.cancel();
         }

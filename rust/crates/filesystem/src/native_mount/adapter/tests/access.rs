@@ -186,7 +186,7 @@ pub(super) fn seed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path(name);
-    let created = source.create_file(&path, metadata(), None, &work)?;
+    let created = source.create_file(&path, metadata(), None, &work)?.lookup;
     source
         .open_created(&path, &created)?
         .write_range(0, Bytes::from_static(bytes))?;
@@ -280,7 +280,7 @@ fn native_access_inbox_creation_does_not_authorize_reopen_or_read()
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path("message");
-    let created = source.create_file(&path, metadata(), None, &work)?;
+    let created = source.create_file(&path, metadata(), None, &work)?.lookup;
     let file = source.open_created(&path, &created)?;
     file.write_range(0, Bytes::from_static(b"delivery"))?;
     assert!(matches!(
@@ -461,11 +461,15 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
                 &work,
             )?,
             Action::Delete => source.remove(&native_test_path("nested/from"), None, &work)?,
-            Action::Admin => source.hard_link(
-                &native_test_path("nested/from"),
-                &native_test_path("nested/link"),
-                &work,
-            )?,
+            Action::Admin => {
+                source.hard_link(
+                    &native_test_path("nested/from"),
+                    &native_test_path("nested/link"),
+                    None,
+                    false,
+                    &work,
+                )?;
+            }
             _ => unreachable!(),
         }
         let policy = crate::access::fixtures::denied(action, "**");
@@ -912,23 +916,46 @@ fn native_relocations_cannot_disclose_denied_files_or_descendants()
 
 #[test]
 fn native_hard_links_cannot_widen_source_permissions() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Portable)?;
-    seed(&source, "private", b"secret")?;
-    let source = bind_test_access(
-        source,
-        vec![deny("private", &[Action::Read], "private")],
-        None,
-    )?;
-    let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
-    assert!(matches!(
-        source.hard_link(
+    for (action, pattern, facts, allowed) in [
+        (Action::Read, "private", false, false),
+        (Action::List, "**", false, true),
+        (Action::List, "**", true, false),
+    ] {
+        let (source, around) = sources(
+            FilesystemProfile::Portable,
+            ConsistencyMode::Pinned,
+            MountPublication::Manual,
+        )?;
+        seed(&source, "private", b"secret")?;
+        let source = bind_test_access(source, vec![deny("private", &[action], pattern)], None)?;
+        let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
+        let result = source.hard_link(
             &native_test_path("private"),
             &native_test_path("public"),
-            &work
-        ),
-        Err(MountSourceError::AccessDenied)
-    ));
-    assert!(source.lookup(&native_test_path("public"))?.is_none());
+            None,
+            facts,
+            &work,
+        );
+        assert_eq!(
+            around.lookup(&native_test_path("public"))?.is_some(),
+            allowed
+        );
+        if allowed {
+            assert!(
+                result?.facts.is_none(),
+                "link authority must not disclose metadata"
+            );
+            assert_eq!(
+                source
+                    .read_range(&native_test_path("public"), 0, 6)?
+                    .as_ref(),
+                b"secret"
+            );
+        } else {
+            assert!(matches!(result, Err(MountSourceError::AccessDenied)));
+        }
+        assert!(source.lookup(&native_test_path("public"))?.is_none());
+    }
     Ok(())
 }
 
@@ -961,6 +988,8 @@ fn native_relocations_preserve_uniform_and_equivalent_suffix_permissions()
         source.hard_link(
             &native_test_path("to/key"),
             &native_test_path("alias"),
+            None,
+            false,
             &work,
         )?;
         assert_eq!(
@@ -1008,6 +1037,8 @@ fn native_relocations_intersect_capability_path_limits() -> Result<(), Box<dyn s
         source.hard_link(
             &native_test_path("private"),
             &native_test_path("public"),
+            None,
+            false,
             &work
         ),
         Err(MountSourceError::AccessDenied)

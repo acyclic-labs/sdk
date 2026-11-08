@@ -641,12 +641,13 @@ impl Shape {
                 .unwrap_or_else(|| panic!("no {call} result: {outputs:?}"));
             serde_json::from_str(output).unwrap_or_else(|_| output.as_str().into())
         };
-        let pick = |value: &Value, pointers: &[&str]| -> Value {
-            pointers
-                .iter()
-                .map(|pointer| value.pointer(pointer).cloned().unwrap_or_default())
-                .collect()
-        };
+        let written = parsed("write");
+        assert!(
+            written["version"]
+                .as_str()
+                .is_some_and(|version| !version.is_empty()),
+            "write named no immutable version: {written}"
+        );
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
         let child: Vec<&str> = spawned["agent"]
@@ -663,14 +664,7 @@ impl Shape {
             .collect();
         Self {
             answer: answer.trim().to_owned(),
-            results: vec![
-                pick(&parsed("shell"), &["/exit_code", "/stdout"]),
-                pick(
-                    &parsed("write"),
-                    &["/file/descriptor", "/file/path", "/file/volume/class"],
-                ),
-                child.into(),
-            ],
+            results: vec![parsed("shell"), written["path"].clone(), child.into()],
             steps,
         }
     }
@@ -679,16 +673,8 @@ impl Shape {
 #[tokio::test(flavor = "multi_thread")]
 async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     let directory = tempfile::tempdir().unwrap();
-    // The approver is the principal the endpoint credential authenticates,
-    // read from a minted credential rather than assumed.
-    let principal = {
-        let model = model(directory.path()).await;
-        let home = Home::new(directory.path(), "probe");
-        let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
-        let endpoint = served(&mut server).await;
-        server.kill().await;
-        endpoint["principal"].as_str().unwrap().to_owned()
-    };
+    // All three backends use the local host's human approval stage. Its
+    // principal is distinct from the credential admitted by the endpoint.
     let policy = directory.path().join("policy.json");
     std::fs::write(
         &policy,
@@ -696,7 +682,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             {"kind": "rules", "principal": "policy:conformance",
              "rules": [{"tool": "shell", "arguments": null, "verdict": "ask"}],
              "fallback": "allow"},
-            {"kind": "human", "principal": principal},
+            {"kind": "human", "principal": acyclic_harness::approvals::HUMAN_APPROVER},
         ]}))
         .unwrap(),
     )
@@ -723,7 +709,6 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
                 &["serve", "127.0.0.1:0"],
             ));
             let endpoint = served(&mut server).await;
-            assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
                 url: endpoint["endpoint"].as_str().unwrap().to_owned(),
                 credential: endpoint["credential"].as_str().unwrap().to_owned(),
@@ -744,13 +729,14 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
     }
     let (_, local) = &shapes[0];
     assert_eq!(local.answer, "root answer\nfollowup answer");
-    assert_eq!(local.results[0], json!([0, "conformance-shell\n"]));
-    assert_eq!(
-        local.results[1][0]["byte_length"],
-        WRITTEN.len(),
-        "{:?}",
-        local.results
+    assert!(
+        local.results[0]
+            .as_str()
+            .is_some_and(|text| text.lines().eq(["Exit code: 0", "conformance-shell"])),
+        "shell did not present a successful command and its output: {:?}",
+        local.results[0]
     );
+    assert_eq!(local.results[1], "conformance.txt");
     assert!(local.steps.contains(&("child", 0)), "{:?}", local.steps);
     for (name, shape) in &shapes[1..] {
         assert_eq!(shape.answer, local.answer, "{name} answered otherwise");

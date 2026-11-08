@@ -43,6 +43,20 @@ const claims = {
     "tests::accounting_matches_complete_allocation_lifetimes",
     "first allocation event differs from physical trace", [],
   ],
+  "cli-failure-output": [
+    "rust/crates/harness/src/completion.rs", "graphcoder",
+    "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
+    "failure output retained a lost shutdown producer", [],
+    { mutations: [
+      { patch: "rust/proofs/cli-failure-output/shutdown.patch", label: "shutdown-omitted", diagnostic: "failure output retained a lost shutdown producer" },
+    ] },
+  ],
+  "native-hard-link-detached-facts": [
+    "rust/crates/filesystem/src/native_mount/lazy/mutations.rs", "acyclic-fs",
+    "native_mount::lazy::tests::publication::source_hard_link_open_unlink_write_preserves_surviving_alias",
+    "hard-link reply discarded current detached file facts",
+    ["--no-default-features", "--features", "memory,native-mount"],
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],

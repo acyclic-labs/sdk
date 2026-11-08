@@ -11,8 +11,9 @@ pub use guest::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired}
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
-    MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
-    ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or, system_time_ns,
+    MountPath, MountSeekTarget, MountSourceError, MountWriteFacts, NativeMountError,
+    NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
+    system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use crate::lock_order::{
@@ -88,8 +89,8 @@ mod session;
 pub(super) use session::FuseSession;
 mod lifecycle;
 mod mount;
-pub(super) use lifecycle::FuseRecoveryControl;
 use lifecycle::*;
+pub(super) use lifecycle::{FUSE_HELPERS, FuseRecoveryControl};
 mod write;
 mod xattr;
 

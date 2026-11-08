@@ -1,0 +1,13 @@
+diff --git a/rust/crates/filesystem/src/collection/mod.rs b/rust/crates/filesystem/src/collection/mod.rs
+index 935f4aefd0..61ce9f98e4 100644
+--- a/rust/crates/filesystem/src/collection/mod.rs
++++ b/rust/crates/filesystem/src/collection/mod.rs
+@@ -286,7 +286,7 @@ impl Collection {
+                 Err(_) if Arc::ptr_eq(&gate, &self.gate()) => {
+                     #[cfg(test)]
+                     self.gate_waits.notify_one();
+-                    accounting.wait_for(Arc::clone(&gate).read_owned()).await?
++                    Arc::clone(&gate).read_owned().await
+                 }
+                 Err(_) => continue,
+             };

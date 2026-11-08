@@ -11,6 +11,10 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "actors-wasm-rpc-inventory"
+test = false
+
 [dependencies]
 acyclic-actors = { version = "=0.2.0", path = "../actors", default-features = false }
 acyclic-contract-derive = { path = "../contract-derive", version = "=0.2.0" }

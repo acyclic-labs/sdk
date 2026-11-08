@@ -208,7 +208,7 @@ impl FuseProjection {
         create: impl FnOnce(
             &MountPath,
             &crate::NativeMaterializationWork,
-        ) -> Result<MountLookup, NativeMountError>,
+        ) -> Result<MountWriteFacts, NativeMountError>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Entry, NativeMountError> {
         self.check_source_write(work)?;
@@ -219,22 +219,13 @@ impl FuseProjection {
             state.admit_write()?;
             ChildName::new(source, state.child_path(parent, name, work)?, work)?
         };
-        let stamp = source.view_stamp_with_meter(work)?;
-        let lookup = self.source_write(work, || create(&child.spelled, work))?;
-        let empty = if lookup.node.kind == MountNodeKind::Directory {
-            let after = source.view_stamp_with_meter(work)?;
-            match stamp {
-                Some(before)
-                    if source.listing_unchanged_since_with_meter(
-                        &child.spelled,
-                        before,
-                        work,
-                    )? =>
-                {
-                    after
-                }
-                _ => None,
-            }
+        let created = self.source_write(work, || create(&child.spelled, work))?;
+        let lookup = created.lookup;
+        let stamp = Some(created.stamp);
+        let empty = if lookup.node.kind == MountNodeKind::Directory
+            && source.listing_unchanged_since_with_meter(&child.spelled, created.stamp, work)?
+        {
+            stamp
         } else {
             None
         };
@@ -380,23 +371,25 @@ impl FuseProjection {
         self.check_source_write(work)?;
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
-        let (from, to, facts) = {
+        let (from, to, file_id) = {
             let state = self.core.state()?;
             state.admit_write()?;
             (
                 fuse_clone_path(state.path(inode)?, work)?,
                 ChildName::new(source, state.child_path(new_parent, new_name, work)?, work)?,
-                state.node_facts(source, inode, None, work)?,
+                state
+                    .by_inode
+                    .get(&inode)
+                    .ok_or(libc::ESTALE)?
+                    .lookup
+                    .node
+                    .file_id,
             )
         };
-        let current = resolve_node(source, facts, work)?;
-        let mut projected = current.lookup;
-        projected.node.link_count = projected
-            .node
-            .link_count
-            .checked_add(1)
-            .ok_or(libc::EMLINK)?;
-        self.source_write(work, || Ok(source.hard_link(&from, &to.spelled, work)?))?;
+        let linked = self.source_write(work, || {
+            Ok(source.hard_link(&from, &to.spelled, Some(file_id), true, work)?)
+        })?;
+        let projected = linked.facts.ok_or(libc::EACCES)?.lookup;
         let mut state = self.core.state()?;
         let attr = state.attr(inode, &projected)?;
         let binding = {
@@ -424,7 +417,7 @@ impl FuseProjection {
         entry.lookup = projected;
         entry.facts = None;
         entry.lookup_references = entry.lookup_references.saturating_add(1);
-        let ttl = state.admit_entry(source, inode, to, current.stamp, work)?;
+        let ttl = state.admit_entry(source, inode, to, Some(linked.stamp), work)?;
         Ok(Entry { attr, ttl })
     }
 }

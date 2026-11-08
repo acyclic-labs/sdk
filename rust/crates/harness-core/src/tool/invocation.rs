@@ -74,7 +74,13 @@ impl ToolInvocation {
         })
     }
 
-    pub(crate) fn model_call_operation(
+    /// The deterministic operation of a model call in its parent execution.
+    /// Saved invocations can be checked against their original execution,
+    /// step and call ID without constructing or copying another invocation.
+    ///
+    /// # Errors
+    /// An accounting overflow or refusal from the optional work ledger.
+    pub fn model_call_operation(
         parent: OperationId,
         step: u32,
         call_id: &str,

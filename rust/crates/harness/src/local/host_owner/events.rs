@@ -128,7 +128,18 @@ impl HostWorkspaceOwner {
     }
 
     pub(super) async fn locate(&self, cwd: &Path) -> Result<Value> {
-        let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
+        // The client resolves its own cwd. This owner serves the views a cwd
+        // names, and resolving one here would wait on its own callbacks.
+        if !cwd.is_absolute()
+            || cwd.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err(Error::Invalid("native cwd is not canonical".into()));
+        }
         // A native session enters only after its view has been attached. Cwd
         // discovery observes those held views; it never reconstructs the
         // agent tree or acquires unrelated views as a side effect of a read.

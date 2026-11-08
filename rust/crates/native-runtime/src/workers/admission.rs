@@ -25,7 +25,7 @@ pub(crate) struct CapacityWaiter {
 pub(crate) struct CapacityWaiterState {
     pub(crate) previous: Weak<CapacityWaiter>,
     pub(crate) next: Option<Arc<CapacityWaiter>>,
-    pub(crate) waker: Waker,
+    pub(crate) waker: Option<Waker>,
     pub(crate) queued: bool,
     /// The node's original allocation charge, retained through its final owner.
     pub(crate) _allocation: Option<ReadAllocation>,
@@ -44,29 +44,27 @@ impl AdmissionState {
         }
     }
 
-    /// Queues a new node carrying the job's prepaid charge, if metered.
-    pub(crate) fn register(
+    /// Installs an already prepared observer and returns its displaced owner.
+    /// The caller retires that owner only after unlocking admission.
+    pub(crate) fn register_existing(
         &mut self,
-        waker: &Waker,
-        charge: Option<ReadAllocation>,
-    ) -> Arc<CapacityWaiter> {
-        let node = capacity_waiter(charge);
-        self.register_existing(&node, waker);
-        node
-    }
-
-    pub(crate) fn register_existing(&mut self, node: &Arc<CapacityWaiter>, waker: &Waker) {
-        {
+        node: &Arc<CapacityWaiter>,
+        waker: Waker,
+    ) -> Option<Waker> {
+        let retired = {
             let mut state = node
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            debug_assert!(!state.queued);
+            let retired = state.waker.replace(waker);
+            if state.queued {
+                return retired;
+            }
             state.previous = self.tail.clone();
             state.next = None;
-            state.waker.clone_from(waker);
             state.queued = true;
-        }
+            retired
+        };
         if let Some(tail) = self.tail.upgrade() {
             tail.state
                 .lock()
@@ -77,11 +75,13 @@ impl AdmissionState {
         }
         self.tail = Arc::downgrade(node);
         self.waiter_count += 1;
+        retired
     }
 
     /// Unlinks the owner's waiter and returns the next waiter's waker. The
-    /// allocation stays funded while a notifier still owns the retired node.
-    pub(crate) fn retire_owner(&mut self, node: Arc<CapacityWaiter>) -> Option<Waker> {
+    /// caller retains the retired owner until the admission lock is released.
+    /// Its allocation stays funded while any notifier still owns the node.
+    pub(crate) fn retire_owner(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
         let mut state = node
             .state
             .lock()
@@ -95,7 +95,7 @@ impl AdmissionState {
         if self
             .notify_next
             .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, &node))
+            .is_some_and(|current| Arc::ptr_eq(current, node))
         {
             self.notify_next = next.clone();
         }
@@ -117,16 +117,14 @@ impl AdmissionState {
             self.tail = previous.as_ref().map_or_else(Weak::new, Arc::downgrade);
         }
         self.waiter_count -= 1;
-        // The owner's reference ends here; a notifier may still hold the node.
         drop(state);
-        drop(node);
         if previous.is_none() {
-            self.head.as_ref().map(|head| {
+            self.head.as_ref().and_then(|head| {
                 head.state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .waker
-                    .clone()
+                    .take()
             })
         } else {
             None
@@ -148,7 +146,7 @@ pub(crate) fn capacity_waiter(allocation: Option<ReadAllocation>) -> Arc<Capacit
         state: Mutex::new(CapacityWaiterState {
             previous: Weak::new(),
             next: None,
-            waker: Waker::noop().clone(),
+            waker: None,
             queued: false,
             _allocation: allocation,
         }),
@@ -190,8 +188,7 @@ pub(crate) fn poll_submission_with(
     let Some(mut job) = pending.take() else {
         return Poll::Ready(Ok(()));
     };
-    let meter = job.meter().cloned();
-    if let Some(meter) = &meter
+    if let Some(meter) = job.meter()
         && let Err(error) = meter.check()
     {
         job.record_submission_error(&error);
@@ -200,64 +197,96 @@ pub(crate) fn poll_submission_with(
     }
     let observation = job.queue_observation();
     job.stage(1);
+    // Declare the owner before the guard so callback unwind also unlocks
+    // admission before retiring this node.
+    let retired;
+    let prepared;
+    let mut displaced = None;
     let mut admission = workers
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(node) = waiter.as_ref() {
-        node.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waker
-            .clone_from(context.waker());
-    }
     // A job that never waits retires its prepaid waiter charge on admission.
-    let prepaid = job.take_admission();
-    match workers.sender.try_send(job) {
+    let mut prepaid = job.take_admission();
+    let submission = match workers.sender.try_send(job) {
+        Err(mpsc::TrySendError::Full(mut job)) => {
+            let registered = waiter.as_ref().is_some_and(|node| {
+                let state = node
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.queued
+                    && state
+                        .waker
+                        .as_ref()
+                        .is_some_and(|waker| waker.will_wake(context.waker()))
+            });
+            if registered {
+                Err(mpsc::TrySendError::Full(job))
+            } else {
+                // Prepare callbacks outside admission, then retry the transfer
+                // so capacity released during preparation cannot go unnoticed.
+                job.set_queued(false);
+                drop(admission);
+                prepared = context.waker().clone();
+                let node = waiter.get_or_insert_with(|| capacity_waiter(prepaid.take()));
+                admission = workers
+                    .admission
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                job.set_queued(true);
+                let submission = workers.sender.try_send(job);
+                displaced = if matches!(&submission, Err(mpsc::TrySendError::Full(_))) {
+                    admission.register_existing(node, prepared)
+                } else {
+                    Some(prepared)
+                };
+                submission
+            }
+        }
+        submission => submission,
+    };
+    match submission {
         Ok(()) => {
             admission.queued_jobs += 1;
-            let next = waiter.take().and_then(|node| admission.retire_owner(node));
+            retired = waiter.take();
+            let next = retired
+                .as_ref()
+                .and_then(|node| admission.retire_owner(node));
             drop(admission);
+            wake_capacity_waiter(next);
+            drop(retired);
+            drop(displaced);
             if let Some(observation) = observation {
                 obs::project(move || {
                     observation.record("native.queued", true);
                     drop(obs::OperationSpan::new_root(observation));
                 });
             }
-            drop(prepaid);
-            wake_capacity_waiter(next);
             Poll::Ready(Ok(()))
         }
         Err(mpsc::TrySendError::Full(mut job)) => {
             // No acceptance callback for a failed candidate transfer.
-            job.restore_unqueued();
-            if let Some(node) = waiter.as_ref() {
-                // The existing node already carries the job's charge.
-                debug_assert!(prepaid.is_none(), "admission waiter paid twice");
-                let queued = node
-                    .state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .queued;
-                if !queued {
-                    admission.register_existing(node, context.waker());
-                }
-            } else {
-                *waiter = Some(admission.register(context.waker(), prepaid));
-            }
+            job.set_queued(false);
+            debug_assert!(prepaid.is_none(), "admission waiter paid twice");
             drop(admission);
             job.stage(0);
             *pending = Some(job);
+            drop(displaced);
             Poll::Pending
         }
         Err(mpsc::TrySendError::Disconnected(job)) => {
-            let next = waiter.take().and_then(|node| admission.retire_owner(node));
+            retired = waiter.take();
+            let next = retired
+                .as_ref()
+                .and_then(|node| admission.retire_owner(node));
             drop(admission);
+            wake_capacity_waiter(next);
+            drop(retired);
+            drop(displaced);
             let error = io::Error::from(io::ErrorKind::BrokenPipe);
             job.record_submission_error(&error);
             drop(job);
-            drop(prepaid);
-            wake_capacity_waiter(next);
             Poll::Ready(Err(error))
         }
     }
@@ -271,9 +300,10 @@ pub(crate) fn remove_capacity_waiter(workers: &NativeWorkers, waiter: Option<Arc
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let next = admission.retire_owner(waiter);
+    let next = admission.retire_owner(&waiter);
     drop(admission);
     wake_capacity_waiter(next);
+    drop(waiter);
 }
 
 pub(crate) fn wake_capacity_waiter(waiter: Option<Waker>) {
@@ -311,16 +341,16 @@ pub(crate) fn notify_capacity_released(admission: &Mutex<AdmissionState>) {
                 admission.notifying = false;
                 return;
             };
-            let state = node
+            let mut state = node
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             admission.notify_next = state.next.clone();
-            state.waker.clone()
+            state.waker.take()
         };
         // A consumer may cancel, poll, or release more capacity synchronously.
         // The cursor lives under admission, so those edits cannot strand the
         // remainder and concurrent releases coalesce without allocating.
-        wake_capacity_waiter(Some(waker));
+        wake_capacity_waiter(waker);
     }
 }

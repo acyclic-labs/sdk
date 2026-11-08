@@ -13,6 +13,10 @@ documentation = "https://docs.rs/acyclic-machines"
 keywords = ["machines", "compute", "grpc"]
 categories = ["api-bindings"]
 
+[[bin]]
+name = "machines-managed-oci-contract"
+test = false
+
 
 [package.metadata.acyclic]
 consumer-features = [{ features = [], target = "wasm32-unknown-unknown" }]

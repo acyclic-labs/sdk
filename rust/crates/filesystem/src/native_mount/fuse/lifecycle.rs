@@ -246,15 +246,19 @@ fn fuse_recovery_needs_detach(
     }
 }
 
+/// The canonical fusermount helpers, in preference order: the one list both
+/// mount recovery and the startup capability probe consult.
+pub(in crate::native_mount) const FUSE_HELPERS: [&CStr; 4] = [
+    c"/usr/bin/fusermount3",
+    c"/bin/fusermount3",
+    c"/usr/bin/fusermount",
+    c"/bin/fusermount",
+];
+
 pub(super) fn fuse_recovery_helper(
     work: &NativeMaterializationWork,
 ) -> Result<&'static CStr, NativeMountError> {
-    for candidate in [
-        c"/usr/bin/fusermount3",
-        c"/bin/fusermount3",
-        c"/usr/bin/fusermount",
-        c"/bin/fusermount",
-    ] {
+    for candidate in FUSE_HELPERS {
         work.charge(Items.delta(1))?;
         match fuse_recovery_stat(candidate, &mut &*work) {
             Ok(metadata) if metadata.st_mode & libc::S_IFMT == libc::S_IFREG => {

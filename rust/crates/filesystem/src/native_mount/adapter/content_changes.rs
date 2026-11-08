@@ -103,7 +103,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         Ok(super::MountWriteResult {
             file_id,
             written,
-            facts,
+            facts: facts.facts,
         })
     }
 }

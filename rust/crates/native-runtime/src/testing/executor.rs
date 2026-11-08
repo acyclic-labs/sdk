@@ -1,9 +1,6 @@
 //! Single-threaded polling of the original owned futures, in seeded ready order.
 use super::*;
-#[cfg(loom)]
-use loom::sync::Condvar;
-#[cfg(not(loom))]
-use std::sync::Condvar;
+use crate::sync::Condvar;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -466,11 +463,17 @@ impl<T> TaskHandle<T> {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        // Explicit submission from a physical worker retains its admitting
+        // runtime without entering that runtime around synchronous user work.
+        let runtime = owner
+            .as_ref()
+            .and_then(|owner| owner.0.runtime.clone())
+            .unwrap_or_else(tokio::runtime::Handle::current);
         let work = Accounted {
             value: future,
             _owner: owner,
         };
-        Self(Handle::Tokio(tokio::spawn(async move {
+        Self(Handle::Tokio(runtime.spawn(async move {
             let work = work;
             let owner = work._owner;
             let value = work.value.await;

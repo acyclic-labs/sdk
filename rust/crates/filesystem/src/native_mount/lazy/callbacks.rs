@@ -100,6 +100,19 @@ where
             .unchanged_since_with_meter(path, file_id, stamp, work)
     }
 
+    fn binding_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        stamp: ViewStamp,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError> {
+        Ok(self.view_is_stable_with_meter(work)?
+            && self.source_observed()
+            && self
+                .authored
+                .binding_unchanged_since_with_meter(path, stamp, work)?)
+    }
+
     fn reported_unchanged_since_with_meter(
         &self,
         path: &MountPath,
@@ -332,7 +345,7 @@ where
                         .await?;
                     match self.resolve(path, &text, owner, work).await? {
                         Resolution::Authored(lookup) => {
-                            Ok(Some((self.project_authored(lookup, work).await?, None)))
+                            Ok(Some((self.project_authored(lookup, work)?, None)))
                         }
                         Resolution::Absent => Ok(None),
                         Resolution::Unauthored(lookup, _allocation) => {

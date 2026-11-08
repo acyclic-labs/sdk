@@ -28,10 +28,10 @@ use crate::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
+pub use acyclic_harness_client::ExecutionQuery;
 use acyclic_harness_client::{
     AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
 };
-pub use events::ExecutionQuery;
 pub use history::HistoryPage;
 use std::sync::Arc;
 pub use usage_query::UsageQuery;
@@ -116,6 +116,15 @@ impl Conversation {
     #[must_use]
     pub fn open(connection: Connection) -> Arc<Self> {
         Arc::new(Self { connection })
+    }
+
+    /// The same conversation over [`Connection::observation`]: its committed
+    /// records stay readable after a failure stopped the agents' runtime.
+    ///
+    /// # Errors
+    /// Fails when the observation cannot be bound.
+    pub async fn observation(&self) -> Result<Arc<Self>> {
+        Ok(Self::open(self.connection.observation().await?))
     }
 
     fn agent(&self) -> &AgentPath {
@@ -252,7 +261,9 @@ impl Conversation {
     pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
         match self.deliver(id, prompt).await? {
             Sent::Accepted(inbox) => Ok(inbox),
-            Sent::Refused(reason) => Err(Error::Storage(reason)),
+            // A refusal committed nothing: it keeps the host's own class,
+            // never a storage failure the caller would treat as a fault.
+            Sent::Refused(reason) => Err(Error::Refused(reason)),
             // The session retains the terminal cause that left the outcome
             // undecided; report it with the outcome instead of dropping it.
             Sent::Unknown => Err(self

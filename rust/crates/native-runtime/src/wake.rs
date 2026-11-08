@@ -1,9 +1,6 @@
 //! Durable wake tokens shared by synchronous native completion owners.
-#[cfg(loom)]
-use loom::sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex};
 use std::sync::Arc;
-#[cfg(not(loom))]
-use std::sync::{Condvar, Mutex};
 
 /// A coalescing notification retained until one waiter consumes it.
 /// Its mutex is independent of the state protected by the caller.
@@ -61,6 +58,45 @@ impl std::task::Wake for NativeWake {
     fn wake_by_ref(self: &Arc<Self>) {
         self.notify();
     }
+}
+
+/// Registers one observer without invoking its clone or retirement callbacks
+/// under the owner's lock. Unchanged observers and terminal reads use one
+/// lock and no clone. A replacement clones outside the lock, then rechecks
+/// publication under the same lock before installing its wake. Readiness is
+/// observed without taking the outcome; a returned guard retains its custody
+/// until every unused incoming observer has retired outside the lock.
+pub(crate) fn poll_registered<S, G>(
+    mut lock: impl FnMut() -> G,
+    waker: &std::task::Waker,
+    ready: impl Fn(&S) -> bool,
+    slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
+) -> std::task::Poll<G>
+where
+    G: std::ops::DerefMut<Target = S>,
+{
+    let mut state = lock();
+    if ready(&state) {
+        return std::task::Poll::Ready(state);
+    }
+    if slot(&mut state)
+        .as_ref()
+        .is_some_and(|current| current.will_wake(waker))
+    {
+        return std::task::Poll::Pending;
+    }
+    drop(state);
+    let waker = waker.clone();
+    let mut state = lock();
+    if ready(&state) {
+        drop(state);
+        drop(waker);
+        return std::task::Poll::Ready(lock());
+    }
+    let retired = slot(&mut state).replace(waker);
+    drop(state);
+    drop(retired);
+    std::task::Poll::Pending
 }
 
 #[cfg(all(test, not(loom)))]

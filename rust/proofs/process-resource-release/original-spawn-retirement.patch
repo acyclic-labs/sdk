@@ -1,8 +1,40 @@
-diff --git b/rust/crates/native-runtime/src/process_tree/unix.rs a/rust/crates/native-runtime/src/process_tree/unix.rs
-index 8139e9d597f..aed4702be67 100644
---- b/rust/crates/native-runtime/src/process_tree/unix.rs
-+++ a/rust/crates/native-runtime/src/process_tree/unix.rs
-@@ -449,16 +449,52 @@ pub(super) fn spawn_closed_with_arguments(
+--- a/rust/crates/native-runtime/src/process_tree/unix.rs
++++ b/rust/crates/native-runtime/src/process_tree/unix.rs
+@@ -411,23 +411,21 @@
+         .ok_or(io::ErrorKind::InvalidInput)?;
+     let copied = bytes - std::mem::size_of::<*mut libc::c_char>();
+     meter.admit_examination((count - 1) as u64, copied as u64)?;
+-    // Storage drops before its original allocation guard, also on a callback unwind.
+-    let mut allocation = crate::ReadAllocation::borrowed(meter, bytes)?;
++    meter.allocate(bytes as u64)?;
+     let mut arguments = Vec::new();
+-    arguments
+-        .try_reserve_exact(count)
+-        .map_err(|error| meter.allocation_failed(error))?;
+-    let actual = arguments
+-        .capacity()
+-        .checked_mul(std::mem::size_of::<*mut libc::c_char>())
+-        .ok_or(io::ErrorKind::InvalidInput)?;
+-    allocation.reconcile_capacity(actual)?;
++    if arguments.try_reserve_exact(count).is_err() {
++        meter.release(bytes as u64);
++        return Err(io::ErrorKind::OutOfMemory.into());
++    }
+     arguments.push(program.as_ptr().cast_mut());
+     arguments.extend(args.iter().map(|argument| argument.as_ptr().cast_mut()));
+     arguments.push(std::ptr::null_mut());
+-    meter
++    let result = meter
+         .record_examination((count - 1) as u64, copied as u64)
+-        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody))
++        .and_then(|()| spawn_closed_with_arguments(program, &arguments, None, meter, custody));
++    drop(arguments);
++    meter.release(bytes as u64);
++    result
+ }
+ 
+ pub(super) fn spawn_closed_with_arguments(
+@@ -451,16 +449,52 @@
          actions: std::mem::MaybeUninit::uninit(),
          attr_initialized: false,
          actions_initialized: false,
@@ -62,7 +94,7 @@ index 8139e9d597f..aed4702be67 100644
  }
  
  fn spawn_status(status: libc::c_int) -> io::Result<()> {
-@@ -470,93 +506,14 @@ fn spawn_status(status: libc::c_int) -> io::Result<()> {
+@@ -472,93 +506,14 @@
  }
  
  /// One closed spawn's native objects; each initialized one must be destroyed.
@@ -76,8 +108,8 @@ index 8139e9d597f..aed4702be67 100644
 -    meter: &'a dyn crate::NativeReadMeter,
 -    custody: &'a mut Option<super::ProcessTree>,
 -    events: super::events::Events,
- }
- 
+-}
+-
 -impl SpawnObjects<'_> {
 -    fn retire(&mut self) -> io::Result<()> {
 -        let mut result = Ok(());
@@ -154,11 +186,13 @@ index 8139e9d597f..aed4702be67 100644
 -        result
 -    }
 -
++}
++
 +impl SpawnObjects {
      fn initialize(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
          let flags = libc::c_short::try_from(libc::POSIX_SPAWN_SETPGROUP)
              .map_err(|_| io::ErrorKind::InvalidInput)?;
-@@ -607,11 +564,13 @@ impl SpawnObjects<'_> {
+@@ -609,11 +564,13 @@
      }
  
      fn spawn(
@@ -173,7 +207,7 @@ index 8139e9d597f..aed4702be67 100644
      ) -> io::Result<()> {
          let mut pid = 0;
          let (result, recorded) =
-@@ -631,7 +590,7 @@ impl SpawnObjects<'_> {
+@@ -633,7 +590,7 @@
                      )
                  };
                  if status == 0 {
@@ -182,7 +216,7 @@ index 8139e9d597f..aed4702be67 100644
                          child: None,
                          native_child: Some(pid),
                          guard: Guard {
-@@ -647,7 +606,7 @@ impl SpawnObjects<'_> {
+@@ -649,7 +606,7 @@
                          exit_fd: None,
                          writer: Writer,
                          queued_stdin: None,
@@ -191,7 +225,7 @@ index 8139e9d597f..aed4702be67 100644
                          #[cfg(all(test, feature = "test-support", not(loom)))]
                          capture_armed: None,
                      });
-@@ -659,25 +618,24 @@ impl SpawnObjects<'_> {
+@@ -661,25 +618,24 @@
      }
  }
  

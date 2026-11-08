@@ -251,7 +251,7 @@ writes and `flush()` provide no durability guarantee.
 Each CI lane summary lists the slowest Rust tests with a `cargo nextest run`
 command that reruns one of them alone. Test processes install no subscriber,
 and there is no shared test-support crate to add one per test, so a test trace
-is a local, uncommitted edit: add `tracing-chrome.workspace = true` to the
+is a local, uncommitted edit: add `tracing-chrome = "0.7.2"` to the
 crate's `dev-dependencies` and wrap the test body:
 
 ```rust

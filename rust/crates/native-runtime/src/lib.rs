@@ -12,13 +12,14 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 mod delivery;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 mod host_index;
 mod sync;
 use sync::Mutex as CompletionMutex;
+pub use sync::{Condvar as InlineCondvar, Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -58,6 +59,10 @@ pub use windows::terminal;
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
+#[cfg(any(unix, windows))]
+pub use process_tree::ProcessPipeReader;
+#[cfg(windows)]
+pub use process_tree::ProcessPipeWriter;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureRequest, CaptureSchedule,
     CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput,
@@ -76,8 +81,6 @@ pub use process_tree::{
     ProcessHostPartialProgress, ProcessHostPhase, ProcessHostProgress, run_external_process_host,
     run_external_process_host_with_progress,
 };
-#[cfg(windows)]
-pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
 
 mod file;
 mod io_progress;
@@ -165,8 +168,8 @@ pub(crate) use blocking::{
 };
 pub use task::{
     AbortHandle, OwnedTask, PersistenceKey, TaskCompletion, TaskHandle, TaskSpawner,
-    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_owned,
-    spawn_persistence,
+    coordination_runtime, persistence_syscall, spawn, spawn_blocking, spawn_eager, spawn_owned,
+    spawn_persistence, try_spawn,
 };
 mod completion;
 #[cfg(any(windows, target_os = "linux"))]

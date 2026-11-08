@@ -125,8 +125,12 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
     for batch in [false, true] {
         let cancel = CancellationToken::new();
         let (cached, id) = owned_cache(Finish::Return, &cancel).await?;
+        let budget = WorkBudget {
+            items_returned: 2,
+            ..budget()
+        };
         let original =
-            NativeMaterializationWork::new(budget(), &cancel).map_err(|(error, _)| error)?;
+            NativeMaterializationWork::new(budget, &cancel).map_err(|(error, _)| error)?;
         let baseline = original.live_allocation_bytes();
         let mut work = AuthorityWork::native(&original, &cancel);
         let requests = [ObjectReadRequest {
@@ -142,6 +146,7 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
             cached.read(id, 5, &mut work).await?.bytes
         };
         let held = original.live_allocation_bytes();
+        assert_eq!(original.receipt().items_returned, if batch { 2 } else { 0 });
         assert!(held > baseline);
         drop(cached.read(id, 5, &mut work).await?);
         cached.clear()?;
@@ -149,7 +154,7 @@ async fn scalar_and_batch_cache_eviction_cannot_release_a_live_byte_alias()
         assert_eq!(alias.as_ref(), b"owned");
         drop(alias);
         assert_eq!(original.live_allocation_bytes(), baseline);
-        original.receipt().verify(budget())?;
+        original.receipt().verify(budget)?;
     }
     Ok(())
 }

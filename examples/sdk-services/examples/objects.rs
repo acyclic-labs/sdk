@@ -1,3 +1,5 @@
+//! Stores and reads a blob through the configured Objects HTTP endpoint.
+
 use acyclic_objects::{Blobs, ByteRange, HttpObjects};
 
 #[tokio::main]
