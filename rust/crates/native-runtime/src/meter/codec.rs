@@ -55,6 +55,8 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeCodecReservation<M> {
 
 impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeCodecReservation<M> {
     fn drop(&mut self) {
-        self.meter.cancel_reserved_codec(self.remaining);
+        crate::delivery::deliver(std::iter::once(self.remaining), |remaining| {
+            self.meter.cancel_reserved_codec(remaining);
+        });
     }
 }

@@ -61,7 +61,6 @@ impl<T> Drop for OwnedTask<T> {
 // Preserve the original typed join error without formatting its panic payload.
 enum JoinFailure {
     Native(tokio::task::JoinError),
-    #[cfg(feature = "test-support")]
     Panicked {
         _payload: std::sync::Mutex<Box<dyn std::any::Any + Send>>,
     },
@@ -73,7 +72,6 @@ impl JoinFailure {
     fn cancelled(&self) -> bool {
         match self {
             Self::Native(error) => error.is_cancelled(),
-            #[cfg(feature = "test-support")]
             Self::Panicked { .. } => false,
             #[cfg(feature = "test-support")]
             Self::Cancelled(_) => true,
@@ -110,7 +108,6 @@ impl std::error::Error for JoinFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Native(error) => Some(error),
-            #[cfg(feature = "test-support")]
             Self::Panicked { .. } => None,
             #[cfg(feature = "test-support")]
             Self::Cancelled(error) => Some(error),
@@ -122,7 +119,6 @@ pub(super) fn join_error(error: tokio::task::JoinError) -> io::Error {
     JoinFailure::Native(error).into_error()
 }
 
-#[cfg(feature = "test-support")]
 pub(crate) fn panic_error(payload: Box<dyn std::any::Any + Send>) -> io::Error {
     JoinFailure::Panicked {
         _payload: std::sync::Mutex::new(payload),

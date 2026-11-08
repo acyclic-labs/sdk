@@ -42,7 +42,7 @@ pub(super) fn name_is_bound(
         work.charge(Items.delta(1))?;
         if *known_id == file_id && **known_name == *name {
             return match stamp {
-                Some(stamp) => Ok(source.unchanged_since_with_meter(name, None, *stamp, work)?),
+                Some(stamp) => Ok(source.binding_unchanged_since_with_meter(name, *stamp, work)?),
                 None => Ok(true),
             };
         }

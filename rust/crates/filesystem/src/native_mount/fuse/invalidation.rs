@@ -179,7 +179,7 @@ impl ProjectionState {
             for (name, held) in &entry.negative_children {
                 work.charge(Items.delta(1))?;
                 let path = fuse_child_path(anchor, name, work)?;
-                if !source.unchanged_since_with_meter(&path, None, *held, work)? {
+                if !source.binding_unchanged_since_with_meter(&path, *held, work)? {
                     let name = fuse_copy_bytes(name, work)?;
                     fuse_reserve(&mut items, 1, work)?;
                     items.push(KernelCacheItem::Entry {
@@ -191,9 +191,8 @@ impl ProjectionState {
             for (index, binding) in entry.bindings.iter().enumerate() {
                 work.charge(Items.delta(1))?;
                 if let Some(held) = binding.kernel
-                    && !source.unchanged_since_with_meter(
+                    && !source.binding_unchanged_since_with_meter(
                         binding.native_path(),
-                        Some(file_id),
                         held,
                         work,
                     )?

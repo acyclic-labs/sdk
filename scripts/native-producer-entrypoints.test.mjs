@@ -1,7 +1,34 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createNativeProducer } from "./build-native-family.mjs";
+import { nativeFamily } from "./native-family.mjs";
+
+test("both native admission baselines equal the actual Rust generator and refuse a missing producer", () => {
+  const binary = process.env.SDK_PROTO_CODEGEN;
+  const empty = mkdtempSync(join(tmpdir(), "sdk-protocol-producer-"));
+  try {
+    for (const family of ["actors", "stream"]) {
+      const producer = createNativeProducer(nativeFamily(family));
+      producer.assertCurrentNativeFamily();
+      process.env.SDK_PROTO_CODEGEN = join(empty, "missing");
+      try {
+        assert.throws(() => producer.assertCurrentNativeFamily(), error =>
+          error.code === "PROTO_CODEGEN_FAILED" && error.cause?.code === "ENOENT"
+          && error.message.includes("step native-family failed; recovery:"));
+      } finally {
+        if (binary === undefined) delete process.env.SDK_PROTO_CODEGEN;
+        else process.env.SDK_PROTO_CODEGEN = binary;
+      }
+    }
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
 
 // Override only with captured, unchanged historical entrypoint source. Real
 // Node/generator failures are retained by the caller as the negative control.

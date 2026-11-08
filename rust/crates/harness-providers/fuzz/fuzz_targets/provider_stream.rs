@@ -1,3 +1,4 @@
+//! Exercises the production provider stream invariants with untrusted input.
 #![no_main]
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {
     acyclic_harness_providers::fuzzing::assert_stream_invariants(input);

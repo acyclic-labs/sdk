@@ -4,6 +4,105 @@ use crate::{authority::*, testing as signed};
 use acyclic_test_support::differential::observe;
 
 #[test]
+fn billed_owner_intersection_visits_each_grant_linearly() {
+    use ed25519_dalek::Signer;
+    use prost::Message;
+
+    let execution = |owner: String| Grant {
+        kind: GrantKind::Execution(ExecutionGrant {
+            grant: ResourceGrant {
+                resource: ResourcePattern {
+                    name: "execution:/work".into(),
+                    prefix: false,
+                },
+                actions: vec!["execution/actor-turn".into()],
+            },
+            cpu_millis: None,
+            memory_bytes: None,
+            policy_generation: None,
+            usage_owner: Some(owner),
+            max_concurrency: None,
+            reserved_capacity_units: None,
+        }),
+    };
+    let mut allowance = SignedAllowance {
+        allowance: Allowance {
+            account_id: "account".into(),
+            spend_micros: 10,
+            expires_at_unix_seconds: signed::NOW + 10,
+            products: vec!["actors".into()],
+        },
+        signature: vec![],
+    };
+    let mut message = crate::ALLOWANCE_DOMAIN.to_vec();
+    AllowanceProto::from(allowance.allowance.clone())
+        .encode(&mut message)
+        .unwrap();
+    allowance.signature = signed::key(1).sign(&message).to_bytes().to_vec();
+    let trust = signed::Snapshot::default();
+    let attributes = RecordAttributes::default();
+    let usage = signed::limits(None);
+    let request = Request {
+        target: Target::Resource {
+            action: "execution/actor-turn",
+            resource: "execution:/work",
+        },
+        ..signed::request("execution:/work", &attributes, &usage)
+    };
+    for repetitions in [8, 32] {
+        for owners in [1, 8] {
+            for admitted in [false, true] {
+                let mut grants: Vec<_> = (0..owners)
+                    .map(|index| execution(format!("actors/{index}")))
+                    .collect();
+                grants.push(execution("workers/b".into()));
+                let bytes = signed::root(|block| {
+                    block.certificates.as_mut().unwrap().keys[0].key.grants = GrantSet {
+                        grants: grants.clone(),
+                    };
+                    block.caveats = (0..repetitions)
+                        .map(|_| Caveat {
+                            kind: CaveatKind::Grants(GrantSet {
+                                grants: grants.clone(),
+                            }),
+                        })
+                        .chain([
+                            Caveat {
+                                kind: CaveatKind::Grants(GrantSet {
+                                    grants: vec![execution(if admitted {
+                                        "actors/0".into()
+                                    } else {
+                                        "workers/b".into()
+                                    })],
+                                }),
+                            },
+                            Caveat {
+                                kind: CaveatKind::Allowance(allowance.clone()),
+                            },
+                        ])
+                        .collect();
+                });
+                let capability = verify(&bytes, &trust, signed::NOW).unwrap();
+                let (result, visits) = observe(
+                    || (),
+                    |()| {
+                        capability.authorize(&trust, &request, PolicyDecision::Allow, Scope::Exact)
+                    },
+                );
+                let visits: Vec<GrantMatch> = visits;
+                assert_eq!(result.is_ok(), admitted);
+                let input_grants = (repetitions + 1) * grants.len() + 1;
+                assert!(
+                    visits.len() <= 3 * input_grants,
+                    "{repetitions} restrictions, {owners} actor owners: {} visits for {input_grants} grants",
+                    visits.len()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn current_authorization_reuses_admission_and_preserves_every_request_dependency() {
     let mut trust = signed::Snapshot::default();
     let capability = verify(&signed::root(|_| {}), &trust, signed::NOW)

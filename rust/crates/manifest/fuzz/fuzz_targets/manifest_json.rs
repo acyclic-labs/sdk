@@ -1,4 +1,6 @@
 #![no_main]
+//! Check manifest admission, serialization and generated entry environments.
+
 use acyclic_manifest::{environment_typescript, parse};
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/support/admission.rs"]
@@ -10,8 +12,10 @@ fuzz_target!(|input: &[u8]| {
             Ok(()),
             "independent admission invariant"
         );
-        let json = serde_json::to_vec(&manifest).expect("admitted manifest encodes");
-        assert_eq!(parse(&json).expect("round trip"), manifest);
+        assert!(
+            serde_json::to_vec(&manifest)
+                .is_ok_and(|json| parse(&json).is_ok_and(|decoded| decoded == manifest))
+        );
         for environment in &manifest.environments {
             for entry in &environment.entries {
                 assert!(environment_typescript(&manifest, &environment.name, &entry.name).is_ok());

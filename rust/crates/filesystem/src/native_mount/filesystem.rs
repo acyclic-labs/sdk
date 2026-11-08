@@ -300,6 +300,14 @@ pub trait MountFilesystem: Send + Sync + 'static {
         stamp: ViewStamp,
         work: &NativeMaterializationWork,
     ) -> Result<bool, MountSourceError>;
+    /// Whether this name and its ancestors retain their bindings, regardless
+    /// of changes to node data or the directory's own children.
+    fn binding_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Traverses only actual reported changes through the same history engine.
     fn reported_unchanged_since_with_meter(
         &self,

@@ -1,17 +1,21 @@
 use super::path_identity;
 
+/// Check relocation against the constructed destination and return that path.
+///
+/// # Panics
+///
+/// Panics when the production path operations refuse or change an owned filename.
 pub fn check(path: &str, old: &str, new: &str, relative: &str, windows: bool) -> String {
-    let rebased = path_identity::rebase(path, old, new, windows)
-        .expect("owned source filename refused relocation");
     let destination = if windows {
         new.replace('\\', "/")
     } else {
         new.to_owned()
     };
+    let rebased = format!("{destination}/{relative}");
     assert_eq!(
-        rebased,
-        format!("{destination}/{relative}"),
-        "relocation changed the source suffix"
+        path_identity::rebase(path, old, new, windows).as_deref(),
+        Some(rebased.as_str()),
+        "relocation refused or changed the source suffix"
     );
     let identity = format!("<root>/{relative}");
     assert_eq!(

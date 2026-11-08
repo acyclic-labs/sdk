@@ -2,6 +2,11 @@ use super::relative_spans;
 use rustdoc_types::{Item, Span};
 use std::{collections::BTreeSet, path::PathBuf};
 
+/// Check the production selector against constructed local and foreign spans.
+///
+/// # Panics
+///
+/// Panics when source selection retains anything beyond the local relative paths.
 pub fn check(prototype: &Item, name: &[u8]) {
     let name = name
         .iter()
@@ -10,7 +15,10 @@ pub fn check(prototype: &Item, name: &[u8]) {
     let local = PathBuf::from(format!("src/source-{name}.rs"));
     let other = PathBuf::from(format!("other/source-{name}.rs"));
     let foreign = PathBuf::from(format!("foreign/source-{name}.rs"));
-    let absolute = std::env::current_dir().unwrap().join(&local);
+    #[cfg(unix)]
+    let absolute = PathBuf::from("/").join(&local);
+    #[cfg(windows)]
+    let absolute = PathBuf::from(r"C:\").join(&local);
     let item = |filename, crate_id, present: bool| {
         let mut item = prototype.clone();
         item.crate_id = crate_id;

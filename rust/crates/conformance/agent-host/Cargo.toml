@@ -41,6 +41,7 @@ workspace = true
 [[bin]]
 name = "oidc-qualify"
 path = "src/bin/oidc_qualify.rs"
+test = false
 required-features = ["local"]
 
 # Neither backend is enabled by default. Either backend admits this target;

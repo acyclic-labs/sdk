@@ -25,7 +25,9 @@ mod tests;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostAction {
     /// This owner process's resident views and its current OS resource use,
-    /// read from the OS on demand. Native host processes are not included.
+    /// read from the OS on demand: its memory, threads, descriptors and CPU,
+    /// and the mounts beneath its workspace. Native host processes are not
+    /// included.
     Resources {
         /// Agent authorizing the query.
         task: AgentPath,
@@ -317,15 +319,23 @@ impl HostWorkspaceOwner {
     }
 
     fn resources(&self) -> Result<Value> {
-        let process =
-            acyclic_native_runtime::resources::sample_process_resources().map_err(storage)?;
+        use acyclic_native_runtime::resources::{mounts_beneath, sample_process_resources};
+        let process = sample_process_resources().map_err(storage)?;
+        let workspace = self.local.workspace_path().ok_or_else(|| {
+            Error::Invalid(
+                "step=sample owner resources: workspace absent; recovery: acyclic agents".into(),
+            )
+        })?;
+        // The mount table is shared with every other process; this owner's
+        // mounts are the ones beneath the workspace it serves.
+        let mounts = mounts_beneath(workspace).map_err(storage)?;
         let views = self.views()?.len();
         Ok(json!({
             "views": views,
             "memory_bytes": process.memory_bytes,
             "threads": process.threads,
             "descriptors": process.descriptors,
-            "mounts": process.mounts,
+            "mounts": mounts,
             "cpu_centiseconds": process.cpu_centiseconds,
         }))
     }

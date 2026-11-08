@@ -2,6 +2,12 @@ use super::child;
 use cargo_metadata::{Error, Metadata};
 use std::process::{ExitStatus, Output};
 
+/// Require the production output decoder to preserve typed fields and failures.
+///
+/// # Panics
+///
+/// Panics when the decoded result disagrees with the original output or Cargo's
+/// maintained metadata schema.
 pub fn check(bytes: &[u8]) {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
@@ -26,54 +32,30 @@ pub fn check(bytes: &[u8]) {
             .as_ref()
             .ok()
             .and_then(|text| text.lines().find(|line| line.starts_with('{')));
-        match result {
+        let preserved = match result {
             Ok(metadata) => {
-                assert!(success, "Cargo output lost failure status");
-                let expected: Metadata =
-                    serde_json::from_str(json.expect("Cargo output admitted missing JSON"))
-                        .expect("Cargo output admitted invalid metadata");
-                assert!(
-                    serde_json::to_value(metadata).unwrap()
-                        == serde_json::to_value(expected).unwrap(),
-                    "Cargo output lost metadata fields"
-                );
+                success
+                    && json.is_some_and(|json| {
+                        serde_json::from_str::<Metadata>(json).is_ok_and(|expected| {
+                            matches!(
+                                (serde_json::to_value(metadata), serde_json::to_value(expected)),
+                                (Ok(actual), Ok(expected)) if actual == expected
+                            )
+                        })
+                    })
             }
-            Err(Error::CargoMetadata { stderr }) => {
-                assert!(!success, "Cargo output lost success status");
-                assert!(
-                    stderr.as_bytes() == bytes,
-                    "Cargo output lost refusal details"
-                );
-            }
-            Err(Error::ErrUtf8(error)) => {
-                assert!(!success, "Cargo output lost success status");
-                assert!(
-                    text.is_err() && error.as_bytes() == bytes,
-                    "Cargo output lost invalid refusal bytes"
-                );
-            }
-            Err(Error::Utf8(error)) => {
-                assert!(success, "Cargo output lost failure status");
-                assert_eq!(text.unwrap_err(), error);
-            }
-            Err(Error::NoJson) => {
-                assert!(success, "Cargo output lost failure status");
-                assert!(
-                    text.is_ok() && json.is_none(),
-                    "Cargo output lost JSON admission"
-                );
-            }
+            Err(Error::CargoMetadata { stderr }) => !success && stderr.as_bytes() == bytes,
+            Err(Error::ErrUtf8(error)) => !success && text.is_err() && error.as_bytes() == bytes,
+            Err(Error::Utf8(error)) => success && text.err() == Some(error),
+            Err(Error::NoJson) => success && text.is_ok() && json.is_none(),
             Err(Error::Json(_)) => {
-                assert!(success, "Cargo output lost failure status");
-                assert!(
-                    serde_json::from_str::<Metadata>(
-                        json.expect("Cargo output lost JSON admission")
-                    )
-                    .is_err(),
-                    "Cargo output rejected valid metadata"
-                );
+                success && json.is_some_and(|json| serde_json::from_str::<Metadata>(json).is_err())
             }
-            Err(Error::Io(_)) => panic!("Cargo output decoder performed I/O"),
-        }
+            Err(Error::Io(_)) => false,
+        };
+        assert!(
+            preserved,
+            "Cargo output changed fields, failure bytes or error class"
+        );
     }
 }

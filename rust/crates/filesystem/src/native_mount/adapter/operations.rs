@@ -168,6 +168,19 @@ where
         })
     }
 
+    fn binding_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        stamp: ViewStamp,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError> {
+        self.query_history(path, work, |path, leaf| {
+            self.checkout
+                .ledger
+                .binding_unchanged_since(path, stamp, leaf)
+        })
+    }
+
     fn listing_unchanged_since_with_meter(
         &self,
         path: &MountPath,

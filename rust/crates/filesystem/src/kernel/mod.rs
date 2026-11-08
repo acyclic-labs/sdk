@@ -83,9 +83,7 @@ pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::records_match_content;
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
-pub(crate) use generation_mutation::{
-    apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
-};
+pub(crate) use generation_mutation::apply_generation_mutations_retaining_with_accounting;
 pub(crate) use list::list_tree_entries_async_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use merge::merge_generation_with_borrowed_resolutions_with_accounting;
@@ -179,7 +177,8 @@ pub use generation::{
     generation_root_id,
 };
 pub(crate) use generation::{
-    read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
+    clone_generation_root_with_accounting, read_generation_root_with_accounting,
+    read_generation_root_with_limits_and_accounting,
 };
 pub use generation_mutation::{
     GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt,
