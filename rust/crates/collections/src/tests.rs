@@ -1,475 +1,14 @@
 use super::*;
 use proptest::prelude::*;
+use proptest::test_runner::TestCaseResult;
 use std::collections::BTreeMap;
 
 mod compiled_prefix;
+mod keyed;
+mod ordered;
+mod persistent;
 mod prefix;
 mod preparation;
-
-#[test]
-fn persistent_histories_preserve_prefixes_bounded_paths_and_original_custody()
--> Result<(), &'static str> {
-    use proptest::test_runner::{Config, RngSeed, TestRunner};
-    let mut runner = TestRunner::new(Config {
-        cases: 128,
-        failure_persistence: None,
-        rng_seed: RngSeed::Fixed(0x7261_6e67_652d_7631),
-        ..Config::default()
-    });
-    runner
-        .run(
-            &prop::collection::vec(
-                (any::<usize>(), any::<u64>(), prop::option::of(any::<u64>())),
-                1..96,
-            ),
-            |operations| {
-                let mut work = Work::default();
-                let mut histories = vec![(PersistentIndex::default(), BTreeMap::new())];
-                for (value, (parent, key, cut)) in operations.into_iter().enumerate() {
-                    let (original, expected) = &histories[parent % histories.len()];
-                    let mut expected = expected.clone();
-                    let view = if let Some(cut) = cut {
-                        expected.retain(|key, _| *key < cut);
-                        original.prefix(cut.to_be_bytes())
-                    } else {
-                        original.clone()
-                    };
-                    let items = work.items;
-                    let claims = work.claims;
-                    let next = view
-                        .insert(key.to_be_bytes(), value, &mut work)
-                        .map_err(TestCaseError::fail)?;
-                    // Two search paths plus two admitted child minima at each
-                    // copied branch; coordinates strictly increase within u64.
-                    prop_assert!(work.items - items <= 65 * 80);
-                    prop_assert!(work.claims - claims <= 65);
-                    expected.insert(key, value);
-                    histories.push((next, expected));
-                    for (history, expected) in &histories {
-                        let claims = work.claims;
-                        for query in [0, key, key.saturating_sub(1), u64::MAX] {
-                            let items = work.items;
-                            let actual = history
-                                .predecessor(query.to_be_bytes(), &mut work)
-                                .map_err(TestCaseError::fail)?
-                                .map(
-                                    |PersistentPosition {
-                                         key,
-                                         value,
-                                         before: _,
-                                     }| {
-                                        (u64::from_be_bytes(*key), *value)
-                                    },
-                                );
-                            prop_assert_eq!(
-                                actual,
-                                expected.range(..=query).next_back().map(|(k, v)| (*k, *v))
-                            );
-                            prop_assert!(work.items - items <= 65 * 58);
-                            let actual = history
-                                .exact_position(query.to_be_bytes(), &mut work)
-                                .map_err(TestCaseError::fail)?
-                                .map(|position| *position.value);
-                            prop_assert_eq!(actual, expected.get(&query).copied());
-                        }
-                        prop_assert_eq!(work.claims, claims);
-                    }
-                }
-                drop(histories);
-                prop_assert_eq!(work.live.get(), 0);
-                Ok(())
-            },
-        )
-        .map_err(|error| {
-            eprintln!("{error}");
-            "immutable prefix histories differ from original ordered facts"
-        })?;
-
-    let mut work = Work {
-        observe_retirement: true,
-        ..Work::default()
-    };
-    let mut result: Result<(), &'static str> = Ok(());
-    let measured = acyclic_test_support::measure(|| {
-        result = (|| {
-            let mut history = PersistentIndex::default();
-            for key in 0_u64..256 {
-                history = history.insert(key.to_be_bytes(), key, &mut work)?;
-                assert_eq!(
-                    work.live.get() as i64,
-                    acyclic_test_support::current_allocations()
-                        .unwrap()
-                        .bytes_current
-                );
-            }
-            let original = history.clone();
-            history = history.prefix(128_u64.to_be_bytes());
-            let live = work.live.get();
-            for claims in 0..=8 {
-                work.maximum_claims = Some(work.claims + claims);
-                let attempt = history.insert(200_u64.to_be_bytes(), 999, &mut work);
-                if claims == 0 {
-                    assert!(matches!(attempt, Err("allocation refused")));
-                }
-                if let Ok(next) = attempt {
-                    drop(next);
-                }
-                assert_eq!(work.live.get(), live);
-                work.maximum_claims = None;
-                assert_eq!(
-                    history
-                        .predecessor(u64::MAX.to_be_bytes(), &mut work)?
-                        .map(|entry| *entry.value),
-                    Some(127)
-                );
-                assert_eq!(
-                    original
-                        .predecessor(u64::MAX.to_be_bytes(), &mut work)?
-                        .map(|entry| *entry.value),
-                    Some(255)
-                );
-            }
-            for items in [0, 1, 32, 128] {
-                work.maximum_items = Some(work.items + items);
-                drop(history.insert(200_u64.to_be_bytes(), 999, &mut work));
-                assert_eq!(work.live.get(), live);
-                work.maximum_items = None;
-            }
-            work.cancelled = true;
-            assert!(history.predecessor(0_u64.to_be_bytes(), &mut work).is_err());
-            assert!(history.insert(0_u64.to_be_bytes(), 1, &mut work).is_err());
-            drop(original);
-            drop(history);
-            Ok(())
-        })();
-    });
-    result?;
-    assert_eq!(work.live.get(), 0);
-    assert_eq!(measured.bytes_current, 0);
-    assert!(
-        !work.early_refund.get(),
-        "immutable node backing outlived its original credit"
-    );
-    Ok(())
-}
-
-#[test]
-fn keyed_histories_preserve_global_cuts_bounded_work_and_physical_custody()
--> Result<(), &'static str> {
-    use proptest::test_runner::{Config, RngSeed, TestRunner};
-    let mut runner = TestRunner::new(Config {
-        cases: 64,
-        failure_persistence: None,
-        rng_seed: RngSeed::Fixed(0x6b65_7965_642d_7631),
-        ..Config::default()
-    });
-    runner
-        .run(
-            &prop::collection::vec(
-                (
-                    any::<usize>(),
-                    0_u64..8,
-                    0_u64..32,
-                    prop::option::of(0_u64..32),
-                ),
-                1..64,
-            ),
-            |operations| {
-                let mut work = Work::default();
-                let mut histories = vec![(KeyedIndex::<_, _, 8>::default(), BTreeMap::new())];
-                for (value, (parent, key, sequence, cut)) in operations.into_iter().enumerate() {
-                    let (original, expected) = &histories[parent % histories.len()];
-                    let mut expected = expected.clone();
-                    let claims = work.claims;
-                    let claimed_bytes = work.claimed_bytes;
-                    let items = work.items;
-                    let view = if let Some(cut) = cut {
-                        expected.retain(|(_, sequence), _| *sequence < cut);
-                        original.cap(cut)
-                    } else {
-                        original.clone()
-                    };
-                    prop_assert_eq!(work.claims, claims);
-                    let next = view
-                        .insert(key.to_be_bytes(), sequence, value, &mut work)
-                        .map_err(TestCaseError::fail)?;
-                    prop_assert!(work.claims - claims <= 130);
-                    let bound = view.insertion_bound(1).unwrap();
-                    prop_assert!(work.claimed_bytes - claimed_bytes <= bound.allocation_bytes);
-                    prop_assert!(work.items - items <= bound.examined_items);
-                    expected.insert((key, sequence), value);
-                    histories.push((next, expected));
-                    for (history, expected) in &histories {
-                        for query in [0, key, 7, 8] {
-                            for (from, before) in
-                                [(0, 32), (sequence, 32), (0, sequence), (sequence, sequence)]
-                            {
-                                let items = work.items;
-                                let claims = work.claims;
-                                let actual = history
-                                    .seek(query.to_be_bytes(), from, before, &mut work)
-                                    .map_err(TestCaseError::fail)?
-                                    .map(|(s, v)| (s, *v));
-                                let expected = expected
-                                    .iter()
-                                    .find(|((k, s), _)| *k == query && from <= *s && *s < before)
-                                    .map(|((_, s), v)| (*s, *v));
-                                prop_assert_eq!(actual, expected);
-                                prop_assert!(work.items - items <= 3 * 65 * 60);
-                                prop_assert_eq!(work.claims, claims);
-                            }
-                        }
-                    }
-                }
-                drop(histories);
-                prop_assert_eq!(work.live.get(), 0);
-                Ok(())
-            },
-        )
-        .map_err(|error| {
-            eprintln!("{error}");
-            "keyed histories differ from original range facts"
-        })?;
-
-    // A lexical composite prefix is the actual existing operation, and cannot
-    // implement a global sequence cut: it keeps a future row under a lower key.
-    let mut work = Work::default();
-    let composite = |key: u64, sequence: u64| {
-        let mut result = [0; 16];
-        result[..8].copy_from_slice(&key.to_be_bytes());
-        result[8..].copy_from_slice(&sequence.to_be_bytes());
-        result
-    };
-    let old = PersistentIndex::default().insert(composite(0, 9), 9, &mut work)?;
-    assert!(
-        old.prefix(composite(1, 5))
-            .predecessor(composite(0, 9), &mut work)?
-            .is_some()
-    );
-    let original = KeyedIndex::<_, _, 8>::default().insert(0_u64.to_be_bytes(), 9, 9, &mut work)?;
-    let corrected = original
-        .cap(5)
-        .insert(1_u64.to_be_bytes(), 5, 5, &mut work)?;
-    assert_eq!(corrected.seek(0_u64.to_be_bytes(), 0, 20, &mut work)?, None);
-    assert_eq!(
-        corrected.seek(1_u64.to_be_bytes(), 0, 20, &mut work)?,
-        Some((5, &5))
-    );
-    drop((old, original, corrected));
-    assert_eq!(work.live.get(), 0);
-
-    let mut indexed_work = [[0; 3]; 2];
-    for (run, population) in [1_u64, 100_000].into_iter().enumerate() {
-        let mut work = Work {
-            observe_retirement: true,
-            ..Work::default()
-        };
-        let mut result: Result<(), &'static str> = Ok(());
-        let measured = acyclic_test_support::measure(|| {
-            result = (|| {
-                let mut index = KeyedIndex::<_, _, 8>::default();
-                for key in 0..population {
-                    index = index.insert(key.to_be_bytes(), 7, key, &mut work)?;
-                }
-                assert_eq!(
-                    work.live.get() as i64,
-                    acyclic_test_support::current_allocations()
-                        .unwrap()
-                        .bytes_current
-                );
-                let claims = work.claims;
-                let capped = index.cap(7);
-                let fork = capped.clone();
-                assert_eq!(work.claims, claims);
-                for (query, key) in [0, population - 1, u64::MAX].into_iter().enumerate() {
-                    let items = work.items;
-                    let actual = index.seek(key.to_be_bytes(), 0, 8, &mut work)?;
-                    assert_eq!(
-                        actual.map(|(s, v)| (s, *v)),
-                        (key < population).then_some((7, key))
-                    );
-                    indexed_work[run][query] = work.items - items;
-                    assert!(work.items - items <= 3 * 65 * 60);
-                    assert_eq!(work.claims, claims);
-                    assert_eq!(fork.seek(key.to_be_bytes(), 0, 8, &mut work)?, None);
-                }
-                let live = work.live.get();
-                for additional in 0..=16 {
-                    work.maximum_claims = Some(work.claims + additional);
-                    drop(capped.insert(0_u64.to_be_bytes(), 8, 999, &mut work));
-                    work.maximum_claims = None;
-                    assert_eq!(work.live.get(), live);
-                }
-                for additional in [0, 1, 32, 128, 1024] {
-                    work.maximum_items = Some(work.items + additional);
-                    drop(capped.insert(0_u64.to_be_bytes(), 8, 999, &mut work));
-                    work.maximum_items = None;
-                    assert_eq!(work.live.get(), live);
-                }
-                work.cancelled = true;
-                assert!(index.seek(0_u64.to_be_bytes(), 0, 8, &mut work).is_err());
-                assert!(index.seek(0_u64.to_be_bytes(), 8, 8, &mut work).is_err());
-                assert!(
-                    index
-                        .insert(0_u64.to_be_bytes(), 8, 999, &mut work)
-                        .is_err()
-                );
-                drop((index, capped, fork));
-                Ok(())
-            })();
-        });
-        result?;
-        assert_eq!(work.live.get(), 0);
-        assert_eq!(measured.bytes_current, 0);
-        assert!(
-            !work.early_refund.get(),
-            "keyed physical backing outlived original funding"
-        );
-    }
-
-    #[derive(Clone)]
-    struct OrderedKey(u64, Rc<Cell<u64>>);
-    impl PartialEq for OrderedKey {
-        fn eq(&self, other: &Self) -> bool {
-            self.0 == other.0
-        }
-    }
-    impl Eq for OrderedKey {}
-    impl PartialOrd for OrderedKey {
-        fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl Ord for OrderedKey {
-        fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-            self.1.set(self.1.get() + 1);
-            self.0.cmp(&other.0)
-        }
-    }
-    let mut old_work = [0; 2];
-    for (run, population) in [1_u64, 100_000].into_iter().enumerate() {
-        let comparisons = Rc::new(Cell::new(0));
-        let mut old = BTreeMap::new();
-        for key in 0..population {
-            old.insert(OrderedKey(key, comparisons.clone()), key);
-        }
-        comparisons.set(0);
-        assert_eq!(old.get(&OrderedKey(0, comparisons.clone())), Some(&0));
-        old_work[run] = comparisons.get();
-    }
-    assert!(
-        old_work[1] > old_work[0],
-        "the actual ordered-map negative must expose population growth"
-    );
-    println!(
-        "population=[1,100000] indexed_items={indexed_work:?} ordered_comparisons={old_work:?}; seek/cap allocations=0"
-    );
-
-    let mut work = Work::default();
-    let inputs: &[&[u8]] = &[
-        b"",
-        b"\0",
-        b"\0\0",
-        b"\0\x01",
-        b"a",
-        b"a\0",
-        b"a\0\0",
-        b"b",
-        &[255],
-    ];
-    for left in inputs {
-        for right in inputs {
-            assert_eq!(
-                binary_key::<16, _>(left, &mut work)
-                    .unwrap()
-                    .cmp(&binary_key::<16, _>(right, &mut work).unwrap()),
-                left.cmp(right)
-            );
-        }
-    }
-    assert_eq!(
-        binary_key::<7, _>(b"", &mut work),
-        Err(BinaryKeyError::Width(7))
-    );
-    assert_eq!(
-        binary_key::<8, _>(b"x", &mut work),
-        Err(BinaryKeyError::TooLong {
-            observed: 1,
-            maximum: 0
-        })
-    );
-    work.cancelled = true;
-    assert_eq!(
-        binary_key::<16, _>(b"a", &mut work),
-        Err(BinaryKeyError::Work("cancelled"))
-    );
-
-    // Every branch coordinate is present. Reverse construction adds roots;
-    // replacing the all-zero key copies the full original wide path. Retirement
-    // and successor must use bounded explicit storage rather than recursion.
-    let mut work = Work {
-        observe_retirement: true,
-        ..Work::default()
-    };
-    let mut result: Result<(), &'static str> = Ok(());
-    let measured = acyclic_test_support::measure(|| {
-        result = (|| {
-            let zero = binary_key::<1032, _>(&[0; 1024], &mut work).unwrap();
-            let mut index = KeyedIndex::default().insert(zero, 0, 0, &mut work)?;
-            let items = work.items;
-            drop(index.insert(zero, 0, 0, &mut work)?);
-            assert!(work.items - items <= 2 * 1032 + 8 + 5);
-            let items = work.items;
-            assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
-            assert!(work.items - items <= 1032 + 1 + 3 * 8 + 1);
-            let required = work.items - items;
-            work.maximum_items = Some(work.items + required - 1);
-            assert_eq!(
-                index.seek(zero, 0, 1, &mut work).err(),
-                Some("items refused")
-            );
-            work.maximum_items = None;
-            for bit in (0..8192).rev() {
-                let mut bytes = [0; 1024];
-                bytes[bit / 8] = 0x80 >> (bit % 8);
-                let key = binary_key::<1032, _>(&bytes, &mut work).unwrap();
-                let bound = index.insertion_bound(1).unwrap();
-                let claimed = work.claimed_bytes;
-                let items = work.items;
-                index = index.insert(key, 9, bit + 1, &mut work)?;
-                assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
-                assert!(work.items - items <= bound.examined_items);
-            }
-            let original = index.clone();
-            let bound = index.insertion_bound(1).unwrap();
-            let claimed = work.claimed_bytes;
-            let items = work.items;
-            work.maximum_items = Some(items + bound.examined_items);
-            index = index.insert(zero, 0, 8888, &mut work)?;
-            assert!(work.claimed_bytes - claimed <= bound.allocation_bytes);
-            assert!(work.items - items <= bound.examined_items);
-            work.maximum_items = None;
-            assert_eq!(index.seek(zero, 0, 1, &mut work)?, Some((0, &8888)));
-            assert_eq!(original.seek(zero, 0, 1, &mut work)?, Some((0, &0)));
-            index = index.cap(1).insert(zero, 1, 9999, &mut work)?;
-            let items = work.items;
-            assert_eq!(index.seek(zero, 1, 2, &mut work)?, Some((1, &9999)));
-            assert!(work.items - items <= 9 * 1032 + 1 + 3 * 65 * 60);
-            let mut first = [0; 1024];
-            first[0] = 128;
-            let first = binary_key::<1032, _>(&first, &mut work).unwrap();
-            assert_eq!(index.seek(first, 0, 10, &mut work)?, None);
-            assert_eq!(original.seek(first, 0, 10, &mut work)?, Some((9, &1)));
-            drop((index, original));
-            Ok(())
-        })();
-    });
-    result?;
-    assert_eq!(work.live.get(), 0);
-    assert_eq!(measured.bytes_current, 0);
-    assert!(!work.early_refund.get());
-    Ok(())
-}
 
 fn audit<V, A, const N: usize>(table: &FixedIndex<V, A, N>) {
     let mut pending = vec![(table.root.as_ref(), None)];
@@ -507,6 +46,39 @@ struct Work {
     early_refund: Rc<Cell<bool>>,
 }
 
+impl Work {
+    fn live_bytes(&self) -> i64 {
+        i64::try_from(self.live.get()).expect("live backing fits the physical counter")
+    }
+}
+
+thread_local! {
+    static ORDERED_COMPARISONS: Cell<u64> = const { Cell::new(0) };
+}
+
+// The observer belongs to this test thread, never to an ordered map's key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CountedKey(u64);
+
+impl PartialOrd for CountedKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CountedKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        ORDERED_COMPARISONS.set(ORDERED_COMPARISONS.get() + 1);
+        self.0.cmp(&other.0)
+    }
+}
+
+fn ordered_comparisons(operation: impl FnOnce()) -> u64 {
+    ORDERED_COMPARISONS.set(0);
+    operation();
+    ORDERED_COMPARISONS.get()
+}
+
 struct Allocation {
     bytes: u64,
     live: Rc<Cell<u64>>,
@@ -521,7 +93,9 @@ impl Drop for Allocation {
             let physical = acyclic_test_support::current_allocations()
                 .expect("retirement is inside its original measurement")
                 .bytes_current;
-            if physical > remaining as i64 {
+            if physical
+                > i64::try_from(remaining).expect("remaining backing fits the physical counter")
+            {
                 self.early_refund.set(true);
             }
         }
@@ -600,7 +174,7 @@ fn original_credit_covers_physical_backing_through_extraction_and_retirement() {
                 acyclic_test_support::current_allocations()
                     .expect("original measurement")
                     .bytes_current,
-                work.live.get() as i64
+                work.live_bytes()
             );
             work.cancelled = true;
             for value in (0..population).step_by(2) {
@@ -664,7 +238,8 @@ fn every_bit<const N: usize>() -> Result<(), &'static str> {
     for byte in 0..N {
         for offset in 0..8 {
             let mut key = [0; N];
-            key[byte] = 0x80 >> offset;
+            *key.get_mut(byte)
+                .ok_or("branch byte exceeds original key")? = 0x80 >> offset;
             table.get_or_try_insert_with(key, &mut work, |_| Ok(byte * 8 + offset + 1))?;
             audit(&table);
         }
@@ -768,336 +343,6 @@ fn extracted_values_keep_their_original_leaf_funding_after_cancelled_removal()
     assert_eq!(work.live.get(), minimum.get());
     drop(value);
     assert!(dropped.get());
-    assert_eq!(work.live.get(), 0);
-    Ok(())
-}
-
-#[test]
-fn ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors()
--> Result<(), &'static str> {
-    use proptest::test_runner::{Config, RngSeed, TestRunner};
-    use std::ops::Bound::{Excluded, Unbounded};
-
-    let mut runner = TestRunner::new(Config {
-        cases: 128,
-        failure_persistence: None,
-        rng_seed: RngSeed::Fixed(0x7265_6164_2d69_6e64),
-        ..Config::default()
-    });
-    runner
-        .run(
-            &(
-                prop::collection::vec(prop::array::uniform::<_, 40>(any::<u8>()), 0..96),
-                prop::collection::vec(prop::array::uniform::<_, 40>(any::<u8>()), 0..32),
-            ),
-            |(keys, queries)| {
-                let mut work = Work::default();
-                let mut table = FixedIndex::default();
-                let mut expected = BTreeMap::new();
-                for (value, key) in keys.into_iter().enumerate() {
-                    table
-                        .get_or_try_insert_with(key, &mut work, |_| Ok(value))
-                        .map_err(TestCaseError::fail)?;
-                    expected.entry(key).or_insert(value);
-                }
-                let claims = work.claims;
-                let live = work.live.get();
-                let existing: Vec<_> = expected.keys().copied().collect();
-                for key in existing.into_iter().chain(queries) {
-                    let before = work.items;
-                    let observed = table
-                        .seek_after(key, &mut ReadOnly(&mut work))
-                        .map_err(TestCaseError::fail)?;
-                    prop_assert_eq!(observed, expected.range((Excluded(key), Unbounded)).next());
-                    prop_assert!(work.items - before <= 25 * 40 + 3);
-                    let before = work.items;
-                    let observed = table
-                        .get_mut(key, &mut ReadOnly(&mut work))
-                        .map_err(TestCaseError::fail)?;
-                    prop_assert_eq!(observed.as_deref(), expected.get(&key));
-                    if let Some(value) = observed {
-                        *value += 1;
-                        *expected.get_mut(&key).unwrap() += 1;
-                    }
-                    prop_assert!(work.items - before <= 9 * 40 + 1);
-                    let before = work.items;
-                    let mut expected_owner = expected.get(&key).copied();
-                    let observed = table.get_retained_mut(
-                        key,
-                        |value| Some(*value) == expected_owner,
-                        |items| work.items += items,
-                    );
-                    prop_assert_eq!(observed.as_deref(), expected.get(&key));
-                    if let Some(value) = observed {
-                        *value += 1;
-                        *expected.get_mut(&key).unwrap() += 1;
-                    }
-                    prop_assert!(work.items - before <= 9 * 40 + 1);
-                    expected_owner = expected.get(&key).map(|value| value + 1);
-                    prop_assert!(
-                        table
-                            .get_retained_mut(
-                                key,
-                                |value| Some(*value) == expected_owner,
-                                |items| work.items += items,
-                            )
-                            .is_none()
-                    );
-                }
-                let mut row = table
-                    .first(&mut ReadOnly(&mut work))
-                    .map_err(TestCaseError::fail)?;
-                for expected in &expected {
-                    prop_assert_eq!(row, Some(expected));
-                    row = table
-                        .seek_after(*expected.0, &mut ReadOnly(&mut work))
-                        .map_err(TestCaseError::fail)?;
-                }
-                prop_assert_eq!(row, None);
-                prop_assert_eq!(work.claims, claims);
-                prop_assert_eq!(work.live.get(), live);
-                for key in expected.keys().copied().collect::<Vec<_>>() {
-                    let before = work.items;
-                    let entry = table
-                        .remove(key, &mut ReadOnly(&mut work))
-                        .map_err(TestCaseError::fail)?;
-                    prop_assert_eq!(
-                        entry.as_ref().map(|entry| (*entry.key(), *entry.value())),
-                        expected.remove(&key).map(|value| (key, value))
-                    );
-                    prop_assert!(work.items - before <= 17 * 40 + 1);
-                    drop(entry);
-                    audit(&table);
-                }
-                prop_assert_eq!(work.claims, claims);
-                drop(table);
-                prop_assert_eq!(work.live.get(), 0);
-                Ok(())
-            },
-        )
-        .map_err(|_| "ordered seek or existing mutation disagreed with independent map")?;
-
-    // Every possible branch coordinate, including beyond 256 bits, and the
-    // empty key exercise the structural bound independently of random shape.
-    fn boundary<const N: usize>() -> Result<(), &'static str> {
-        let mut work = Work::default();
-        let mut table = FixedIndex::default();
-        let mut expected = BTreeMap::new();
-        table.get_or_try_insert_with([0; N], &mut work, |_| Ok(0))?;
-        expected.insert([0; N], 0);
-        for byte in 0..N {
-            for offset in 0..8 {
-                let mut key = [0; N];
-                key[byte] = 0x80 >> offset;
-                table.get_or_try_insert_with(key, &mut work, |_| Ok(1))?;
-                expected.insert(key, 1);
-            }
-        }
-        let claims = work.claims;
-        for key in expected.keys().copied().chain([[255; N]]) {
-            let before = work.items;
-            assert_eq!(
-                table.seek_after(key, &mut ReadOnly(&mut work))?,
-                expected.range((Excluded(key), Unbounded)).next()
-            );
-            assert!(work.items - before <= (25 * N + 3) as u64);
-        }
-        let before = work.items;
-        table
-            .get_mut([0; N], &mut ReadOnly(&mut work))?
-            .ok_or("missing original key")?;
-        let required = work.items - before;
-        for credit in 0..required {
-            work.maximum_items = Some(work.items + credit);
-            assert_eq!(
-                table.get_mut([0; N], &mut ReadOnly(&mut work)).err(),
-                Some("items refused")
-            );
-        }
-        work.maximum_items = None;
-        assert_eq!(table.get([0; N], &mut ReadOnly(&mut work))?, Some(&0));
-        let before = work.items;
-        table.seek_after([0; N], &mut ReadOnly(&mut work))?;
-        let required = work.items - before;
-        for credit in 0..required {
-            work.maximum_items = Some(work.items + credit);
-            assert_eq!(
-                table.seek_after([0; N], &mut ReadOnly(&mut work)).err(),
-                Some("items refused")
-            );
-        }
-        work.maximum_items = None;
-        let held = work.live.get();
-        // The zero key traverses every actual branch coordinate in this tree.
-        // Refusal at any point, including the second walk, must preserve it.
-        for credit in 0..(17 * N + 1) as u64 {
-            work.maximum_items = Some(work.items + credit);
-            assert_eq!(
-                table.remove([0; N], &mut ReadOnly(&mut work)).err(),
-                Some("items refused")
-            );
-            work.maximum_items = None;
-            assert_eq!(
-                table.get([0; N], &mut ReadOnly(&mut work))?,
-                Some(&0),
-                "refused removal must preserve original owner"
-            );
-            assert_eq!(work.live.get(), held);
-        }
-        work.cancelled = true;
-        assert_eq!(
-            table.remove([0; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        assert_eq!(
-            table.get_mut([255; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        assert_eq!(
-            table.seek_after([255; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        let mut empty = FixedIndex::<usize, Allocation, N>::default();
-        assert_eq!(
-            empty.remove([0; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        assert_eq!(
-            empty.get_mut([0; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        assert_eq!(
-            empty.get([0; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled"),
-            "cancelled empty exact read must be refused"
-        );
-        assert_eq!(
-            empty.first(&mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        let before = work.items;
-        work.maximum_items = Some(before);
-        assert!(
-            table
-                .get_retained_mut([0; N], |value| *value == 1, |items| work.items += items)
-                .is_none()
-        );
-        *table
-            .get_retained_mut([0; N], |value| *value == 0, |items| work.items += items)
-            .ok_or("original retained owner was refused during cancellation")? = 2;
-        assert!(work.items - before <= 2 * (9 * N + 1) as u64);
-        assert!(
-            empty
-                .get_retained_mut(
-                    [0; N],
-                    |_| panic!("absent owner predicate"),
-                    |_| panic!("absent node observation"),
-                )
-                .is_none()
-        );
-        assert_eq!(
-            empty.seek_after([0; N], &mut ReadOnly(&mut work)).err(),
-            Some("cancelled")
-        );
-        assert!(
-            empty
-                .get_or_try_insert_with([0; N], &mut work, |_| panic!("cancelled construction"))
-                .is_err()
-        );
-        assert_eq!(work.claims, claims);
-        work.cancelled = false;
-        work.maximum_items = None;
-        let before = work.items;
-        let entry = table
-            .remove([0; N], &mut ReadOnly(&mut work))?
-            .ok_or("original owner missing after refused removals")?;
-        assert_eq!((*entry.key(), *entry.value()), ([0; N], 2));
-        assert_eq!(work.items - before, (17 * N + 1) as u64);
-        drop(entry);
-        assert_eq!(table.get([0; N], &mut ReadOnly(&mut work))?, None);
-        assert_eq!(work.claims, claims);
-        drop(table);
-        assert_eq!(work.live.get(), 0);
-        Ok(())
-    }
-    boundary::<0>()?;
-    boundary::<8>()?;
-    boundary::<24>()?;
-    boundary::<40>()?;
-    // An old retained registration must not mutate a successor at the same key.
-    let mut work = Work::default();
-    let mut table = FixedIndex::default();
-    table.get_or_try_insert_with([7; 8], &mut work, |_| Ok(0))?;
-    let original = table
-        .remove_if([7; 8], |generation| *generation == 0)
-        .ok_or("missing original registration")?;
-    table.get_or_try_insert_with([7; 8], &mut work, |_| Ok(1))?;
-    let claims = work.claims;
-    let live = work.live.get();
-    work.cancelled = true;
-    assert!(
-        table
-            .get_retained_mut(
-                [7; 8],
-                |generation| *generation == 0,
-                |items| work.items += items
-            )
-            .is_none()
-    );
-    *table
-        .get_retained_mut(
-            [7; 8],
-            |generation| *generation == 1,
-            |items| work.items += items,
-        )
-        .ok_or("successor retirement was refused")? = 2;
-    assert_eq!(*original.value(), 0);
-    assert_eq!(work.claims, claims);
-    assert_eq!(work.live.get(), live);
-    drop(table);
-    drop(original);
-    assert_eq!(work.live.get(), 0);
-
-    // The shared recent-fact composition must preserve the same read-only
-    // admission when a miss in its current window searches the previous one.
-    work.cancelled = false;
-    let mut recent = RecentIndex::<_, _, 8, 2>::default();
-    for key in 0_u64..5 {
-        recent.get_or_try_insert_with(key.to_be_bytes(), &mut work, |_| Ok(key))?;
-    }
-    let claims = work.claims;
-    let live = work.live.get();
-    for (key, expected) in [(0, None), (2, Some(2)), (4, Some(4)), (u64::MAX, None)] {
-        let before = work.items;
-        assert_eq!(
-            recent.get(key.to_be_bytes(), &mut ReadOnly(&mut work))?,
-            expected.as_ref()
-        );
-        let required = work.items - before;
-        assert!(required <= 2 * (9 * 8 + 1));
-        for credit in 0..required {
-            work.maximum_items = Some(work.items + credit);
-            assert_eq!(
-                recent
-                    .get(key.to_be_bytes(), &mut ReadOnly(&mut work))
-                    .err(),
-                Some("items refused"),
-                "recent window refusal must not become a cache miss"
-            );
-        }
-        work.maximum_items = None;
-        work.cancelled = true;
-        assert_eq!(
-            recent
-                .get(key.to_be_bytes(), &mut ReadOnly(&mut work))
-                .err(),
-            Some("cancelled")
-        );
-        work.cancelled = false;
-    }
-    assert_eq!(work.claims, claims);
-    assert_eq!(work.live.get(), live);
-    drop(recent);
     assert_eq!(work.live.get(), 0);
     Ok(())
 }
