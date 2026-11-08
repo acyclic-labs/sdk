@@ -1,10 +1,18 @@
+pub(super) enum MutationSelection<'a, A: 'static, O: 'static> {
+    Facts(FileId),
+    Bindings(
+        &'a CheckoutMountSource<A, O>,
+        &'a mut dyn MountRenameBindings,
+    ),
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     async fn mutate(
         &self,
         mut candidate: CheckoutCandidate<'_, A, O>,
         change: AuthoredMutation,
         effect: ViewChange<'_>,
-        facts: Option<FileId>,
+        facts: Option<MutationSelection<'_, A, O>>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountMutationResult, MountSourceError> {
         candidate.deadline = self.mutation_deadline()?;

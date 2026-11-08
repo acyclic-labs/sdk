@@ -94,7 +94,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .install_change(
                 candidate,
                 ViewChange::Node(file_id),
-                facts.then_some(file_id),
+                facts.then_some(MutationSelection::Facts(file_id)),
                 work,
                 lifetime,
                 guard,

@@ -275,6 +275,7 @@ fn measure_common(view: &dyn MountFilesystem) -> TestResult {
             &path("made/created.txt"),
             false,
             &work,
+            None,
         )
     })?;
     measured.measure("write-existing", || {
@@ -290,7 +291,13 @@ fn measure_common(view: &dyn MountFilesystem) -> TestResult {
         view.set_attributes(&attributes, metadata, Some(1), &work)
     })?;
     measured.measure("rename-existing", || {
-        view.rename(&path("rename.txt"), &path("renamed.txt"), false, &work)
+        view.rename(
+            &path("rename.txt"),
+            &path("renamed.txt"),
+            false,
+            &work,
+            None,
+        )
     })?;
     measured.measure("remove-existing", || {
         view.remove(&path("remove.txt"), None, &work)

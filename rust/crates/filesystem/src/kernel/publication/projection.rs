@@ -105,16 +105,13 @@ async fn revision<O: crate::AsyncObjectStore>(
     )
     .await?;
     let record = record.ok_or(ClosureError::MissingRootFile)?;
-    let (read, _retained) = crate::kernel::file_read::read_object_with_accounting(
+    let metadata = crate::kernel::read_file_metadata_with_accounting(
         objects,
         record.metadata,
-        limits.maximum_object_bytes,
+        limits,
         accounting,
         cancellation,
     )
     .await?;
-    let (metadata, _custody) = crate::kernel::decode_owned(accounting, |observe| {
-        crate::kernel::decode_file_metadata(&read.bytes, limits, &mut |s| observe(s))
-    })?;
     Ok(metadata.named_attributes)
 }

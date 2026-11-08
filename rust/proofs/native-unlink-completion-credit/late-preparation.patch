@@ -1,0 +1,35 @@
+diff --git a/rust/crates/filesystem/src/native_mount/fuse/lookup.rs b/rust/crates/filesystem/src/native_mount/fuse/lookup.rs
+index 4d6ba8e5926..c3ff905f092 100644
+--- a/rust/crates/filesystem/src/native_mount/fuse/lookup.rs
++++ b/rust/crates/filesystem/src/native_mount/fuse/lookup.rs
+@@ -297,15 +297,6 @@ impl FuseProjection {
+         };
+         let current = source.lookup_with_meter(&child.spelled, work)?;
+         let mut detached = self.detach_name(&child.spelled, current.as_ref(), work)?;
+-        let remove_binding = {
+-            let state = self.core.state()?;
+-            work.charge(Items.delta(1))?;
+-            state
+-                .inode_by_path
+-                .get(child.key())
+-                .map(|inode| state.prepare_remove_binding(*inode, child.key(), work))
+-                .transpose()?
+-        };
+         let removed = self.source_write(work, || {
+             Ok(source.remove(
+                 &child.spelled,
+@@ -316,6 +307,14 @@ impl FuseProjection {
+         let mut state = self.core.state()?;
+         removed?;
+         state.install_detached_handles(&mut detached);
++        let remove_binding = {
++            work.charge(Items.delta(1))?;
++            state
++                .inode_by_path
++                .get(child.key())
++                .map(|inode| state.prepare_remove_binding(*inode, child.key(), work))
++                .transpose()?
++        };
+         if let Some(remove_binding) = remove_binding {
+             remove_binding(&mut state);
+         }

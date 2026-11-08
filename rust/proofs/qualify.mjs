@@ -15,6 +15,66 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-unlink-completion-credit": [
+    "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
+    "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",
+    "unlink refused after its source was accepted",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { mutations: [
+      { patch: "rust/proofs/native-unlink-completion-credit/late-preparation.patch", label: "late-preparation", diagnostic: "unlink refused after its source was accepted" },
+      { source: "rust/crates/filesystem/src/demand/reservations.rs", patch: "rust/proofs/native-unlink-completion-credit/early-refund.patch", label: "early-refund", diagnostic: "completion corrupted its original ledger" },
+    ], positive: [
+      "native_mount::fuse::tests::detach::unlink_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
+    ] },
+  ],
+  "native-rename-reviewed-completion": [
+    "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
+    "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",
+    "rename certified a replaced descendant",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { mutations: [
+      { patch: "rust/proofs/native-rename-reviewed-completion/stale-identity.patch", label: "stale-identity", diagnostic: "rename certified a replaced descendant" },
+      { source: "rust/crates/filesystem/src/native_mount/adapter/installation.rs", patch: "rust/proofs/native-rename-reviewed-completion/non-directory.patch", label: "non-directory", diagnostic: "path traversal encountered a non-directory" },
+    ] },
+  ],
+  "native-rename-completion-credit": [
+    "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
+    "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+    "rename refused after its source was accepted",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { mutations: [
+      { patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "rename refused after its source was accepted" },
+    ], positive: [
+      "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
+    ] },
+  ],
+  "native-rename-binding-completion": [
+    "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
+    "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
+    "a node change must not detach its unchanged name: RenamedFile",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { positive: [
+      "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
+      "native_mount::fuse::tests::detach::prepared_rename_cannot_resurrect_a_concurrent_forget",
+      "native_mount::fuse::tests::detach::forgotten_inode_negative_control",
+    ] },
+  ],
+  "metadata-closure-work": [
+    "rust/crates/filesystem/src/kernel/closure/walk.rs", "acyclic-fs",
+    "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
+    "metadata closure discarded its original decoder work",
+    ["--no-default-features", "--features", "memory"],
+  ],
+  "metadata-reader-work": [
+    "rust/crates/filesystem/src/kernel/metadata.rs", "acyclic-fs",
+    "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
+    "metadata decoder bypassed its original copy admission",
+    ["--no-default-features", "--features", "memory"],
+  ],
   "policy-time-interval": [
     "rust/crates/filesystem/src/access/trie.rs", "acyclic-fs",
     "access::review::policy_fence_and_native_custody_preserve_pinned_views",

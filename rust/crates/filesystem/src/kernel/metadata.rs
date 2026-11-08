@@ -1,8 +1,9 @@
 //! Canonical cross-profile metadata with explicit unavailable fields.
 
+use super::allocation::KernelAccounting;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
-use crate::WorkCounters;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
+use crate::{AsyncObjectStore, CancellationToken, FsError, WorkCounters};
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
 const VERSION: u16 = 1;
@@ -260,6 +261,33 @@ fn encode_metadata_fields<E>(
         encode_object
     );
     Ok(())
+}
+
+/// Reads one canonical metadata object, retiring its original scratch on every exit.
+pub(crate) fn read_file_metadata_with_accounting<'task, 'accounting, S: AsyncObjectStore>(
+    store: &'task S,
+    object: ObjectId,
+    limits: DecodeLimits,
+    accounting: &'task mut KernelAccounting<'accounting>,
+    cancellation: &'task CancellationToken,
+) -> impl std::future::Future<Output = Result<FileMetadata, FsError>>
++ acyclic_stream::ProviderTask
++ 'task {
+    async move {
+        let mut accounting = accounting.allocation_scope()?;
+        let (read, _) = super::read_object_with_accounting(
+            store,
+            object,
+            limits.maximum_object_bytes,
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+        super::decode_owned(&mut accounting, |observe| {
+            decode_file_metadata(&read.bytes, limits, &mut |step| observe(step))
+        })
+        .map(|(metadata, _)| metadata)
+    }
 }
 
 /// Decodes the same record with admission and actual primitive/item completions.

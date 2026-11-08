@@ -372,8 +372,8 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
-        let (ttl, name) = self.prepare_entry(source, inode, name, stamp, work)?;
-        self.accept_entry(parent, &name, work)?;
+        let (ttl, name, completion) = self.prepare_entry(source, inode, name, stamp, work)?;
+        self.accept_entry(parent, &name, completion);
         Ok(ttl)
     }
 
@@ -385,7 +385,14 @@ impl ProjectionState {
         name: ChildName,
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(Duration, FuseOwned<MountPath>), NativeMountError> {
+    ) -> Result<
+        (
+            Duration,
+            FuseOwned<MountPath>,
+            crate::materializer::NativeWorkReservation,
+        ),
+        NativeMountError,
+    > {
         let folded = name.folded.is_some();
         let key = self.retain_spelling(inode, name)?;
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
@@ -404,8 +411,8 @@ impl ProjectionState {
         } else {
             Duration::ZERO
         };
-        work.admit(Items.delta(1))?;
-        Ok((ttl, key))
+        let completion = work.reserve_work(Items.delta(1))?;
+        Ok((ttl, key, completion))
     }
 
     /// A delivered positive spelling replaces the kernel's previous miss.
@@ -413,15 +420,14 @@ impl ProjectionState {
         &mut self,
         parent: u64,
         name: &MountPath,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+        mut completion: crate::materializer::NativeWorkReservation,
+    ) {
         if let Some(component) = name.components().last()
             && let Some(entry) = self.by_inode.get_mut(&parent)
         {
             entry.negative_children.remove(component.as_slice());
         }
-        work.record_admitted(Items.delta(1))?;
-        Ok(())
+        completion.record_deferred(Items.delta(1));
     }
 
     pub(super) fn negative_entry(
