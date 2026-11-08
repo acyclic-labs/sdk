@@ -167,9 +167,9 @@ impl Selection {
         Ok(())
     }
 
-    pub(super) async fn mounts(&self) -> Result<Arc<Mounts>> {
-        let preparing = match &self.result {
-            SelectedResult::Ready(mounts) => return Ok(Arc::clone(mounts)),
+    pub(super) async fn mounts(self) -> Result<Arc<Mounts>> {
+        let preparing = match self.result {
+            SelectedResult::Ready(mounts) => return Ok(mounts),
             SelectedResult::Preparing(preparing) => preparing,
         };
         if preparing.completed.terminated().await != OperationTermination::Released {
@@ -226,16 +226,18 @@ mod tests {
             work.receipt().items_examined - before <= 9 * 32 + 1,
             "binding lookup grew beyond the fixed-width path"
         );
-        assert!(observer.mounts().now_or_never().is_none());
-        drop(producer);
-        assert!(
-            matches!(
-                observer.mounts().now_or_never(),
-                Some(Err(Error::Conflict(_)))
-            ),
-            "lost original producer did not finish its observer"
-        );
-        drop(observer);
+        {
+            let mut observed = std::pin::pin!(observer.mounts());
+            assert!(observed.as_mut().now_or_never().is_none());
+            drop(producer);
+            assert!(
+                matches!(
+                    observed.as_mut().now_or_never(),
+                    Some(Err(Error::Conflict(_)))
+                ),
+                "lost original producer did not finish its observer"
+            );
+        }
         drop(original);
         assert!(old.upgrade().is_none());
         let (replacement, successor) = Bindings::select(&index, key, &work, &cancellation)?;
