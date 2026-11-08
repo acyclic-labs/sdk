@@ -6,7 +6,7 @@ use crate::kernel::allocation::{
 use std::sync::atomic::AtomicUsize;
 
 type Owner = RetainedArc<ReadOwner>;
-pub(super) type ReaderIndex = acyclic_collections::FixedIndex<Owner, RetainedAllocation>;
+pub(super) type ReaderIndex = acyclic_collections::FixedIndex<Owner, RetainedAllocation, 8>;
 
 pub(super) struct ReadOwner {
     pub(super) readers: AtomicUsize,
