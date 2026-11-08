@@ -4,7 +4,7 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
-#[cfg(all(test, not(loom)))]
+#[cfg(all(test, feature = "native-execution", not(loom)))]
 mod tests;
 
 pub(super) fn view_options(
