@@ -12,8 +12,9 @@ process lifetime. The retained model controls exercise owner death, producer
 loss, crash detection, exact process-wide budgets and renewal between runs.
 The finite model step budget does not restrict fuzz input length.
 
+`mutations/session-startup-crash.patch` selects the existing real process fault.
 `mutations/session-input-cutoff.patch` restores the old silent input cutoff.
-With a frame longer than 4096 bytes and the existing real `startupCrash` fault,
+With a frame longer than 4096 bytes and that real `startupCrash` fault,
 the mutated target falsely succeeds without starting the model. Restoring the
 target must report the actual producer-loss error from that same input. Normal
 corpus replay then uses the unmodified TypeScript decoder and validator.
