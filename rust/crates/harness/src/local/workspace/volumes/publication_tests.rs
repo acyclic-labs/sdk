@@ -277,6 +277,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("test mount owner"))?,
         &workspace.task_view_admission,
+        None,
     )
     .await?;
     let rebound = rebound.named(Some("home"))?.1;
