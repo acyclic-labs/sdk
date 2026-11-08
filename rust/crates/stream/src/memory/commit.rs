@@ -133,8 +133,9 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let mut records =
-            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        let records = crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut records = records;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             for record in &mut records {
