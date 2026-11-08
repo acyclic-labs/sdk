@@ -226,6 +226,9 @@ impl LocalWorkspace {
     /// only after host authentication and approval; it does not authorize file
     /// publication, change workspace grants or make other tools read-only.
     /// A different selected workspace must fit the same grant or launch refuses.
+    /// Its native policy is compiled once here on a shared worker; missing
+    /// enforcement refuses construction. Launch still verifies the original
+    /// roots and working directory before creating a child.
     pub async fn executor(
         self: &Arc<Self>,
         (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, u64),

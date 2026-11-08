@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/tool/recorded_invocation.rs b/rust/crates/harness-core/src/tool/recorded_invocation.rs
+--- a/rust/crates/harness-core/src/tool/recorded_invocation.rs
++++ b/rust/crates/harness-core/src/tool/recorded_invocation.rs
+@@ -4,7 +4,6 @@
+ /// Execution readers use this same envelope as persistence and replay, rather
+ /// than interpreting the `invocation` member as the entire stored record.
+ #[derive(Serialize, Deserialize, crate::HeapLayout)]
+-#[serde(deny_unknown_fields)]
+ pub struct RecordedInvocation<I = ToolInvocation, M = Value> {
+     /// Original admitted tool identity and arguments.
+     pub invocation: I,

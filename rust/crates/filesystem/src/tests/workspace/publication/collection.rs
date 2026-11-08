@@ -742,7 +742,8 @@ async fn a_root_owner_holds_its_root_until_killed() -> Result<(), Box<dyn Error>
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
     let main = unbounded!(fs, create_workspace("repo"))?;
     main.write_text("/owned.txt", "owned").await?;
-    println!("owned");
+    // The libtest progress prefix may share stdout's current line.
+    std::io::Write::write_all(&mut std::io::stdout(), b"\nowned\n")?;
     std::future::pending::<()>().await;
     Ok(())
 }
@@ -753,27 +754,49 @@ async fn a_root_owner_holds_its_root_until_killed() -> Result<(), Box<dyn Error>
 #[cfg(all(feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_process_owns_a_local_root() -> Result<(), Box<dyn Error>> {
-    use std::io::BufRead as _;
+    use acyclic_native_runtime::{ProcessCommand, ProcessPipeReader, ProcessStdio, ProcessTree};
+    use tokio::io::AsyncBufReadExt as _;
+
+    async fn owner(root: &std::path::Path) -> std::io::Result<ProcessTree> {
+        let mut command = ProcessCommand::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "workspace::tests::publication::collection::a_root_owner_holds_its_root_until_killed",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env(ROOT_OWNER, root)
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::inherit());
+        let mut owner = ProcessTree::spawn(&mut command)?;
+        let stdout = ProcessPipeReader::take_stdout(&mut owner)?;
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        while let Some(line) = lines.next_line().await? {
+            if line == "owned" {
+                return Ok(owner);
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "the owner exited before it published",
+        ))
+    }
+
     let directory = tempfile::tempdir()?;
+    // The same real child must close readiness when local opening fails.
+    let invalid_root = directory.path().join("file");
+    std::fs::write(&invalid_root, b"not a directory")?;
+    assert_eq!(
+        owner(&invalid_root)
+            .await
+            .err()
+            .expect("a file admitted a local root")
+            .kind(),
+        std::io::ErrorKind::UnexpectedEof,
+    );
     let root = directory.path().join("root");
-    let mut owner = std::process::Command::new(std::env::current_exe()?)
-        .args([
-            "--exact",
-            "workspace::tests::publication::collection::a_root_owner_holds_its_root_until_killed",
-            "--nocapture",
-        ])
-        .env(ROOT_OWNER, &root)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    let stdout = owner.stdout.take().ok_or("the owner has no stdout")?;
-    let owned = tokio::task::spawn_blocking(move || {
-        std::io::BufReader::new(stdout)
-            .lines()
-            .any(|line| line.is_ok_and(|line| line == "owned"))
-    })
-    .await?;
-    assert!(owned, "the owner exited before it published");
+    let mut owner = owner(&root).await?;
     assert!(matches!(
         Fs::local(crate::LocalOptions::new(&root)).await,
         Err(
@@ -797,8 +820,7 @@ async fn one_process_owns_a_local_root() -> Result<(), Box<dyn Error>> {
     ));
     // The OS releases both locks when the owner dies; its unclean close
     // leaves the root marked for repair.
-    owner.kill()?;
-    owner.wait()?;
+    owner.terminate(None)?;
     assert!(root.join("objects").join("OPEN").exists());
     let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
     let main = unbounded!(fs, open_workspace("repo"))?;

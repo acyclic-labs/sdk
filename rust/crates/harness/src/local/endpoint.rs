@@ -113,6 +113,23 @@ impl Connection {
         &self.root
     }
 
+    /// A connection to the same agent that reads its committed records even
+    /// after the in-process agents' runtime stopped: a delivery failure that
+    /// closed this session never hides the calls, turns or history the tree
+    /// already committed. A remote connection's session is its server's, so
+    /// it is returned as it is.
+    ///
+    /// # Errors
+    /// Fails when the agent's credential cannot be minted or bound.
+    pub async fn observation(&self) -> Result<Self> {
+        let Some(host) = &self._host else {
+            return Ok(self.clone());
+        };
+        let root = host.agents.get().map(super::agents::Hosted::root);
+        let agent = (root != Some(&self.root)).then(|| self.root.clone());
+        host.attach(agent, false).await
+    }
+
     /// Connects to the endpoint the one connection policy selects: an
     /// explicit `endpoint`, else `ACYCLIC_ENDPOINT`, else the managed
     /// default, with `ACYCLIC_API_KEY` as the credential. There is no config
@@ -220,6 +237,15 @@ impl LocalHarness {
     /// [`Self::connect`] under a credential minted for `agent`, the root when
     /// `None`: the one credential that drives and observes that agent.
     async fn connect_agent(self: &Arc<Self>, agent: Option<AgentPath>) -> Result<Connection> {
+        self.attach(agent, true).await
+    }
+
+    /// One connection to `agent`'s tree. A `live` session closes with the
+    /// agents' runtime, so no wait parks on a stopped producer. An observation
+    /// session is not bound to it: what the tree already committed (usage,
+    /// history, turns) stays readable after a delivery failure stops that
+    /// runtime, and each read answers from those records.
+    async fn attach(self: &Arc<Self>, agent: Option<AgentPath>, live: bool) -> Result<Connection> {
         self.agents().await?;
         let hosted = self
             .agents
@@ -246,7 +272,7 @@ impl LocalHarness {
             Some(Arc::new(changes)),
             server.clone(),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
-            Some(hosted.runtime.lifetime()),
+            live.then(|| hosted.runtime.lifetime()),
         );
         let connection =
             Connection::bind(session, observation.credential, Some(Arc::clone(self))).await?;

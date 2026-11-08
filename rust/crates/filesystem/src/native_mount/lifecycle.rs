@@ -4,15 +4,11 @@ use super::*;
 #[must_use]
 pub fn probe_native_mount() -> NativeMountCapabilities {
     #[cfg(target_os = "linux")]
-    let (kind, available, reason) = (
-        Some(NativeMountKind::LinuxFuse),
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/fuse")
-            .is_ok(),
-        "/dev/fuse is not usable",
-    );
+    let (kind, reason) = (Some(NativeMountKind::LinuxFuse), linux_fuse_refusal());
+    #[cfg(target_os = "linux")]
+    let available = reason.is_none();
+    #[cfg(target_os = "linux")]
+    let reason = reason.unwrap_or_default();
     #[cfg(target_os = "macos")]
     let (kind, available, reason) = (
         Some(NativeMountKind::MacOsNfs),
@@ -33,6 +29,75 @@ pub fn probe_native_mount() -> NativeMountCapabilities {
     NativeMountCapabilities {
         kind,
         unavailable_reason: (!available).then_some(reason),
+    }
+}
+
+/// Why a FUSE mount cannot start here, from the facts the kernel applies to
+/// the mount itself: the device, then the authority that mounts it. Direct
+/// `mount(2)` needs effective `CAP_SYS_ADMIN`; otherwise the setuid helper
+/// mounts, and it holds only what the bounding set keeps and nothing under
+/// `no_new_privs`. Docker's stock `AppArmor` profile denies mount itself. An
+/// unreadable status leaves those facts unknown, never refused. The mount
+/// that follows still reports its own exact failure.
+#[cfg(target_os = "linux")]
+fn linux_fuse_refusal() -> Option<&'static str> {
+    use std::os::unix::{ffi::OsStrExt as _, fs::MetadataExt as _};
+    const SYS_ADMIN: u64 = 1 << 21;
+    if std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/fuse")
+        .is_err()
+    {
+        return Some(
+            "/dev/fuse is not usable; recovery: pass the device (docker run --device /dev/fuse)",
+        );
+    }
+    // Docker's stock `AppArmor` profile denies every mount, whatever the
+    // capabilities; another profile's rules are its own and stay unjudged.
+    let confinement = std::fs::read_to_string("/proc/self/attr/apparmor/current")
+        .or_else(|_| std::fs::read_to_string("/proc/self/attr/current"))
+        .unwrap_or_default();
+    if confinement.trim() == "docker-default (enforce)" {
+        return Some(
+            "no mount authority: the docker-default AppArmor profile denies mount; recovery:              docker run --security-opt apparmor=unconfined (or a profile allowing fuse mounts)",
+        );
+    }
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(str::trim)
+    };
+    let capabilities = |name| field(name).and_then(|hex| u64::from_str_radix(hex, 16).ok());
+    if capabilities("CapEff:")? & SYS_ADMIN != 0 {
+        return None;
+    }
+    if capabilities("CapBnd:")? & SYS_ADMIN == 0 {
+        return Some(
+            "no mount authority: CAP_SYS_ADMIN is outside this process's bounding set, so              neither mount(2) nor the setuid fusermount3 helper can mount FUSE; recovery:              grant it (docker run --cap-add SYS_ADMIN)",
+        );
+    }
+    if field("NoNewPrivs:") == Some("1") {
+        return Some(
+            "no mount authority: no_new_privs keeps the setuid fusermount3 helper from              mounting FUSE; recovery: run without no-new-privileges or with effective              CAP_SYS_ADMIN",
+        );
+    }
+    let helper = super::fuse::FUSE_HELPERS.iter().find_map(|helper| {
+        let path = std::path::Path::new(std::ffi::OsStr::from_bytes(helper.to_bytes()));
+        std::fs::metadata(path)
+            .ok()
+            .filter(std::fs::Metadata::is_file)
+    });
+    match helper {
+        None => Some(
+            "no fusermount3 helper: install fuse3 so /usr/bin/fusermount3 exists, or run              with effective CAP_SYS_ADMIN",
+        ),
+        Some(helper) if helper.uid() != 0 || helper.mode() & 0o4000 == 0 => Some(
+            "fusermount3 is not setuid root, so it cannot mount FUSE; recovery: reinstall              fuse3 or run with effective CAP_SYS_ADMIN",
+        ),
+        Some(_) => None,
     }
 }
 

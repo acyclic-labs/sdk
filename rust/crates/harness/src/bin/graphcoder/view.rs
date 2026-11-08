@@ -28,6 +28,7 @@ use futures::{StreamExt as _, stream::LocalBoxStream};
 use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
+use acyclic_harness::completion::Exit;
 mod diff;
 mod query;
 
@@ -45,8 +46,8 @@ const CANCELLED: &str = "interaction cancelled";
 const COMPACTED: &str = "Compacted conversation";
 const REWOUND: &str = "Rewound to selected checkpoint";
 
-/// How the session ended, as the process exit code: the last turn
-/// succeeded, failed, or was cancelled.
+/// How the session ended, as the process exit: the last turn succeeded,
+/// failed (status 1), or was cancelled (status 2).
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Outcome {
     #[default]
@@ -55,12 +56,20 @@ enum Outcome {
     Cancelled,
 }
 
-impl Outcome {
-    const fn code(self) -> u8 {
-        match self {
-            Self::Settled => 0,
-            Self::Failed => 1,
-            Self::Cancelled => 2,
+impl View {
+    /// The process exit, each nonzero status with its reason.
+    fn exit(&self) -> Result<(), Failure> {
+        match self.outcome {
+            Outcome::Settled => Ok(()),
+            Outcome::Failed => Err(Box::new(Exit::failed(
+                self.ended
+                    .clone()
+                    .unwrap_or_else(|| "the last turn failed".into()),
+            ))),
+            Outcome::Cancelled => Err(Box::new(Exit::new(
+                std::num::NonZeroU8::MIN.saturating_add(1),
+                "the last turn was cancelled",
+            ))),
         }
     }
 }
@@ -473,7 +482,7 @@ pub async fn run(
     conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
-) -> Result<u8, Failure> {
+) -> Result<(), Failure> {
     let mut tty = Tty::open()?;
     tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
@@ -703,7 +712,7 @@ pub async fn run(
                                 match catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit {} })) => {
-                                        return Ok(view.outcome.code());
+                                        return view.exit();
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
                                         queries.close(query_future.as_mut());
@@ -786,7 +795,7 @@ pub async fn run(
                                 conversation.cancel().await?;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
-                            InputEffect::Quit => return Ok(view.outcome.code()),
+                            InputEffect::Quit => return view.exit(),
                             InputEffect::Scroll(rows) if queries.source().is_some() && query_future.is_none() && credit != 0 => {
                                 if let Some(panel) = queries.page.as_ref()
                                     && !panel.page_boundary(&mut overlay_top, rows, areas.overlay_rows(0))

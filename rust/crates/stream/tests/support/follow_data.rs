@@ -108,6 +108,7 @@ pub(super) fn check(
     }
 }
 
+/// Exercises real follow codecs against independent wire-position assertions.
 pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
     if let Ok(subscription) = wire::SessionSubscription::decode(payload) {
         assert_eq!(

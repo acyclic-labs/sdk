@@ -66,6 +66,9 @@ pub struct CliFailure {
     /// The returned failure's independent delivery disposition. A diagnostic
     /// ACK does not substitute for this frame or for physical retirement.
     pub failure_report: FailureReport,
+    /// Independent stderr delivery. Runtime admission failure leaves this
+    /// incomplete; OS termination never starts another write.
+    pub stderr_report: FailureReport,
 }
 
 impl fmt::Display for CliFailure {
@@ -80,14 +83,57 @@ impl std::error::Error for CliFailure {
     }
 }
 
-/// The shared executable completion, with no post-terminal output write.
+/// A nonzero exit status and its reason. An operation exits nonzero only by
+/// returning one (or another error), so no status leaves without a reason.
+#[derive(Debug)]
+pub struct Exit {
+    code: std::num::NonZeroU8,
+    reason: String,
+}
+
+impl Exit {
+    /// Exit status 1 with `reason`.
+    #[must_use]
+    pub fn failed(reason: impl Into<String>) -> Self {
+        Self {
+            code: std::num::NonZeroU8::MIN,
+            reason: reason.into(),
+        }
+    }
+
+    /// Exit status `code` with `reason`.
+    #[must_use]
+    pub fn new(code: std::num::NonZeroU8, reason: impl Into<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+        }
+    }
+
+    /// The exit status.
+    #[must_use]
+    pub const fn code(&self) -> std::num::NonZeroU8 {
+        self.code
+    }
+}
+
+impl fmt::Display for Exit {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for Exit {}
+
+/// The shared executable completion. Failure output belongs to the original
+/// runtime and shutdown scope; its terminal only returns the exit status.
 /// Embedders can consume the original typed result before OS termination.
 #[derive(Debug)]
-pub struct CliCompletion(Result<std::process::ExitCode, CliFailure>);
+pub struct CliCompletion(Result<(), CliFailure>);
 
 impl CliCompletion {
     /// Returns the original error and its independent observation disposition.
-    pub fn into_result(self) -> Result<std::process::ExitCode, CliFailure> {
+    pub fn into_result(self) -> Result<(), CliFailure> {
         self.0
     }
 
@@ -97,31 +143,71 @@ impl CliCompletion {
             phase,
             cause,
             failure_report: report,
+            stderr_report: FailureReport::Incomplete(None),
         }))
     }
 
     /// Retains an operation result and its independent failure delivery outcome.
-    pub fn executed(result: Result<u8, Failure>, report: Option<FailureReport>) -> Self {
-        Self(
-            result
-                .map(std::process::ExitCode::from)
-                .map_err(|cause| CliFailure {
-                    phase: CliPhase::Execution,
-                    cause,
-                    failure_report: report.unwrap_or(FailureReport::Incomplete(None)),
-                }),
-        )
+    pub fn executed(result: Result<(), Failure>, report: Option<FailureReport>) -> Self {
+        Self(result.map_err(|cause| CliFailure {
+            phase: CliPhase::Execution,
+            cause,
+            failure_report: report.unwrap_or(FailureReport::Incomplete(None)),
+            stderr_report: FailureReport::Incomplete(None),
+        }))
+    }
+
+    /// Writes a failure through the caller's original native output admission.
+    /// Success admits no descriptor and formats no text. The original shutdown
+    /// event ends a blocked write without replacing the cause or its status.
+    /// A synchronous native write retains custody until physical completion;
+    /// an incomplete observation makes no claim that accepted bytes retired.
+    pub async fn write_failure(
+        mut self,
+        shutdown: Shutdown,
+        open: impl FnOnce() -> io::Result<acyclic_native_runtime::InheritedOutput>,
+    ) -> Self {
+        if let Err(failure) = &mut self.0 {
+            failure.stderr_report = settle_failure(shutdown, async {
+                let output = open()?;
+                output.write_owned(failure.render().into_bytes()).await?;
+                Ok(())
+            })
+            .await;
+        }
+        self
+    }
+}
+
+impl CliFailure {
+    /// The exit status: the [`Exit`]'s own, or 1 for any other error.
+    #[must_use]
+    pub fn code(&self) -> std::num::NonZeroU8 {
+        self.cause
+            .downcast_ref::<Exit>()
+            .map_or(std::num::NonZeroU8::MIN, Exit::code)
+    }
+
+    /// The stderr line for delivery in the original runtime: executable and reason.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let name = std::env::args_os()
+            .next()
+            .and_then(|path| {
+                std::path::Path::new(&path)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "graphcoder".into());
+        format!("{name}: {}\n", self.cause)
     }
 }
 
 impl std::process::Termination for CliCompletion {
     fn report(self) -> std::process::ExitCode {
-        // The original cause and write/incomplete disposition survive until
-        // this shared terminal. Neither executable renders or discards a
-        // returned setup error before its completion has been settled.
         match self.0 {
-            Ok(code) => code,
-            Err(_failure) => std::process::ExitCode::FAILURE,
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(failure) => std::process::ExitCode::from(failure.code().get()),
         }
     }
 }
@@ -146,15 +232,23 @@ pub async fn report_failure(
             port.reject_startup(phase.name(), cause).await
         }
     };
+    settle_failure(shutdown, write).await
+}
+
+async fn settle_failure(
+    shutdown: Shutdown,
+    write: impl Future<Output = io::Result<()>>,
+) -> FailureReport {
     tokio::select! {
+        biased;
+        stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
+            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),
+            Err(error) => io::Error::new(error.kind(), error),
+        })),
         result = write => match result {
             Ok(()) => FailureReport::Written,
             Err(error) => FailureReport::Incomplete(Some(error)),
         },
-        stopped = shutdown => FailureReport::Incomplete(Some(match stopped {
-            Ok(_) => io::Error::new(io::ErrorKind::Interrupted, "shutdown interrupted CLI failure delivery"),
-            Err(error) => io::Error::other(error),
-        })),
     }
 }
 
@@ -170,8 +264,8 @@ pub async fn observe(
     port: io::Result<Option<ReportPort>>,
     shutdown: Shutdown,
     graceful: bool,
-    operation: impl Future<Output = Result<u8, Failure>>,
-) -> (Result<u8, Failure>, io::Result<()>, Option<FailureReport>) {
+    operation: impl Future<Output = Result<(), Failure>>,
+) -> (Result<(), Failure>, io::Result<()>, Option<FailureReport>) {
     let (mut port, mut admission_error) = match port {
         Ok(port) => (port, None),
         Err(error) => (None, Some(error)),
@@ -213,11 +307,13 @@ pub async fn observe(
     }
     // A snapshot can precede the operation's terminal. Retain the same port
     // until that terminal and deliver its exact cause before returning it.
+    // An `Exit` is the operation's reported outcome, not a failed operation:
+    // only the latter is a report-port failure frame.
     let failure_report = match &result {
-        Err(cause) => {
+        Err(cause) if !cause.is::<Exit>() => {
             Some(report_failure(port, shutdown, CliPhase::Execution, cause.as_ref()).await)
         }
-        Ok(_) => None,
+        _ => None,
     };
     (result, diagnostic, failure_report)
 }
@@ -225,11 +321,17 @@ pub async fn observe(
 async fn finish(
     stopped: Result<u8, Arc<io::Error>>,
     graceful: bool,
-    operation: impl Future<Output = Result<u8, Failure>>,
-) -> Result<u8, Failure> {
+    operation: impl Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
     if graceful {
-        operation.await
-    } else {
-        stopped.map_err(|error| Box::new(io::Error::other(error)) as Failure)
+        return operation.await;
+    }
+    let code = stopped.map_err(|error| Box::new(io::Error::other(error)) as Failure)?;
+    match std::num::NonZeroU8::new(code) {
+        None => Ok(()),
+        Some(code) => Err(Box::new(Exit::new(
+            code,
+            format!("stopped by signal (exit status {code})"),
+        ))),
     }
 }

@@ -1,3 +1,4 @@
+//! Checks canonical stream paths and each parent through the production parser.
 #![no_main]
 use acyclic_stream::StreamPath;
 use libfuzzer_sys::fuzz_target;
@@ -8,12 +9,17 @@ fuzz_target!(|data: &[u8]| {
     };
     if let Ok(path) = StreamPath::new(text) {
         assert_eq!(path.as_str(), text);
-        assert_eq!(StreamPath::new(path.as_str()).unwrap(), path);
-        let mut current = path.clone();
+        assert_eq!(StreamPath::new(path.as_str()).ok().as_ref(), Some(&path));
+        let mut current = path;
         while let Some(parent) = current.parent() {
-            let end = current.as_str().rfind('/').unwrap();
-            assert_eq!(parent.as_str(), &current.as_str()[..end]);
-            assert_eq!(StreamPath::new(parent.as_str()).unwrap(), parent);
+            assert_eq!(
+                current.as_str().rsplit_once('/').map(|(prefix, _)| prefix),
+                Some(parent.as_str())
+            );
+            assert_eq!(
+                StreamPath::new(parent.as_str()).ok().as_ref(),
+                Some(&parent)
+            );
             assert!(parent < current);
             current = parent;
         }

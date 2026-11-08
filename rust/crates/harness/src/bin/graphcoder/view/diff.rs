@@ -28,7 +28,7 @@ pub(super) async fn query(
     if fragments.is_empty() {
         lines.push(Line::raw("No changes"));
     }
-    for fragment in fragments {
+    for fragment in &fragments {
         render(fragment, &mut lines);
     }
     if next.is_some() {
@@ -43,7 +43,7 @@ pub(super) async fn query(
     ))
 }
 
-fn render(fragment: DiffFilePage, lines: &mut Vec<Line<'static>>) {
+fn render(fragment: &DiffFilePage, lines: &mut Vec<Line<'static>>) {
     if !fragment.continued {
         let kind = match fragment.kind {
             DiffKind::Added => "added",

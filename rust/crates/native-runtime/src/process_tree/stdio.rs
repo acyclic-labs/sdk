@@ -2,24 +2,33 @@
 use super::{events, platform};
 use std::future::Future;
 use std::io;
+#[cfg(unix)]
+use std::os::fd::AsFd as _;
 use std::pin::Pin;
-use std::process::{ChildStdin, ChildStdout};
+#[cfg(windows)]
+use std::process::ChildStdin;
+use std::process::ChildStdout;
+#[cfg(windows)]
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+#[cfg(windows)]
+use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, ReadBuf};
 
 /// A transferred child output pipe. Waiting for input occupies no worker.
 pub struct ProcessPipeReader {
     wait: Option<events::Wait<'static>>,
     pipe: ChildStdout,
+    #[cfg(windows)]
     operation: Arc<events::PipeOperation>,
 }
 
 impl ProcessPipeReader {
-    /// Transfers stdout and its original readiness operation from the tree.
-    /// Cancels the previous observation before moving its pending native read.
+    /// Transfers stdout after cancelling the tree's previous observation.
+    /// Windows retains the original pending native read.
     pub fn take_stdout(tree: &mut super::ProcessTree) -> io::Result<Self> {
         let pipe = tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?;
+        #[cfg(windows)]
         let operation = match tree.readers[0].take() {
             Some(operation) => operation,
             None => events::PipeOperation::reader(&pipe)?,
@@ -27,6 +36,7 @@ impl ProcessPipeReader {
         Ok(Self {
             wait: None,
             pipe,
+            #[cfg(windows)]
             operation,
         })
     }
@@ -53,17 +63,21 @@ impl AsyncRead for ProcessPipeReader {
             let (read, recorded) = platform::read_pipe(&mut this.pipe, unfilled, None)?;
             recorded?;
             if let Some(read) = read {
-                // SAFETY: read_pipe reports only the bytes initialized by ReadFile.
+                // SAFETY: read_pipe reports only the bytes initialized by the read.
                 unsafe { buffer.assume_init(read) };
                 buffer.advance(read);
                 return Poll::Ready(Ok(()));
             }
-            this.wait = Some(events::arm(&[events::Source::Pipe(&this.operation)], None)?);
+            #[cfg(unix)]
+            let source = events::Source::Readable(this.pipe.as_fd());
+            #[cfg(windows)]
+            let source = events::Source::Pipe(&this.operation);
+            this.wait = Some(events::arm(&[source], None)?);
         }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::super::{ProcessCommand as Command, ProcessStdio as Stdio};
     use super::*;
@@ -264,12 +278,14 @@ mod tests {
 
 /// A transferred child input pipe. Flush joins physical delivery.
 /// The shared completion service retains pending bytes if the caller disappears.
+#[cfg(windows)]
 pub struct ProcessPipeWriter {
     wait: Option<events::Wait<'static>>,
     pipe: Option<ChildStdin>,
     writer: platform::Writer,
 }
 
+#[cfg(windows)]
 impl ProcessPipeWriter {
     /// Transfers the original stdin handle without adding a blocking worker.
     pub fn from_stdin(pipe: ChildStdin) -> io::Result<Self> {
@@ -301,6 +317,7 @@ impl ProcessPipeWriter {
     }
 }
 
+#[cfg(windows)]
 impl AsyncWrite for ProcessPipeWriter {
     fn poll_write(
         self: Pin<&mut Self>,
