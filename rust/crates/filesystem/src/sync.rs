@@ -4,13 +4,16 @@ pub(crate) use loom::sync::*;
 pub(crate) use std::sync::*;
 
 // The lock itself is inline: first use cannot attach an unaccounted allocation
-// to an already funded owner. Use where callers recover after unwinding;
-// poisoning does not protect an invariant in these protocols.
+// to an already funded owner. Protocols either recover after unwinding or
+// record transaction poisoning explicitly in their own guard.
 #[cfg(not(loom))]
-pub(crate) use parking_lot::Mutex as InlineMutex;
+pub(crate) use parking_lot::{Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
 
 #[cfg(loom)]
-#[derive(Default)]
+pub(crate) use loom::sync::MutexGuard as InlineMutexGuard;
+
+#[cfg(loom)]
+#[derive(Debug, Default)]
 pub(crate) struct InlineMutex<T>(loom::sync::Mutex<T>);
 
 #[cfg(loom)]
@@ -19,7 +22,7 @@ impl<T> InlineMutex<T> {
         Self(loom::sync::Mutex::new(value))
     }
 
-    pub(crate) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+    pub(crate) fn lock(&self) -> InlineMutexGuard<'_, T> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

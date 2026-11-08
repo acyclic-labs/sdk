@@ -182,7 +182,7 @@ impl NativeMaterializationWork {
             metadata,
             self_ref: self_ref.clone(),
             parent: self.resource.clone(),
-            state: super::resource_lock::Mutex::new(NativeResourceState::default()),
+            state: crate::sync::InlineMutex::new(NativeResourceState::default()),
         });
         let mut work = self.allocation_work();
         work.resource = Some(resource);
