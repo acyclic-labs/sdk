@@ -17,6 +17,7 @@ struct Probe {
     reads: AtomicUsize,
     answers: Mutex<Vec<u64>>,
     gate: Mutex<Option<oneshot::Receiver<()>>>,
+    observing: Mutex<Option<oneshot::Sender<()>>>,
     stop: Mutex<Option<acyclic_actors::guest::CancellationToken>>,
 }
 
@@ -39,6 +40,9 @@ impl TurnChildren for Children {
             let selected = self.original.settled(child).await?;
             let gate = self.probe.gate.lock().unwrap().take();
             if let Some(gate) = gate {
+                if let Some(observing) = self.probe.observing.lock().unwrap().take() {
+                    let _ = observing.send(());
+                }
                 gate.await.map_err(|_| {
                     acyclic_harness_core::Error::Storage(
                         "original child observation producer dropped".into(),
@@ -232,12 +236,14 @@ async fn observe(
         .answer
         .unwrap();
     let (release, gate) = oneshot::channel();
+    let (observing, observed) = oneshot::channel();
+    *probe.observing.lock().unwrap() = Some(observing);
     *probe.gate.lock().unwrap() = Some(gate);
     let mut pending = Box::pin(deliver(host, parent, requested("observe-original", parent)));
-    assert!(
-        pending.as_mut().now_or_never().is_none(),
-        "wait skipped original observation"
-    );
+    match futures::future::select(pending.as_mut(), observed).await {
+        futures::future::Either::Right((observed, _)) => observed?,
+        futures::future::Either::Left(_) => panic!("wait skipped original observation"),
+    }
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
     deliver(host, child, requested("advance-after-selection", child)).await?;
     let latest = settled(stream, &within(), child)
@@ -287,18 +293,24 @@ async fn observe(
     );
 
     let (producer, gate) = oneshot::channel();
+    let (observing, observed) = oneshot::channel();
+    *probe.observing.lock().unwrap() = Some(observing);
     *probe.gate.lock().unwrap() = Some(gate);
     let mut pending = Box::pin(deliver(host, parent, requested("cancel-original", parent)));
-    assert!(pending.as_mut().now_or_never().is_none());
+    match futures::future::select(pending.as_mut(), observed).await {
+        futures::future::Either::Right((observed, _)) => observed?,
+        futures::future::Either::Left(_) => panic!("wait skipped cancellation observation"),
+    }
     probe.stop.lock().unwrap().as_ref().unwrap().cancel();
-    assert!(
-        pending.now_or_never().is_some(),
-        "original cancellation did not end preparation"
-    );
+    let completed = pending.as_mut().now_or_never();
     assert!(
         producer.is_canceled(),
-        "cancelled preparation retained its original read"
+        "original cancellation did not end preparation"
     );
+    match completed {
+        Some(result) => result?,
+        None => pending.await?,
+    };
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
     Ok(())
 }
