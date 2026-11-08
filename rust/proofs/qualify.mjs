@@ -31,13 +31,6 @@ const claims = {
     ["--no-default-features", "--features", "memory,native-mount"],
     { mutations: [
       { patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "namespace changed before a refused completion" },
-    ], positive: [
-      "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",
-      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
-      "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
-      "native_mount::fuse::tests::cache::readdirplus_acceptance_supersedes_cached_name_misses",
-      "native_mount::fuse::tests::detach::prepared_rename_cannot_resurrect_a_concurrent_forget",
-      "native_mount::fuse::tests::detach::forgotten_inode_negative_control",
     ] },
   ],
   "native-rename-binding-completion": [

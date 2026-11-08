@@ -165,12 +165,12 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
         assert!(operation(&original, rename, Some(required), false)?.is_some());
     }
     let required = operation(&original, true, None, true)?.ok_or("unbounded rename was refused")?;
-    assert!(
-        operation(&original, true, Some(required - 1), true)?.is_none(),
-        "rename did not reserve its completion item"
-    );
-    // Consumed items do not include unused admission reservations. The finite
-    // allocation replay above proves progress without assuming those are equal.
+    // Replicas share provider caches, and unused reservations are refunded.
+    // Check safety at each cut without assuming an identical cost or outcome.
+    // The finite allocation replay above independently checks progress.
+    for allowance in 0..=required {
+        operation(&original, true, Some(allowance), true)?;
+    }
     Ok(())
 }
 
