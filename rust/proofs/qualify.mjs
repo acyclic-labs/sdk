@@ -15,6 +15,20 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "fixed-index-read-admission": [
+    "rust/crates/collections/src/lib.rs", "acyclic-collections",
+    "tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors",
+    "cancelled empty exact read must be refused", [],
+    {
+      oracle: "rust/crates/collections/src/tests/ordered.rs",
+      nextest: ["--no-tests=fail"],
+      mutations: [
+        { patch: "rust/crates/collections/src/tests/unchecked_empty_read.patch", label: "unchecked-empty-read", diagnostic: "cancelled empty exact read must be refused" },
+        { patch: "rust/crates/collections/src/tests/late_remove_admission.patch", label: "late-remove-admission", diagnostic: "refused removal must preserve original owner" },
+        { source: "rust/crates/collections/src/recent.rs", patch: "rust/crates/collections/src/tests/swallowed_window_refusal.patch", label: "swallowed-window-refusal", diagnostic: "recent window refusal must not become a cache miss" },
+      ],
+    },
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
