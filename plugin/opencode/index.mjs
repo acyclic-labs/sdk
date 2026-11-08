@@ -33,7 +33,7 @@ export default async function acyclic({client, directory}) {
       // Isolated delegation belongs to the shared actor/subtree/volume owner.
       // Deny the native Task tool even when a project grants other tools.
       if (typeof config.permission !== "object" || config.permission === null)
-        config.permission = { "*": config.permission ?? "ask" };
+        config.permission = config.permission == null ? {} : { "*": config.permission };
       config.permission.task = "deny";
       config.mcp ??= {};
       if (Object.hasOwn(config.mcp, "acyclic-sessions"))
