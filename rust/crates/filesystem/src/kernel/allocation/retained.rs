@@ -410,19 +410,19 @@ pub(crate) struct Retained<T> {
     pub(crate) allocation: RetainedAllocation,
 }
 
-struct RetainedBytes<T> {
-    bytes: Vec<u8>,
+struct RetainedBytes<B, T> {
+    bytes: B,
     _custody: T,
     _allocation: RetainedAllocation,
 }
 
-impl<T> AsRef<[u8]> for RetainedBytes<T> {
+impl<B: AsRef<[u8]>, T> AsRef<[u8]> for RetainedBytes<B, T> {
     fn as_ref(&self) -> &[u8] {
-        &self.bytes
+        self.bytes.as_ref()
     }
 }
 
-impl Retained<Vec<u8>> {
+impl<B: AsRef<[u8]> + Send + 'static> Retained<B> {
     /// Keeps physical backing and its original lease through the last alias.
     /// The shared owner header is admitted before `Bytes` allocates it.
     pub(crate) fn into_bytes<T: Send + 'static>(
@@ -431,7 +431,7 @@ impl Retained<Vec<u8>> {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<bytes::Bytes, crate::FsError> {
         let control =
-            acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<T>>() as u64;
+            acyclic_auth::operation::bytes_owner_allocation_bytes::<RetainedBytes<B, T>>() as u64;
         let mut allocation = RetainedAllocation::claim(control, 1, accounting)?;
         self.allocation.absorb(&mut allocation)?;
         Ok(bytes::Bytes::from_owner(RetainedBytes {
