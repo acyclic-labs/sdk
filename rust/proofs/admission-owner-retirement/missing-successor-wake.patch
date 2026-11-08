@@ -1,0 +1,29 @@
+--- a/rust/crates/native-runtime/src/workers/admission.rs
++++ b/rust/crates/native-runtime/src/workers/admission.rs
+@@ -254,7 +254,7 @@
+                 .as_ref()
+                 .and_then(|node| admission.retire_owner(node));
+             drop(admission);
+-            wake_capacity_waiter(next);
++            drop(next);
+             drop(retired);
+             drop(displaced);
+             if let Some(observation) = observation {
+@@ -281,7 +281,7 @@
+                 .as_ref()
+                 .and_then(|node| admission.retire_owner(node));
+             drop(admission);
+-            wake_capacity_waiter(next);
++            drop(next);
+             drop(retired);
+             drop(displaced);
+             let error = io::Error::from(io::ErrorKind::BrokenPipe);
+@@ -302,7 +302,7 @@
+         .unwrap_or_else(std::sync::PoisonError::into_inner);
+     let next = admission.retire_owner(&waiter);
+     drop(admission);
+-    wake_capacity_waiter(next);
++    drop(next);
+     drop(waiter);
+ }
+ 

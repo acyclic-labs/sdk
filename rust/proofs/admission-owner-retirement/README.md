@@ -1,0 +1,45 @@
+# Original capacity waiter retirement
+
+Admission unlinks a borrowed waiter. The original caller retains that owner
+until admission is unlocked and its successor has been notified. No extra
+reference count, allocation, lock, syscall, durability barrier, round trip or
+payload copy is added. Unlinking retains its fixed adjacent-node work; it
+never traverses other waiters. Final owner destruction moves from inside the
+admission lock to after successor notification.
+
+`cancelled_original_submission_retires_waiter_outside_admission` occupies the
+configured production workers and their real channel before polling public
+`run_blocking_io` submissions. Cancelling the original pending submission must
+retire its observer outside admission, preserve its own destructor panic,
+notify the live successor before that panic, release the original funding
+and leave the cancelled body unexecuted. Releasing the original worker gate
+then lets that same successor complete. The existing exclusive-process entry
+keeps whole-pool occupation from blocking unrelated tests.
+
+The retained inverse restores the complete admission and job implementations
+and their original allocation-control and queue-model callers from
+`20890de854ae6404eb4734a9658169affe3da1bd`. The new public-entry property stays
+unchanged. Compilation failures cannot qualify this negative control:
+
+```sh
+git apply rust/proofs/admission-owner-retirement/original-owner.patch
+git diff --exit-code 20890de854ae6404eb4734a9658169affe3da1bd -- rust/crates/native-runtime/src/workers/admission.rs rust/crates/native-runtime/src/workers/job.rs rust/crates/native-runtime/src/tests/native_allocation.rs rust/crates/native-runtime/src/testing/queue_model.rs
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission)'
+git apply -R rust/proofs/admission-owner-retirement/original-owner.patch
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission) | test(retired_waiter_)'
+```
+
+The original must fail with `original waiter retired under the admission lock`.
+The separate `missing-successor-wake.patch` removes notification from all three
+production retirement callers. The same public-entry property must fail with
+`retirement lost its successor wake`, before waiting for that successor:
+
+```sh
+git apply rust/proofs/admission-owner-retirement/missing-successor-wake.patch
+cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(cancelled_original_submission_retires_waiter_outside_admission)'
+git apply -R rust/proofs/admission-owner-retirement/missing-successor-wake.patch
+```
+
+The existing allocation controls cover final notifier ownership and removal of
+neighbor links. Registration replacement and notification transfer have their
+own controls in `../admission-observer-transfer/README.md`.

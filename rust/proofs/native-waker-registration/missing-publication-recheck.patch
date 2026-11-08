@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/wake.rs
++++ b/rust/crates/native-runtime/src/wake.rs
+@@ -91,7 +91,7 @@
+     drop(state);
+     let waker = waker.clone();
+     let mut state = lock();
+-    if ready(&state) {
++    if false {
+         drop(state);
+         drop(waker);
+         return std::task::Poll::Ready(lock());

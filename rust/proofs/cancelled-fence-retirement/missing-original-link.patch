@@ -1,0 +1,11 @@
+--- a/rust/crates/native-runtime/src/completion/fence.rs
++++ b/rust/crates/native-runtime/src/completion/fence.rs
+@@ -54,7 +54,7 @@
+             self.complete();
+         } else {
+             let retired = state.successor.take();
+-            let skipped = state.skipped_successor.replace(Arc::clone(self));
++            let skipped = state.skipped_successor.take();
+             drop(state);
+             drop(skipped);
+             drop(retired);
