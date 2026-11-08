@@ -87,65 +87,75 @@ async fn collect_paths<'a, O: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<crate::kernel::Owned<Vec<ChangedPath>>, WorkspaceError> {
-    crate::heap_future::in_borrowed_frame!(accounting, |accounting| async move {
-        let mut cursor = create(accounting)?;
-        let mut paths = match crate::kernel::Owned::<Vec<ChangedPath>>::allocate(0, accounting) {
-            Ok(paths) => paths,
-            Err(error) => {
-                cursor.retire(accounting)?;
-                return Err(error.into());
-            }
-        };
-        let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-        let result = async {
-            while let Some(path) = cursor
-                .next(objects, roots, accounting, cancellation)
-                .await?
+    crate::heap_future::in_borrowed_frame!(
+        accounting,
+        |accounting| async move {
+            let mut cursor = create(accounting)?;
+            let mut paths = match crate::kernel::Owned::<Vec<ChangedPath>>::allocate(0, accounting)
             {
-                if paths.value.len() == maximum {
-                    path.retire(accounting)?;
-                    return Err(WorkspaceError::ChangedPathLimit);
-                }
-                let prepared = (|| {
-                    let moved = if paths.value.len() == paths.value.capacity() {
-                        paths.value.len()
-                    } else {
-                        0
-                    };
-                    let copied = copy_work(crate::foundation::usize_to_u64(
-                        moved
-                            .checked_add(1)
-                            .and_then(|count| count.checked_mul(std::mem::size_of::<ChangedPath>()))
-                            .ok_or(crate::WorkError::Overflow)?,
-                    ));
-                    accounting.admit(copied)?;
-                    paths.ensure_for_push(maximum, accounting)?;
-                    accounting.record_completed(copied)
-                })();
-                if let Err(error) = prepared {
-                    path.retire(accounting)?;
+                Ok(paths) => paths,
+                Err(error) => {
+                    cursor.retire(accounting)?;
                     return Err(error.into());
                 }
-                let path = path.transfer_to(&mut paths.allocation, &mut paths.bytes, accounting)?;
-                paths.value.push(path);
+            };
+            let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+            let result = async {
+                while let Some(path) = cursor
+                    .next(objects, roots, accounting, cancellation)
+                    .await?
+                {
+                    if paths.value.len() == maximum {
+                        path.retire(accounting)?;
+                        return Err(WorkspaceError::ChangedPathLimit);
+                    }
+                    let prepared = (|| {
+                        let moved = if paths.value.len() == paths.value.capacity() {
+                            paths.value.len()
+                        } else {
+                            0
+                        };
+                        let copied = copy_work(crate::foundation::usize_to_u64(
+                            moved
+                                .checked_add(1)
+                                .and_then(|count| {
+                                    count.checked_mul(std::mem::size_of::<ChangedPath>())
+                                })
+                                .ok_or(crate::WorkError::Overflow)?,
+                        ));
+                        accounting.admit(copied)?;
+                        paths.ensure_for_push(maximum, accounting)?;
+                        accounting.record_completed(copied)
+                    })();
+                    if let Err(error) = prepared {
+                        path.retire(accounting)?;
+                        return Err(error.into());
+                    }
+                    let path =
+                        path.transfer_to(&mut paths.allocation, &mut paths.bytes, accounting)?;
+                    paths.value.push(path);
+                }
+                // The public vector API retains its historical path order. The cursor
+                // itself emits each path once, so no prefix index or coalescing is needed.
+                crate::kernel::sort_by_with_accounting(
+                    &mut paths.value,
+                    accounting,
+                    |left, right| left.path.components().cmp(right.path.components()),
+                )?;
+                Ok(())
             }
-            // The public vector API retains its historical path order. The cursor
-            // itself emits each path once, so no prefix index or coalescing is needed.
-            crate::kernel::sort_by_with_accounting(&mut paths.value, accounting, |left, right| {
-                left.path.components().cmp(right.path.components())
-            })?;
-            Ok(())
-        }
-        .await;
-        let retirement = cursor.retire(accounting);
-        match result.and_then(|()| retirement.map_err(Into::into)) {
-            Ok(()) => Ok(paths),
-            Err(error) => {
-                paths.retire(accounting)?;
-                Err(error)
+            .await;
+            let retirement = cursor.retire(accounting);
+            match result.and_then(|()| retirement.map_err(Into::into)) {
+                Ok(()) => Ok(paths),
+                Err(error) => {
+                    paths.retire(accounting)?;
+                    Err(error)
+                }
             }
-        }
-    })
+        },
+        erase_task
+    )
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<A, O> {
