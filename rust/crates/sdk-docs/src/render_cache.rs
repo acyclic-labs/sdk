@@ -1,4 +1,4 @@
-use crate::{Error, public_api::PublicItemSignature};
+use crate::{public_api::PublicItemSignature, Error};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -617,13 +617,11 @@ mod tests {
     fn nested_and_unwinding_operations_restore_the_outer_cache() {
         with_rustdoc_cache(|| {
             extract(&Rc::from(&b"outer"[..]), || Ok(item(b"outer"))).unwrap();
-            assert!(
-                std::panic::catch_unwind(|| with_rustdoc_cache(|| {
-                    extract(&Rc::from(&b"inner"[..]), || Ok(item(b"inner"))).unwrap();
-                    panic!("negative control");
-                }))
-                .is_err()
-            );
+            assert!(std::panic::catch_unwind(|| with_rustdoc_cache(|| {
+                extract(&Rc::from(&b"inner"[..]), || Ok(item(b"inner"))).unwrap();
+                panic!("negative control");
+            }))
+            .is_err());
             assert_eq!(
                 extract(&Rc::from(&b"outer"[..]), || panic!("outer result was lost")).unwrap(),
                 item(b"outer")

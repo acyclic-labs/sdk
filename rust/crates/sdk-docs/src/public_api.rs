@@ -7,7 +7,7 @@
 
 use crate::Error;
 use public_api::tokens::Token;
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, ItemEnum};
+use rustdoc_types::{Crate, Id, ItemEnum, FORMAT_VERSION};
 use serde_json::Value;
 use std::{io::Write, path::Path};
 
@@ -359,11 +359,9 @@ mod tests {
     fn adapter_removes_only_typed_nullable_metadata() {
         let mut value = base();
         remove_known_fields(&mut value, [(7, "function")]).expect("nullable metadata is supported");
-        assert!(
-            value["index"]["7"]["inner"]["function"]
-                .get("default_unstable")
-                .is_none()
-        );
+        assert!(value["index"]["7"]["inner"]["function"]
+            .get("default_unstable")
+            .is_none());
         assert_eq!(value["default_unstable"]["user_defined"], true);
         assert_eq!(
             value["index"]["7"]["inner"]["function"]["user_defined"]["default_unstable"],
@@ -614,11 +612,9 @@ mod tests {
         ] {
             let mut tokens = vec![Token::Keyword("impl".into()), Token::Whitespace];
             tokens.extend(target);
-            assert!(
-                exported_path_for_item(tokens.iter(), true)
-                    .expect("compound impl should be retained without an exported path")
-                    .is_empty()
-            );
+            assert!(exported_path_for_item(tokens.iter(), true)
+                .expect("compound impl should be retained without an exported path")
+                .is_empty());
         }
     }
 

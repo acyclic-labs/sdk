@@ -288,21 +288,19 @@ mod tests {
             |_| Ok(success(b"outer".to_vec())),
             || {
                 assert_eq!(command("unused").run_output().unwrap().stdout, b"outer");
-                assert!(
-                    std::panic::catch_unwind(|| {
-                        with_command_executor(
-                            |_| Err(std::io::ErrorKind::NotFound.into()),
-                            || {
-                                assert_eq!(
-                                    command("unused").run_output().unwrap_err().kind(),
-                                    std::io::ErrorKind::NotFound
-                                );
-                                panic!("executor unwind");
-                            },
-                        );
-                    })
-                    .is_err()
-                );
+                assert!(std::panic::catch_unwind(|| {
+                    with_command_executor(
+                        |_| Err(std::io::ErrorKind::NotFound.into()),
+                        || {
+                            assert_eq!(
+                                command("unused").run_output().unwrap_err().kind(),
+                                std::io::ErrorKind::NotFound
+                            );
+                            panic!("executor unwind");
+                        },
+                    );
+                })
+                .is_err());
                 assert_eq!(command("unused").run_output().unwrap().stdout, b"outer");
             },
         );
@@ -324,14 +322,12 @@ mod tests {
     #[test]
     fn unwinding_restores_the_environment() {
         let before = overrides();
-        assert!(
-            std::panic::catch_unwind(|| {
-                let mut child = Command::new("cargo");
-                child.env("CARGO_HOME", "inner");
-                with_command_environment(&child, || panic!("scope unwind"))
-            })
-            .is_err()
-        );
+        assert!(std::panic::catch_unwind(|| {
+            let mut child = Command::new("cargo");
+            child.env("CARGO_HOME", "inner");
+            with_command_environment(&child, || panic!("scope unwind"))
+        })
+        .is_err());
         assert_eq!(overrides(), before);
     }
 }
