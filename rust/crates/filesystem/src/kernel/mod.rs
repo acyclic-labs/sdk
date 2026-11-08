@@ -42,6 +42,7 @@ mod live;
 mod mark;
 mod merge;
 mod metadata;
+pub(crate) use metadata::read_file_metadata_with_accounting;
 mod references;
 pub(crate) use references::{visit_object_references, visit_record_references};
 mod mutation;

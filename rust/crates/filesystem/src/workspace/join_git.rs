@@ -379,9 +379,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
         let mut work = WorkBudget::UNBOUNDED.accounting(&cancellation);
         let mut values = [FileMetadata::default(); 3];
         for (slot, original) in values.iter_mut().zip(records) {
-            *slot = crate::facade::read_record_metadata_to_file_root_with_accounting(
-                volume,
-                *original,
+            *slot = crate::kernel::read_file_metadata_with_accounting(
+                volume.fs.objects(),
+                original.metadata,
+                crate::kernel::DecodeLimits::for_volume(volume.config),
                 &mut work,
                 &cancellation,
             )

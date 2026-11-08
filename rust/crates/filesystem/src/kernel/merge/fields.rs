@@ -162,10 +162,21 @@ async fn merge_metadata_async<S: AsyncObjectStore>(
     if let Some(resolved) = base.and_then(|base| resolve_three(&base, &ours, &theirs)) {
         return Ok(Some(resolved));
     }
-    let ours_fields = read_metadata(store, ours, limits, accounting, cancellation).await?;
-    let theirs_fields = read_metadata(store, theirs, limits, accounting, cancellation).await?;
+    let ours_fields =
+        super::read_file_metadata_with_accounting(store, ours, limits, accounting, cancellation)
+            .await?;
+    let theirs_fields =
+        super::read_file_metadata_with_accounting(store, theirs, limits, accounting, cancellation)
+            .await?;
     let (merged, base_fields) = if let Some(base) = base {
-        let fields = read_metadata(store, base, limits, accounting, cancellation).await?;
+        let fields = super::read_file_metadata_with_accounting(
+            store,
+            base,
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await?;
         (
             merge_metadata_fields(fields, ours_fields, theirs_fields),
             Some(fields),
@@ -239,40 +250,6 @@ async fn empty_tree_async<S: AsyncObjectStore>(
         cancellation,
     )
     .await
-}
-
-async fn read_metadata<S: AsyncObjectStore>(
-    store: &S,
-    object: ObjectId,
-    limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<FileMetadata, FsError> {
-    let (read, retained) = super::file_read::read_object_with_accounting(
-        store,
-        object,
-        limits.maximum_object_bytes,
-        accounting,
-        cancellation,
-    )
-    .await?;
-    let result = (|| {
-        accounting.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        decode_file_metadata(&read.bytes, limits, &mut |_| {
-            Ok::<_, crate::kernel::CanonicalDecodeError>(())
-        })
-        .map_err(FsError::from)
-    })();
-    drop(read);
-    // Native provider bytes own their original guard internally; only the
-    // standalone provider retention remains on the caller's ledger.
-    if retained != 0 {
-        retire_allocation(KernelOwnedAllocation::Standalone, retained, accounting)?;
-    }
-    result
 }
 
 pub(crate) fn merge_metadata_fields(

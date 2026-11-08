@@ -1,6 +1,127 @@
 use super::*;
 
 #[tokio::test]
+async fn metadata_reads_preserve_the_original_decoder_work() -> TestResult {
+    let metadata = FileMetadata {
+        posix_mode: MetadataField::Value(0o100_640),
+        posix_uid: MetadataField::Value(41),
+        posix_gid: MetadataField::Value(42),
+        posix_flags: MetadataField::Value(43),
+        windows_attributes: MetadataField::Value(44),
+        created_ns: MetadataField::Value(45),
+        modified_ns: MetadataField::Value(46),
+        accessed_ns: MetadataField::Value(47),
+        changed_ns: MetadataField::Value(48),
+        ..FileMetadata::default()
+    };
+    let minimal = FileMetadata {
+        posix_uid: metadata.posix_uid,
+        ..FileMetadata::default()
+    };
+    let (minimal_decode, minimal_closure) = metadata_work_trace(minimal).await?;
+    let (complete_decode, complete_closure) = metadata_work_trace(metadata).await?;
+    // Both real generations have the same topology and object classes. Only
+    // the file metadata's scalar payload differs; its original decoder trace
+    // must account for the entire change in closure copy work.
+    assert_eq!(
+        complete_closure - minimal_closure,
+        complete_decode - minimal_decode,
+        "metadata closure discarded its original decoder work"
+    );
+    Ok(())
+}
+
+async fn metadata_work_trace(metadata: FileMetadata) -> TestResult<(u64, u64)> {
+    use crate::kernel::{DecodeLimits, ReadAllocationStep, decode_file_metadata};
+
+    let cancel = CancellationToken::new();
+    let (volume, mut checkout) = fixture(config(), &cancel).await?;
+    let file = path("metadata")?;
+    checkout
+        .create(
+            AuthoredMutation::CreateFile {
+                path: file.clone(),
+                bytes: OwnedBytes::from_static(b"original"),
+                metadata,
+            },
+            B,
+            &cancel,
+        )
+        .await?;
+    let detached = checkout.detach_regular_file(&file, B, &cancel).await?.value;
+    let record = checkout
+        .lookup_no_follow(&file, B, &cancel)
+        .await?
+        .value
+        .record
+        .ok_or("created file is missing")?;
+    // Capture the actual stored object and its physical read work. The same
+    // production decoder supplies the independent completion trace; no codec
+    // sizes or adapter counters are restated in this oracle.
+    let mut physical = crate::AuthorityWork::new(B, &cancel);
+    let limits = DecodeLimits::for_volume(config());
+    let read = volume
+        .fs
+        .objects()
+        .read(record.metadata, limits.maximum_object_bytes, &mut physical)
+        .await?;
+    let mut copied = physical.spent().bytes_copied;
+    let mut examined = physical.spent().items_examined;
+    assert_eq!(
+        decode_file_metadata(&read.bytes, limits, &mut |step| {
+            match step {
+                ReadAllocationStep::Copied(bytes) => copied += bytes,
+                ReadAllocationStep::Item => examined += 1,
+                _ => {}
+            }
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?,
+        metadata
+    );
+    for maximum in 0..=copied {
+        let result = detached
+            .read_metadata(
+                WorkBudget {
+                    bytes_copied: maximum,
+                    ..B
+                },
+                &cancel,
+            )
+            .await;
+        if maximum == copied {
+            let receipt = result?;
+            assert_eq!(receipt.value, metadata);
+            assert_eq!(receipt.work.bytes_copied, copied);
+            assert_eq!(receipt.work.items_examined, examined);
+        } else {
+            let failure =
+                result.expect_err("metadata decoder bypassed its original copy admission");
+            assert!(
+                matches!(
+                    failure.error,
+                    FsError::Work(WorkError::BudgetExceeded {
+                        counter: "bytes_copied",
+                        ..
+                    })
+                ),
+                "{failure:?}"
+            );
+            assert!(failure.work.bytes_copied <= maximum);
+        }
+    }
+    commit(&mut checkout, &cancel).await?;
+    let proof = crate::kernel::prove_generation_closure(
+        volume.fs.objects(),
+        checkout.generation_root,
+        crate::facade::closure_limits(config()),
+        B,
+        &cancel,
+    )
+    .await?;
+    Ok((copied, proof.work.bytes_copied))
+}
+
+#[tokio::test]
 async fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal() -> TestResult {
     let cancel = CancellationToken::new();
     let (_, mut checkout) = fixture(config(), &cancel).await?;

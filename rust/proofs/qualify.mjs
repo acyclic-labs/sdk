@@ -29,6 +29,18 @@ const claims = {
     "hard-link reply discarded current detached file facts",
     ["--no-default-features", "--features", "memory,native-mount"],
   ],
+  "metadata-closure-work": [
+    "rust/crates/filesystem/src/kernel/closure/walk.rs", "acyclic-fs",
+    "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
+    "metadata closure discarded its original decoder work",
+    ["--no-default-features", "--features", "memory"],
+  ],
+  "metadata-reader-work": [
+    "rust/crates/filesystem/src/kernel/metadata.rs", "acyclic-fs",
+    "facade::tests::detached::metadata_reads_preserve_the_original_decoder_work",
+    "metadata decoder bypassed its original copy admission",
+    ["--no-default-features", "--features", "memory"],
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],

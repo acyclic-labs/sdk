@@ -118,9 +118,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
             )?;
             for entry in &lookup.0.entries {
                 let file = if let Some(record) = entry.record {
-                    let metadata = read_record_metadata_to_file_root_with_accounting(
-                        &self.volume,
-                        record,
+                    let metadata = crate::kernel::read_file_metadata_with_accounting(
+                        self.volume.fs.objects(),
+                        record.metadata,
+                        DecodeLimits::for_volume(self.volume.config),
                         &mut accounting,
                         cancellation,
                     )

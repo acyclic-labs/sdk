@@ -118,9 +118,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
             let record = self
                 .resolve_file(path, &mut accounting, cancellation)
                 .await?;
-            read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
+            crate::kernel::read_file_metadata_with_accounting(
+                self.volume.fs.objects(),
+                record.metadata,
+                DecodeLimits::for_volume(self.volume.config),
                 &mut accounting,
                 cancellation,
             )
@@ -129,42 +130,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
         .await;
         budget.finish(result, &accounting)
     }
-}
-
-pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    volume: &Volume<A, O>,
-    record: FileRecord,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<FileMetadata, FsError> {
-    let mut accounting = accounting.allocation_scope()?;
-    let (read, _retained_bytes) = crate::kernel::read_object_with_accounting(
-        &volume.fs.inner.objects,
-        record.metadata,
-        volume.config.limits.maximum_object_bytes,
-        &mut accounting,
-        cancellation,
-    )
-    .await
-    .map_err(|error| match error {
-        FsError::BlobRead(BlobReadError::Storage(error)) => match error {
-            #[cfg(not(target_arch = "wasm32"))]
-            crate::ObjectStoreError::Native(error) => FsError::NativeKernel(error),
-            error => FsError::Object(error),
-        },
-        error => error,
-    })?;
-    crate::kernel::decode_owned(&mut accounting, |observe| {
-        crate::kernel::decode_file_metadata(
-            &read.bytes,
-            DecodeLimits::for_volume(volume.config),
-            &mut |step| observe(step),
-        )
-    })
-    .map(|(metadata, _)| metadata)
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A, O> {
@@ -315,9 +280,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     .lookup_file_record_by_id_with_accounting(id, &mut accounting, cancellation)
                     .await?
                     .ok_or(FsError::NotFound)?;
-                let metadata = read_record_metadata_to_file_root_with_accounting(
-                    &self.volume,
-                    record,
+                let metadata = crate::kernel::read_file_metadata_with_accounting(
+                    self.volume.fs.objects(),
+                    record.metadata,
+                    DecodeLimits::for_volume(self.volume.config),
                     &mut accounting,
                     cancellation,
                 )
@@ -394,9 +360,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
         cancellation: &CancellationToken,
     ) -> W::Output<FileMetadata, FsError> {
         let mut accounting = budget.accounting(cancellation);
-        let result = read_record_metadata_to_file_root_with_accounting(
-            &self.volume,
-            self.record,
+        let result = crate::kernel::read_file_metadata_with_accounting(
+            self.volume.fs.objects(),
+            self.record.metadata,
+            DecodeLimits::for_volume(self.volume.config),
             &mut accounting,
             cancellation,
         )

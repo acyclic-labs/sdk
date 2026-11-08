@@ -269,7 +269,6 @@ pub use local::LocalOptions;
 #[cfg(test)]
 use local::run_local_initialization;
 use metadata::AuthoredMetadataCache;
-pub(crate) use metadata::read_record_metadata_to_file_root_with_accounting;
 use proof::DependencyLedger;
 use proof::Proof;
 pub(crate) use publication::GenerationClosure;
