@@ -190,7 +190,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
 
       step = "settle two original native children through the shared process owner";
       env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits",
-        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: { allow: [`command(${childWrite})`] } })]);
+        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: { allow: [`command(${childWrite})`] } }), "--add-dir", "."]);
       const bridge = scope.start(staged.executable, ["__mcp", "agy"], { cwd: workspace, env });
       const client = new McpClient(bridge.child, { name: "native-agy-conformance", version: "1", recovery });
       const call = async (name, args) => {
@@ -245,7 +245,8 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const childRequest = coordinatedCalls.find(call => call.step === 5);
       assert.ok(!childRequest.body.systemInstruction.parts.some(part =>
         part.text?.includes(`Command Working Directory: ${workspace}\n`)), "native child selected the parent workspace as its command cwd");
-      assert.equal(await readFile(join(childReply.cwd, "native-child.txt"), "utf8"), "native-agy-child-write",
+      const reopened = await request({ kind: "reopen", task: childReply.task });
+      assert.equal(await readFile(join(reopened.cwd, "native-child.txt"), "utf8"), "native-agy-child-write",
         "writing native child did not capture its file in the admitted view");
       step = "inspect native profile session storage after physical settlement";
       const profileFiles = await readdir(join(profile, ".gemini"), { recursive: true });
