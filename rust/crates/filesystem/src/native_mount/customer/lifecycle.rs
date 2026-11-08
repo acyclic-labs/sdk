@@ -1,7 +1,7 @@
 use super::super::session::NativeSessionControl;
 use super::*;
 
-pub(super) struct CustomerSession {
+pub(in crate::native_mount) struct CustomerSession {
     slot: Mutex<Option<NativeMountSession>>,
     _allocation: NativeAllocation,
 }

@@ -211,6 +211,49 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         std::fs::read(retained.path().join("still-live.txt"))?,
         b"retained"
     );
+    let cancelled = workspace.mount_view(options.clone()).await?;
+    let cancelled_path = cancelled.path().to_owned();
+    let cancelled_session = Arc::downgrade(&cancelled.session);
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let mut retirement = Box::pin(schedule.scope(cancelled.abandon_command()));
+    let accepted = loop {
+        tokio::select! {
+            result = &mut retirement => {
+                result?;
+                return Err("retirement completed before its submission boundary".into());
+            }
+            boundary = events.recv() => {
+                let boundary = boundary.ok_or("retirement submission producer dropped")?;
+                if boundary.name == "blocking:submitted" {
+                    break boundary;
+                }
+                boundary.release();
+            }
+        }
+    };
+    assert!(cancelled.is_retiring());
+    assert!(schedule.pending_native_work() > 0);
+    schedule.cancel();
+    drop(retirement);
+    drop(cancelled);
+    assert!(cancelled_session.upgrade().is_some());
+    accepted.release();
+    let drained = schedule.drained();
+    tokio::pin!(drained);
+    loop {
+        tokio::select! {
+            () = &mut drained => break,
+            boundary = events.recv() => {
+                boundary.ok_or("accepted retirement producer dropped")?.release();
+            }
+        }
+    }
+    assert!(cancelled_session.upgrade().is_none());
+    assert!(!cancelled_path.exists());
+    assert_eq!(
+        std::fs::read(retained.path().join("still-live.txt"))?,
+        b"retained"
+    );
     let unmounted = workspace.mount_view(options).await?;
     assert_eq!(retained.path().parent(), unmounted.path().parent());
     assert!(unmounted.path().is_dir());

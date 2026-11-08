@@ -4,7 +4,7 @@ use super::*;
 /// One process-owned customer mount over a canonical workspace checkout.
 pub struct Mount<A: 'static, O: 'static> {
     pub(crate) source: Arc<CheckoutMountSource<A, O>>,
-    pub(super) session: Arc<CustomerSession>,
+    pub(in crate::native_mount) session: Arc<CustomerSession>,
     pub(crate) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
     pub(super) retiring: std::sync::atomic::AtomicBool,

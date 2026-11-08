@@ -481,12 +481,11 @@ pub(super) fn alias_target(path: &Path) -> Result<Option<PathBuf>> {
     }
 }
 
-/// The projection owns this exact alias target. Retirement removes the link
-/// only after the view has gone; a live or replaced binding remains intact.
+/// Releases the projection's exact alias, independently of physical retirement.
+/// A replacement binding belongs to its new owner and remains intact.
 pub(super) fn unlink_binding(destination: &Path, view: &Path) -> Result<()> {
     if let Some(target) = alias_target(destination)?
         && (target == view || canonical_destination(&target)? == canonical_destination(view)?)
-        && !view.try_exists().map_err(mount_io)?
     {
         unlink_directory_alias(destination).map_err(mount_io)?;
     }
