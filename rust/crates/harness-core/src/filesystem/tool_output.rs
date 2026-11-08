@@ -45,12 +45,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
-        let (resource, credential, principal) = self
-            .observation_credential(authority, agent, volume, clock.as_ref(), calls)
-            .await?;
         let issuer = authority.issuer.native().ok_or_else(|| {
             Error::Invalid("client credential enrollment requires native custody".into())
         })?;
+        let audience = issuer.audience_resource()?;
+        let (resource, credential, principal) = self
+            .observation_credential(authority, agent, volume, clock.as_ref(), calls, audience)
+            .await?;
         Ok(AgentObservation {
             resource,
             credential,
@@ -69,6 +70,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &'a VolumeRef,
         clock: &'a dyn UnixMillisClock,
         calls: Option<&'a str>,
+        audience: String,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<(String, Vec<u8>, String)>> {
         Box::pin(async move {
             let issuer = authority.issuer.native().ok_or_else(|| {
@@ -163,7 +165,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 ],
             };
             let (credential, principal) =
-                issuer.resource_credential(&authority.scope, &grants, seconds(clock))?;
+                issuer.resource_credential(&authority.scope, &grants, audience, seconds(clock))?;
             Ok((resource, credential, principal))
         })
     }

@@ -405,7 +405,7 @@ where
                 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
                 if agent != &self.root {
                     if let Some((tools, credential)) =
-                        self.bound.selected_observation(agent).await?
+                        self.bound.selected_observation(&self.root, agent).await?
                     {
                         return Ok(AgentBinding::reply(
                             &self.binding(),
