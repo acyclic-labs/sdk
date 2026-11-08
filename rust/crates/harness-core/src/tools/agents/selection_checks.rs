@@ -76,12 +76,12 @@ fn check_value(parent: &AgentPath, arguments: Value) {
         return;
     }
     let (children, actual_need, timeout) = actual.unwrap();
-    assert_eq!((actual_need, timeout), (need, input.timeout_ms));
     assert_eq!(
         children.len(),
         distinct.len(),
         "wait selected a child twice"
     );
+    assert_eq!((actual_need, timeout), (need, input.timeout_ms));
     let mut previous = None;
     let mut selected = BTreeSet::new();
     for (reference, child) in &children {
