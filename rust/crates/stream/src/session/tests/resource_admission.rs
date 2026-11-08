@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt as _;
 
 struct RefusingResources {
     error: StreamError,
@@ -16,11 +17,11 @@ impl ResourceProvider for RefusingResources {
             open: Box::pin(async move {
                 let mut request = crate::FollowRequest::new(StreamPath::new("healthy")?, 0);
                 request.until = Some(1);
-                Ok(provider
-                    .follow(request)
-                    .await?
-                    .chain(stream::once(future::ready(Err(error))))
-                    .boxed())
+                Ok(provider.follow(request).await?.map_cursor(|cursor| {
+                    cursor
+                        .chain(stream::once(future::ready(Err(error))))
+                        .boxed()
+                }))
             }),
         })
     }
@@ -73,7 +74,7 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
             StreamError::NotFound,
             StreamError::PrefixNotRetained,
         ] {
-            let canonical = crate::grpc::error_status(&category);
+            let canonical = crate::wire_codec::error_status(&category);
             // Opaque detail bytes are the original Rust Objects ErrorDetail
             // writer's corpus output, never a hand-encoded remote status.
             let status = tonic::Status::with_details(
