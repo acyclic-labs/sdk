@@ -283,7 +283,7 @@ fn folded_directory_validation_is_shared_between_pages() -> TestResult {
     let cached = cache_work(budget, &crate::CancellationToken::new());
     let next = source.read_directory_with_meter(
         &MountPath::root(),
-        first.next_cursor.as_deref(),
+        first.next_cursor.as_ref(),
         256,
         &cached,
     )?;
@@ -363,7 +363,7 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
     let mut listed = Vec::new();
     loop {
         let page =
-            source.read_directory_with_meter(&MountPath::root(), cursor.as_deref(), 1, &work)?;
+            source.read_directory_with_meter(&MountPath::root(), cursor.as_ref(), 1, &work)?;
         listed.extend(page.entries.iter().map(|entry| entry.name.clone()));
         if page.entries.is_empty() {
             assert!(
@@ -371,7 +371,7 @@ fn folded_collisions_leave_unrelated_files_and_descendants_accessible() -> TestR
                 "ambiguous page lost its source frontier"
             );
         }
-        cursor = page.next_cursor().map(<[u8]>::to_vec);
+        cursor = page.next_cursor;
         if cursor.is_none() {
             break;
         }

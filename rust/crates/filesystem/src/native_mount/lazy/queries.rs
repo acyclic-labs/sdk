@@ -111,7 +111,6 @@ where
             .is_none_or(|(id, _)| id != file_id)
         {
             removals.epoch = removals.epoch.wrapping_add(1);
-            self.cursors.clear();
         }
         drop(removals);
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -155,9 +154,7 @@ where
 
     pub(super) fn record_rebound(&self, path: &str) -> Result<(), MountSourceError> {
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        if removals.rebound(path) {
-            self.cursors.clear();
-        }
+        removals.rebound(path);
         Ok(())
     }
 
