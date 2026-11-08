@@ -157,6 +157,7 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
 #[test]
 fn rename_completion_retains_credit_after_source_acceptance()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
     #[derive(Default)]
     struct CompletionPressure {
         accepted: AtomicBool,
