@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
++++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
+@@ -241,7 +241,9 @@
+         }
+         let next = next.clone();
+         let bytes = tree.read(&next).await?;
+-        observations.observe(&next, bytes.as_deref());
++        if bytes.is_some() {
++            observations.observe(&next, bytes.as_deref());
++        }
+         let Some(bytes) = bytes else {
+             return Ok(Err(format!(
+                 "{current} imports {next}, which no layer holds"

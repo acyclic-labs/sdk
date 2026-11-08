@@ -1,6 +1,6 @@
---- a/rust/crates/harness-core/src/config/evaluate.rs
-+++ b/rust/crates/harness-core/src/config/evaluate.rs
-@@ -167,25 +167,28 @@
+--- a/rust/crates/harness-core/src/config/evaluate/prepared.rs
++++ b/rust/crates/harness-core/src/config/evaluate/prepared.rs
+@@ -168,25 +168,28 @@
      // A completed shared dependency is reused without scanning the active path.
      let mut stack = vec![(path.to_owned(), 0_usize)];
      let mut order = Vec::new();
@@ -38,6 +38,6 @@
              continue;
          }
 -        let next = next.clone();
-         let Some(bytes) = tree.read(&next).await? else {
-             return Ok(Err(format!(
-                 "{current} imports {next}, which no layer holds"
+         let bytes = tree.read(&next).await?;
+         observations.observe(&next, bytes.as_deref());
+         let Some(bytes) = bytes else {

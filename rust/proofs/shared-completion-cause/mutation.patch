@@ -1,0 +1,14 @@
+diff --git a/rust/crates/native-runtime/src/task/custody.rs b/rust/crates/native-runtime/src/task/custody.rs
+--- a/rust/crates/native-runtime/src/task/custody.rs
++++ b/rust/crates/native-runtime/src/task/custody.rs
+@@ -151,7 +151,9 @@ impl TaskCompletion {
+             async move {
+                 task.await
+                     .and_then(std::convert::identity)
+-                    .map_err(Arc::new)
++                    .map_err(|error| {
++                        Arc::new(io::Error::new(error.kind(), error.to_string()))
++                    })
+             }
+             .boxed()
+             .shared(),

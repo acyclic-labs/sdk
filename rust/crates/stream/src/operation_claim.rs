@@ -2,6 +2,7 @@
 
 mod resources;
 mod termination;
+pub(crate) use termination::Signal;
 pub use termination::{OperationObservation, OperationTermination};
 
 use acyclic_collections::{FixedIndex, IndexWork};

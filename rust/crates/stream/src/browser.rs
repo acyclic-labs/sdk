@@ -94,6 +94,8 @@ struct Inner {
 /// Immutable committed-envelope and spent-key hits use the durably replayed
 /// cache. Misses and current head/record observations refresh IndexedDB;
 /// cancelled tentative cache state must be repaired before serving a result.
+/// Backend unavailability ends revision waits with [`StreamError::Unavailable`];
+/// reopen the database to establish a live revision authority again.
 #[derive(Clone)]
 pub struct BrowserStream {
     inner: Rc<Inner>,
@@ -225,7 +227,7 @@ impl BrowserStream {
         // Cancellation leaves a replaceable cache; only durable replay can
         // restore validity and advance the public revision authority.
         cache.valid = false;
-        let port = port::BrowserPort::new(self, self.transaction()?)?;
+        let port = port::BrowserPort::new(self, self.transaction()?);
         let mut replica = Replicated::new(
             port,
             cache.provider.clone(),
@@ -278,7 +280,10 @@ impl BrowserStream {
         dispatch.repair = true;
         let result = self.refresh(cache, &mut dispatch.keys).await;
         dispatch.repair = false;
-        dispatch.failed = result.is_err();
+        dispatch.failed = result
+            .as_ref()
+            .err()
+            .map(|error| *error == StreamError::Unavailable);
         result
     }
 
@@ -322,7 +327,10 @@ impl BrowserStream {
             .run(&mut cache, &mut dispatch.keys, Some((command, deadline)))
             .await;
         dispatch.repair = false;
-        dispatch.failed = result.is_err();
+        dispatch.failed = result
+            .as_ref()
+            .err()
+            .map(|error| *error == StreamError::Unavailable);
         result?.ok_or(StreamError::InvalidResponse)
     }
 }

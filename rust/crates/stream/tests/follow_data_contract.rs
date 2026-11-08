@@ -204,20 +204,23 @@ fn corpus_delivery_seeds_reach_their_named_outcomes() {
 #[test]
 fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
     use acyclic_stream::{CommitId, wire_codec::session::confirm_follow};
-    for (name, seed, delivery, after, accepted, durable, length, expected) in [
+    macro_rules! seed {
+        ($name:literal) => {
+            (
+                $name,
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/fuzz/corpus/session/browser-",
+                    $name
+                ))
+                .as_slice(),
+            )
+        };
+    }
+    for ((name, seed), delivery, after, accepted, durable, length, expected) in [
+        (seed!("latest-jump"), 2, 9, 10, 8, 1, Ok(8)),
         (
-            "latest-jump",
-            include_bytes!("../fuzz/corpus/session/browser-latest-jump").as_slice(),
-            2,
-            9,
-            10,
-            8,
-            1,
-            Ok(8),
-        ),
-        (
-            "latest-empty-key",
-            include_bytes!("../fuzz/corpus/session/browser-latest-empty-key").as_slice(),
+            seed!("latest-empty-key"),
             2,
             9,
             10,
@@ -226,8 +229,7 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             Err(StreamError::Unavailable),
         ),
         (
-            "latest-impossible-durable",
-            include_bytes!("../fuzz/corpus/session/browser-latest-impossible-durable").as_slice(),
+            seed!("latest-impossible-durable"),
             2,
             9,
             10,
@@ -235,19 +237,9 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
             1,
             Err(StreamError::Unavailable),
         ),
+        (seed!("all-held-flush"), 1, 1, 4, 0, 32, Ok(0)),
         (
-            "all-held-flush",
-            include_bytes!("../fuzz/corpus/session/browser-all-held-flush").as_slice(),
-            1,
-            1,
-            4,
-            0,
-            32,
-            Ok(0),
-        ),
-        (
-            "all-short-commit",
-            include_bytes!("../fuzz/corpus/session/browser-all-short-commit").as_slice(),
+            seed!("all-short-commit"),
             1,
             1,
             4,
@@ -278,25 +270,14 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
         assert_eq!(follow_sequence(delivery, 0, &data), expected, "{name}");
         assert_eq!(check(delivery, 0, &data, Fault::None), Ok(()));
     }
-    for (name, seed, confirmation, expected) in [
+    for ((name, seed), confirmation, expected) in [
+        (seed!("opened-empty"), vec![], Err(StreamError::Unsupported)),
         (
-            "opened-empty",
-            include_bytes!("../fuzz/corpus/session/browser-opened-empty").as_slice(),
-            vec![],
-            Err(StreamError::Unsupported),
-        ),
-        (
-            "opened-foreign",
-            include_bytes!("../fuzz/corpus/session/browser-opened-foreign").as_slice(),
+            seed!("opened-foreign"),
             vec![9; 32],
             Err(StreamError::Unsupported),
         ),
-        (
-            "opened-matching",
-            include_bytes!("../fuzz/corpus/session/browser-opened-matching").as_slice(),
-            vec![7; 32],
-            Ok(()),
-        ),
+        (seed!("opened-matching"), vec![7; 32], Ok(())),
     ] {
         let frame = wire::SessionFrame::decode(seed).unwrap();
         let Some(wire::session_frame::Body::Opened(opened)) = frame.body else {

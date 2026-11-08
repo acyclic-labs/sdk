@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/changes.rs b/rust/crates/stream/src/changes.rs
+--- a/rust/crates/stream/src/changes.rs
++++ b/rust/crates/stream/src/changes.rs
+@@ -550,6 +550,3 @@
+-        if count == self.headers.keys().len() {
+-            return Ok(Some(self));
+-        }
+         if count == 0 {
+             return Ok(None);
+         }

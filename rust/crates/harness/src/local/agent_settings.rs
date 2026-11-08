@@ -216,7 +216,7 @@ pub(super) async fn plugins(
     agent: AgentId,
     clock: &dyn acyclic_stream::UnixMillisClock,
 ) -> Result<crate::hooks::Hooks> {
-    use crate::plugins::{MANIFEST, load};
+    use crate::plugins::{MANIFEST, load_result};
     let enabler = agent.to_string();
     let seed = Layer {
         name: "seed",
@@ -230,7 +230,10 @@ pub(super) async fn plugins(
         error => error,
     };
     let Some((version, bytes)) = tree.home(MANIFEST).await? else {
-        return Ok(load(tree, &[seed], &enabler).await.map_err(seeded)?.rules);
+        return Ok(load_result(tree, &[seed], &enabler)
+            .await?
+            .map_err(seeded)?
+            .rules);
     };
     let layers = [
         seed,
@@ -244,8 +247,8 @@ pub(super) async fn plugins(
         tree.volumes,
         agent,
         (MANIFEST, &version),
-        load(tree, &layers, &enabler)
-            .await
+        load_result(tree, &layers, &enabler)
+            .await?
             .map(|enabled| enabled.rules)
             .map_err(Refused::evaluated),
         clock,
@@ -279,10 +282,7 @@ impl Refused {
     }
 
     fn evaluated(error: Error) -> Self {
-        match error {
-            error @ Error::Invalid(_) => Self::Settings(AdmissionStatus::Invalid, error),
-            error => Self::Operation(error),
-        }
+        Self::Settings(AdmissionStatus::Invalid, error)
     }
 
     fn selection(error: Error) -> Self {
@@ -314,13 +314,13 @@ async fn settle(
     let selection = format!("{}/{}", started.0.provider, started.0.name);
     let invalid =
         |error: String| Refused::Settings(AdmissionStatus::Invalid, Error::Invalid(error));
-    let (value, _) = config::compose(
+    let (value, _) = config::compose_result(
         config::AGENT,
         layers,
         tree,
         serde_json::json!({ "model": selection }),
     )
-    .await
+    .await?
     .map_err(Refused::evaluated)?;
     let settings: AgentConfig = serde_json::from_value(value)
         .map_err(|error| invalid(format!("{}: {error}", config::AGENT)))?;
@@ -488,7 +488,9 @@ mod tests {
                         crate::wire::ErrorCode::Unauthorized
                     );
                 }
-                (_, Err(error)) => panic!("{prefix}: {error:?}"),
+                (_, Err(error)) => panic!(
+                    "settings admission lost its original read producer: {prefix}: {error:?}"
+                ),
                 (_, Ok(_)) => panic!("{prefix}: imported settings escaped their read boundary"),
             }
         }

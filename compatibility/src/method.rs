@@ -121,6 +121,38 @@ struct Extractor {
     possible: Vec<Action>,
 }
 
+fn extractor_registry(pool: &DescriptorPool) -> Result<BTreeMap<String, Extractor>, Error> {
+    let registry = pool
+        .get_extension_by_name("acyclic.validation.v1.extractors")
+        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
+    let mut extractors = BTreeMap::new();
+    for file in pool.files() {
+        let options = file.options();
+        let value = options.get_extension(&registry);
+        for value in value.as_list().into_iter().flatten() {
+            let declaration = value
+                .as_message()
+                .ok_or_else(|| invalid("invalid extractor"))?;
+            let name = string(declaration, "name");
+            let resources_only = declaration
+                .get_field_by_name("resources_only")
+                .and_then(|value| value.as_bool())
+                .unwrap_or_default();
+            let extractor = Extractor {
+                resources_only,
+                possible: actions(declaration, "possible_actions")?,
+            };
+            if name.is_empty()
+                || extractor.possible.is_empty()
+                || extractors.insert(name, extractor).is_some()
+            {
+                return Err(invalid("empty or duplicate authorization extractor").into());
+            }
+        }
+    }
+    Ok(extractors)
+}
+
 /// Generate a service's exhaustive method enum and admission table.
 /// Dynamic extractor vocabularies remain output ceilings;
 /// they are never promoted to unconditional required permissions.
@@ -156,7 +188,7 @@ pub fn product_authorization(
     let extension = pool
         .get_extension_by_name("acyclic.validation.v1.auth")
         .ok_or_else(|| invalid("method authorization extension is missing"))?;
-    let extractors = extractors(&pool)?;
+    let extractors = extractor_registry(&pool)?;
     let service = pool
         .get_service_by_name(service)
         .ok_or_else(|| invalid("authorization service is missing"))?;
@@ -231,47 +263,12 @@ pub fn product_authorization(
         variants.push(name.to_owned());
         rows.push(format!("auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}", rust_actions(&required), rules.join(",")));
     }
-    if variants.is_empty() {
-        return Err(invalid("authorization selection has no methods").into());
-    }
-    rust_authorization(method_type, service.full_name(), &variants, &rows)
+    render_authorization(service.full_name(), method_type, &variants, &rows)
 }
 
-fn extractors(pool: &DescriptorPool) -> Result<BTreeMap<String, Extractor>, Error> {
-    let registry = pool
-        .get_extension_by_name("acyclic.validation.v1.extractors")
-        .ok_or_else(|| invalid("authorization extractor registry is missing"))?;
-    let mut extractors = BTreeMap::new();
-    for file in pool.files() {
-        let options = file.options();
-        let value = options.get_extension(&registry);
-        for value in value.as_list().into_iter().flatten() {
-            let declaration = value
-                .as_message()
-                .ok_or_else(|| invalid("invalid extractor"))?;
-            let name = string(declaration, "name");
-            let resources_only = declaration
-                .get_field_by_name("resources_only")
-                .and_then(|value| value.as_bool())
-                .unwrap_or_default();
-            let extractor = Extractor {
-                resources_only,
-                possible: actions(declaration, "possible_actions")?,
-            };
-            if name.is_empty()
-                || extractor.possible.is_empty()
-                || extractors.insert(name, extractor).is_some()
-            {
-                return Err(invalid("empty or duplicate authorization extractor").into());
-            }
-        }
-    }
-    Ok(extractors)
-}
-
-fn rust_authorization(
-    method_type: &str,
+fn render_authorization(
     service: &str,
+    method_type: &str,
     variants: &[String],
     rows: &[String],
 ) -> Result<String, Error> {

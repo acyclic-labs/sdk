@@ -3,10 +3,24 @@ use super::*;
 use serde_json::json;
 use std::borrow::Cow;
 use std::cell::Cell;
+mod composition;
+#[cfg(feature = "hooks")]
+mod plugins;
+mod prepared;
 
 thread_local! {
     static VM_ENTRIES: Cell<usize> = const { Cell::new(0) };
     static DEPENDENCY_CHECKS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_READS: Cell<usize> = const { Cell::new(0) };
+    static RETAINED_ROOTS: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn read_retained() {
+    RETAINED_READS.set(RETAINED_READS.get().wrapping_add(1));
+}
+
+pub(super) fn root_retained() {
+    RETAINED_ROOTS.set(RETAINED_ROOTS.get().wrapping_add(1));
 }
 
 pub(super) fn entered() {
@@ -18,7 +32,7 @@ pub(super) fn dependency_checked() {
 }
 
 struct Files {
-    input: Vec<u8>,
+    input: Option<Vec<u8>>,
     cycle: bool,
 }
 
@@ -29,7 +43,7 @@ impl Tree for Files {
     ) -> BoxFuture<'a, Result<Option<acyclic_stream::OwnedBytes>>> {
         Box::pin(async move {
             Ok(match path {
-                "sys/input.json" => Some(self.input.clone()),
+                "sys/input.json" => self.input.clone(),
                 "sys/a.ts" => Some(b"import b from './b.ts'; import input from './input.json'; export default [b, input]; export {input};".to_vec()),
                 "sys/b.ts" => Some(if self.cycle {
                     b"import a from './a.ts'; export default a;".to_vec()
@@ -91,7 +105,7 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
     let text = utf8.map_or_else(|| String::from_utf8_lossy(bytes), Cow::Borrowed);
     let specifier = serde_json::to_string(&text).map_err(|error| error.to_string())?;
     let tree = Files {
-        input: specifier.as_bytes().to_vec(),
+        input: Some(specifier.as_bytes().to_vec()),
         cycle: false,
     };
     let dynamic = format!("export default import({specifier});");
@@ -226,6 +240,10 @@ async fn raw_source(bytes: &[u8]) -> std::result::Result<(), String> {
 /// No process-global cache growth: each input owns one cache, shared across
 /// changes of source, imported content, base and surface at the same path.
 pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
+    prepared::check(bytes).await?;
+    composition::check(bytes).await?;
+    #[cfg(feature = "hooks")]
+    plugins::check(bytes).await?;
     raw_source(bytes).await?;
     let cache = Cache::default();
     let mode = bytes.first().copied().unwrap_or_default() % 13;
@@ -252,7 +270,7 @@ pub async fn check(bytes: &[u8]) -> std::result::Result<(), String> {
             };
             let imported = json!({"imported": revision, "value": literal});
             let tree = Files {
-                input: serde_json::to_vec(&imported).map_err(|error| error.to_string())?,
+                input: Some(serde_json::to_vec(&imported).map_err(|error| error.to_string())?),
                 cycle,
             };
             let encoded = serde_json::to_string(&literal).map_err(|error| error.to_string())?;

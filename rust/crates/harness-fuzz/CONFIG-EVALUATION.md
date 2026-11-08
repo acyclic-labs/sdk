@@ -20,7 +20,7 @@ with quote, backslash, NUL and invalid UTF-8 bytes in the imported JSON value.
 Run the existing shared property without a separate graph implementation:
 
 ```sh
-cargo test --locked -p acyclic-harness-core --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation -- --exact --nocapture
+cargo test --locked -p acyclic-harness-core --features filesystem --lib config::evaluate::model::tests::generated_settings_match_fresh_evaluation -- --exact --nocapture
 cargo fuzz run --fuzz-dir rust/crates/harness-fuzz config_evaluation --no-default-features --features core -- -runs=1000 -seed=1
 ```
 
@@ -140,3 +140,22 @@ from the invalid-string case reported in review. It is an authored malformed
 internal input, not a captured external-tool fixture. The existing property
 passes these exact bytes to production source admission; replacement characters
 must not turn its expected refusal into a reference value.
+
+The same target also exercises retained `config::prepare` and
+`config::compose_with_evidence` cuts, including absent and malformed imports,
+semantic refusals, canonical base/surface/root identities, original ordered
+layer generations and off markers. No second parser, dependency collector,
+model or fuzz target is introduced. The corresponding production mutations
+are kept in `rust/proofs/config-retained-cut/` and
+`rust/proofs/config-composition-cut/`; run their two named `qualify.mjs`
+claims to require semantic negatives and restored-source acceptance.
+
+The generated plugin cases also call ordinary `plugins::load`, compare its
+admitted or refused result with `load_decision`, and require the same original
+file-read count. Counters at the production evidence-copy operations require
+zero retained module paths and zero retained preparation roots on the plain
+path. These counters describe evidence copies, not every allocator call in
+the parser or engine. The collector hashes each original observation once
+for the existing evaluation cache; only evidence callers retain its path.
+`mutations/config-plain-read-retention.patch` restores unconditional read
+retention and must fail this same property. No dependency walk is repeated.

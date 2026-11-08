@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/query_sync/watch.rs b/rust/crates/stream/src/query_sync/watch.rs
+--- a/rust/crates/stream/src/query_sync/watch.rs
++++ b/rust/crates/stream/src/query_sync/watch.rs
+@@ -47,7 +47,7 @@
+             return Some(if waiter.wake.will_wake(&wake) {
+                 wake
+             } else {
+-                std::mem::replace(&mut waiter.wake, wake)
++                wake
+             });
+         }
+         let slot = Arc::new(AtomicUsize::new(value.waiters.len()));

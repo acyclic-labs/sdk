@@ -1,0 +1,10 @@
+diff --git a/rust/crates/native-runtime/src/task/custody.rs b/rust/crates/native-runtime/src/task/custody.rs
+--- a/rust/crates/native-runtime/src/task/custody.rs
++++ b/rust/crates/native-runtime/src/task/custody.rs
+@@ -91,5 +91,5 @@ impl JoinFailure {
+             io::ErrorKind::Interrupted
+         } else {
+-            io::ErrorKind::Other
++            io::ErrorKind::Interrupted
+         };
+         io::Error::new(kind, self)

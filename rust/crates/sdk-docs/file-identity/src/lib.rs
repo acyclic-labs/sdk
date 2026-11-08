@@ -128,25 +128,23 @@ pub fn stamp(path: &Path) -> io::Result<Stamp> {
 )]
 fn windows_identity(file: &fs::File) -> std::io::Result<(u64, [u8; 16], i64)> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
-    };
-    let mut basic = std::mem::MaybeUninit::<FILE_BASIC_INFO>::uninit();
-    let mut id = std::mem::MaybeUninit::<FILE_ID_INFO>::uninit();
+    use windows_sys::Win32::Storage::FileSystem as winfs;
+    let mut basic = std::mem::MaybeUninit::<winfs::FILE_BASIC_INFO>::uninit();
+    let mut id = std::mem::MaybeUninit::<winfs::FILE_ID_INFO>::uninit();
     // SAFETY: both buffers have the API's exact type/size and outlive the calls;
     // the file owns the live handle. Read the buffers only after both succeed.
     unsafe {
-        if GetFileInformationByHandleEx(
+        if winfs::GetFileInformationByHandleEx(
             file.as_raw_handle(),
-            FileBasicInfo,
+            winfs::FileBasicInfo,
             basic.as_mut_ptr().cast(),
-            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            std::mem::size_of::<winfs::FILE_BASIC_INFO>() as u32,
         ) == 0
-            || GetFileInformationByHandleEx(
+            || winfs::GetFileInformationByHandleEx(
                 file.as_raw_handle(),
-                FileIdInfo,
+                winfs::FileIdInfo,
                 id.as_mut_ptr().cast(),
-                std::mem::size_of::<FILE_ID_INFO>() as u32,
+                std::mem::size_of::<winfs::FILE_ID_INFO>() as u32,
             ) == 0
         {
             return Err(std::io::Error::last_os_error());

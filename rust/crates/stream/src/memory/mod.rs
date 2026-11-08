@@ -1,11 +1,11 @@
 //! Deterministic reference state machine; no durability or availability claim.
 
-#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
 
 #[cfg(any(test, loom))]
 use crate::StreamProviderExt as _;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use std::collections::VecDeque;
 use std::sync::Arc;
 

@@ -47,6 +47,28 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --all-features --locked
 ```
 
+Live PostgreSQL and S3 controls have explicit nextest profiles. Ordinary nextest
+runs, including the `ci` profile, exclude these two capability modules. Complete
+storage qualification runs both profiles against real disposable services:
+
+```sh
+cargo nextest run --locked -p acyclic-stream --no-default-features --features postgres --profile postgres --no-tests=fail
+cargo nextest run --locked -p acyclic-objects --no-default-features --features s3 --profile s3 --no-tests=fail
+```
+
+Set `STORAGE_POSTGRES_URL` to a disposable PostgreSQL database. Verifying the SQL
+observation counts also requires server statement logs with `log_statement=all`
+and `%a` in `log_line_prefix`; the tests mark sessions with `publication-count-`
+application names. The tests do not read or verify those server logs themselves.
+
+For S3, supply `STORAGE_S3_BUCKET`, `STORAGE_S3_ENDPOINT`, `STORAGE_S3_REGION`,
+`STORAGE_S3_ACCESS_KEY` and `STORAGE_S3_SECRET_KEY` for a disposable bucket with
+conditional-write support. Set `STORAGE_S3_ALLOW_HTTP=1` only for an HTTP endpoint.
+The caller owns service startup, observed SQL counts and final service teardown.
+Selected controls fail if a required environment variable or service is missing;
+they are never ignored. Direct `cargo test` commands do not use nextest profiles
+and require the same services when selecting those modules.
+
 The product workspace shares its root `Cargo.lock` with compatible fuzzers,
 proofs and tools. Root commands select the SDK's original default members;
 explicitly select additional packages with `-p PACKAGE`. `--workspace` also

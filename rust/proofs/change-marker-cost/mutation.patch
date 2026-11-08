@@ -1,0 +1,7 @@
+diff --git a/rust/crates/stream/src/changes.rs b/rust/crates/stream/src/changes.rs
+--- a/rust/crates/stream/src/changes.rs
++++ b/rust/crates/stream/src/changes.rs
+@@ -84,2 +84,3 @@
+ pub(crate) fn reader_format(headers: &RecordHeaders) -> Result<Option<&[u8]>, StreamError> {
++    let _ = marker(headers);
+     match marker(headers) {

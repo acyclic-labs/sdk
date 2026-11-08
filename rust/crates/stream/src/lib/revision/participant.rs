@@ -55,7 +55,7 @@ impl ObservedAuthority {
     }
 }
 
-#[cfg(loom)]
+#[cfg(all(loom, test))]
 pub(super) fn verify_concurrent_frontier(replace_maximum: bool) {
     loom::model(move || {
         let first = Revision {
