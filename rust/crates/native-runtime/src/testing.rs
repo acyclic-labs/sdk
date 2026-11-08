@@ -10,6 +10,8 @@ use crate::sync::Mutex;
 mod entropy;
 pub use entropy::fill_seeded;
 mod clock;
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+pub(crate) use clock::wall_alarms;
 pub use clock::{CapturedClock, unix_millis};
 mod executor;
 pub use executor::{AbortHandle, TaskHandle};
@@ -37,6 +39,18 @@ mod queue_model;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 tokio::task_local! { static BLOCKING_CONTEXT: Option<Context>; }
+
+/// Builds the single-threaded runtime for an independently replayable world.
+///
+/// The seed controls Tokio's randomized `select!` order, including dependencies.
+/// Replay also requires the same Tokio, dependency and compiler versions.
+pub fn seeded_runtime(seed: u64) -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()))
+        .enable_all()
+        .build()
+}
+
 #[cfg(test)]
 thread_local! {
     static FORGET_HOST_CONTEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -103,13 +117,14 @@ impl Clone for Schedule {
 
 // Accepted work retains its completion state, but does not own the controller
 // that drives it. Otherwise executor -> future -> Context -> Schedule cycles.
-struct Controller(Option<Arc<executor::Executor>>);
+struct Controller(Arc<Inner>);
 
 impl Drop for Controller {
     fn drop(&mut self) {
-        if let Some(executor) = &self.0 {
+        if let Some(executor) = &self.0.executor {
             executor.shutdown();
         }
+        Schedule(self.0.clone(), None).close_wall_alarms();
     }
 }
 
@@ -117,6 +132,7 @@ impl Drop for Controller {
 #[derive(Clone)]
 pub(crate) struct Context {
     schedule: Schedule,
+    runtime: Option<tokio::runtime::Handle>,
     owned: bool,
     // Never nested with the schedule-state lock; cloned before sends/callbacks.
     detail: Arc<Mutex<Arc<str>>>,
@@ -160,21 +176,16 @@ impl Schedule {
     fn with_seed(seed: Option<u64>, entropy: bool) -> (Self, mpsc::UnboundedReceiver<Boundary>) {
         let (events, receiver) = mpsc::unbounded_channel();
         let executor = seed.map(executor::Executor::new);
-        let controller = Arc::new(Controller(executor.clone()));
-        (
-            Self(
-                Arc::new(Inner {
-                    events,
-                    state: Mutex::new(State::default()),
-                    entropy: seed
-                        .filter(|_| entropy)
-                        .map(|seed| Arc::new(entropy::Source::new(seed))),
-                    executor,
-                }),
-                Some(controller),
-            ),
-            receiver,
-        )
+        let inner = Arc::new(Inner {
+            events,
+            state: Mutex::new(State::default()),
+            entropy: seed
+                .filter(|_| entropy)
+                .map(|seed| Arc::new(entropy::Source::new(seed))),
+            executor,
+        });
+        let controller = Arc::new(Controller(inner.clone()));
+        (Self(inner, Some(controller)), receiver)
     }
 
     /// Instruments only this explicitly scoped future and its owned descendants.
@@ -198,6 +209,11 @@ impl Schedule {
         let future = CURRENT.scope(
             Some(Context {
                 schedule: Self(self.0.clone(), None),
+                runtime: if self.is_seeded() {
+                    None
+                } else {
+                    tokio::runtime::Handle::try_current().ok()
+                },
                 owned: false,
                 detail: Arc::new(Mutex::new(Arc::from(""))),
                 host: None,
@@ -205,7 +221,15 @@ impl Schedule {
             future,
         );
         match &self.0.executor {
-            Some(executor) => executor.run(future).await,
+            Some(executor) => {
+                let mut running = std::pin::pin!(executor.run(future));
+                std::future::poll_fn(|cx| {
+                    let result = running.as_mut().poll(cx);
+                    self.poll_wall_alarms(cx);
+                    result
+                })
+                .await
+            }
             None => future.await,
         }
     }
@@ -223,6 +247,7 @@ impl Schedule {
             if let Some(executor) = &self.0.executor {
                 executor.poll_owned(cx);
             }
+            self.poll_wall_alarms(cx);
             let mut state = self.0.state();
             if state.active == 0 {
                 Poll::Ready(())
@@ -288,6 +313,7 @@ impl Context {
         Active(
             Self {
                 schedule: self.schedule.clone(),
+                runtime: self.runtime.clone(),
                 owned: true,
                 detail: Arc::new(Mutex::new(lock(&self.detail).clone())),
                 host: self.host.clone(),
@@ -342,6 +368,27 @@ where
     spawn_in_context(Context::simulation(), future)
 }
 
+/// Submits to the retained simulation scope or current native executor,
+/// returning the unpolled future when neither can own it.
+pub fn try_spawn<F>(future: F) -> Result<TaskHandle<F::Output>, F>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let context = Context::simulation();
+    if context.is_none() && tokio::runtime::Handle::try_current().is_err() {
+        return Err(future);
+    }
+    Ok(spawn_in_context(context, future))
+}
+
+// An explicitly submitted async operation starts before the pending-task
+// handoff when it is polled eagerly. Synchronous physical work stays outside
+// CURRENT; only this original future's poll enters its retained scope.
+pub(crate) fn enter_task_poll<T>(poll: impl FnOnce() -> T) -> T {
+    CURRENT.sync_scope(Context::simulation(), poll)
+}
+
 pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
 where
     F: Future + Send + 'static,
@@ -370,7 +417,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let owner = if let Some(context) = Context::current() {
+    let owner = if let Some(context) = Context::simulation() {
         BlockingOwner::Controlled(controlled_blocking(&context, work))
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real

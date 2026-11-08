@@ -11,6 +11,7 @@ pub(crate) use pool::Pool;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
     Starting,
+    Waiting,
     Running,
     Parked,
     Finished,
@@ -21,6 +22,7 @@ struct State {
     ready: bool,
     io_ready: bool,
     waiting_start: bool,
+    notifying: usize,
     detached: bool,
     driver: Option<Waker>,
 }
@@ -98,6 +100,7 @@ impl Host {
                 ready: false,
                 io_ready: false,
                 waiting_start: false,
+                notifying: 0,
                 detached: false,
                 driver: None,
             }),
@@ -107,7 +110,30 @@ impl Host {
     }
 
     pub(super) fn run<T>(self: &Arc<Self>, work: impl FnOnce() -> T) -> T {
-        lock(&self.state).phase = Phase::Running;
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(driver) = state.take_start_waiter() {
+            // A saturated pool let the driver yield before this worker began.
+            // Publish availability, then wait for that driver to own the first
+            // physical step before user work can wake any other simulated task.
+            state.phase = Phase::Waiting;
+            state.notifying += 1;
+            let saturated = self.pool.park();
+            drop(state);
+            self.notify(Some(driver));
+            if saturated {
+                self.pool.changed();
+            }
+            state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while state.phase == Phase::Waiting {
+                state = self
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        } else {
+            state.phase = Phase::Running;
+        }
+        drop(state);
         self.pool.changed();
         let _finished = Finished(self.clone());
         let context = Context::simulation().map(|mut context| {
@@ -131,13 +157,10 @@ impl Host {
             {
                 return output;
             }
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut state = lock(&self.state);
             state.phase = Phase::Parked;
             let saturated = self.pool.park();
             // Parking does not make the callback ready.
-            // A driver that yielded before startup must now produce this
-            // callback's reply. Wake it once at the original parking event.
-            let parked_driver = state.take_start_waiter();
             if state.detached && state.ready {
                 state.ready = false;
                 self.pool.resume();
@@ -147,9 +170,6 @@ impl Host {
             drop(state);
             if saturated {
                 self.pool.changed();
-            }
-            if let Some(driver) = parked_driver {
-                driver.wake();
             }
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             while state.phase == Phase::Parked {
@@ -173,11 +193,18 @@ impl Host {
                     .as_mut()
                     .poll(&mut PollContext::from_waker(&io_waker))
                 {
+                    drop(self.step_finished());
                     return Poll::Ready(output);
                 }
                 let mut state = self.pool.start_or_saturation(&self.state);
                 state.driver = Some(cx.waker().clone());
                 loop {
+                    while state.notifying != 0 {
+                        state = self
+                            .changed
+                            .wait(state)
+                            .unwrap_or_else(PoisonError::into_inner);
+                    }
                     if state.io_ready {
                         state.io_ready = false;
                         drop(state);
@@ -187,6 +214,11 @@ impl Host {
                         Phase::Finished => {
                             drop(state);
                             return Poll::Ready(executor::complete_io(future.as_mut()));
+                        }
+                        Phase::Waiting => {
+                            self.pool.resume();
+                            state.phase = Phase::Running;
+                            self.changed.notify_one();
                         }
                         Phase::Parked if state.ready => {
                             state.ready = false;
@@ -210,6 +242,37 @@ impl Host {
         })
         .await
     }
+
+    fn step_finished(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        // A terminal may be published before the worker retires its current
+        // physical step. Finished/parked publication belongs to that same worker;
+        // observing the terminal alone cannot let the next simulated task race it.
+        while state.notifying != 0 || state.phase == Phase::Running {
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        state
+    }
+
+    fn notify(&self, driver: Option<Waker>) {
+        if let Some(driver) = driver {
+            // The readiness bit and its notification retire together. The
+            // guard releases the driver even if a custom waker unwinds.
+            let _publication = Notification(self);
+            driver.wake();
+        }
+    }
+}
+
+struct Notification<'a>(&'a Host);
+impl Drop for Notification<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.state).notifying -= 1;
+        self.0.changed.notify_all();
+    }
 }
 
 // Accepted physical work outlives its replay driver. Once that driver goes
@@ -226,9 +289,9 @@ impl Drop for Driver {
             return;
         }
         let driver = {
-            let mut state = lock(&self.0.state);
+            let mut state = self.0.step_finished();
             state.detached = true;
-            if state.phase == Phase::Parked && state.ready {
+            if state.phase == Phase::Waiting || (state.phase == Phase::Parked && state.ready) {
                 state.ready = false;
                 self.0.pool.resume();
                 state.phase = Phase::Running;
@@ -251,34 +314,25 @@ impl Wake for IoWake {
         let driver = {
             let mut state = lock(&self.0.state);
             state.io_ready = true;
-            (
-                state.phase == Phase::Starting,
-                state.waiting_start.then(|| state.driver.clone()).flatten(),
-            )
+            let driver = state.waiting_start.then(|| state.driver.clone()).flatten();
+            state.notifying += usize::from(driver.is_some());
+            (state.phase == Phase::Starting, driver)
         };
         self.0.changed.notify_one();
         if driver.0 {
             self.0.pool.changed();
         }
-        let driver = driver.1;
-        if let Some(driver) = driver {
-            driver.wake();
-        }
+        self.0.notify(driver.1);
     }
 }
 
 struct Finished(Arc<Host>);
 impl Drop for Finished {
     fn drop(&mut self) {
-        let driver = {
-            let mut state = lock(&self.0.state);
-            state.phase = Phase::Finished;
-            state.take_start_waiter()
-        };
+        let mut state = lock(&self.0.state);
+        state.phase = Phase::Finished;
+        drop(state);
         self.0.changed.notify_one();
-        if let Some(driver) = driver {
-            driver.wake();
-        }
     }
 }
 
@@ -296,19 +350,43 @@ impl Wake for Host {
                 state.phase = Phase::Running;
                 self.changed.notify_one();
             }
-            state.driver.clone()
+            // Running work belongs to the current physical step. Its driver
+            // waits for Parked/Finished and consumes this latched readiness
+            // there; waking it as well can arrive after that step has ended.
+            let driver = (state.phase == Phase::Parked)
+                .then(|| state.driver.clone())
+                .flatten();
+            state.notifying += usize::from(driver.is_some());
+            driver
         };
-        if let Some(driver) = driver {
-            driver.wake();
-        }
+        self.notify(driver);
     }
 }
 
 /// Waits on the original channel/control future on its real blocking worker.
 /// A simulated worker yields its permit at Pending and resumes by seed order.
 pub fn blocking_on<F: Future>(future: F) -> F::Output {
-    match Context::simulation().and_then(|context| context.host) {
-        Some(host) => host.block(future),
+    let owner = Context::simulation().and_then(|context| {
+        context.host.map(|host| {
+            let runtime = context
+                .schedule
+                .is_seeded()
+                .then(|| context.schedule.0.state().wall.runtime.clone())
+                .flatten();
+            (host, runtime)
+        })
+    });
+    match owner {
+        Some((host, Some(runtime))) => {
+            // Only the explicit async callback enters Tokio. block_on installs
+            // its deterministic TLS seed; enter alone retains worker entropy.
+            // The native handoff owns Pending, including cooperative progress.
+            let mut future = std::pin::pin!(future);
+            runtime.block_on(tokio::task::unconstrained(async {
+                host.block(future.as_mut())
+            }))
+        }
+        Some((host, None)) => host.block(future),
         None => executor::complete_io(future),
     }
 }

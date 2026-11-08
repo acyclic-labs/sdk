@@ -463,8 +463,8 @@ impl AppliedRevisions {
     /// token survives a reset or names another provider.
     #[must_use]
     pub fn in_process() -> Self {
-        let scope = uuid::Uuid::new_v4().into_bytes();
-        let incarnation = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
+        let scope = crate::new_identity();
+        let incarnation = u128::from_be_bytes(crate::new_identity());
         Self::new(RevisionScope::new(scope.to_vec()), incarnation, 0)
     }
 
