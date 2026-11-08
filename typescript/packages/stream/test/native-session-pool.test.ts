@@ -6,6 +6,42 @@ import { NativeStreamProvider } from "../src/native.js";
 import { StreamError } from "../src/types.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
+import { producer as originalRefusal } from "../../objects/test/refusal.fuzz.mjs";
+
+test("native Session rejection preserves original diagnostic bytes through the public provider", async () => {
+  const original = (await originalRefusal()).refusal;
+  const encoded = Buffer.from(original.details).toString("base64");
+  let sessions = 0;
+  // Derived wire admission, not a captured Stream attribution. The actual
+  // Rust writer supplies the opaque bytes; the TLS peer returns them verbatim.
+  const host = await credentialTlsFixture(router => {
+    router.service(wire.StreamSessionService, { async *session(_input, context) {
+      expect(context.requestHeader.get("authorization")).toBe("Bearer fixture");
+      sessions++;
+      context.responseTrailer.set("grpc-status-details-bin", encoded);
+      context.responseTrailer.set("acyclic-native-bin", encoded);
+      throw new ConnectError(original.message, Code.Unknown);
+    } });
+  });
+  try {
+    const provider = await NativeStreamProvider.connect(host.endpoint, "fixture", Buffer.from(host.certificate));
+    let actual: unknown;
+    try { await provider.tail("observed"); }
+    catch (error) { actual = error; }
+    expect(actual).toBeInstanceOf(StreamError);
+    if (!(actual instanceof StreamError)) throw new Error("missing native Stream error");
+    expect(actual.code).toBe("unavailable");
+    expect(actual.refusal?.status).toBe(Code.Unknown);
+    expect(actual.refusal?.message).toBe(original.message);
+    expect(actual.refusal?.details).toBeInstanceOf(Uint8Array);
+    expect(Array.from(actual.refusal?.details ?? [])).toEqual(Array.from(original.details));
+    expect(actual.refusal?.metadata.map(([key, bytes]) => [key, Array.from(bytes)]))
+      .toEqual([["acyclic-native-bin", Array.from(new TextEncoder().encode(encoded))]]);
+    expect(actual.cause).toBeUndefined();
+    expect(sessions).toBe(1);
+    expect(host.connections).toBe(1);
+  } finally { await host.close(); }
+});
 
 async function fixture(node: SessionNode, name: string, movedEndpoint: () => string,
   welcome?: { arrived: () => void; released: Promise<void> }) {

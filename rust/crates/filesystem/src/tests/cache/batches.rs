@@ -118,7 +118,10 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_test_native_io();
     let cancellation = CancellationToken::new();
-    let budget = crate::performance::BOUNDARY_BUDGET;
+    let budget = WorkBudget {
+        items_returned: 2,
+        ..crate::performance::BOUNDARY_BUDGET
+    };
     let (id, bytes) = object(b"owned cache read");
     for maximum_bytes in [1, 1024] {
         for batch in [false, true] {
@@ -147,6 +150,7 @@ async fn cached_reads_keep_only_returned_owned_storage_on_the_original_ledger()
                 }; 2];
                 let (values, allocation) = cached.read_many(&requests, &mut work).await?;
                 assert_eq!(values.len(), 2);
+                assert_eq!(work.spent().items_returned, 2);
                 assert_eq!(values[0].bytes, bytes);
                 assert_eq!(values[1].bytes, bytes);
                 let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
@@ -241,10 +245,9 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
         };
         let mut batch = Box::pin(async {
             if stored {
-                crate::async_storage::read_many_stored_sequential(&store, &requests, &mut work)
-                    .await
+                store.read_many_stored(&requests, &mut work).await
             } else {
-                crate::async_storage::read_many_sequential(&store, &requests, &mut work).await
+                store.read_many(&requests, &mut work).await
             }
         });
         assert!(futures::poll!(batch.as_mut()).is_pending());
@@ -259,7 +262,11 @@ async fn sequential_batch_retains_original_prefix_on_withdrawal_and_producer_los
                 let (values, allocation) = batch.await?;
                 assert_eq!(values[0].bytes.as_ref(), b"first");
                 assert_eq!(values[1].bytes.as_ref(), b"second");
-                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
+                let retained = (values.capacity() * size_of::<ObjectRead>()) as u64
+                    + values
+                        .iter()
+                        .map(|read| read.retention.owned_bytes())
+                        .sum::<u64>();
                 assert_eq!(work.allocations.live_bytes(), live + retained);
                 assert!(allocation.is_none());
                 drop(values);

@@ -1,0 +1,17 @@
+diff --git a/rust/crates/filesystem/src/staged_objects/read.rs b/rust/crates/filesystem/src/staged_objects/read.rs
+index d5d94a5db6..cda0d8bc82 100644
+--- a/rust/crates/filesystem/src/staged_objects/read.rs
++++ b/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -163,11 +163,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
+         work: &mut AuthorityWork<'_>,
+     ) -> Result<ObjectRead, ObjectStoreError> {
+         // The shared lock keeps a drain from reusing this spill offset.
+-        let spill_file = work
+-            .accounting()
+-            .wait_for(self.spill_io.read())
+-            .await
+-            .map_err(crate::async_storage::object_error)?;
++        let spill_file = self.spill_io.read().await;
+         let (offset, length) = match self.lookup(object_id) {
+             Lookup::Spilled { offset, length } => (offset, length),
+             Lookup::Resident(bytes) => return resident_read(bytes, maximum_bytes, work),

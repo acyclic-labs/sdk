@@ -1,0 +1,24 @@
+diff --git b/rust/crates/filesystem/src/staged_objects/read.rs a/rust/crates/filesystem/src/staged_objects/read.rs
+index c057814ffc..d5d94a5db6 100644
+--- b/rust/crates/filesystem/src/staged_objects/read.rs
++++ a/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -145,15 +145,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
+         drop(plan);
+         drop(durable);
+         scope.check()?;
+-        // The provider counts its durable batch. Private members, including a
+-        // drained member's scalar fallback, return through this batch alone.
+-        let private = count - misses as u64;
+-        if private != 0 {
+-            scope.charge(WorkCounters {
+-                items_returned: private,
+-                ..WorkCounters::UNCHARGED
+-            })?;
+-        }
++        scope.charge(WorkCounters {
++            items_returned: count,
++            ..WorkCounters::UNCHARGED
++        })?;
+         Ok(crate::async_storage::authority_parts(
+             scope
+                 .finish_owned(values)

@@ -37,8 +37,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(StreamError::Unavailable)) | None => self.reconnect(&node)?,
-                            Some(Err(error)) => self.fail_link(&node,&error),
+                            Some(Err(transport::Failure { transient: true, .. })) | None => self.reconnect(&node)?,
+                            Some(Err(failure)) => self.fail_link(&node,&failure.error),
                         }
                     }
                     None => return Err(StreamError::Unavailable),
@@ -487,7 +487,7 @@ impl Pool {
             wire_codec::session::consume_credit(&mut route.credit, received)?;
             return self.data(node, id, received.generation, input, length, epoch);
         }
-        let input = input.into_wire();
+        let (input, original_error) = input.into_parts();
         if matches!(input.body, Some(Body::Closed(_) | Body::Moved(_)))
             && let Some(link) = self.links.get(node)
         {
@@ -538,10 +538,12 @@ impl Pool {
                 }
             }
             Some(Body::Closed(closed)) => {
+                let error =
+                    original_error.unwrap_or_else(|| StreamError::from_session_close(&closed.code));
                 if let Some(input) = &route.input {
-                    input.0.close(StreamError::from_session_close(&closed.code));
+                    input.0.close(error.clone());
                 }
-                let error = Self::closed(route, &closed);
+                let error = Self::closed(route, &closed, error);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.
                     self.flush_watermark(id)?;
@@ -697,7 +699,11 @@ impl Pool {
         Ok(())
     }
     /// End a route with the server's status after its earlier records.
-    fn closed(route: &mut Route, closed: &wire::SessionClosed) -> Option<StreamError> {
+    fn closed(
+        route: &mut Route,
+        closed: &wire::SessionClosed,
+        error: StreamError,
+    ) -> Option<StreamError> {
         // Only an opened bounded follow or actor socket ends cleanly (a socket
         // after its final frame); anywhere else "end" is a protocol error, and
         // a checked follow never ends unconfirmed.
@@ -712,7 +718,6 @@ impl Pool {
             route.progress.end();
             return None;
         }
-        let error = StreamError::from_session_close(&closed.code);
         if let Some(ready) = route.ready.take() {
             let _ = ready.send(Err(error));
             return None;
