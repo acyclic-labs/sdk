@@ -240,7 +240,7 @@ macro_rules! mutation_callbacks {
             destination: &MountPath,
             replace: bool,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<MountMutationResult, MountSourceError> {
+        ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
             self.require_path(source, crate::access::Action::Rename, work)?;
             self.require_path(destination, crate::access::Action::Rename, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
@@ -254,9 +254,8 @@ macro_rules! mutation_callbacks {
                     .authored
                     .view_stamp_with_meter(work)?
                     .ok_or(MountSourceError::Stale)?;
-                let completed = MountMutationResult { stamp, facts: None };
                 if self.authored.lookup(source)?.is_some() {
-                    return Ok(completed);
+                    return Ok(stamp);
                 }
                 return self.runtime.wait(|| async {
                     self.lazy
@@ -266,7 +265,7 @@ macro_rules! mutation_callbacks {
                         )
                         .await
                         .map_err(lazy_error)?;
-                    Ok(completed)
+                    Ok(stamp)
                 });
             }
             if self.authored.lookup(source)?.is_none() {

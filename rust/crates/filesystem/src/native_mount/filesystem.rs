@@ -165,7 +165,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         replace: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<MountMutationResult, MountSourceError>;
+    ) -> Result<super::ViewStamp, MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
     fn set_attributes(
         &self,

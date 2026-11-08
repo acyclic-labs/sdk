@@ -356,9 +356,9 @@ impl FuseProjection {
             Ok(source.rename(&from.spelled, &to.spelled, replace, work)?)
         });
         let mut state = self.core.state()?;
-        let completed = renamed?;
+        let stamp = renamed?;
         state.install_detached_handles(&mut detached);
-        install_names(&mut state, completed.stamp);
+        install_names(&mut state, stamp);
         state.accept_entry(new_parent, to.key(), work)?;
         Ok(())
     }

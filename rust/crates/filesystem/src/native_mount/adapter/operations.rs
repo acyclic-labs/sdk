@@ -734,7 +734,7 @@ where
         destination: &MountPath,
         replace: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountMutationResult, MountSourceError> {
+    ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
         CheckoutMountSource::rename(self, source, destination, replace, work)
     }
 

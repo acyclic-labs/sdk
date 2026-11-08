@@ -61,7 +61,7 @@ where
         destination: &MountPath,
         replace: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountMutationResult, MountSourceError> {
+    ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
@@ -136,6 +136,7 @@ where
                 work,
             )
             .await
+            .map(|completed| completed.stamp)
         })
     }
 
