@@ -672,7 +672,7 @@ pub(super) fn handle_rename_source(
         }
         return Ok(());
     }
-    source_fs.rename(source, &destination, true, work)?;
+    source_fs.rename(source, &destination, true, work, None)?;
     source_fs.flush(work)
 }
 

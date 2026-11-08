@@ -240,6 +240,7 @@ macro_rules! mutation_callbacks {
             destination: &MountPath,
             replace: bool,
             work: &crate::NativeMaterializationWork,
+            bindings: Option<&mut dyn crate::native_mount::MountRenameBindings>,
         ) -> Result<crate::native_mount::ViewStamp, MountSourceError> {
             self.require_path(source, crate::access::Action::Rename, work)?;
             self.require_path(destination, crate::access::Action::Rename, work)?;
@@ -249,7 +250,7 @@ macro_rules! mutation_callbacks {
             if self.authored.lookup(source)?.is_none() && self.is_removed(&source_text)? {
                 return Err(MountSourceError::NotFound);
             }
-            if source_text == destination_text {
+            if source_text == destination_text && bindings.is_none() {
                 let stamp = self
                     .authored
                     .view_stamp_with_meter(work)?
@@ -338,11 +339,15 @@ macro_rules! mutation_callbacks {
             } else {
                 None
             };
-            let completed = self.authored.rename(source, destination, replace, work)?;
+            let completed = self
+                .authored
+                .rename(source, destination, replace, work, bindings)?;
             if let Some((record, metadata, file)) = replaced_open {
                 self.record_removed_identity(record, metadata, file, work)?;
             }
-            self.record_removed(source, source_id, work)?;
+            if source_text != destination_text {
+                self.record_removed(source, source_id, work)?;
+            }
             self.record_rebound(&destination_text)?;
             Ok(completed)
         }

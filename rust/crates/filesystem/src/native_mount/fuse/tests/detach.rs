@@ -8,6 +8,7 @@ fn operation(
     original: &MemoryCheckout,
     rename: bool,
     allowance: Option<u64>,
+    item_budget: bool,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
     let setup = fuse_fixture_work();
     let cancellation = crate::CancellationToken::new();
@@ -41,7 +42,16 @@ fn operation(
     let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &setup)?;
     let work = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
-            allocation_operations: allowance.unwrap_or(u64::MAX),
+            allocation_operations: if item_budget {
+                u64::MAX
+            } else {
+                allowance.unwrap_or(u64::MAX)
+            },
+            items_examined: if item_budget {
+                allowance.unwrap_or(u64::MAX)
+            } else {
+                u64::MAX
+            },
             ..crate::WorkBudget::UNBOUNDED
         },
         &crate::CancellationToken::new(),
@@ -51,8 +61,8 @@ fn operation(
         Err((error, _)) => {
             assert!(matches!(error,
                 crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "allocation_operations", maximum, ..
-                }) if Some(maximum) == allowance
+                    counter, maximum, ..
+                }) if Some(maximum) == allowance && counter == if item_budget { "items_examined" } else { "allocation_operations" }
             ));
             assert!(
                 preserved(source.as_ref(), &path)?,
@@ -76,13 +86,13 @@ fn operation(
     if let Err(error) = result {
         assert!(
             preserved(source.as_ref(), &path)?,
-            "allowance {allowance:?}: {error:?}"
+            "namespace changed before a refused completion: allowance {allowance:?}: {error:?}"
         );
         let refusal = crate::workspace::workspace_bounded_error(&error);
         assert!(
             matches!(refusal, Some(crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded {
-                counter: "allocation_operations", maximum, observed,
-            })) if Some(maximum) == allowance && observed > maximum),
+                counter, maximum, observed,
+            })) if Some(maximum) == allowance && observed > maximum && counter == if item_budget { "items_examined" } else { "allocation_operations" }),
             "allowance {allowance:?}: {error:?}; source {:?}",
             std::error::Error::source(&error)
         );
@@ -97,7 +107,11 @@ fn operation(
             .open_file
             .clone();
         assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
-        Ok(Some(work.receipt().allocation_operations))
+        Ok(Some(if item_budget {
+            work.receipt().items_examined
+        } else {
+            work.receipt().allocation_operations
+        }))
     }
 }
 
@@ -139,12 +153,18 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
     })?;
     for rename in [false, true] {
         let required =
-            operation(&original, rename, None)?.ok_or("unbounded fixture was refused")?;
+            operation(&original, rename, None, false)?.ok_or("unbounded fixture was refused")?;
         for allowance in 0..required {
-            operation(&original, rename, Some(allowance))?;
+            operation(&original, rename, Some(allowance), false)?;
         }
-        assert!(operation(&original, rename, Some(required))?.is_some());
+        assert!(operation(&original, rename, Some(required), false)?.is_some());
     }
+    let required = operation(&original, true, None, true)?.ok_or("unbounded rename was refused")?;
+    assert!(
+        operation(&original, true, Some(required - 1), true)?.is_none(),
+        "rename did not reserve its completion item"
+    );
+    assert!(operation(&original, true, Some(required), true)?.is_some());
     Ok(())
 }
 
@@ -213,7 +233,7 @@ fn rename_and_forget(resurrect: bool) -> Result<(), Box<dyn std::error::Error>> 
         .ino
         .0;
     let mut state = projection.core.state().map_err(NativeMountError::from)?;
-    let install = state.prepare_rename_prefix(
+    let mut install = state.prepare_rename_prefix(
         &name("before"),
         &name("after"),
         &name("after"),
@@ -222,12 +242,15 @@ fn rename_and_forget(resurrect: bool) -> Result<(), Box<dyn std::error::Error>> 
     )?;
     state.release_lookup_reference(inode, 1);
     drop(state);
-    let stamp = projection
-        .core
-        .source
-        .rename(&name("before"), &name("after"), false, &work)?;
+    let stamp = projection.core.source.rename(
+        &name("before"),
+        &name("after"),
+        false,
+        &work,
+        Some(&mut install),
+    )?;
     let mut state = projection.core.state().map_err(NativeMountError::from)?;
-    install(&mut state, stamp);
+    install.install(&mut state, stamp);
     if resurrect {
         state
             .inode_by_path

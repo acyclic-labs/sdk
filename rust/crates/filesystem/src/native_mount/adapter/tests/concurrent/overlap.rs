@@ -441,7 +441,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
             source.checkout.install_change(
                 candidate,
                 ViewChange::Node(left),
-                Some(left),
+                Some(MutationSelection::Facts(left)),
                 &work,
                 source.cancellation(),
                 None,
@@ -607,7 +607,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         let projection = source.checkout.install_change(
             pending,
             ViewChange::Node(left),
-            Some(left),
+            Some(MutationSelection::Facts(left)),
             &work,
             source.cancellation(),
             None,
@@ -648,7 +648,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         let mut projection = Box::pin(source.checkout.install_change(
             candidate,
             ViewChange::Node(left),
-            Some(left),
+            Some(MutationSelection::Facts(left)),
             &work,
             source.cancellation(),
             None,

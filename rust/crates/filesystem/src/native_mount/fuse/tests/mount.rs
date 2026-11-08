@@ -422,7 +422,7 @@ impl MountFilesystem for GatedSource {
         capture_host_paths(source_root: &std::path::Path, paths: &[MountPath]) -> Result<(), MountSourceError>;
         capture_host_subtree(source_root: &std::path::Path, path: &MountPath) -> Result<(), MountSourceError>;
         remove(path: &MountPath, expected: Option<FileId>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-        rename(source: &MountPath, destination: &MountPath, replace: bool, work: &crate::NativeMaterializationWork) -> Result<crate::native_mount::ViewStamp, MountSourceError>;
+        rename(source: &MountPath, destination: &MountPath, replace: bool, work: &crate::NativeMaterializationWork, bindings: Option<&mut dyn crate::native_mount::MountRenameBindings>) -> Result<crate::native_mount::ViewStamp, MountSourceError>;
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         flush(work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         open_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;

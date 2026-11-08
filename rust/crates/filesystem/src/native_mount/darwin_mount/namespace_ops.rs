@@ -65,7 +65,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
         let rename = || {
             context
                 .source
-                .rename(&source, &destination, true, work)
+                .rename(&source, &destination, true, work, None)
                 .map(drop)
         };
         match context.lookup(&destination, work) {

@@ -15,6 +15,24 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-rename-reviewed-completion": [
+    "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
+    "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",
+    "rename certified a replaced descendant",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { mutations: [
+      { patch: "rust/proofs/native-rename-reviewed-completion/stale-identity.patch", label: "stale-identity", diagnostic: "rename certified a replaced descendant" },
+      { source: "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", test: "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
+        patch: "rust/proofs/native-rename-reviewed-completion/completion-credit.patch", label: "completion-credit", diagnostic: "namespace changed before a refused completion" },
+    ], positive: [
+      "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",
+      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
+      "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
+      "native_mount::fuse::tests::cache::readdirplus_acceptance_supersedes_cached_name_misses",
+      "native_mount::fuse::tests::detach::prepared_rename_cannot_resurrect_a_concurrent_forget",
+      "native_mount::fuse::tests::detach::forgotten_inode_negative_control",
+    ] },
+  ],
   "native-rename-binding-completion": [
     "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
     "native_mount::fuse::tests::cache::node_changes_preserve_cached_name_bindings",
@@ -187,9 +205,10 @@ if (claim === "--help" && extra.length === 0) {
     "--target", fuzzTarget,
     "--", options.fuzz.corpus, `-runs=${runs}`, "-seed=71", "-print_final_stats=1",
     `-artifact_prefix=target/${claim}/`];
-  const command = options.fuzz ? fuzzCommand(1) : options.nextest
+  const testCommand = test => options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
+  const command = options.fuzz ? fuzzCommand(1) : testCommand(test);
   const positive = options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
       options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
@@ -249,6 +268,9 @@ if (claim === "--help" && extra.length === 0) {
     if (oraclePath) oracle = readFileSync(oraclePath);
     const mutations = options.mutations ?? [{ patch, diagnostic, label: options.negativeLabel ?? "mutated" }];
     for (const mutation of mutations) {
+      const mutationSource = mutation.source
+        ? new URL(mutation.source, new URL("../../", import.meta.url)) : sourcePath;
+      const mutationOriginal = readFileSync(mutationSource);
       step = `check mutation anchors: ${mutation.patch}`;
       const anchor = run("git", ["apply", "--check", mutation.patch]);
       if (anchor.status !== 0) throw new Error(anchor.output);
@@ -257,16 +279,17 @@ if (claim === "--help" && extra.length === 0) {
         const applied = run("git", ["apply", mutation.patch]);
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
-        const mutated = check(mutation.label);
+        const mutated = check(mutation.label, mutation.test ? testCommand(mutation.test) : command);
         require(options.fuzz
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && mutated.output.includes("ERROR: libFuzzer:")
           : mutated.status === (options.nextest ? 100 : 101) && !mutated.signal && mutated.output.includes(mutation.diagnostic)
             && (options.nextest || mutated.output.includes("0 passed; 1 failed")));
       } finally {
-        writeFileSync(sourcePath, original);
+        writeFileSync(mutationSource, mutationOriginal);
       }
       step = "restore exact original source";
+      require(readFileSync(mutationSource).equals(mutationOriginal));
       require(readFileSync(sourcePath).equals(original));
     }
     step = "restored original oracle completes";

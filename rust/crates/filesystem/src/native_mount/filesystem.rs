@@ -38,6 +38,18 @@ pub(in crate::native_mount) fn can_disclose(
     }
 }
 
+/// Cached identities checked against the final candidate of a rename.
+/// These observations convey no metadata or authority. Only a successful rename
+/// certifies the reported identities at its returned completion stamp.
+pub trait MountRenameBindings: Send {
+    /// Number of prepared slots, including destination bindings to remove.
+    fn count(&self) -> usize;
+    /// Destination spelling and identity expected by one prepared slot.
+    fn binding(&self, index: usize) -> Option<(&MountPath, FileId)>;
+    /// Record whether the final candidate retained this exact identity.
+    fn verified(&mut self, index: usize, unchanged: bool);
+}
+
 /// Synchronous callback surface implemented by an embedded checkout adapter.
 pub trait MountFilesystem: Send + Sync + 'static {
     /// Retain policy publication exclusion for a physical projection. Sources
@@ -165,6 +177,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         replace: bool,
         work: &NativeMaterializationWork,
+        bindings: Option<&mut dyn MountRenameBindings>,
     ) -> Result<super::ViewStamp, MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
     fn set_attributes(

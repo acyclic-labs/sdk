@@ -352,12 +352,18 @@ impl ProjectionState {
                     .get(&child_inode)
                     .map(|entry| entry.kernel_content);
                 let superseding = self.superseded_attributes.len();
-                let (ttl, child) = if counts_lookups {
-                    self.prepare_entry(source, child_inode, child, current, work)?
+                let (ttl, child, completion) = if counts_lookups {
+                    let (ttl, child, completion) =
+                        self.prepare_entry(source, child_inode, child, current, work)?;
+                    (ttl, child, Some(completion))
                 } else {
-                    (Duration::ZERO, self.retain_spelling(child_inode, child)?)
+                    (
+                        Duration::ZERO,
+                        self.retain_spelling(child_inode, child)?,
+                        None,
+                    )
                 };
-                work.admit(Copy.delta(entry.name.len() as u64))?;
+                let mut copied = work.reserve_work(Copy.delta(entry.name.len() as u64))?;
                 if listing.as_mut().ok_or(libc::EIO)?.push(
                     next,
                     OsStr::from_bytes(&entry.name),
@@ -375,10 +381,10 @@ impl ProjectionState {
                     }
                     return Ok(());
                 }
-                if counts_lookups {
-                    self.accept_entry(inode, &child, work)?;
+                if let Some(completion) = completion {
+                    self.accept_entry(inode, &child, completion);
                 }
-                work.record_admitted(Copy.delta(entry.name.len() as u64))?;
+                copied.record_deferred(Copy.delta(entry.name.len() as u64));
                 if counts_lookups && let Some(handed) = self.by_inode.get_mut(&child_inode) {
                     handed.listed_in_reply = reply;
                 }

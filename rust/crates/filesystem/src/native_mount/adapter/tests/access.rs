@@ -414,7 +414,13 @@ fn native_access_rename_checks_source_and_destination() -> Result<(), Box<dyn st
         let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
         assert!(
             source
-                .rename(&native_test_path(from), &native_test_path(to), false, &work)
+                .rename(
+                    &native_test_path(from),
+                    &native_test_path(to),
+                    false,
+                    &work,
+                    None
+                )
                 .is_err()
         );
         assert!(source.lookup(&native_test_path(from))?.is_some());
@@ -460,6 +466,7 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
                     &native_test_path("nested/to"),
                     false,
                     &work,
+                    None,
                 )?;
             }
             Action::Delete => source.remove(&native_test_path("nested/from"), None, &work)?,
@@ -906,7 +913,8 @@ fn native_relocations_cannot_disclose_denied_files_or_descendants()
                     &native_test_path("private"),
                     &native_test_path("public"),
                     false,
-                    &work
+                    &work,
+                    None
                 ),
                 Err(MountSourceError::AccessDenied)
             ));
@@ -980,6 +988,7 @@ fn native_relocations_preserve_uniform_and_equivalent_suffix_permissions()
             &native_test_path("to"),
             false,
             &work,
+            None,
         )?;
         assert_eq!(
             source
@@ -1031,7 +1040,8 @@ fn native_relocations_intersect_capability_path_limits() -> Result<(), Box<dyn s
             &native_test_path("private"),
             &native_test_path("public"),
             false,
-            &work
+            &work,
+            None
         ),
         Err(MountSourceError::AccessDenied)
     ));

@@ -29,7 +29,7 @@ impl MountFilesystem for NoContent {
         read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
         read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32, work: &NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
         remove(path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
-        rename(source: &MountPath, destination: &MountPath, replace: bool, work: &NativeMaterializationWork) -> Result<crate::native_mount::ViewStamp, MountSourceError>;
+        rename(source: &MountPath, destination: &MountPath, replace: bool, work: &NativeMaterializationWork, bindings: Option<&mut dyn crate::native_mount::MountRenameBindings>) -> Result<crate::native_mount::ViewStamp, MountSourceError>;
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         flush(work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         open_file_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;

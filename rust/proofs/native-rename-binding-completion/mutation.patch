@@ -1,11 +1,11 @@
 --- a/rust/crates/filesystem/src/native_mount/fuse/identity.rs
 +++ b/rust/crates/filesystem/src/native_mount/fuse/identity.rs
-@@ -252,8 +252,6 @@
-                         };
-                         binding.path = path;
-                         binding.spelled = native;
+@@ -207,8 +207,6 @@
+                     binding.path = path;
+                     binding.spelled = native;
+                     if unchanged {
 -                        binding.verified = Some(stamp);
 -                        binding.kernel = binding.kernel.map(|_| stamp);
                      }
-                     None => {
-                         entry.bindings.remove(index);
+                 }
+                 None => {

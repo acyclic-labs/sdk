@@ -514,23 +514,26 @@ fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn s
 
     let refusals = [
         (
-            source.rename(&directory, &file, true, &work).err(),
+            source.rename(&directory, &file, true, &work, None).err(),
             "ENOTDIR",
         ),
         (
-            source.rename(&file, &directory, true, &work).err(),
+            source.rename(&file, &directory, true, &work, None).err(),
             "EISDIR",
         ),
         (
-            source.rename(&directory, &full, true, &work).err(),
+            source.rename(&directory, &full, true, &work, None).err(),
             "ENOTEMPTY",
         ),
         (source.remove(&full, None, &work).err(), "ENOTEMPTY"),
         (
-            source.rename(&file, &directory, false, &work).err(),
+            source.rename(&file, &directory, false, &work, None).err(),
             "EEXIST",
         ),
-        (source.rename(&absent, &file, true, &work).err(), "ENOENT"),
+        (
+            source.rename(&absent, &file, true, &work, None).err(),
+            "ENOENT",
+        ),
     ];
     for (refusal, expected) in refusals {
         let error = refusal.ok_or("the operation succeeded")?;

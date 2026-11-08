@@ -3,7 +3,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         &self,
         candidate: CheckoutCandidate<'_, A, O>,
         change: ViewChange<'_>,
-        facts: Option<FileId>,
+        facts: Option<MutationSelection<'_, A, O>>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
@@ -54,7 +54,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         (candidate, rename, facts): (
             CheckoutCandidate<'a, A, O>,
             Option<[&NamespacePath; 2]>,
-            Option<FileId>,
+            Option<MutationSelection<'_, A, O>>,
         ),
         carrier: &mut NativeDemandCarrier<'_>,
         cancellation: &CancellationToken,
@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 _publication,
                 _file_mutation,
             };
-            let facts = if let Some(file_id) = facts {
+            let facts = if let Some(MutationSelection::Facts(file_id)) = facts {
                 // The final candidate owns its root and original mutation lease.
                 // Select its facts without retaining shared checkout guards.
                 drop(state.take());
@@ -164,6 +164,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     stamp: recorded_stamp,
                 })
             } else {
+                if let Some(MutationSelection::Bindings(source, bindings)) = facts {
+                    drop(state.take());
+                    let mut inspector = None;
+                    for index in 0..bindings.count() {
+                        let unchanged = if let Some((path, file_id)) = bindings.binding(index) {
+                            let mut inputs = InputBuffers::new(carrier)?;
+                            let path = source.namespace_inputs(path, &mut inputs)?;
+                            let mut accounting =
+                                crate::kernel::allocation::KernelAccounting::native(
+                                    original,
+                                    cancellation,
+                                );
+                            let inspector = match inspector {
+                                Some(ref mut inspector) => inspector,
+                                None => inspector.insert(
+                                    candidate
+                                        .checkout
+                                        .inspector(&mut accounting, cancellation)?,
+                                ),
+                            };
+                            inspector
+                                .lookup_no_follow(&path, original, cancellation)
+                                .await?
+                                .record
+                                .is_some_and(|record| record.file_id == file_id)
+                        } else {
+                            false
+                        };
+                        bindings.verified(index, unchanged);
+                    }
+                }
                 None
             };
             let mut state = match state {
