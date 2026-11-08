@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const nativeHarness = ["--features", "filesystem-local,native-execution,test-support,grpc,search-http"];
+const bindingFeatures = ["--features", "filesystem-local,native-execution,test-support"];
+const bindingNextest = ["--profile", "ci", "--retries", "0", "--no-tests=fail", "--no-fail-fast", "--failure-output", "final"];
 const cleanupTests = [
   "local::workspace::volumes::publication_tests::cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head",
   "local::tests::agents::a_shell_call_stages_its_output_on_the_private_volume",
@@ -15,6 +17,41 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "task-binding-selection": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::bindings::tests::original_preparation_has_finite_generation_and_credit",
+    "lost original producer did not finish its observer", bindingFeatures,
+    { nextest: bindingNextest, mutations: [
+      { patch: "fuzz/mutations/task_binding_lost_producer.patch", label: "producer-loss", diagnostic: "lost original producer did not finish its observer" },
+      { patch: "fuzz/mutations/task_binding_late_retirement.patch", label: "late-retirement", diagnostic: "late retirement removed the replacement owner" },
+      { patch: "fuzz/mutations/task_binding_retained_credit.patch", label: "retained-credit", diagnostic: "retired binding generations retained original allocation credit" },
+      { patch: "fuzz/mutations/task_binding_lookup_cost.patch", label: "lookup-cost", diagnostic: "binding lookup grew beyond the fixed-width path" },
+    ] },
+  ],
+  "task-binding-observer": [
+    "rust/crates/harness/src/local/workspace/bindings.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "registered binding observer lost its successful preparation", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_observer_result.patch", label: "result-loss", diagnostic: "registered binding observer lost its successful preparation" },
+    ] },
+  ],
+  "task-binding-checkout": [
+    "rust/crates/harness/src/local/workspace/task_views.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::binding_preparation_releases_the_checkout_owner",
+    "binding preparation retains the unrelated checkout owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_checkout_owner.patch", label: "checkout-owner", diagnostic: "binding preparation retains the unrelated checkout owner" },
+    ] },
+  ],
+  "task-binding-physical": [
+    "rust/crates/harness/src/local/workspace/projection.rs", "acyclic-harness",
+    "local::workspace::task_views::tests::native_guard_retains_the_original_binding_until_physical_retirement",
+    "physical native guard lost the original binding owner", bindingFeatures,
+    { nextest: bindingNextest, oracle: "rust/crates/harness/src/local/workspace/task_views/tests.rs", mutations: [
+      { patch: "fuzz/mutations/task_binding_physical_owner.patch", label: "physical-owner", diagnostic: "physical native guard lost the original binding owner" },
+    ] },
+  ],
   "inbox-settlement": [
     "rust/crates/harness-core/src/agent/records.rs", "acyclic-harness-core",
     "agent::checkpoint::tests::bounded_record_fields_and_settled_checkpoints_fit_their_frames",
