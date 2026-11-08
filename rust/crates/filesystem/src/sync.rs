@@ -7,7 +7,9 @@ pub(crate) use std::sync::*;
 // to an already funded owner. Protocols either recover after unwinding or
 // record transaction poisoning explicitly in their own guard.
 #[cfg(not(loom))]
-pub(crate) use parking_lot::{Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
+pub(crate) use parking_lot::Mutex as InlineMutex;
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+pub(crate) use parking_lot::MutexGuard as InlineMutexGuard;
 
 #[cfg(loom)]
 pub(crate) use loom::sync::MutexGuard as InlineMutexGuard;
