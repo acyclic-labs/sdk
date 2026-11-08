@@ -1,5 +1,77 @@
 use super::*;
 
+#[tokio::test]
+async fn connection_observers_end_when_the_original_pool_driver_is_dropped() -> TestResult {
+    use futures::task::{ArcWake, waker};
+    use std::{future::Future as _, task::Context};
+
+    #[derive(Default)]
+    struct Executor(Mutex<Option<BoxProviderFuture<'static, ()>>>);
+    impl crate::runtime::Executor for Executor {
+        fn spawn(&self, future: BoxProviderFuture<'static, ()>) {
+            assert!(self.0.lock().unwrap().replace(future).is_none());
+        }
+        fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
+            crate::runtime::Executor::sleep(&crate::runtime::PlatformExecutor, milliseconds)
+        }
+    }
+    struct Wake(AtomicUsize);
+    impl ArcWake for Wake {
+        fn wake_by_ref(value: &Arc<Self>) {
+            value.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for started in [false, true] {
+        let executor = Arc::new(Executor::default());
+        let channel = Endpoint::from_static("http://unused.invalid").connect_lazy();
+        let client = Client::with_transport(
+            native::endpoint(channel, None, None),
+            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable.into())))),
+            executor.clone(),
+        );
+        let connections = client.connections();
+        let sibling = connections.clone();
+        let wake = Arc::new(Wake(AtomicUsize::new(0)));
+        let waker = waker(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut waiting = Box::pin(connections.changed(0));
+        let mut cancelled = Box::pin(sibling.changed(0));
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+        drop(cancelled);
+        let mut driver = executor
+            .0
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or("missing pool driver")?;
+        if started {
+            assert!(driver.as_mut().poll(&mut cx).is_pending());
+        }
+        wake.0.store(0, Ordering::SeqCst);
+        drop(driver);
+        assert!(
+            wake.0.load(Ordering::SeqCst) > 0,
+            "original pool driver dropped without waking its connection observer"
+        );
+        assert!(matches!(
+            waiting.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(Err(StreamError::Unavailable))
+        ));
+        let mut late = Box::pin(sibling.changed(0));
+        assert!(matches!(
+            late.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(Err(StreamError::Unavailable))
+        ));
+        assert!(matches!(
+            client.register_credential(0, Bytes::new()),
+            Err(StreamError::Unavailable)
+        ));
+    }
+    Ok(())
+}
+
 struct ReplacedNode {
     provider: Arc<MemoryStream>,
     replacement: AtomicUsize,

@@ -18,6 +18,80 @@ async fn append(provider: &BrowserStream, path: &str) -> Result<AppendOutcome, S
 }
 
 #[wasm_bindgen_test]
+async fn database_loss_ends_parked_revision_observers() {
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let AppendOutcome::Committed(seed) = append(&writer, "events").await.expect("seed") else {
+        panic!("seed refused");
+    };
+    reader
+        .wait_applied(&crate::RevisionCut::of(seed.revision.clone()))
+        .await
+        .expect("durable seed");
+    let mut future = seed.revision.clone();
+    future.index += 1;
+    let cut = crate::RevisionCut::of(future);
+    let waiting = reader.wait_applied(&cut);
+    futures::pin_mut!(waiting);
+    // The original cache lock joins the initial IndexedDB replay. The public
+    // revision wait must then park outside it, without a readiness probe.
+    match futures::future::select(waiting.as_mut(), Box::pin(reader.inner.cache.lock())).await {
+        futures::future::Either::Left(_) => panic!("future revision completed before publication"),
+        futures::future::Either::Right((guard, _)) => drop(guard),
+    }
+    assert!(waiting.as_mut().now_or_never().is_none());
+    let mut follow = reader
+        .follow(crate::FollowRequest::new(
+            StreamPath::new("events").expect("path"),
+            seed.start + 1,
+        ))
+        .map_ok(crate::records_only)
+        .await
+        .expect("follow");
+    assert!(follow.next().now_or_never().is_none());
+    // Close the original IndexedDB connection, retaining the actual provider
+    // and its subscribers. A public observation encounters the lost backend.
+    reader.inner.database.clone().close();
+    assert_eq!(
+        reader.tail(StreamPath::new("events").expect("path")).await,
+        Err(StreamError::Unavailable)
+    );
+    assert_eq!(
+        waiting.as_mut().now_or_never(),
+        Some(Err(StreamError::Unavailable)),
+        "revision wait retained failed IndexedDB producer"
+    );
+    assert!(matches!(
+        follow.next().now_or_never(),
+        Some(Some(Err(StreamError::Unavailable)))
+    ));
+    assert_eq!(
+        reader.wait_applied(&cut).now_or_never(),
+        Some(Err(StreamError::Unavailable))
+    );
+    let AppendOutcome::Committed(next) = append(&writer, "events").await.expect("surviving writer")
+    else {
+        panic!("surviving writer refused");
+    };
+    let reopened = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reopen");
+    reopened
+        .wait_applied(&crate::RevisionCut::of(next.revision))
+        .await
+        .expect("reopened durable authority");
+    assert_eq!(
+        reopened.tail(StreamPath::new("events").unwrap()).await,
+        Ok(2)
+    );
+}
+
+#[wasm_bindgen_test]
 async fn immutable_results_reuse_only_a_durable_browser_cache() {
     let database = name();
     let provider = BrowserStream::open(&database, BrowserStreamLimits::default())

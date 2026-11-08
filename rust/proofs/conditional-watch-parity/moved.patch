@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/query_sync/watch.rs b/rust/crates/stream/src/query_sync/watch.rs
+--- a/rust/crates/stream/src/query_sync/watch.rs
++++ b/rust/crates/stream/src/query_sync/watch.rs
+@@ -82,6 +82,6 @@
+             let removed = value.waiters.swap_remove(index);
+             if let Some(moved) = value.waiters.get(index) {
+-                moved.slot.store(index, Ordering::Relaxed);
++                moved.slot.fetch_add(0, Ordering::Relaxed);
+             }
+             removed
+         };

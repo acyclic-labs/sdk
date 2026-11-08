@@ -21,7 +21,7 @@ fn source(identity: wire::SessionChannel) -> Source {
     )
     .boxed()
 }
-fn partition(sources: &Sources) -> Result<(), TestCaseError> {
+fn partition(sources: &Sources, ids: impl IntoIterator<Item = u64>) -> Result<(), TestCaseError> {
     let mut seen = BTreeSet::new();
     for (class, queue) in sources.queues.iter().enumerate() {
         let mut before = None;
@@ -50,11 +50,16 @@ fn partition(sources: &Sources) -> Result<(), TestCaseError> {
         }
         prop_assert_eq!(queue.last, before);
     }
-    for (id, entry) in &sources.entries {
-        let runnable = entry.ready && (entry.opening || entry.mode.is_some());
-        prop_assert_eq!(seen.contains(id), runnable);
-        prop_assert_eq!(entry.links.is_some(), runnable);
+    let mut retained = 0;
+    for id in ids {
+        if let Some(entry) = sources.entries.get(&id) {
+            retained += 1;
+            let runnable = entry.ready && (entry.opening || entry.mode.is_some());
+            prop_assert_eq!(seen.contains(&id), runnable);
+            prop_assert_eq!(entry.links.is_some(), runnable);
+        }
     }
+    prop_assert_eq!(retained, sources.len());
     Ok(())
 }
 fn mode(value: u8) -> Option<usize> {
@@ -139,7 +144,7 @@ fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseErr
                 }
             }
         }
-        partition(&sources)?;
+        partition(&sources, 1..=3)?;
         if let Some(entry) = sources.entries.get(&id) {
             let mode = entry.mode;
             let queues = sources
@@ -156,7 +161,7 @@ fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseErr
                     .map(|queue| (queue.first, queue.last))
                     .collect::<Vec<_>>()
             );
-            partition(&sources)?;
+            partition(&sources, 1..=3)?;
         }
     }
     Ok(())
@@ -195,7 +200,21 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
     let slots = testing::slots();
     for (binding, lookahead) in [
         (None, false),
-        (Some(testing::binding()), true),
+        (
+            Some(
+                authority
+                    .bind(
+                        &slots,
+                        0,
+                        &StreamPath::new("model").unwrap(),
+                        Default::default(),
+                        1,
+                    )
+                    .unwrap()
+                    .0,
+            ),
+            true,
+        ),
         (
             Some(authority.bind_list(&slots, 0, None, 1).unwrap().0),
             false,
@@ -258,7 +277,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                         expected,
                         "source admission differs: lookahead={lookahead} flags={flags} pending={pending} room={room:?}"
                     );
-                    partition(&sources).unwrap();
+                    partition(&sources, 1..=3).unwrap();
                 }
             }
         }
@@ -294,7 +313,7 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
         sources.entries.get(&1).map(|entry| entry.ready),
         Some(false)
     );
-    partition(&sources).unwrap();
+    partition(&sources, 1..=3).unwrap();
 }
 
 fn old_mode(sources: &mut Sources, id: u64, mode: Option<usize>) {
@@ -340,7 +359,7 @@ fn unchanged_admission_does_no_queue_edits_and_preserves_turn_order() {
         );
         assert_eq!(sources.queue_edits, if legacy { 20_000 } else { 0 });
         assert_eq!(sources.queues[ALL].first, Some(if legacy { 2 } else { 1 }));
-        partition(&sources).unwrap();
+        partition(&sources, 1..=10_000).unwrap();
         eprintln!(
             "source_refresh legacy={legacy} follows=10000 refreshes=10000 queue_edits={} elapsed={elapsed:?}",
             sources.queue_edits

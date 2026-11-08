@@ -1191,6 +1191,7 @@ mod tests {
         struct Counted {
             records: acyclic_stream::BoxProviderStream<'static, Result<Record, StreamError>>,
             polls: Arc<AtomicUsize>,
+            primed: Option<Arc<AtomicUsize>>,
             dropped: Arc<AtomicUsize>,
         }
         impl Stream for Counted {
@@ -1200,7 +1201,11 @@ mod tests {
                 cx: &mut Context<'_>,
             ) -> Poll<Option<Self::Item>> {
                 self.polls.fetch_add(1, Ordering::SeqCst);
-                self.records.poll_next_unpin(cx)
+                let result = self.records.poll_next_unpin(cx);
+                if let Some(primed) = self.primed.take() {
+                    primed.fetch_add(1, Ordering::SeqCst);
+                }
+                result
             }
         }
         impl Drop for Counted {
@@ -1219,6 +1224,7 @@ mod tests {
             .unwrap();
             driver.attach(&mut reader, 0);
             let dropped = Arc::new(AtomicUsize::new(0));
+            let primed = Arc::new(AtomicUsize::new(0));
             let mut counters = Vec::new();
             for index in 0..513 {
                 let path = StreamPath::new(format!("quiet/{index:04}")).unwrap();
@@ -1253,15 +1259,25 @@ mod tests {
                             Box::pin(Counted {
                                 records,
                                 polls,
+                                primed: Some(primed.clone()),
                                 dropped: dropped.clone(),
                             })
                         }),
                     )
                     .unwrap();
             }
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
-            driver.drain(&mut reader, 0, &mut cx);
+            // ReadySources yields after one provider poll and wakes this same
+            // task while another source is runnable. Let those actual wakes
+            // drive registration; dormant providers never wake this task.
+            futures::future::poll_fn(|cx| {
+                driver.drain(&mut reader, 0, cx);
+                if primed.load(Ordering::SeqCst) == counters.len() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
             assert!(
                 counters
                     .iter()
@@ -1277,6 +1293,8 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(reader.follows.get(&path).map(|intent| intent.from), Some(2));
             assert_eq!(driver.reconciled, 0);

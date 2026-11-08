@@ -1,10 +1,14 @@
 #[cfg(loom)]
-pub(crate) use loom::sync::{
-    Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use loom::sync;
 #[cfg(not(loom))]
-pub(crate) use std::sync::{
-    Arc, Mutex,
+use std::sync;
+
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub(crate) use sync::Arc;
+pub(crate) use sync::{
+    Mutex,
     atomic::{AtomicU64, Ordering},
 };

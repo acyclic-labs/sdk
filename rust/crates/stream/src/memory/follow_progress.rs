@@ -177,8 +177,8 @@ struct MemoryProgress {
     changed: watch::Receiver<u64>,
 }
 impl crate::snapshot::Snapshot for Box<MemoryProgress> {
-    type Output = Result<Option<crate::FollowUpdate>, StreamError>;
-    async fn read(&mut self) -> Self::Output {
+    type Output = Option<crate::FollowUpdate>;
+    async fn read(&mut self) -> Result<Self::Output, StreamError> {
         let state = &mut **self;
         state
             .provider

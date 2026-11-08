@@ -13,6 +13,7 @@ pub struct ResourceAuthorization {
     pub(super) resource: Arc<ResourcePattern>,
     capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
     pub(super) action: &'static str,
+    call: Option<(Arc<ResourcePattern>, &'static str)>,
 }
 impl ResourceAuthorization {
     pub(super) fn new(
@@ -28,6 +29,16 @@ impl ResourceAuthorization {
             }),
             capability: Arc::new(std::sync::Mutex::new(capability)),
             action: crate::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
+            call: None,
+        }
+    }
+    pub(super) fn dependent(&self, resource: ResourcePattern, action: &'static str) -> Self {
+        Self {
+            authority: Arc::clone(&self.authority),
+            resource: Arc::new(resource),
+            capability: Arc::clone(&self.capability),
+            action,
+            call: Some((Arc::clone(&self.resource), self.action)),
         }
     }
     /// The channel's current credential; `renew` replaces it in place.
@@ -60,7 +71,20 @@ impl ResourceAuthorization {
         self.authorize_account(resource, keys, attributes, policy, None)
     }
 
-    pub(super) fn authorize_account(
+    /// Check the certified account and resource against the same current
+    /// credential. The owning product still supplies its current policy.
+    pub fn authorize_in_account(
+        &self,
+        account: &[u8],
+        resource: &str,
+        keys: &[Vec<u8>],
+        attributes: &RecordAttributes,
+        policy: PolicyDecision,
+    ) -> Result<(), StreamError> {
+        self.authorize_account(resource, keys, attributes, policy, Some(account))
+    }
+
+    fn authorize_account(
         &self,
         resource: &str,
         keys: &[Vec<u8>],
@@ -86,36 +110,58 @@ impl ResourceAuthorization {
                 return Err(StreamError::AccessDenied);
             }
         }
-        capability
-            .authorize(
-                snapshot.trust.as_ref(),
+        let request = Request {
+            target: Target::Resource {
+                action: self.action,
+                resource,
+            },
+            audience: &self.authority.audience,
+            holder: self.authority.holder.as_deref(),
+            now_unix_seconds: snapshot.now_unix_seconds,
+            keys,
+            attributes,
+            usage: &Usage {
+                rps: None,
+                burst: None,
+                bytes_per_s: None,
+                channels: None,
+                concurrency: None,
+                bytes: None,
+                spend_micros: None,
+                tokens: None,
+            },
+            cpu_millis: 0,
+            memory_bytes: 0,
+        };
+        let authorize = |request: &Request<'_>, policy| {
+            capability
+                .authorize(
+                    snapshot.trust.as_ref(),
+                    request,
+                    policy,
+                    acyclic_auth::authority::Scope::Exact,
+                )
+                .map_err(|_| StreamError::AccessDenied)
+        };
+        if let Some((resource, action)) = &self.call {
+            // The call grant remains necessary after suspension or renewal.
+            // Dependent entry facts must not stand in for the admitted call.
+            let attributes =
+                RecordAttributes::try_new(vec![]).map_err(|_| StreamError::InvalidArgument)?;
+            authorize(
                 &Request {
                     target: Target::Resource {
-                        action: self.action,
-                        resource,
+                        action,
+                        resource: &resource.name,
                     },
-                    audience: &self.authority.audience,
-                    holder: self.authority.holder.as_deref(),
-                    now_unix_seconds: snapshot.now_unix_seconds,
-                    keys,
-                    attributes,
-                    usage: &Usage {
-                        rps: None,
-                        burst: None,
-                        bytes_per_s: None,
-                        channels: None,
-                        concurrency: None,
-                        bytes: None,
-                        spend_micros: None,
-                        tokens: None,
-                    },
-                    cpu_millis: 0,
-                    memory_bytes: 0,
+                    keys: &[],
+                    attributes: &attributes,
+                    ..request
                 },
-                policy,
-                acyclic_auth::authority::Scope::Exact,
-            )
-            .map_err(|_| StreamError::AccessDenied)
+                PolicyDecision::Allow,
+            )?;
+        }
+        authorize(&request, policy)
     }
     /// Pushes semantic filesystem grant prefixes into the provider index. The
     /// full lossless path is still authorized per entry after indexed selection.
@@ -137,11 +183,7 @@ impl ResourceAuthorization {
                     GrantKind::Filesystem(grant) => &grant.grant,
                     GrantKind::WebsocketConnect(_) => continue,
                 };
-                if !resource
-                    .actions
-                    .iter()
-                    .any(|action| action == crate::authorization::RESOURCE_FOLLOW_ACTION.as_str())
-                {
+                if !resource.actions.iter().any(|action| action == self.action) {
                     continue;
                 }
                 if resource.resource.prefix
@@ -164,13 +206,6 @@ impl ResourceAuthorization {
                     .strip_prefix(volume_resource)
                     .and_then(|tail| tail.strip_prefix('/'))
                 {
-                    // A prefix pattern's trailing `/` is not a component,
-                    // exactly as `resource_matches` reads it.
-                    let path = if resource.resource.prefix {
-                        path.trim_end_matches('/')
-                    } else {
-                        path
-                    };
                     path_ranges(path, resource.resource.prefix, &mut ranges)?;
                 }
             }
@@ -189,15 +224,23 @@ impl ResourceAuthorization {
             .resource
             .name
             .strip_prefix(volume_resource)
-            .and_then(|tail| tail.strip_prefix('/'))
+            .and_then(|tail| {
+                if tail.is_empty() {
+                    Some("")
+                } else {
+                    tail.strip_prefix('/')
+                }
+            })
         {
             let mut ranges = Vec::new();
-            path_ranges(path, true, &mut ranges)?;
-            wire.all_of.push(wire::SessionFilterClause {
-                keys: ranges,
-                attributes: vec![],
-                all_keys: true,
-            });
+            path_ranges(path, self.resource.prefix, &mut ranges)?;
+            if !ranges.is_empty() {
+                wire.all_of.push(wire::SessionFilterClause {
+                    keys: ranges,
+                    attributes: vec![],
+                    all_keys: true,
+                });
+            }
         }
         crate::FollowFilter::new(wire)
     }
@@ -326,6 +369,15 @@ fn path_ranges(
     prefix: bool,
     ranges: &mut Vec<wire::KeyRange>,
 ) -> Result<(), StreamError> {
+    // Prefix matching ignores its final separator at both grant and call scope.
+    let encoded = if prefix {
+        encoded.trim_end_matches('/')
+    } else {
+        encoded
+    };
+    if prefix && encoded.is_empty() {
+        return Ok(());
+    }
     let mut key = Vec::new();
     for (index, component) in encoded.split('/').enumerate() {
         if index != 0 {

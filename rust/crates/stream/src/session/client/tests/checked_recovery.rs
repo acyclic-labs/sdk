@@ -88,14 +88,15 @@ impl transport::Transport for Observed {
             let source = match self.inner.session(Box::pin(requests)).await {
                 Ok(source) => source,
                 Err(error) => {
-                    owner.cause = error.error.clone();
+                    owner.cause.clone_from(&error.error);
+                    drop(owner);
                     return Err(error);
                 }
             };
             let received = self.received.clone();
             Ok(Box::pin(source.map(move |frame| {
                 if let Err(error) = &frame {
-                    owner.cause = error.error.clone();
+                    owner.cause.clone_from(&error.error);
                 }
                 // Retain the complete drop owner through the original response.
                 let _owner = &owner;

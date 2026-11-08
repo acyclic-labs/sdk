@@ -17,6 +17,14 @@ fn contents<const N: usize>(
 #[test]
 fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
 -> Result<(), &'static str> {
+    prefix_generated_operations()?;
+    prefix_population_work()?;
+    prefix_physical_retirement()?;
+    prefix_drain_refusals()?;
+    Ok(())
+}
+
+fn prefix_generated_operations() -> Result<(), &'static str> {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 128,
@@ -38,7 +46,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                         .map_err(TestCaseError::fail)?;
                     expected.entry(key).or_insert(value);
                     if !extract {
-                        if value % 7 == 0 {
+                        if value.is_multiple_of(7) {
                             let removed = index.remove_if(key, |_| !miss);
                             if miss {
                                 prop_assert!(removed.is_none());
@@ -63,7 +71,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                     if miss {
                         bytes[0] ^= 255;
                     }
-                    let prefix = &bytes[..length];
+                    let prefix = bytes.get(..length).ok_or_else(|| TestCaseError::fail("generated prefix exceeds original bytes"))?;
                     let result = if length == 5 {
                         Ok(index.extract_through(key, |n| visits += n))
                     } else {
@@ -90,42 +98,7 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
                         expected.retain(|key, _| !selected.contains_key(key));
                         prop_assert!(visits <= 17 * 4 + 3);
                         prop_assert_eq!(&contents(extracted.index(), &mut work).map_err(TestCaseError::fail)?, &selected);
-                        let items = work.items;
-                        let claims = work.claims;
-                        let mut drain_items = 0;
-                        work.cancelled = true;
-                        work.maximum_items = Some(0);
-                        work.maximum_claims = Some(0);
-                        prop_assert!(extracted.index().first(&mut work).is_err());
-                        let mut entries = extracted.into_entries(|n| drain_items += n);
-                        if value % 2 == 0 {
-                            // Withdrawing a partial consumer must retire only
-                            // the unconsumed subtree, never its delivered leaf.
-                            let entry = entries.next();
-                            prop_assert_eq!(entry.as_ref().map(|entry| (*entry.key(), *entry.value())), selected.first_key_value().map(|(key, value)| (*key, *value)));
-                            drop(entries);
-                            let retained = entry.as_ref().map_or(0, |entry| entry._allocation.bytes);
-                            let live = work.live.get();
-                            prop_assert!(live >= retained);
-                            drop(entry);
-                            prop_assert_eq!(work.live.get(), live - retained);
-                        } else {
-                            let mut delivered = Vec::new();
-                            for entry in &mut entries {
-                                delivered.push(entry.into_parts());
-                            }
-                            prop_assert!(entries.next().is_none());
-                            prop_assert!(entries.next().is_none());
-                            drop(entries);
-                            prop_assert_eq!(delivered.iter().map(|(key, value, _)| (*key, *value)).collect::<Vec<_>>(), selected.iter().map(|(key, value)| (*key, *value)).collect::<Vec<_>>());
-                            drop(delivered);
-                        }
-                        prop_assert!(drain_items <= 6 * selected.len().saturating_mul(2) as u64);
-                        prop_assert_eq!(work.claims, claims);
-                        prop_assert_eq!(work.items, items);
-                        work.cancelled = false;
-                        work.maximum_items = None;
-                        work.maximum_claims = None;
+                        verify_selected_drain(extracted, &selected, value, &mut work)?;
                         prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
                     }
                     prop_assert_eq!(contents(&index, &mut work).map_err(TestCaseError::fail)?, expected.clone());
@@ -139,10 +112,14 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             eprintln!("{error}");
             "prefix extraction differs from complete original keys"
         })?;
+    Ok(())
+}
 
+fn prefix_population_work() -> Result<(), &'static str> {
     let mut indexed = [0; 2];
     let mut census = [0; 2];
-    for (run, population) in [1_u64, 100_000].into_iter().enumerate() {
+    for ((indexed, census), population) in indexed.iter_mut().zip(&mut census).zip([1_u64, 100_000])
+    {
         let mut work = Work::default();
         let mut index = FixedIndex::<usize, _, 9>::default();
         let mut ordered = BTreeMap::new();
@@ -157,19 +134,22 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
         let claims = work.claims;
         let live = work.live.get();
         let selected = index
-            .extract_prefix(&[0], |items| indexed[run] += items)
-            .unwrap();
+            .extract_prefix(&[0], |items| *indexed += items)
+            .map_err(|_| "original prefix refused")?;
         assert_eq!(work.claims, claims);
         assert_eq!(work.live.get(), live);
         assert_eq!(contents(selected.index(), &mut work)?.len(), 1);
-        assert_eq!(contents(&index, &mut work)?.len(), population as usize);
+        assert_eq!(
+            contents(&index, &mut work)?.len(),
+            usize::try_from(population).map_err(|_| "population exceeds address space")?
+        );
         // The original whole-partition census must fail the same fixed-output
         // cost requirement even when it produces the correct selected entry.
         assert_eq!(
             ordered
                 .keys()
                 .filter(|key| {
-                    census[run] += 1;
+                    *census += 1;
                     key.starts_with(&[0])
                 })
                 .count(),
@@ -191,7 +171,10 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
     assert_eq!(indexed[0], indexed[1]);
     assert!(census[1] > census[0]);
     println!("foreign=[1,100000] prefix_items={indexed:?} census_items={census:?}; selected=1");
+    Ok(())
+}
 
+fn prefix_physical_retirement() -> Result<(), &'static str> {
     let mut work = Work {
         observe_retirement: true,
         ..Work::default()
@@ -207,7 +190,10 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
             }
             let before = acyclic_test_support::current_allocations().unwrap();
             let live = work.live.get();
-            assert_eq!(live as i64, before.bytes_current);
+            assert_eq!(
+                i64::try_from(live).expect("live backing fits the physical counter"),
+                before.bytes_current
+            );
             let detached = index.extract_prefix(&[127], |_| {}).unwrap();
             let after = acyclic_test_support::current_allocations().unwrap();
             assert_eq!(after.bytes_current, before.bytes_current);
@@ -273,6 +259,10 @@ fn prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work()
     result?;
     assert_eq!(measured.bytes_current, 0);
     assert!(!work.early_refund.get());
+    Ok(())
+}
+
+fn prefix_drain_refusals() -> Result<(), &'static str> {
     let required = verify_admitted_drain(None)?;
     // Every original admission boundary, including immediately before a lower
     // child visit, must preserve the exact remaining values and their funding.
@@ -298,7 +288,7 @@ fn verify_admitted_drain(allowance: Option<u64>) -> Result<u64, &'static str> {
     work.maximum_items = allowance.map(|allowance| before + allowance);
     let mut entries = index
         .extract_prefix(&[], |_| {})
-        .unwrap()
+        .map_err(|_| "empty prefix refused")?
         .into_entries(|_| {});
     let mut remaining = expected.iter();
     let mut refused = false;
@@ -350,7 +340,8 @@ fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static st
     // input construction visits a key-width path per inserted key.
     for bit in (0..8 * N).rev() {
         let mut key = [0; N];
-        key[bit / 8] = 0x80 >> (bit % 8);
+        *key.get_mut(bit / 8)
+            .ok_or("branch bit exceeds original key")? = 0x80 >> (bit % 8);
         index.get_or_try_insert_with(key, work, |_| Ok(bit + 1))?;
     }
     work.cancelled = true;
@@ -380,5 +371,64 @@ fn verify_drain_shape<const N: usize>(work: &mut Work) -> Result<(), &'static st
     assert_eq!(work.items, original_items);
     assert_eq!(work.claims, original_claims);
     assert_eq!(work.live.get(), 0);
+    Ok(())
+}
+
+fn verify_selected_drain(
+    extracted: ExtractedPrefix<usize, Allocation, 4>,
+    selected: &BTreeMap<[u8; 4], usize>,
+    value: usize,
+    work: &mut Work,
+) -> TestCaseResult {
+    let items = work.items;
+    let claims = work.claims;
+    let mut drain_items = 0;
+    work.cancelled = true;
+    work.maximum_items = Some(0);
+    work.maximum_claims = Some(0);
+    prop_assert!(extracted.index().first(work).is_err());
+    let mut entries = extracted.into_entries(|n| drain_items += n);
+    if value.is_multiple_of(2) {
+        // Withdrawing a partial consumer must retire only
+        // the unconsumed subtree, never its delivered leaf.
+        let entry = entries.next();
+        prop_assert_eq!(
+            entry.as_ref().map(|entry| (*entry.key(), *entry.value())),
+            selected
+                .first_key_value()
+                .map(|(key, value)| (*key, *value))
+        );
+        drop(entries);
+        let retained = entry.as_ref().map_or(0, |entry| entry._allocation.bytes);
+        let live = work.live.get();
+        prop_assert!(live >= retained);
+        drop(entry);
+        prop_assert_eq!(work.live.get(), live - retained);
+    } else {
+        let mut delivered = Vec::new();
+        for entry in &mut entries {
+            delivered.push(entry.into_parts());
+        }
+        prop_assert!(entries.next().is_none());
+        prop_assert!(entries.next().is_none());
+        drop(entries);
+        prop_assert_eq!(
+            delivered
+                .iter()
+                .map(|(key, value, _)| (*key, *value))
+                .collect::<Vec<_>>(),
+            selected
+                .iter()
+                .map(|(key, value)| (*key, *value))
+                .collect::<Vec<_>>()
+        );
+        drop(delivered);
+    }
+    prop_assert!(drain_items <= 6 * selected.len().saturating_mul(2) as u64);
+    prop_assert_eq!(work.claims, claims);
+    prop_assert_eq!(work.items, items);
+    work.cancelled = false;
+    work.maximum_items = None;
+    work.maximum_claims = None;
     Ok(())
 }

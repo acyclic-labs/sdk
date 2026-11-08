@@ -114,6 +114,14 @@ impl IndexWork for Bounded<'_> {
 #[test]
 fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_population()
 -> Result<(), &'static str> {
+    mutable_exact_item_refusals()?;
+    mutable_generated_bounds()?;
+    mutable_boundary_shapes()?;
+    mutable_population_work()?;
+    Ok(())
+}
+
+fn mutable_exact_item_refusals() -> Result<(), &'static str> {
     for first in [[0; 8], [255; 8]] {
         let mut original = Work {
             maximum_items: Some(1),
@@ -170,7 +178,10 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
         drop(index);
         assert_eq!(original.live.get(), 0);
     }
+    Ok(())
+}
 
+fn mutable_generated_bounds() -> Result<(), &'static str> {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 128,
@@ -211,86 +222,24 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
             eprintln!("{error}");
             "mutable insertion exceeded its owned bound or changed exact contents"
         })?;
+    Ok(())
+}
 
-    fn coordinates<const N: usize>() -> Result<(), &'static str> {
-        let mut original = Work {
-            observe_retirement: true,
-            ..Work::default()
-        };
-        let mut result: Result<(), &'static str> = Ok(());
-        let physical = acyclic_test_support::measure(|| {
-            result = (|| {
-                let mut index = FixedIndex::<usize, _, N>::default();
-                let bound = FixedIndex::<usize, Allocation, N>::insertion_bound(1).unwrap();
-                index.get_or_try_insert_with(
-                    [0; N],
-                    &mut Bounded {
-                        original: &mut original,
-                        remaining: bound,
-                    },
-                    |_| Ok(0),
-                )?;
-                for byte in (0..N).rev() {
-                    for bit in (0..8).rev() {
-                        let mut key = [0; N];
-                        key[byte] = 0x80 >> bit;
-                        index.get_or_try_insert_with(
-                            key,
-                            &mut Bounded {
-                                original: &mut original,
-                                remaining: bound,
-                            },
-                            |_| Ok(1),
-                        )?;
-                    }
-                }
-                // Existing-key traversal also consumes the same public bound,
-                // but never funds another node or runs a value constructor.
-                index.get_or_try_insert_with(
-                    [0; N],
-                    &mut Bounded {
-                        original: &mut original,
-                        remaining: bound,
-                    },
-                    |_| panic!("existing constructor"),
-                )?;
-                assert_eq!(
-                    original.live.get() as i64,
-                    acyclic_test_support::current_allocations()
-                        .unwrap()
-                        .bytes_current
-                );
-                original.cancelled = true;
-                assert_eq!(
-                    index
-                        .get_or_try_insert_with(
-                            [255; N],
-                            &mut Bounded {
-                                original: &mut original,
-                                remaining: bound
-                            },
-                            |_| panic!("cancelled constructor")
-                        )
-                        .err(),
-                    Some("cancelled")
-                );
-                drop(index);
-                Ok(())
-            })();
-        });
-        result?;
-        assert_eq!(physical.bytes_current, 0);
-        assert_eq!(original.live.get(), 0);
-        assert!(!original.early_refund.get());
-        Ok(())
-    }
+fn mutable_boundary_shapes() -> Result<(), &'static str> {
     coordinates::<0>()?;
     coordinates::<8>()?;
     coordinates::<40>()?;
+    Ok(())
+}
 
+fn mutable_population_work() -> Result<(), &'static str> {
     let mut observations = [0; 2];
     let mut ordered_comparisons = [0; 2];
-    for (row, population) in [1_u64, 100_000].into_iter().enumerate() {
+    for ((observation, ordered_comparison), population) in observations
+        .iter_mut()
+        .zip(&mut ordered_comparisons)
+        .zip([1_u64, 100_000])
+    {
         let mut original = Work::default();
         let mut index = FixedIndex::<usize, _, 9>::default();
         index.get_or_try_insert_with([0; 9], &mut original, |_| Ok(7))?;
@@ -335,37 +284,18 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
             },
             |_| Ok(11),
         )?;
-        observations[row] = original.items - before;
+        *observation = original.items - before;
         assert_eq!(original.live.get() - live, bound.allocation_bytes);
         // Restoring an ordered insertion pays comparisons against unrelated
         // keys. The independent comparison sink exposes that forbidden slope.
-        #[derive(Clone)]
-        struct Ordered(u64, Rc<Cell<u64>>);
-        impl PartialEq for Ordered {
-            fn eq(&self, other: &Self) -> bool {
-                self.0 == other.0
+        *ordered_comparison = super::ordered_comparisons(|| {
+            let mut ordered = BTreeMap::new();
+            for foreign in (1..=population).rev() {
+                ordered.insert(CountedKey(foreign), ());
             }
-        }
-        impl Eq for Ordered {}
-        impl PartialOrd for Ordered {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-        impl Ord for Ordered {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.1.set(self.1.get() + 1);
-                self.0.cmp(&other.0)
-            }
-        }
-        let comparisons = Rc::new(Cell::new(0));
-        let mut ordered = BTreeMap::new();
-        for foreign in (1..=population).rev() {
-            ordered.insert(Ordered(foreign, comparisons.clone()), ());
-        }
-        comparisons.set(0);
-        ordered.insert(Ordered(0, comparisons.clone()), ());
-        ordered_comparisons[row] = comparisons.get();
+            ORDERED_COMPARISONS.set(0);
+            ordered.insert(CountedKey(0), ());
+        });
         drop(index);
         assert_eq!(original.live.get(), 0);
     }
@@ -376,5 +306,79 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
         "mutable insertion items={observations:?}; ordered negative comparisons={ordered_comparisons:?}"
     );
     assert!(FixedIndex::<usize, Allocation, 8>::insertion_bound(u64::MAX).is_none());
+    Ok(())
+}
+
+fn coordinates<const N: usize>() -> Result<(), &'static str> {
+    let mut original = Work {
+        observe_retirement: true,
+        ..Work::default()
+    };
+    let mut result: Result<(), &'static str> = Ok(());
+    let physical = acyclic_test_support::measure(|| {
+        result = (|| {
+            let mut index = FixedIndex::<usize, _, N>::default();
+            let bound = FixedIndex::<usize, Allocation, N>::insertion_bound(1).unwrap();
+            index.get_or_try_insert_with(
+                [0; N],
+                &mut Bounded {
+                    original: &mut original,
+                    remaining: bound,
+                },
+                |_| Ok(0),
+            )?;
+            for byte in (0..N).rev() {
+                for bit in (0..8).rev() {
+                    let mut key = [0; N];
+                    *key.get_mut(byte)
+                        .ok_or("branch byte exceeds original key")? = 0x80 >> bit;
+                    index.get_or_try_insert_with(
+                        key,
+                        &mut Bounded {
+                            original: &mut original,
+                            remaining: bound,
+                        },
+                        |_| Ok(1),
+                    )?;
+                }
+            }
+            // Existing-key traversal also consumes the same public bound,
+            // but never funds another node or runs a value constructor.
+            index.get_or_try_insert_with(
+                [0; N],
+                &mut Bounded {
+                    original: &mut original,
+                    remaining: bound,
+                },
+                |_| panic!("existing constructor"),
+            )?;
+            assert_eq!(
+                original.live_bytes(),
+                acyclic_test_support::current_allocations()
+                    .unwrap()
+                    .bytes_current
+            );
+            original.cancelled = true;
+            assert_eq!(
+                index
+                    .get_or_try_insert_with(
+                        [255; N],
+                        &mut Bounded {
+                            original: &mut original,
+                            remaining: bound
+                        },
+                        |_| panic!("cancelled constructor")
+                    )
+                    .err(),
+                Some("cancelled")
+            );
+            drop(index);
+            Ok(())
+        })();
+    });
+    result?;
+    assert_eq!(physical.bytes_current, 0);
+    assert_eq!(original.live.get(), 0);
+    assert!(!original.early_refund.get());
     Ok(())
 }

@@ -43,6 +43,12 @@ pub(super) fn exchange_groups(
                 None => crate::Error::Invalid(cause.to_string()),
             })
         }),
+        Err(CompiledPrefixError::Invariant) => original.with(|work| {
+            Err(compaction_error(
+                work,
+                "tool dependency index is inconsistent",
+            ))
+        }),
         Err(CompiledPrefixError::Capacity | CompiledPrefixError::Order(_)) => {
             original.with(|work| {
                 Err(compaction_error(

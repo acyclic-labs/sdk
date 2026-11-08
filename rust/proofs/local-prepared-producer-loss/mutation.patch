@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/local/prepared_commit.rs b/rust/crates/stream/src/local/prepared_commit.rs
+--- a/rust/crates/stream/src/local/prepared_commit.rs
++++ b/rust/crates/stream/src/local/prepared_commit.rs
+@@ -80,6 +80,7 @@ impl LocalStream {
+                                     let _handle = handle;
+                                     match LocalInner::observe(&mut failed, task).await {
+-                                        Ok(result) => result.map_err(std::io::Error::other)?,
++                                        Ok(Ok(result)) => result,
++                                        Ok(Err(_)) => std::future::pending().await,
+                                         Err(error) => Ok(Err(error)),
+                                     }
+                                 },

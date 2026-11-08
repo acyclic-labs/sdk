@@ -926,44 +926,17 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             assert!(filter.matches(&change.headers));
         }
         for (index, record) in records.iter().enumerate() {
-            let mut projected = None;
-            crate::changes::take_parsed_bytes();
-            // Original decision remains an independent allocating control.
-            let old = acyclic_test_support::measure(|| {
-                projected = Some(
-                    filter
-                        .project(record.clone())
-                        .map(|projected| projected == Some(record.clone())),
-                );
-            });
-            let old_parsed = crate::changes::take_parsed_bytes();
-            let mut preserved = None;
-            let direct = acyclic_test_support::measure(|| {
-                preserved = Some(filter.preserves(record));
-            });
-            let direct_parsed = crate::changes::take_parsed_bytes();
-            assert_eq!(preserved, projected);
-            if matches!(preserved, Some(Ok(_))) {
-                assert_eq!(direct.count_total, 0);
-                assert_eq!(direct.bytes_total, 0);
-            } else {
-                // Invalid encodings retain the original decoder's error cost.
-                assert!(direct.count_total <= old.count_total);
-                assert!(direct.bytes_total <= old.bytes_total);
-            }
+            let preserved = filter.preserves(record);
+            assert_eq!(
+                preserved,
+                filter
+                    .project(record.clone())
+                    .map(|projected| projected == Some(record.clone()))
+            );
             if index == 0 {
-                assert_eq!(preserved, Some(Ok(complete)));
-                assert_eq!(direct_parsed, record.value.len());
-                if complete {
-                    assert!(old.count_total > 0);
-                    assert_eq!(old_parsed, 3 * record.value.len());
-                }
-                eprintln!(
-                    "complete record range={start}..{end} allocations: project={} borrow={}; parsed bytes: project={old_parsed} borrow={direct_parsed}",
-                    old.count_total, direct.count_total,
-                );
+                assert_eq!(preserved, Ok(complete));
             } else if index >= 2 {
-                assert_eq!(preserved, Some(Err(StreamError::InvalidArgument)));
+                assert_eq!(preserved, Err(StreamError::InvalidArgument));
             }
         }
         client.register_credential(2, credential.into())?;

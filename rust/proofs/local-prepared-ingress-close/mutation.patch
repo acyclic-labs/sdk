@@ -1,0 +1,9 @@
+diff --git a/rust/crates/stream/src/native/prepared.rs b/rust/crates/stream/src/native/prepared.rs
+--- a/rust/crates/stream/src/native/prepared.rs
++++ b/rust/crates/stream/src/native/prepared.rs
+@@ -64,5 +64,4 @@
+ impl Drop for PreparedNativeCommit {
+     fn drop(&mut self) {
+-        self.record.close();
+     }
+ }
