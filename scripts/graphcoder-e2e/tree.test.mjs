@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Processes, Spool } from "./process.mjs";
@@ -6,6 +9,30 @@ import { alive } from "./orphan-check.mjs";
 
 const fixture = fileURLToPath(new URL("./tree-fixture.py", import.meta.url));
 const physicalFixture = fileURLToPath(new URL("./windows-custody-fixture.py", import.meta.url));
+
+test("acceptance Python imports leave source directories unchanged, including descendants", async () => {
+  const root = mkdtempSync(join(tmpdir(), "e2e-python-import-"));
+  const processes = new Processes({ transcripts: root });
+  try {
+    for (const directory of ["direct", "descendant"]) {
+      mkdirSync(join(root, directory));
+      copyFileSync(new URL("./owned_mounts.py", import.meta.url), join(root, directory, "owned_mounts.py"));
+    }
+    const result = await processes.run(process.platform === "win32" ? "python.exe" : "python3", ["-c", `
+import subprocess, sys
+sys.path.insert(0, 'direct')
+import owned_mounts
+print(owned_mounts.__file__, flush=True)
+subprocess.run([sys.executable, '-c', 'import owned_mounts; print(owned_mounts.__file__)'], cwd='descendant', check=True)
+`], { cwd: root, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "", PYTHONPYCACHEPREFIX: "" } });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim().split(/\r?\n/).length, 2, "both real imports completed");
+    for (const directory of ["direct", "descendant"])
+      assert.deepEqual(readdirSync(join(root, directory)), ["owned_mounts.py"],
+        "Python imports must not create source-tree bytecode");
+  } finally { await processes.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 function reap(pids) {
   for (const pid of pids) {
     try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }

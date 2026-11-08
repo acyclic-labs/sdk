@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One canonical build closure per touched crate; build time is outside E2E_WALL.
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 artifact_args=()
 inventory_scope=all
 case "${1:-}" in
