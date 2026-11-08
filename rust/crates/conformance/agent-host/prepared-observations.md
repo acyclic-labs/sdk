@@ -58,3 +58,10 @@ answer bytes, with temporary observation storage proportional to the selection.
 The per-turn effects barrier and configured approval traversal are separate
 existing costs; this change does not claim a constant-time directory traversal.
 Native agent observation producers still refuse unsupported custody explicitly.
+
+Selected-child admission precedes quorum satisfaction and answer reads. The same
+real-child journey selects a settled child and a valid direct-child path whose
+actor was never created, with `need: 1`, in both orders. Each invocation must
+return the original input refusal and no answer read. Treating missing actors
+as running children must fail this control. A future early quorum reducer must
+preserve this boundary; a syntactically valid child path is not admission.

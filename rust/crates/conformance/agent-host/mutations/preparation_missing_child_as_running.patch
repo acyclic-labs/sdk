@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/filesystem/agent_turns.rs b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+index 65098116f7d..ae5ecac0018 100644
+--- a/rust/crates/harness-core/src/filesystem/agent_turns.rs
++++ b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+@@ -1942,9 +1942,7 @@ where
+         Box::pin(async move {
+             match crate::agent::settled(&self.stream, &self.within, child).await {
+                 Ok(settled) => Ok(settled),
+-                Err(crate::agent::Error::NoSuchAgent) => {
+-                    Err(Error::NotFound(child.as_str().to_owned()))
+-                }
++                Err(crate::agent::Error::NoSuchAgent) => Ok(None),
+                 Err(error) => Err(agent_error(error)),
+             }
+         })
