@@ -15,6 +15,24 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "objects-explicit-close": [
+    "rust/crates/objects/src/local.rs", "acyclic-objects",
+    "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
+    "implicit Drop performed unobserved durability", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-implicit-close.patch", label: "implicit-close", diagnostic: "implicit Drop performed unobserved durability" }] },
+  ],
+  "objects-cost-observation": [
+    "rust/crates/objects/src/tests.rs", "acyclic-objects",
+    "tests::a_repeat_put_observes_metadata_and_probes_presence_without_writes",
+    "version observations must remain distinct from payload reads", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-conflated-observations.patch", label: "conflated-observations", diagnostic: "version observations must remain distinct from payload reads" }] },
+  ],
+  "objects-cost-forwarding": [
+    "rust/crates/objects/src/tests.rs", "acyclic-objects",
+    "tests::a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once",
+    "cost recorder suppressed the original local flush", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-recorder-skipped-flush.patch", label: "skipped-flush", diagnostic: "cost recorder suppressed the original local flush" }] },
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",

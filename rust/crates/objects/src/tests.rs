@@ -2945,7 +2945,10 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
     retained?;
     eprintln!("syncs of one put: {child_syncs:?}; of its commit: {commit:?}");
     // Negative control: the same trace sees the commit's barrier.
-    assert!(!commit.is_empty());
+    assert!(
+        !commit.is_empty(),
+        "cost recorder suppressed the original local flush"
+    );
     // Durable now: a second commit of the closure syncs only its own batch.
     let (retained, again) = syncs(blobs.retain(&root_id, vec![parent])).await;
     retained?;
