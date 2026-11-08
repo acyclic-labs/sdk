@@ -387,7 +387,7 @@ impl FuseProjection {
             _ => (source.lookup_with_meter(path, work)?, stamp),
         };
         let mut confirmed = HashMap::new();
-        let (lookup, open_file, dirty) =
+        let (lookup, open_file, dirty, stamp) =
             if let Some(existing) = existing {
                 if flags & libc::O_EXCL != 0 {
                     return Err(libc::EEXIST.into());
@@ -396,19 +396,19 @@ impl FuseProjection {
                     return Err(libc::EISDIR.into());
                 }
                 self.confirm_names(&child.spelled, existing.node, &mut confirmed, work)?;
-                let (open_file, lookup, _) =
+                let (open_file, lookup, stamp) =
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
-                (lookup, open_file, flags & libc::O_TRUNC != 0)
+                (lookup, open_file, flags & libc::O_TRUNC != 0, stamp)
             } else {
                 let metadata = create_metadata(&self.core.clock, mode, S_IFREG, owner.0, owner.1);
                 let created = self.source_write(work, || {
                     Ok(source.create_file(path, metadata, proof, work)?)
                 })?;
                 let open_file = FuseOpenFile(fuse_open_file(
-                    source.open_created_with_meter(path, &created, work)?,
+                    source.open_created_with_meter(path, &created.lookup, work)?,
                     work,
                 )?);
-                (created, open_file, true)
+                (created.lookup, open_file, true, Some(created.stamp))
             };
         let mut state = self.core.state()?;
         let inode = state.intern(

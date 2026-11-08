@@ -28,7 +28,9 @@ async fn a_scoped_name_query_checks_policy_without_a_namespace_change()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
-    let lookup = source.create_file(&windows_path("leaf"), FileMetadata::default(), None, &work)?;
+    let lookup = source
+        .create_file(&windows_path("leaf"), FileMetadata::default(), None, &work)?
+        .lookup;
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source view is unstable")?;
     let root = tempfile::tempdir()?;
     let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
@@ -58,7 +60,9 @@ async fn a_scoped_name_query_rejects_an_intervening_source_removal()
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
     let path = windows_path("leaf");
-    let lookup = source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let lookup = source
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source view is unstable")?;
     let root = tempfile::tempdir()?;
     let runtime = callback_runtime(Arc::clone(&source), root.path(), &work)?;
@@ -80,7 +84,9 @@ async fn a_scoped_name_query_keeps_the_callback_budget_and_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
-    let lookup = source.create_file(&windows_path("leaf"), FileMetadata::default(), None, &work)?;
+    let lookup = source
+        .create_file(&windows_path("leaf"), FileMetadata::default(), None, &work)?
+        .lookup;
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source view is unstable")?;
     let root = tempfile::tempdir()?;
     let mut runtime = callback_runtime(source, root.path(), &work)?;
@@ -115,7 +121,9 @@ async fn stale_name_runtime(
 ) -> Result<(Runtime, FileId, ReadBasis, tempfile::TempDir), Box<dyn std::error::Error>> {
     let source = windows_checkout_source().await?;
     let path = windows_path("leaf");
-    let lookup = source.create_file(&path, FileMetadata::default(), None, work)?;
+    let lookup = source
+        .create_file(&path, FileMetadata::default(), None, work)?
+        .lookup;
     let basis = ReadBasis::sample(source.as_ref()).ok_or("source view is unstable")?;
     source.remove(&path, None, work)?;
     assert_ne!(ReadBasis::sample(source.as_ref()), Some(basis));

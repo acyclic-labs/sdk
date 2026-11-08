@@ -215,9 +215,7 @@ where
             } else {
                 match self.resolve(&child, &child_text, owner, work).await? {
                     Resolution::Absent => continue,
-                    Resolution::Authored(lookup) => {
-                        (self.project_authored(lookup, work).await?, None)
-                    }
+                    Resolution::Authored(lookup) => (self.project_authored(lookup, work)?, None),
                     Resolution::Unauthored(lookup, _allocation) => {
                         self.project_unauthored(&child_text, lookup, work).await?
                     }

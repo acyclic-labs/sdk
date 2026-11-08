@@ -6,7 +6,7 @@ macro_rules! mutation_callbacks {
             metadata: FileMetadata,
             absent_since: Option<ViewStamp>,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<MountLookup, MountSourceError> {
+        ) -> Result<MountWriteFacts, MountSourceError> {
             self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
@@ -22,7 +22,7 @@ macro_rules! mutation_callbacks {
             path: &MountPath,
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<MountLookup, MountSourceError> {
+        ) -> Result<MountWriteFacts, MountSourceError> {
             self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
@@ -37,7 +37,7 @@ macro_rules! mutation_callbacks {
             target: crate::kernel::OwnedSourceChunk,
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<MountLookup, MountSourceError> {
+        ) -> Result<MountWriteFacts, MountSourceError> {
             self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
@@ -55,7 +55,7 @@ macro_rules! mutation_callbacks {
             device: Option<(u32, u32)>,
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<MountLookup, MountSourceError> {
+        ) -> Result<MountWriteFacts, MountSourceError> {
             self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
@@ -346,15 +346,28 @@ macro_rules! mutation_callbacks {
             &self,
             source: &MountPath,
             destination: &MountPath,
+            expected: Option<FileId>,
+            facts: bool,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<(), MountSourceError> {
+        ) -> Result<MountMutationResult, MountSourceError> {
             self.require_path(source, crate::access::Action::Admin, work)?;
             self.require_path(destination, crate::access::Action::Admin, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_locked(source, Some(work))?;
             self.promote_parents_locked(destination, work)?;
-            self.authored.hard_link(source, destination, work)?;
-            self.record_rebound(&self.path(destination, work)?.0)
+            let mut linked = self
+                .authored
+                .hard_link(source, destination, expected, facts, work)?;
+            self.record_rebound(&self.path(destination, work)?.0)?;
+            if let Some(facts) = &mut linked.facts {
+                facts.lookup = self.project_authored(facts.lookup, work)?;
+                match self.require_path(source, crate::access::Action::List, work) {
+                    Ok(()) => {}
+                    Err(MountSourceError::AccessDenied) => linked.facts = None,
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(linked)
         }
 
         fn flush(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {

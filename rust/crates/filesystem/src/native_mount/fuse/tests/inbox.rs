@@ -23,7 +23,9 @@ fn write_inbox(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             "upload",
         )],
     )?;
-    let created = source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let created = source
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     let opened = super::super::FuseOpenFile(super::super::fuse_open_file(
         source.open_created_with_meter(&path, &created, &work)?,
         &work,

@@ -15,8 +15,12 @@ fn capture_install_uses_exact_candidate_conflicts_instead_of_global_cache_stamps
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let paths = ["concurrent", "captured"].map(native_test_path);
-    let first = source.create_file(&paths[0], metadata(), None, &work)?;
-    let second = source.create_file(&paths[1], metadata(), None, &work)?;
+    let first = source
+        .create_file(&paths[0], metadata(), None, &work)?
+        .lookup;
+    let second = source
+        .create_file(&paths[1], metadata(), None, &work)?
+        .lookup;
     let handles = [source.open_file(&paths[0])?, source.open_file(&paths[1])?];
     source.runtime.wait(|| async {
         let first_candidate =
@@ -170,8 +174,12 @@ fn native_candidates_merge_disjoint_changes_and_cancel_without_blocking_successo
     )?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let paths = ["first", "second"].map(native_test_path);
-    let first = source.create_file(&paths[0], metadata(), None, &work)?;
-    let second = source.create_file(&paths[1], metadata(), None, &work)?;
+    let first = source
+        .create_file(&paths[0], metadata(), None, &work)?
+        .lookup;
+    let second = source
+        .create_file(&paths[1], metadata(), None, &work)?
+        .lookup;
     let handles = [source.open_file(&paths[0])?, source.open_file(&paths[1])?];
     source.runtime.wait(|| async {
         let first_candidate =
@@ -235,7 +243,7 @@ fn native_publication_waits_for_in_flight_candidate() -> Result<(), Box<dyn std:
     let source = source(FilesystemProfile::Portable)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let path = native_test_path("written-before-sync");
-    let created = source.create_file(&path, metadata(), None, &work)?;
+    let created = source.create_file(&path, metadata(), None, &work)?.lookup;
     let file = source.open_created(&path, &created)?;
     source.runtime.wait(|| async {
         let candidate =
@@ -273,6 +281,7 @@ fn deleting_a_file_conflicts_with_its_staged_write() -> Result<(), Box<dyn std::
     let name = source.path(&path)?;
     let file = source
         .create_file(&path, metadata(), None, &work)?
+        .lookup
         .node
         .file_id;
     source.runtime.wait(|| async {
@@ -286,6 +295,7 @@ fn deleting_a_file_conflicts_with_its_staged_write() -> Result<(), Box<dyn std::
                     expected_file_id: Some(file),
                 },
                 ViewChange::Entry(&name, file),
+                None,
                 &work,
             )
             .await?;
@@ -400,6 +410,7 @@ fn unconfirmed_source_imports_remain_fenced() -> Result<(), Box<dyn std::error::
         let name = source.path(&path)?;
         let file = source
             .create_file(&path, metadata(), None, &work)?
+            .lookup
             .node
             .file_id;
         source.runtime.wait(|| async {

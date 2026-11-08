@@ -62,15 +62,17 @@ async fn directory_link_projection_has_no_target_sized_conversion()
         let source = windows_checkout_source().await?;
         let path = windows_path("link");
         let target = [b'x', 0].repeat(units);
-        let lookup = source.create_symbolic_link(
-            &path,
-            setup_chunk(&target, &work)?,
-            FileMetadata {
-                windows_attributes: MetadataField::Value(FILE_ATTRIBUTE_NORMAL.0),
-                ..FileMetadata::default()
-            },
-            &work,
-        )?;
+        let lookup = source
+            .create_symbolic_link(
+                &path,
+                setup_chunk(&target, &work)?,
+                FileMetadata {
+                    windows_attributes: MetadataField::Value(FILE_ATTRIBUTE_NORMAL.0),
+                    ..FileMetadata::default()
+                },
+                &work,
+            )?
+            .lookup;
         let root = tempfile::tempdir()?;
         let runtime = callback_runtime(source, root.path(), &work)?;
         let projection = Projection {

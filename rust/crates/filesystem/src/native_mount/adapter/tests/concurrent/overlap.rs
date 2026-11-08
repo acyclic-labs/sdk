@@ -144,6 +144,7 @@ fn refresh_io_preserves_original_roots_and_concurrent_observations()
             let path = native_test_path("observed");
             let file = writer
                 .create_file(&path, metadata(), None, &work)?
+                .lookup
                 .node
                 .file_id;
             writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
@@ -386,10 +387,12 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     let paths = ["left", "right"].map(native_test_path);
     let left = source
         .create_file(&paths[0], metadata(), None, &work)?
+        .lookup
         .node
         .file_id;
     let right = source
         .create_file(&paths[1], metadata(), None, &work)?
+        .lookup
         .node
         .file_id;
     objects.paused.store(true, Ordering::Release);
@@ -431,7 +434,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     let candidate = source
         .runtime
         .wait(|| staged_write(&source.checkout, left, b"rebased", &work))?;
-    source.hard_link(&paths[0], &native_test_path("alias"), &work)?;
+    source.hard_link(&paths[0], &native_test_path("alias"), None, false, &work)?;
     let facts = source
         .runtime
         .wait(|| {
@@ -444,6 +447,7 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
                 None,
             )
         })?
+        .facts
         .expect("adopted facts");
     assert_eq!(facts.lookup.node.file_id, left);
     assert_eq!(facts.lookup.node.logical_bytes, 7);
@@ -658,7 +662,9 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
     })?;
 
     let detached_path = native_test_path("detached");
-    let created = source.create_file(&detached_path, metadata(), None, &work)?;
+    let created = source
+        .create_file(&detached_path, metadata(), None, &work)?
+        .lookup;
     let detached = source.detach_file(&detached_path)?;
     source.remove(&detached_path, Some(created.node.file_id), &work)?;
     let result = detached.write_range_with_meter(
@@ -691,7 +697,9 @@ fn disjoint_writes_overlap_in_object_store() -> Result<(), Box<dyn std::error::E
         None,
     )?;
     let inbox_path = native_test_path("inbox");
-    let created = source.create_file(&inbox_path, metadata(), None, &work)?;
+    let created = source
+        .create_file(&inbox_path, metadata(), None, &work)?
+        .lookup;
     let inbox = source.open_created(&inbox_path, &created)?;
     let result = inbox.write_range_with_meter(
         0,
@@ -744,6 +752,7 @@ fn same_file_writes_wait_and_both_land_in_order() -> Result<(), Box<dyn std::err
         let path = native_test_path("shared");
         let file = source
             .create_file(&path, metadata(), None, &work)?
+            .lookup
             .node
             .file_id;
         objects.paused.store(true, Ordering::Release);
@@ -787,6 +796,7 @@ fn cancelling_a_same_file_waiter_keeps_the_next_write_live()
     let path = native_test_path("cancelled-waiter");
     let file = source
         .create_file(&path, metadata(), None, &work)?
+        .lookup
         .node
         .file_id;
     let cancellation = CancellationToken::new();

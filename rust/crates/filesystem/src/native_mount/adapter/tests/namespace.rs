@@ -39,7 +39,7 @@ fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
         let source = source(FilesystemProfile::Portable)?;
         let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
         let path = native_test_path(name);
-        let created = source.create_file(&path, metadata(), None, &work)?;
+        let created = source.create_file(&path, metadata(), None, &work)?.lookup;
         let file = source.open_created(&path, &created)?;
         file.write_range(offset, bytes.clone())?;
         assert_eq!(
@@ -315,12 +315,22 @@ fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     source.create_file(&paths[index], metadata(), None, &work)?
                 }
+                .lookup
                 .node
                 .file_id,
             );
         }
         let alias = native_test_path("alias");
-        source.hard_link(&paths[1], &alias, &work)?;
+        assert!(matches!(
+            source.hard_link(&paths[1], &alias, ids[2], true, &work),
+            Err(MountSourceError::Stale)
+        ));
+        assert!(source.lookup(&alias)?.is_none());
+        let linked = source.hard_link(&paths[1], &alias, ids[1], true, &work)?;
+        let linked_facts = linked.facts.ok_or("authorized linked facts")?;
+        assert_eq!(Some(linked_facts.lookup.node.file_id), ids[1]);
+        assert_eq!(linked_facts.lookup.node.link_count, 2);
+        assert_eq!(linked_facts.stamp, linked.stamp);
         let stamp = source.view_stamp().ok_or("view stamp")?;
         let binding = source.binding_epoch();
         assert!(
@@ -420,6 +430,7 @@ fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error
         );
         let written_id = writer
             .create_file(&written, metadata(), None, &work)?
+            .lookup
             .node
             .file_id;
         writer.sync()?;

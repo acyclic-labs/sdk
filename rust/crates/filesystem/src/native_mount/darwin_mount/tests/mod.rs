@@ -286,7 +286,9 @@ fn change_labels_advance_exactly_for_objects_that_changed() -> TestResult {
 fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult {
     let (source, context, work) = checkout_context(MountPublication::Manual)?;
     let path = MountPath::root().child(b"raced".to_vec());
-    let created = source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let created = source
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     let before = context
         .cache_stamp(&work)?
         .ok_or("checkout has no view stamp")?;
@@ -341,7 +343,9 @@ fn only_a_publishing_source_leaves_writes_unstable() -> TestResult {
 fn handles_keep_the_node_they_opened() -> TestResult {
     let (source, context, work) = checkout_context(MountPublication::Manual)?;
     let path = MountPath::root().child(b"deferred".to_vec());
-    let created = source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let created = source
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     source.write_range(&path, 0, Bytes::from_static(b"kept"))?;
     let closed_unused = context.open(
         &path,
@@ -396,7 +400,9 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
         MountPath::root().child(b"replaced".to_vec()),
         MountPath::root().child(b"replacement".to_vec()),
     );
-    let original = source.create_file(&replaced, FileMetadata::default(), None, &work)?;
+    let original = source
+        .create_file(&replaced, FileMetadata::default(), None, &work)?
+        .lookup;
     source.write_range(&replaced, 0, Bytes::from_static(b"original"))?;
     source.create_file(&replacement, FileMetadata::default(), None, &work)?;
     let handle = context.open(

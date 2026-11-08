@@ -4,10 +4,11 @@ use super::view_gate::{CallbackOwner, ViewGate, ViewReadLease, ViewWriteLease};
 use super::view_ledger::{ViewChange, ViewEffect, ViewLedger, ViewStamp};
 use super::{
     CaptureOptions, MountAttributePage, MountAttributeWriteMode, MountDirectoryEntry,
-    MountDirectoryPage, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenAccess,
-    MountOpenFile, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
-    MountSourceError, MountSourceRetirement, MountSparseRange, MountWriteResult, NativeMountError,
-    ViewObserver, capture_root_identity,
+    MountDirectoryPage, MountFilesystem, MountLookup, MountMutationResult, MountNode,
+    MountNodeKind, MountOpenAccess, MountOpenFile, MountPath, MountPublication,
+    MountRangeAllocation, MountSeekTarget, MountSourceError, MountSourceRetirement,
+    MountSparseRange, MountWriteFacts, MountWriteResult, NativeMountError, ViewObserver,
+    capture_root_identity,
 };
 use crate::kernel::{
     AttributeClass, AttributeName, ExtentSeekTarget, FileKind, FileMetadata, FilePayload,
