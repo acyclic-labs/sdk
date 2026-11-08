@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/workspace/bindings.rs
++++ b/rust/crates/harness/src/local/workspace/bindings.rs
+@@ -126,7 +126,7 @@
+ 
+ impl Drop for Binding {
+     fn drop(&mut self) {
+-        self.index.retire(self.key, self);
++        let _ = self.key;
+     }
+ }
+ 

@@ -1,14 +1,10 @@
 --- a/rust/crates/harness/src/local/workspace/task_views.rs
 +++ b/rust/crates/harness/src/local/workspace/task_views.rs
-@@ -44,9 +44,9 @@
-             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
-             mounts
-         };
-+        let mounted = self.mount_task_view(view, owner, Some(mounts), authority).await;
-         drop(state);
--        self.mount_task_view(view, owner, Some(mounts), authority)
--            .await
-+        mounted
-     }
- 
-     /// All task views enter the filesystem's shared instance. The host may
+@@ -28,6 +28,7 @@
+         owner: &dyn super::owner::ViewOwner,
+         authority: &crate::filesystem::NativeMountAuthority,
+     ) -> Result<Arc<LocalWorkspace>> {
++        let _checkout = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
+         let cancellation = CancellationToken::new();
+         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

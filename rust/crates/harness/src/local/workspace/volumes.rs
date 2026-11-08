@@ -116,6 +116,7 @@ pub(super) async fn attach(
     mounts: &mut Mounts,
     authority: &crate::filesystem::NativeMountAuthority,
     admission: &Arc<std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>>,
+    binding: Option<&acyclic_fs::kernel::allocation::RetainedArc<super::bindings::Binding>>,
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -162,6 +163,7 @@ pub(super) async fn attach(
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(crate::sync::SyncMutex::new(0)),
             execution: StateArc::new(AsyncMutex::new(())),
+            _binding: binding.cloned(),
         }));
     }
     Ok(())

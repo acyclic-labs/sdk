@@ -40,8 +40,8 @@ pub(super) struct CheckoutTools {
     // completion locks are also inner; neither callback reacquires state.
     // Child views live in the workspace's own index, never under this guard;
     // only forking a child from a selected branch takes the branch owner's
-    // guard. No path holds two checkout guards. Bindings share their
-    // workspace's guard.
+    // guard. No path holds two checkout guards. Binding preparation and its
+    // original producer event are owned separately from checkout selection.
     state: StateArc<AsyncMutex<State>>,
 }
 
@@ -49,8 +49,6 @@ pub(in crate::local) struct State {
     pub(in crate::local) active: Option<workspace::View>,
     pub(in crate::local) initial_view: acyclic_fs::WorkspaceId,
     pub(in crate::local) workspace: Option<(acyclic_fs::WorkspaceId, Arc<LocalWorkspace>)>,
-    pub(in crate::local) allocated_mounts:
-        std::collections::BTreeMap<String, std::sync::Weak<workspace::Mounts>>,
     pub(in crate::local) watcher: Option<capture::Cursor>,
     pub(in crate::local) mounts: Arc<workspace::Mounts>,
     pub(in crate::local) initialized: bool,
@@ -68,7 +66,6 @@ impl State {
             active: None,
             initial_view,
             workspace: None,
-            allocated_mounts: Default::default(),
             watcher: None,
             mounts,
             initialized: false,

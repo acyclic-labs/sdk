@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/workspace/bindings.rs
++++ b/rust/crates/harness/src/local/workspace/bindings.rs
+@@ -110,7 +110,7 @@
+     }
+ 
+     pub(super) async fn mounts(&self) -> Result<Arc<Mounts>> {
+-        if self.completed.terminated().await != OperationTermination::Released {
++        if std::future::pending::<OperationTermination>().await != OperationTermination::Released {
+             return Err(Error::Conflict(
+                 "original binding producer dropped before publication".into(),
+             ));

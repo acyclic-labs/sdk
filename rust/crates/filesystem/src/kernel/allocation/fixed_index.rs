@@ -10,7 +10,9 @@ use crate::FsError;
 use crate::kernel::KernelAccounting;
 use crate::kernel::allocation::retained::RetainedAllocation;
 
-pub(crate) struct FixedIndex<V, const N: usize = 16>(
+/// The shared fixed-width index funded by the original filesystem accounting
+/// owner. Traversal is bounded by key width; retirement allocates nothing.
+pub struct FixedIndex<V, const N: usize = 16>(
     acyclic_collections::FixedIndex<V, RetainedAllocation, N>,
 );
 
@@ -75,7 +77,11 @@ impl<V, const N: usize> FixedIndex<V, N> {
         self.0.seek_after(after, &mut IndexAccounting(accounting))
     }
 
-    pub(crate) fn get(
+    /// Borrows one exact key under the caller's original read admission.
+    ///
+    /// # Errors
+    /// Returns the original cancellation or work refusal.
+    pub fn get(
         &self,
         key: [u8; N],
         accounting: &mut KernelAccounting<'_>,
@@ -83,7 +89,11 @@ impl<V, const N: usize> FixedIndex<V, N> {
         self.0.get(key, &mut IndexAccounting(accounting))
     }
 
-    pub(crate) fn get_or_try_insert_with(
+    /// Returns the original value or constructs it after funding its index nodes.
+    ///
+    /// # Errors
+    /// Returns the original admission or construction error without publication.
+    pub fn get_or_try_insert_with(
         &mut self,
         key: [u8; N],
         accounting: &mut KernelAccounting<'_>,
@@ -101,7 +111,8 @@ impl<V, const N: usize> FixedIndex<V, N> {
         self.0.get_mut(key, &mut IndexAccounting(accounting))
     }
 
-    pub(crate) fn retire_if(&mut self, key: [u8; N], matches: impl FnOnce(&V) -> bool) -> bool {
+    /// Physically retires an exact retained owner without new admission.
+    pub fn retire_if(&mut self, key: [u8; N], matches: impl FnOnce(&V) -> bool) -> bool {
         self.0.retire_if(key, matches)
     }
 }
