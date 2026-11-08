@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/local/local_inner.rs b/rust/crates/stream/src/local/local_inner.rs
+index 1bc01aeaae4..67f5842d98c 100644
+--- a/rust/crates/stream/src/local/local_inner.rs
++++ b/rust/crates/stream/src/local/local_inner.rs
+@@ -90,7 +90,7 @@ impl LocalInner {
+         match futures::future::select(pending, unavailable).await {
+             futures::future::Either::Left((result, _)) => Ok(result),
+             futures::future::Either::Right((_, pending))
+-                if work.is_some_and(crate::native::Work::has_failed) =>
++                if work.is_some_and(crate::native::Work::has_failed) && false =>
+             {
+                 // This worker already recorded its own physical failure. Its
+                 // terminal owns that error, even while task acknowledgement is

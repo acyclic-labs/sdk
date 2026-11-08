@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/local/prepared_commit.rs b/rust/crates/stream/src/local/prepared_commit.rs
+index af6ebdd8663..761367e502f 100644
+--- a/rust/crates/stream/src/local/prepared_commit.rs
++++ b/rust/crates/stream/src/local/prepared_commit.rs
+@@ -85,7 +85,7 @@ impl LocalStream {
+                                         match LocalInner::observe(
+                                             &mut failed,
+                                             task,
+-                                            Some(&observed_work),
++                                            Some(&observed_work).filter(|_| false),
+                                         )
+                                         .await
+                                         {

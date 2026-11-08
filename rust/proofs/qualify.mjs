@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-error-custody": [
+    "rust/crates/stream/src/local/local_inner.rs", "acyclic-stream",
+    "local::tests::failure::failed_physical_write_keeps_its_cause_and_ends_followers",
+    "failure watch replaced the original native I/O error", ["--no-default-features", "--features", "local,test-support"],
+    { oracle: "rust/crates/stream/src/local/tests/failure.rs", mutations: [
+      { patch: "rust/proofs/native-error-custody/watch.patch", label: "watch", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/native/work.rs", patch: "rust/proofs/native-error-custody/delivered.patch", label: "delivered", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/local/native_mutations.rs", patch: "rust/proofs/native-error-custody/guarded.patch", label: "guarded", diagnostic: "failure watch replaced the original native I/O error" },
+      { source: "rust/crates/stream/src/local/prepared_commit.rs", patch: "rust/proofs/native-error-custody/prepared.patch", label: "prepared", diagnostic: "failure watch replaced the original native I/O error" },
+    ] },
+  ],
   "policy-time-interval": [
     "rust/crates/filesystem/src/access/trie.rs", "acyclic-fs",
     "access::review::policy_fence_and_native_custody_preserve_pinned_views",
