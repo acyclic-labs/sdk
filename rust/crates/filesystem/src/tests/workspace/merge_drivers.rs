@@ -76,10 +76,14 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
         if_target: join.target_head(),
         idempotency_key: IdempotencyKey::new(),
     };
-    let preview = value!(
-        join.preview_pages(options, WorkBudget::UNBOUNDED, &cancellation)
-            .await
-    )?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = &original;
+    #[cfg(target_arch = "wasm32")]
+    let work = WorkBudget::UNBOUNDED;
+    let preview = value!(join.preview_pages(options, work, &cancellation).await)?;
     let staging = unbounded!(fs, create_workspace("directory-staging"))?;
     // Adopting an advanced cursor would silently omit its earlier rows while
     // plan.json still advertised the original complete conflict count.
@@ -568,10 +572,13 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     // Read each proposal from one immutable staging head, then use the same
     // domain candidate and atomic publisher as every other workspace join.
     staging.write_text(text_path, "resolved\n").await?;
+    // Valid user whitespace makes the selected proposal larger than the
+    // original binary conflict's description, isolating its read receipt.
+    let binary_proposal = format!("{}{{\"take\":\"theirs\"}}", " ".repeat(65536));
     staging
         .write_text(
             &format!("{}.resolve.json", conflict_paths["binary"]),
-            r#"{"take":"theirs"}"#,
+            &binary_proposal,
         )
         .await?;
     staging
@@ -638,10 +645,23 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ));
     let mut resolutions = BTreeMap::new();
     for view in &typed.conflicts {
-        resolutions.insert(
-            view.key.clone(),
-            directory.resolution(&staged, &view.key).await?,
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = original.receipt();
+        let resolution = directory.resolution(&staged, &view.key).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if &view.key == binary_key {
+            let output = original
+                .receipt()
+                .output_bytes
+                .checked_sub(before.output_bytes)
+                .ok_or("original output count regressed")?;
+            assert!(
+                output >= binary_proposal.len() as u64,
+                "proposal read escaped the preview's original receipt: {output} < {}",
+                binary_proposal.len()
+            );
+        }
+        resolutions.insert(view.key.clone(), resolution);
     }
     // The retained preview owns admission even after its last page. A fresh
     // token cannot revive it while reading a valid pinned proposal.
