@@ -392,9 +392,9 @@ jobs:
           "$qualifier" --verify-receipt release/native-mount/windows-projfs.json \
             --require-kind windows-projfs --release-version "$version" --release-arch x86_64 \
             --release-executable release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe
-      - name: Build and validate the universal plugin
+      - name: Assemble and smoke release assets
         run: |
-          node plugin/scripts/package.mjs \
+          node scripts/assemble-plugin-release.mjs \
             --binary linux-x64-gnu=release/binaries/acyclic-linux-x64-gnu/linux-x64-gnu/acyclic \
             --binary linux-x64-musl=release/binaries/acyclic-linux-x64-musl/linux-x64-musl/acyclic \
             --binary linux-arm64-gnu=release/binaries/acyclic-linux-arm64-gnu/linux-arm64-gnu/acyclic \
@@ -403,95 +403,12 @@ jobs:
             --binary darwin-arm64=release/binaries/acyclic-darwin-arm64/darwin-arm64/acyclic \
             --binary win32-x64=release/binaries/acyclic-win32-x64/win32-x64/acyclic.exe \
             --binary win32-arm64=release/binaries/acyclic-win32-arm64/win32-arm64/acyclic.exe \
-            --out release/package
-          mkdir -p release/package/plugin/certification
-          cp release/native-mount/linux-fuse.json \
-            release/package/plugin/certification/native-mount-linux-x64-gnu.json
-          cp release/native-mount/macos-nfs.json \
-            release/package/plugin/certification/native-mount-darwin-arm64.json
-          cp release/native-mount/windows-projfs.json \
-            release/package/plugin/certification/native-mount-win32-x64.json
-          node plugin/scripts/validate-package.mjs release/package --require-universal
-      - name: Smoke the launcher and MCP bridge
-        working-directory: release/package/plugin
-        run: |
-          node bin/verify.js linux-x64-gnu
-          bin/linux-x64-gnu/acyclic --help
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-smoke","version":"1"}}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | timeout 20 bin/linux-x64-gnu/acyclic __mcp-commandless > /tmp/acyclic-mcp.out
-          grep -q '"name":"acyclic"' /tmp/acyclic-mcp.out
-          version=$(node -p "require('./package.json').version")
-          grep -q "\"version\":\"$version\"" /tmp/acyclic-mcp.out
-      - name: Install the npm package into an empty prefix
-        run: |
-          set -eu
-          package=$(cd release/package/plugin && npm pack --silent --pack-destination "$RUNNER_TEMP")
-          package="$RUNNER_TEMP/$package"
-          cp "$package" release/acyclic-plugin-npm.tgz
+            --out release \
+            --certification release/native-mount \
+            --require-universal
           node scripts/plugin-qualification.mjs create \
             release/acyclic-plugin-npm.tgz release/plugin-qualification.json \
             "$(git rev-parse HEAD)"
-          echo "ACYCLIC_NPM_PACKAGE=$package" >> "$GITHUB_ENV"
-          prefix=$(mktemp -d)
-          state=$(mktemp -d)
-          XDG_STATE_HOME="$state" npm install --global --prefix "$prefix" "$package"
-          "$prefix/bin/acyclic-plugin" --help
-          test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/plugin.json"
-          test -f "$prefix/lib/node_modules/@acyclic-labs/plugin/.agents/plugins/marketplace.json"
-          test ! -e "$prefix/lib/node_modules/@acyclic-labs/plugin/src"
-          test -f "$state/acyclic/state-v5/certification/native-mount-linux-x64-gnu.json"
-      - name: Validate packaged Codex installation and MCP bridge
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          set -euo pipefail
-          package="$ACYCLIC_NPM_PACKAGE"
-          test -f "$package"
-          prefix=$(mktemp -d)
-          home=$(mktemp -d)
-          export HOME="$home"
-          export CODEX_HOME="$home/.codex"
-          export XDG_CONFIG_HOME="$home/.config"
-          export XDG_STATE_HOME="$home/.state"
-          export PATH="$prefix/bin:$PATH"
-          mkdir -p "$CODEX_HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
-          codex_version=$(node -p "require('./plugin/tests/hosts/package.json').dependencies['@openai/codex']")
-          npm install --global --prefix "$prefix" "$package" "@openai/codex@$codex_version"
-          acyclic-plugin install codex
-          codex plugin list --marketplace acyclic --json | jq -e '.installed[] | select(.pluginId == "acyclic@acyclic" and .enabled == true)'
-          acyclic-plugin agents --json | jq -e '.schemaVersion == 1'
-          printf '%s\n' \
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"release-e2e","version":"1"}}}' \
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"acyclic","arguments":{"argv":["agents","--json"]}}}' \
-            | timeout 20 acyclic-plugin __mcp-commandless > "$home/mcp-task.jsonl"
-          jq -e 'select(.id == 2) | .result.isError != true and ((.result.content[0].text | fromjson | .schemaVersion) == 1)' "$home/mcp-task.jsonl"
-          if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-            timeout 480 codex exec --ephemeral --json --skip-git-repo-check \
-              -c 'plugins."acyclic@acyclic".mcp_servers.acyclic.tools.acyclic.approval_mode="approve"' \
-              --dangerously-bypass-hook-trust -C "$GITHUB_WORKSPACE" \
-              'Call the acyclic MCP tool with arguments ["agents","--json"]. Only after it succeeds, reply exactly ACYCLIC_E2E_OK.' \
-              > "$home/fresh-task.jsonl"
-            grep -q 'ACYCLIC_E2E_OK' "$home/fresh-task.jsonl"
-          else
-            echo '::warning::OPENAI_API_KEY is not configured; live model invocation was skipped after packaged Codex registration and MCP tool-call verification.'
-          fi
-          test -d "$XDG_STATE_HOME/acyclic/state-v5"
-          acyclic-plugin uninstall codex
-          test -d "$XDG_STATE_HOME/acyclic/state-v5"
-      - name: Assemble release assets
-        run: |
-          cp release/package/plugin/bin/platform-binaries.json release/platform-binaries.json
-          cp plugin/bin/verify.js release/verify.js
-          for target in linux-x64-gnu linux-x64-musl linux-arm64-gnu linux-arm64-musl darwin-x64 darwin-arm64 win32-x64 win32-arm64; do
-            name=acyclic
-            suffix=
-            case "$target" in win32-*) name=acyclic.exe; suffix=.exe ;; esac
-            cp "release/binaries/acyclic-$target/$target/$name" "release/acyclic-$target$suffix"
-          done
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 \
-            --numeric-owner --format=ustar -C release/package \
-            -czf release/acyclic-plugin.tar.gz .
-          ! tar -tzf release/acyclic-plugin.tar.gz | grep -E '\.tgz$'
       - name: Generate and verify release evidence
         run: |
           version=$(node -p "require('./plugin/package.json').version")
