@@ -739,6 +739,15 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
             directory.resolution(&staged, &view.key).await?,
         );
     }
+    merge_directory_proposal_retirement(
+        unbounded!(agent.join_into(&main).git_metadata(), plan())?,
+        options,
+        staging.clone(),
+        binary_key,
+        &binary_proposal,
+        text_key,
+    )
+    .await?;
     // The retained preview owns admission even after its last page. A fresh
     // token cannot revive it while reading a valid pinned proposal.
     cancellation.cancel();
@@ -814,6 +823,118 @@ async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<
     ));
     assert_eq!(unbounded!(main, head())?.id(), published);
     merge_directory_opaque_bindings().await?;
+    Ok(())
+}
+
+async fn merge_directory_proposal_retirement<
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+>(
+    join: JoinPlan<A, O>,
+    options: ApplyOptions,
+    staging: Workspace<A, O>,
+    key: &ConflictKey,
+    proposal: &str,
+    text_key: &ConflictKey,
+) -> Result<(), Box<dyn Error>> {
+    let cancellation = CancellationToken::new();
+    // This existing observer funds the real standalone frame and retains a
+    // lease on that same ledger; it supplies no provider responses.
+    let original = crate::workspace::accounting_tests::Prefunded {
+        budget: crate::performance::BOUNDARY_BUDGET,
+        held: std::sync::Mutex::new(None),
+    };
+    let preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+    let mut directory = preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+    let step = std::num::NonZeroU32::new(1).ok_or("zero page")?;
+    while !directory.plan().complete {
+        let section = if directory.plan().conflicts_complete {
+            MergeDirectorySection::Clean
+        } else {
+            MergeDirectorySection::Conflicts
+        };
+        directory
+            .write_page(section, step, crate::PublicationPermit::Unrestricted)
+            .await?;
+    }
+    let live = || {
+        original
+            .held
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(held, _)| held.allocation.standalone_live_bytes())
+            .ok_or("original standalone ledger retired")
+    };
+    for accepted in [true, false] {
+        let bytes = if accepted {
+            proposal.to_owned()
+        } else {
+            format!("{proposal}!")
+        };
+        staging
+            .write_text(
+                &format!("{}.resolve.json", directory.conflict_file_path(key)?),
+                &bytes,
+            )
+            .await?;
+        let generation = unbounded!(staging, head())?;
+        for _ in 0..2 {
+            let before = live()?;
+            let resolution = directory.resolution(&generation, key).await;
+            if accepted {
+                assert_eq!(resolution?, MergeResolution::Select(ConflictSide::Theirs));
+            } else {
+                assert!(matches!(
+                    resolution,
+                    Err(DrivenJoinError::Workspace(WorkspaceError::Engine(_)))
+                ));
+            }
+            assert_eq!(
+                live()?,
+                before,
+                "discarded proposal buffer stayed charged to the original frame"
+            );
+        }
+    }
+    // The accepted text is a new physical allocation. Keep the actual public
+    // result alive after its reader is gone; only dropping that result can
+    // release the original credit that funds its bytes.
+    let text = "resolved content\n".repeat(4096);
+    staging
+        .write_text(&directory.conflict_file_path(text_key)?, &text)
+        .await?;
+    let generation = unbounded!(staging, head())?;
+    let before = live()?;
+    let resolution = directory.resolution(&generation, text_key).await?;
+    let MergeResolution::Text(content) = &resolution else {
+        return Err("public text proposal changed resolution kind".into());
+    };
+    assert_eq!(content, &text);
+    let retained = live()?;
+    assert!(
+        retained >= before + text.len() as u64,
+        "accepted text backing left its original allocation ledger: {retained} < {before} + {}",
+        text.len()
+    );
+    drop(directory);
+    let baseline = original
+        .held
+        .lock()
+        .unwrap()
+        .as_ref()
+        .ok_or("original allocation observer retired")?
+        .1;
+    assert!(
+        live()? >= baseline + text.len() as u64,
+        "returned text lost its original allocation owner with the directory"
+    );
+    drop(resolution);
+    assert_eq!(
+        live()?,
+        baseline,
+        "discarded text retained its original allocation credit"
+    );
     Ok(())
 }
 
