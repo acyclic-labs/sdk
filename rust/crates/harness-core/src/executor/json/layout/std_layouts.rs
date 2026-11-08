@@ -45,11 +45,6 @@ impl HeapLayout for str {
 impl HeapLayout for serde_json::value::RawValue {
     const LAYOUT: &'static JsonLayout = &JsonLayout::BorrowedRaw;
 }
-#[cfg(not(target_arch = "wasm32"))]
-impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
-    const LAYOUT: &'static JsonLayout =
-        &JsonLayout::record(&[("v1", <([u8; 32], [u8; 32])>::LAYOUT)]);
-}
 /// A borrowed record is laid out as the record it borrows.
 impl<T: HeapLayout + ?Sized> HeapLayout for &T {
     const LAYOUT: &'static JsonLayout = T::LAYOUT;
@@ -324,6 +319,11 @@ macro_rules! record {
             flatten: &[],
         }
     };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl HeapLayout for acyclic_native_runtime::signing_key::SigningKeyReference {
+    const LAYOUT: &'static JsonLayout = &record!("v1" => <([u8; 32], [u8; 32])>::LAYOUT);
 }
 
 /// An externally tagged enum: an object of one member per variant.

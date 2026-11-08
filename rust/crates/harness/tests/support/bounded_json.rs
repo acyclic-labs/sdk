@@ -13,6 +13,23 @@ pub fn check(input: &[u8]) {
         maximum_items: 1_048_576,
         maximum_depth: 256,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    // The reference seeds reuse the internal v1 corpus payload, in both
+    // representations accepted by the production derived decoder.
+    if let Ok(expected) =
+        serde_json::from_slice::<acyclic_native_runtime::signing_key::SigningKeyReference>(input)
+    {
+        let decoded = json_from_slice_bounded(
+            std::marker::PhantomData::<acyclic_native_runtime::signing_key::SigningKeyReference>,
+            input,
+            bounds,
+            None,
+            None,
+            &mut |_| Ok(()),
+        )
+        .expect("signing reference layout must admit every Serde record form");
+        assert_eq!(decoded, expected);
+    }
     let raw = serde_json::from_slice::<&serde_json::value::RawValue>(input);
     let mut admissions = 0;
     let mut scratch = 0_u64;

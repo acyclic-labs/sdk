@@ -16,25 +16,28 @@ try {
   const { values: args } = parseArgs({ options: {
     "raw-domain-prior": { type: "string" }, "depth-prior": { type: "string" },
     "first-cause-prior": { type: "string" }, "hidden-items": { type: "boolean" },
+    "signing-reference": { type: "boolean" },
     help: { type: "boolean" },
   } });
   if (args.help) {
-    console.log(`Usage: ${recovery} [--raw-domain-prior REVISION | --depth-prior REVISION | --first-cause-prior REVISION | --hidden-items]\nPlants the actual selected production omission, checks its semantic assertion, and restores exact source and oracle bytes. Prior controls also retain the original oracle miss or false positive.`);
+    console.log(`Usage: ${recovery} [--raw-domain-prior REVISION | --depth-prior REVISION | --first-cause-prior REVISION | --hidden-items | --signing-reference]\nPlants the actual selected production omission, checks its semantic assertion, and restores exact source and oracle bytes. Prior controls also retain the original oracle miss or false positive.`);
   } else {
     const selected = Object.keys(args).filter((key) => args[key]);
     if (selected.length > 1) throw new Error("select at most one admission control");
     const mode = selected[0];
     const nextest = ["depth-prior", "first-cause-prior", "hidden-items"].includes(mode);
-    const source = join(root, "rust/crates/harness-core/src/executor/json", mode ? "admission.rs" : "records.rs");
+    const source = join(root, "rust/crates/harness-core/src/executor/json",
+      mode === "signing-reference" ? "layout/std_layouts.rs" : mode ? "admission.rs" : "records.rs");
     const oracle = join(root, mode === "hidden-items"
       ? "rust/crates/harness-core/src/executor/json/value_shape_tests.rs"
       : "rust/crates/harness/tests/support/bounded_json.rs");
     const suffix = {
       "raw-domain-prior": "expand-borrowed-raw", "depth-prior": "ignore-depth",
       "first-cause-prior": "drop-first-cause", "hidden-items": "ignore-hidden-items",
+      "signing-reference": "reject-signing-sequence",
     }[mode] ?? "ignore-syntax-admission";
     const patch = join(root, `rust/crates/harness-fuzz/negative-controls/typed-json-${suffix}.patch`);
-    const label = { "raw-domain-prior": "raw-domain", "depth-prior": "depth", "first-cause-prior": "first-cause", "hidden-items": "hidden-items" }[mode] ?? "syntax";
+    const label = { "raw-domain-prior": "raw-domain", "depth-prior": "depth", "first-cause-prior": "first-cause", "hidden-items": "hidden-items", "signing-reference": "signing-reference" }[mode] ?? "syntax";
     out = join(root, `target/typed-json-${label}-control`);
     const property = mode === "hidden-items"
       ? "executor::json::value_shape_tests::hidden_raw_values_are_bounded_before_decode"
@@ -71,7 +74,7 @@ try {
       const positive = nextest ? "1 test run: 1 passed" : "test result: ok. 1 passed; 0 failed";
       let phases = [["diagnostic-admission-refusal-red", 101, "typed JSON decode must preserve caller charge refusal at frontier 5"],
         ["restored-original-corpus", 0, positive]];
-      if (args[mode] && mode !== "hidden-items") {
+      if (typeof args[mode] === "string") {
         step = "read prior shared oracle from the selected revision";
         prior = git("show", `${args[mode]}:${portable(oracle)}`);
         result.prior_oracle = { revision: args[mode], sha256: digest(prior) };
@@ -84,6 +87,8 @@ try {
         ["first-cause-loss-red", 100, "materialized JSON admission must preserve the first caller cause"], ["restored-original-corpus", 0, positive]];
       if (mode === "hidden-items") phases = [["hidden-item-omission-red", 100, "assertion failed: !admitted && inspected <= maximum_inspected"],
         ["restored-original-property", 0, positive]];
+      if (mode === "signing-reference") phases = [["signing-sequence-refusal-red", 101, "signing reference layout must admit every Serde record form"],
+        ["restored-original-corpus", 0, positive]];
       for (const [name, expected, assertion] of phases) {
         writeFileSync(source, ["prior-depth-false-positive", "restored-original-corpus", "restored-original-property"].includes(name) ? original : mutated);
         writeFileSync(oracle, ["prior-oracle-mutant-miss", "prior-depth-false-positive"].includes(name) ? prior : originalOracle);

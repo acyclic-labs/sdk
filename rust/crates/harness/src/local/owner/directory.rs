@@ -15,22 +15,22 @@ pub(crate) fn separated_directory(path: &Path, checkout: Option<&Path>) -> Resul
 pub(in crate::local) fn planned_separated_directory(
     path: &Path,
     checkout: Option<&Path>,
-) -> Result<PathBuf> {
+) -> Result<()> {
+    let Some(checkout) = checkout else {
+        return Ok(());
+    };
     let planned = planned_directory(path).ok_or_else(|| {
         Error::Invalid("local state directory has an unresolved path suffix".into())
     })?;
-    if let Some(checkout) = checkout {
-        let checkout =
-            fs::canonicalize(checkout).map_err(|error| Error::Storage(error.to_string()))?;
-        if checkout.starts_with(&planned) || planned.starts_with(&checkout) {
-            return Err(Error::Invalid(format!(
-                "local state directory must be separate from the checkout: state {} and checkout {} nest; recovery: run from the project directory (never /) or set XDG_DATA_HOME outside it",
-                planned.display(),
-                checkout.display()
-            )));
-        }
+    let checkout = fs::canonicalize(checkout).map_err(|error| Error::Storage(error.to_string()))?;
+    if checkout.starts_with(&planned) || planned.starts_with(&checkout) {
+        return Err(Error::Invalid(format!(
+            "local state directory must be separate from the checkout: state {} and checkout {} nest; recovery: run from the project directory (never /) or set XDG_DATA_HOME outside it",
+            planned.display(),
+            checkout.display()
+        )));
     }
-    Ok(planned)
+    Ok(())
 }
 
 /// Canonical form of a not-yet-created directory: its nearest existing ancestor plus plain

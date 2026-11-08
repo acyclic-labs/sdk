@@ -245,7 +245,7 @@ impl Opening {
                     LocalProject::Workspace(path) => Some(path.as_path()),
                     LocalProject::Volume { .. } => None,
                 };
-                owner::planned_separated_directory(&directory, checkout).map(drop)
+                owner::planned_separated_directory(&directory, checkout)
             });
             refusals.extend(location.err());
         }
