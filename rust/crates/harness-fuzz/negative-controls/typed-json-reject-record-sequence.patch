@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/executor/json/layout.rs
++++ b/rust/crates/harness-core/src/executor/json/layout.rs
+@@ -115,7 +115,7 @@
+     /// A derived struct: an object of its fields or an array in field order.
+     pub const fn record(fields: &'static [(&'static str, &'static JsonLayout)]) -> Self {
+         Self::Node {
+-            seq: Some(Alloc::INLINE),
++            seq: None,
+             map: Some(Alloc::INLINE),
+             tagged: false,
+             fields,
