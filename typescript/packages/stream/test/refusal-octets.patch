@@ -1,0 +1,10 @@
+diff --git a/typescript/packages/auth/src/grpc-refusal.ts b/typescript/packages/auth/src/grpc-refusal.ts
+--- a/typescript/packages/auth/src/grpc-refusal.ts
++++ b/typescript/packages/auth/src/grpc-refusal.ts
+@@ -15,5 +15,5 @@
+       if (name === "grpc-status" || name === "grpc-message") statusHeaders.set(name, value);
+       else if (name === "grpc-status-details-bin") details = value;
+-      else if (name.startsWith("acyclic-")) metadata.push([name, Buffer.from(value, "latin1")]);
++      else if (name.startsWith("acyclic-")) metadata.push([name, Buffer.from(value)]);
+     }
+   }

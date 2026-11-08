@@ -1,0 +1,12 @@
+diff --git a/typescript/packages/auth/src/grpc-refusal.ts b/typescript/packages/auth/src/grpc-refusal.ts
+--- a/typescript/packages/auth/src/grpc-refusal.ts
++++ b/typescript/packages/auth/src/grpc-refusal.ts
+@@ -19,4 +19,8 @@
+   }
++  metadata.length = 0;
++  for (const [name, value] of error.metadata) {
++    if (name.startsWith("acyclic-")) metadata.push([name, Buffer.from(value, "latin1")]);
++  }
+   const status = findTrailerError(statusHeaders) ?? error;
+   return { status: status.code, message: status.rawMessage, details: Buffer.from(details, "base64"), metadata };
+ }

@@ -1,4 +1,5 @@
 import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
+import { refusalFromGrpcHeaders } from "@acyclic-labs/auth/grpc-refusal";
 import type { Opened } from "./opened.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
@@ -6,10 +7,10 @@ import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, SessionFrameSchema, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Http2Session, IncomingHttpHeaders } from "node:http2";
-import { createClient, ConnectError, Code, type CallOptions } from "@connectrpc/connect";
+import { createClient, ConnectError, Code, type CallOptions, type Interceptor } from "@connectrpc/connect";
 import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
-import { findTrailerError } from "@connectrpc/connect/protocol-grpc";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
@@ -86,34 +87,59 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     transportOptions.writeMaxBytes = maximum;
   }
   const manager = new Http2SessionManager(endpoint, undefined, transportOptions.nodeOptions);
-  transportOptions.sessionManager = manager;
+  const current = new AsyncLocalStorage<PeerResponse>();
+  const observe: Interceptor = next => request => {
+    const peer: PeerResponse = { statusReceived: false };
+    const failed = (error: unknown): never => {
+      if (error instanceof ConnectError) {
+        Object.assign(error, {
+          [peerRefusal]: refusalFromGrpcHeaders(error, [peer.header ?? [], peer.trailer ?? []]),
+          [peerInterrupted]: !peer.statusReceived
+            && peer.connection !== undefined && (peer.connection.closed || peer.connection.destroyed),
+        });
+      }
+      throw error;
+    };
+    return current.run(peer, async () => {
+      try {
+        const response = await next(request);
+        if (!response.stream) return response;
+        const messages = response.message;
+        return { ...response, message: (async function* () {
+          try { yield* messages; } catch (error) { failed(error); }
+        })() };
+      } catch (error) { return failed(error); }
+    });
+  };
+  transportOptions.interceptors = [observe, ...(transportOptions.interceptors ?? [])];
+  transportOptions.sessionManager = {
+    authority: manager.authority,
+    async request(...args: Parameters<Http2SessionManager["request"]>) {
+      const peer = current.getStore();
+      const request = await manager.request(...args);
+      if (peer !== undefined) {
+        peer.connection = request.session;
+        request.once("response", (headers: IncomingHttpHeaders, _flags, raw: string[]) => {
+          peer.header = raw;
+          peer.statusReceived ||= headers["grpc-status"] !== undefined;
+        });
+        request.once("trailers", (headers: IncomingHttpHeaders, _flags, raw: string[]) => {
+          peer.trailer = raw;
+          peer.statusReceived ||= headers["grpc-status"] !== undefined;
+        });
+      }
+      return request;
+    },
+    notifyResponseByteRead(request) { manager.notifyResponseByteRead(request); },
+  };
+  const transport = createGrpcTransport(transportOptions);
   return {
-    transport: createGrpcTransport(transportOptions),
+    transport,
     session(input: AsyncIterable<SessionFrame>, signal: AbortSignal) {
-      // Retain this RPC's original connection, even if the shared manager has
-      // already opened its successor. A peer status always remains terminal.
-      let connection: Http2Session | undefined;
-      let statusReceived = false;
-      const receiveStatus = (headers: IncomingHttpHeaders): void => {
-        statusReceived ||= headers["grpc-status"] !== undefined;
-      };
-      const transport = createGrpcTransport({ ...transportOptions, sessionManager: {
-        authority: manager.authority,
-        async request(...args: Parameters<Http2SessionManager["request"]>) {
-          const request = await manager.request(...args);
-          connection = request.session;
-          request.once("response", receiveStatus);
-          request.once("trailers", receiveStatus);
-          return request;
-        },
-        notifyResponseByteRead(request) { manager.notifyResponseByteRead(request); },
-      } });
       return {
         incoming: createClient(StreamSessionService, transport).session(input, { signal }),
         fail(error: unknown): never {
-          const interrupted = !signal.aborted && !statusReceived && connection !== undefined
-            && (connection.closed || connection.destroyed);
-          throw sessionTransportError(error, interrupted);
+          throw sessionTransportError(error, signal);
         },
       };
     },
@@ -267,10 +293,10 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  const status = grpcStatus(error);
-  const reason = status.rawMessage;
+  const refusal = grpcRefusal(error);
+  const reason = refusal.message;
   let code: StreamFailureCode = "unavailable";
-  switch (status.code) {
+  switch (refusal.status) {
     case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
@@ -283,36 +309,32 @@ function providerError(error: unknown, operation: string): Error {
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason, undefined, code === "unavailable" ? grpcRefusal(error, status) : undefined);
+  return new StreamError(code, reason, undefined, code === "unavailable" ? refusal : undefined);
 }
 
-/** The peer's details are opaque; they need not encode Google's Status message. */
-function grpcStatus(error: ConnectError): ConnectError {
-  const code = error.metadata.get("grpc-status");
-  if (code === null) return error;
-  return findTrailerError(new Headers({ "grpc-status": code,
-    "grpc-message": error.metadata.get("grpc-message") ?? "" })) ?? error;
+const peerRefusal = Symbol("original peer refusal");
+const peerInterrupted = Symbol("original connection interruption");
+type PeerError = ConnectError & {
+  [peerRefusal]?: StreamRefusal;
+  [peerInterrupted]?: boolean;
+};
+interface PeerResponse {
+  connection?: Http2Session;
+  statusReceived: boolean;
+  header?: readonly string[];
+  trailer?: readonly string[];
 }
 
-/** Retain the original status bytes; Connect's decoded Any values are projections. */
-function grpcRefusal(error: ConnectError, status: ConnectError): StreamRefusal {
-  const metadata: Array<readonly [string, Uint8Array]> = [];
-  for (const [name, value] of error.metadata) {
-    if (name.startsWith("acyclic-")) metadata.push([name, Buffer.from(value)]);
-  }
-  return {
-    status: status.code,
-    message: status.rawMessage,
-    details: Buffer.from(error.metadata.get("grpc-status-details-bin") ?? "", "base64"),
-    metadata,
-  };
+function grpcRefusal(error: PeerError): StreamRefusal {
+  return error[peerRefusal] ?? refusalFromGrpcHeaders(error, []);
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
-function sessionTransportError(error: unknown, transient: boolean): unknown {
+function sessionTransportError(error: unknown, signal: AbortSignal): unknown {
   if (!(error instanceof ConnectError)) return error;
-  const status = grpcStatus(error);
-  return Object.assign(new Error(status.rawMessage), {
-    code: grpcErrorCode(status.code, status.rawMessage), transient, refusal: grpcRefusal(error, status),
+  const refusal = grpcRefusal(error);
+  return Object.assign(new Error(refusal.message), {
+    code: grpcErrorCode(refusal.status, refusal.message),
+    transient: !signal.aborted && (error as PeerError)[peerInterrupted] === true, refusal,
   });
 }

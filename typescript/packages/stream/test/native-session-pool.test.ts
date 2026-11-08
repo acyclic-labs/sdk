@@ -6,6 +6,7 @@ import { NativeStreamProvider } from "../src/native.js";
 import { GrpcStreamProvider } from "../src/grpc.js";
 import { StreamError } from "../src/types.js";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
+import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 import { producer as originalRefusal } from "../../objects/test/refusal.fuzz.mjs";
 
@@ -42,6 +43,46 @@ test.each(["native", "gRPC"] as const)("%s Session rejection preserves original 
       .toEqual([["acyclic-native-bin", Array.from(new TextEncoder().encode(encoded))]]);
     expect(actual.cause).toBeUndefined();
     expect(sessions).toBe(1);
+    expect(host.connections).toBe(1);
+  } finally { await host.close(); }
+});
+
+test("gRPC Session and unary refusals retain repeated original metadata bytes", async () => {
+  const original = (await originalRefusal()).refusal;
+  const encoded = Buffer.from(original.details).toString("base64");
+  const repeated = [encoded, encoded];
+  const byte = 0x80 | original.details[0]!;
+  let sessions = 0, unary = 0;
+  const host = await credentialTlsFixture(router => {
+    router.service(wire.StreamSessionService, { async *session() {
+      sessions++;
+      throw new ConnectError(original.message, Code.Unknown);
+    } });
+    router.service(StreamService, { tail() {
+      unary++;
+      throw new ConnectError(original.message, Code.Unknown);
+    } });
+  }, { "grpc-status-details-bin": encoded, "acyclic-original": repeated,
+    "acyclic-byte": String.fromCharCode(byte) });
+  try {
+    const provider = new GrpcStreamProvider({ endpoint: host.endpoint, token: "fixture", caCertificate: host.certificate });
+    for (const call of [() => provider.heads({ paths: ["observed"], projection: "tail", limit: 1 }),
+      () => provider.tail("observed")]) {
+      let actual: unknown;
+      try { await call(); } catch (error) { actual = error; }
+      expect(actual).toBeInstanceOf(StreamError);
+      if (!(actual instanceof StreamError)) throw new Error("missing original refusal");
+      expect(actual.refusal?.status).toBe(Code.Unknown);
+      expect(actual.refusal?.message).toBe(original.message);
+      expect(Array.from(actual.refusal?.details ?? [])).toEqual(Array.from(original.details));
+      expect(actual.refusal?.metadata.filter(([name]) => name === "acyclic-original")
+        .map(([, bytes]) => Array.from(bytes))).toEqual(repeated.map(value => Array.from(Buffer.from(value, "latin1"))));
+      expect(actual.refusal?.metadata.filter(([name]) => name === "acyclic-byte")
+        .map(([, bytes]) => Array.from(bytes))).toEqual([[byte]]);
+      expect(actual.refusal?.metadata.length).toBe(3);
+    }
+    expect(sessions).toBe(1);
+    expect(unary).toBe(1);
     expect(host.connections).toBe(1);
   } finally { await host.close(); }
 });
