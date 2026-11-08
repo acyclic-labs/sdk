@@ -304,12 +304,11 @@ fn verify_prefix_queries(
                     entry.original,
                     "matched original position"
                 );
-                prop_assert!(std::ptr::eq(
-                    entry,
-                    index.entries().get(entry.original).ok_or_else(|| {
-                        TestCaseError::fail("matched entry lost original position")
-                    })?
-                ));
+                let original = index
+                    .entries()
+                    .get(entry.original)
+                    .ok_or_else(|| TestCaseError::fail("matched entry lost original position"))?;
+                prop_assert!(std::ptr::eq(entry, original));
                 prop_assert_eq!(
                     entry.original,
                     index
