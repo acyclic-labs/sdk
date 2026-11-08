@@ -317,3 +317,135 @@ fn owned_push_respects_the_logical_limit_with_spare_capacity()
     values.retire(&mut accounting)?;
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn owned_growth_admits_the_original_and_replacement_before_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::allocation::LogicalVecCapacity;
+    use crate::kernel::persistent_point::Owned;
+    use crate::{FsError, WorkError};
+    for native in [false, true] {
+        for logical in [false, true] {
+            for refusal in [
+                Some("peak_allocation_bytes"),
+                Some("bytes_copied"),
+                Some("cancelled"),
+                None,
+            ] {
+                let cancellation = CancellationToken::new();
+                let baseline = if native {
+                    crate::NativeMaterializationWork::accounting_state_bytes()
+                } else {
+                    0
+                };
+                let budget = WorkBudget {
+                    peak_allocation_bytes: baseline
+                        + if refusal == Some("peak_allocation_bytes") {
+                            2
+                        } else {
+                            3
+                        },
+                    bytes_copied: if refusal == Some("bytes_copied") {
+                        0
+                    } else {
+                        u64::MAX
+                    },
+                    ..WorkBudget::UNBOUNDED
+                };
+                let original = if native {
+                    Some(
+                        crate::NativeMaterializationWork::new(budget, &cancellation)
+                            .map_err(|(error, _)| error)?,
+                    )
+                } else {
+                    None
+                };
+                let mut accounting = match &original {
+                    Some(original) => KernelAccounting::native(original, &cancellation),
+                    None => KernelAccounting::standalone(budget, &cancellation),
+                };
+                let mut capacity = LogicalVecCapacity::default();
+                let mut values =
+                    Owned::<Vec<u8>>::allocate(usize::from(!logical), &mut accounting)?;
+                if logical {
+                    capacity.ensure_for_push_with_accounting(
+                        &mut values.value,
+                        2,
+                        &mut values.allocation,
+                        &mut accounting,
+                    )?;
+                    values.bytes = capacity.logical_bytes();
+                }
+                values.value.push(7);
+                let before = accounting.spent();
+                if refusal == Some("cancelled") {
+                    cancellation.cancel();
+                }
+                let mut result = Ok(());
+                let physical = acyclic_test_support::measure(|| {
+                    result = if logical {
+                        capacity.ensure_for_push_with_accounting(
+                            &mut values.value,
+                            2,
+                            &mut values.allocation,
+                            &mut accounting,
+                        )
+                    } else {
+                        values.ensure_for_push(2, &mut accounting)
+                    };
+                });
+                if logical {
+                    values.bytes = capacity.logical_bytes();
+                }
+                if let Some(cause) = refusal {
+                    assert!(
+                        result.is_err(),
+                        "growth admitted replacement while original backing was still live: {native}/{logical}/{cause}"
+                    );
+                    let error = result.err().ok_or(crate::WorkError::Overflow)?;
+                    match error {
+                        FsError::Work(WorkError::BudgetExceeded { counter, .. })
+                        | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                            WorkError::BudgetExceeded { counter, .. },
+                        )) => assert_eq!(counter, cause),
+                        FsError::Cancelled(_)
+                        | FsError::NativeKernel(crate::NativeTreeMaterializationError::Cancelled) =>
+                        {
+                            assert_eq!(cause, "cancelled");
+                        }
+                        error => return Err(error.into()),
+                    }
+                    assert_eq!(
+                        physical.count_total, 0,
+                        "refused growth allocated physical backing"
+                    );
+                    assert_eq!(values.value.capacity(), 1);
+                    assert_eq!(accounting.spent(), before);
+                } else {
+                    result?;
+                    assert_eq!(physical.count_total, 1);
+                    assert_eq!(physical.bytes_total, 2);
+                    assert_eq!(values.value.capacity(), 2);
+                    assert_eq!(accounting.spent().bytes_copied, before.bytes_copied + 1);
+                    assert_eq!(accounting.spent().peak_allocation_bytes, baseline + 3);
+                }
+                assert_eq!(values.value, [7]);
+                values.retire(&mut accounting)?;
+                if let Some(original) = original {
+                    assert_eq!(original.live_allocation_bytes(), baseline);
+                } else {
+                    assert_eq!(
+                        accounting
+                            .standalone_parts()
+                            .ok_or(crate::WorkError::Overflow)?
+                            .0
+                            .live_bytes(),
+                        0
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}

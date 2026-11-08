@@ -69,6 +69,16 @@ impl<T> Owned<Vec<T>> {
         count: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
+        Self::allocate_with(count, accounting, |_| {
+            super::CanonicalDecodeError::AllocationFailed.into()
+        })
+    }
+
+    fn allocate_with(
+        count: usize,
+        accounting: &mut KernelAccounting<'_>,
+        allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
+    ) -> Result<Self, crate::FsError> {
         let requested = crate::foundation::usize_to_u64(
             count
                 .checked_mul(std::mem::size_of::<T>())
@@ -87,7 +97,7 @@ impl<T> Owned<Vec<T>> {
                     crate::NativeTreeMaterializationError::AllocationFailed(_error),
                 ));
             }
-            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+            return Err(allocation_failed(_error));
         }
         let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
         let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
@@ -111,35 +121,60 @@ impl<T> Owned<Vec<T>> {
             return Ok(());
         }
         let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
-        let previous = self.value.capacity();
-        let requested = crate::foundation::usize_to_u64(
-            (next - previous)
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(crate::WorkError::Overflow)?,
-        );
-        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-        if let Err(_error) = self.value.try_reserve_exact(next - self.value.len()) {
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
-            retire_allocation(allocation, requested, accounting)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(crate::FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::AllocationFailed(_error),
-                ));
-            }
-            return Err(super::CanonicalDecodeError::AllocationFailed.into());
+        self.reserve_capacity(next, accounting)
+    }
+
+    /// Admits both physical backings before growing, retaining the original
+    /// value on an early refusal and the completed replacement on a late one.
+    pub(crate) fn reserve_capacity(
+        &mut self,
+        capacity: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        self.reserve_capacity_with(capacity, accounting, |_| {
+            super::CanonicalDecodeError::AllocationFailed.into()
+        })
+    }
+
+    /// Uses the caller's ordinary allocation error while preserving the native
+    /// allocator's original cause. Admission and physical growth stay shared.
+    pub(crate) fn reserve_capacity_with(
+        &mut self,
+        capacity: usize,
+        accounting: &mut KernelAccounting<'_>,
+        allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
+    ) -> Result<(), crate::FsError> {
+        if capacity <= self.value.capacity() {
+            return Ok(());
         }
-        let actual = crate::foundation::usize_to_u64(
-            (self.value.capacity() - previous) * std::mem::size_of::<T>(),
-        );
-        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        self.allocation.absorb(&mut allocation)?;
-        self.bytes = self
-            .bytes
-            .checked_add(actual)
-            .ok_or(crate::WorkError::Overflow)?;
-        checked
+        let copied = crate::WorkCounters {
+            bytes_copied: crate::foundation::usize_to_u64(
+                self.value
+                    .len()
+                    .checked_mul(std::mem::size_of::<T>())
+                    .ok_or(crate::WorkError::Overflow)?,
+            ),
+            ..crate::WorkCounters::UNCHARGED
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut credit = super::allocation::effects::EffectCredit::for_accounting(accounting);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(credit) = &mut credit {
+            credit.reserve(copied, false)?;
+        } else {
+            accounting.admit(copied)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        accounting.admit(copied)?;
+        let mut replacement = Self::allocate_with(capacity, accounting, allocation_failed)?;
+        replacement.value.append(&mut self.value);
+        std::mem::swap(self, &mut replacement);
+        let retired = replacement.retire(accounting);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(credit) = &mut credit {
+            return credit.complete(copied).and(retired);
+        }
+        accounting.record_completed(copied).and(retired)
     }
 }
 
@@ -222,6 +257,12 @@ pub(crate) fn retire_allocation(
     bytes: u64,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
+    // An empty unallocated value has no ledger custody to release. Native
+    // growth can replace such a value before it acquires its first guard.
+    if bytes == 0 {
+        drop(allocation);
+        return Ok(());
+    }
     match allocation {
         KernelOwnedAllocation::Standalone => match accounting {
             KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),

@@ -49,6 +49,72 @@ proptest! {
 
 #[test]
 fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    for native in [false, true] {
+        let cancellation = CancellationToken::new();
+        let baseline = if native {
+            crate::NativeMaterializationWork::accounting_state_bytes()
+        } else {
+            0
+        };
+        let budget = WorkBudget {
+            peak_allocation_bytes: baseline + 2,
+            ..WorkBudget::UNBOUNDED
+        };
+        let original = if native {
+            Some(
+                crate::NativeMaterializationWork::new(budget, &cancellation)
+                    .map_err(|(error, _)| error)?,
+            )
+        } else {
+            None
+        };
+        let mut accounting = match &original {
+            Some(work) => KernelAccounting::native(work, &cancellation),
+            None => KernelAccounting::standalone(budget, &cancellation),
+        };
+        let mut values = empty_blob_vec::<u8>();
+        reserve_blob_vec(&mut values, 1, &mut accounting)?;
+        values.value.push(7);
+        let before = accounting.spent();
+        let mut result = Ok(());
+        let physical = acyclic_test_support::measure(|| {
+            result = reserve_blob_vec(&mut values, 2, &mut accounting);
+        });
+        assert!(
+            matches!(
+                result,
+                Err(FsError::Work(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                })) | Err(FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes",
+                        ..
+                    })
+                ))
+            ),
+            "blob growth admitted replacement while original backing was still live: {result:?}"
+        );
+        assert_eq!(physical.count_total, 0);
+        assert_eq!(values.value.capacity(), 1);
+        assert_eq!(values.value, [7]);
+        assert_eq!(accounting.spent(), before);
+        release_blob_vec(values, &mut accounting)?;
+        if let Some(original) = original {
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                0
+            );
+        }
+    }
+
     fn build(overreserve: bool) -> Result<(ObjectId, u64, usize, usize), FsError> {
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);

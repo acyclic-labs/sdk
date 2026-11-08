@@ -57,7 +57,7 @@ fn simultaneous_claims_produce_one_operation_wide_peak() -> Result<(), Allocatio
 }
 
 #[test]
-fn one_byte_short_budget_rejects_before_claim() -> Result<(), AllocationError> {
+fn one_byte_short_budget_rejects_before_claim() -> Result<(), crate::FsError> {
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::default();
     let error = ledger
@@ -71,7 +71,7 @@ fn one_byte_short_budget_rejects_before_claim() -> Result<(), AllocationError> {
             },
         )
         .err()
-        .ok_or(AllocationError::AllocationFailed)?;
+        .ok_or(crate::FsError::PendingMutationAllocationFailed)?;
     assert!(matches!(
         error,
         AllocationError::Work(WorkError::BudgetExceeded {
@@ -86,42 +86,58 @@ fn one_byte_short_budget_rejects_before_claim() -> Result<(), AllocationError> {
 }
 
 #[test]
-fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), AllocationError> {
+fn vector_capacity_and_ledger_corruption_guards_are_total() -> Result<(), Box<dyn std::error::Error>>
+{
+    let cancellation = crate::CancellationToken::new();
+    let mut guard = KernelOwnedAllocation::Standalone;
     let mut capacity = LogicalVecCapacity::default();
     let mut values = Vec::<u64>::new();
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::default();
-    capacity.ensure_for_push(
+    capacity.ensure_for_push_with_accounting(
         &mut values,
         1,
-        &mut ledger,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-    )?;
-    let admitted = ledger.live_bytes();
-    capacity.ensure_for_push(
-        &mut values,
-        1,
-        &mut ledger,
-        &mut work,
-        WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(ledger.live_bytes(), admitted);
-    values.push(1);
-    assert_eq!(
-        capacity.ensure_for_push(
-            &mut values,
-            1,
+        &mut guard,
+        &mut KernelAccounting::borrowed_standalone(
             &mut ledger,
             &mut work,
             WorkBudget::UNBOUNDED,
+            &cancellation,
         ),
-        Err(AllocationError::CapacityExceeded)
-    );
+    )?;
+    let admitted = ledger.live_bytes();
+    capacity.ensure_for_push_with_accounting(
+        &mut values,
+        1,
+        &mut guard,
+        &mut KernelAccounting::borrowed_standalone(
+            &mut ledger,
+            &mut work,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ),
+    )?;
+    assert_eq!(ledger.live_bytes(), admitted);
+    values.push(1);
+    assert!(matches!(
+        capacity.ensure_for_push_with_accounting(
+            &mut values,
+            1,
+            &mut guard,
+            &mut KernelAccounting::borrowed_standalone(
+                &mut ledger,
+                &mut work,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ),
+        ),
+        Err(crate::FsError::PendingMutationAllocationFailed)
+    ));
     assert_eq!(
         ledger.release(admitted + 1),
         Err(AllocationError::ReleaseInvariant)
     );
+    drop(values);
     ledger.release(admitted)?;
 
     let mut overflow = AllocationLedger::default();
@@ -339,48 +355,5 @@ fn visited_growth_failures_release_candidate_storage_and_preserve_the_old_table(
         ))?;
         assert_eq!(ledger.live_bytes(), 0);
     }
-    Ok(())
-}
-
-#[test]
-fn vector_completed_growth_survives_a_late_budget_error() -> Result<(), AllocationError> {
-    let mut values = Vec::<u64>::new();
-    let mut capacity = LogicalVecCapacity::default();
-    let mut ledger = AllocationLedger::default();
-    let mut work = WorkCounters::UNCHARGED;
-    let result = capacity.ensure_for_push_using(
-        &mut values,
-        1,
-        |error| error,
-        |step| match step {
-            LogicalVecAllocationStep::Claim { bytes } => {
-                ledger.claim_bytes(bytes, 1, &mut work, WorkBudget::UNBOUNDED)
-            }
-            LogicalVecAllocationStep::ReserveFailed { bytes, .. } => {
-                ledger.release(bytes)?;
-                Err(AllocationError::AllocationFailed)
-            }
-            LogicalVecAllocationStep::Capacity { requested, actual } => {
-                ledger.record_owned_bytes(actual - requested, &mut work)?;
-                work.verify(WorkBudget {
-                    peak_allocation_bytes: 0,
-                    ..WorkBudget::UNBOUNDED
-                })?;
-                Ok(())
-            }
-        },
-    );
-    assert!(matches!(
-        result,
-        Err(AllocationError::Work(WorkError::BudgetExceeded { .. }))
-    ));
-    let actual_bytes = usize_to_u64(values.capacity() * size_of::<u64>());
-    assert_eq!(capacity.elements, 1);
-    assert_eq!(capacity.logical_bytes(), actual_bytes);
-    assert_eq!(ledger.live_bytes(), actual_bytes);
-    assert_eq!(work.peak_allocation_bytes, actual_bytes);
-    assert_eq!(work.allocation_operations, 1);
-    drop(values);
-    ledger.release(actual_bytes)?;
     Ok(())
 }
