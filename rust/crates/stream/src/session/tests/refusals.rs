@@ -106,5 +106,40 @@ async fn local_socket_refusals_retain_the_original_error_after_prior_data() -> T
         };
         assert_eq!(actual, original, "local socket lost its original refusal");
     }
+    // Hold both credits at zero so the terminal must retain the same error
+    // while earlier accepted data owns the queue. Drive the actual queue and
+    // credit transitions, rather than substituting another close producer.
+    let mut session = super::properties::empty_session(false);
+    let identity = wire::SessionChannel {
+        channel_id: 1,
+        generation: 1,
+    };
+    session.record(
+        identity,
+        Ok(Event::Socket {
+            next: 1,
+            bytes: Bytes::from_static(b"queued"),
+        }),
+    )?;
+    session.record(identity, Err(original.clone()))?;
+    assert!(session.ready()?.is_none());
+    assert!(session.controls.is_empty());
+    session.receive(window(0))?;
+    session.receive(window(1))?;
+    let data = session.ready()?.ok_or("accepted data was dropped")?;
+    assert!(matches!(&data.wire().body, Some(Body::Data(data))
+        if matches!(&data.item, Some(Item::ActorSocket(bytes)) if bytes == b"queued")));
+    let (_, retained) = session
+        .controls
+        .pop_front()
+        .ok_or("terminal was dropped")?
+        .into_parts();
+    assert_eq!(
+        retained,
+        Some(original),
+        "queued terminal lost the original refusal"
+    );
+    assert!(session.channels.is_empty());
+    assert!(session.controls.is_empty());
     Ok(())
 }

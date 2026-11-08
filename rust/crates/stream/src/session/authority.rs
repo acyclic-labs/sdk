@@ -624,15 +624,18 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         }
         self.remove(identity.channel_id)?;
         self.controls
-            .retain(|frame| frame.channel_id != identity.channel_id);
-        self.controls.push_back(frame(
-            identity.channel_id,
-            identity.generation,
-            Body::Closed(wire::SessionClosed {
-                code: reason.code().into(),
-                message: String::new(),
-            }),
-        ));
+            .retain(|frame| frame.wire().channel_id != identity.channel_id);
+        self.controls.push_back(
+            frame(
+                identity.channel_id,
+                identity.generation,
+                Body::Closed(wire::SessionClosed {
+                    code: reason.code().into(),
+                    message: String::new(),
+                }),
+            )
+            .into(),
+        );
         Ok(())
     }
     pub(super) fn validate_authority(&mut self, id: u64) -> Result<(), Rejection> {
