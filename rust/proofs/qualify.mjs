@@ -533,7 +533,10 @@ const claims = {
     "rust/crates/actors/src/conformance.rs", "acyclic-actors",
     "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
     "outbox", [],
-    { patch: "missing.patch", negativeLabel: "restart-without-advancement" },
+    { mutations: [
+      { patch: "rust/proofs/actors-conformance-clock/early.patch", label: "alarm-before-observation", diagnostic: "outbox" },
+      { patch: "rust/proofs/actors-conformance-clock/missing.patch", label: "restart-without-advancement", diagnostic: "outbox" },
+    ] },
   ],
   "actors-alarm-deadline": [
     "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
