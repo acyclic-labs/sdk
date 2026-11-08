@@ -29,6 +29,18 @@ const claims = {
       ],
     },
   ],
+  "persistence-cut-boundary": [
+    "rust/crates/stream/src/local/persistence_cut.rs", "acyclic-stream",
+    "local::tests::journal_batch::cuts::a_batch_cut_recovers_only_its_flushed_prefix",
+    "a frame written before the cut is not flushed", ["--no-default-features", "--features", "local,test-support"],
+    { oracle: "rust/crates/stream/src/local/tests/journal_batch.rs",
+      nextest: ["--profile", "ci", "--no-tests=fail", "--retries", "0"],
+      mutations: [
+        { patch: "rust/proofs/persistence-cut-boundary/flush.patch", label: "unflushed-prefix", diagnostic: "a frame written before the cut is not flushed" },
+        { patch: "rust/proofs/persistence-cut-boundary/fence.patch", label: "unfenced-installation", diagnostic: "cut escaped the original mutation fence" },
+        { patch: "rust/proofs/persistence-cut-boundary/failure.patch", label: "lost-owner", diagnostic: "cut retained a lost original owner" },
+      ] },
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",

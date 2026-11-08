@@ -121,7 +121,7 @@ mod cuts {
     impl PersistenceCut for Cut {
         fn admit(&self) -> bool {
             let frame = self.frame.fetch_add(1, Ordering::SeqCst) + 1;
-            self.phase != 0 || frame != 2
+            self.phase != 3 && (self.phase != 0 || frame != 2)
         }
         fn written(&self) -> bool {
             self.phase != 1 || self.frame.load(Ordering::SeqCst) != 2
@@ -141,28 +141,92 @@ mod cuts {
     #[tokio::test]
     async fn a_batch_cut_recovers_only_its_flushed_prefix() -> Result<(), Box<dyn std::error::Error>>
     {
-        for phase in 0..3 {
+        for phase in [3, 0, 1, 2] {
             let root = tempfile::tempdir()?;
             let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+            // The real publisher may have accepted another frame after a
+            // caller's flush. Installation owns that original prefix too.
+            deferring_durability(stream.append(super::super::keyed_append("before-cut", 0)?))
+                .await?;
             let cut = Arc::new(Cut {
                 phase,
                 frame: AtomicU64::new(0),
                 crashed: AtomicBool::new(false),
             });
-            stream.cut_persistence(cut.clone());
+            {
+                let visibility = stream.inner.visibility.write().await;
+                let installation = stream.cut_persistence(cut.clone());
+                tokio::pin!(installation);
+                assert!(
+                    futures::poll!(&mut installation).is_pending(),
+                    "cut escaped the original mutation fence"
+                );
+                drop(visibility);
+                installation.await?;
+            }
             assert!(matches!(
                 stream.persist_frames(frames(3, None)?.into_iter()).await,
                 Err(StreamError::Unavailable)
             ));
             assert!(cut.crashed.load(Ordering::SeqCst));
-            assert_eq!(cut.frame.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                cut.frame.load(Ordering::SeqCst),
+                if phase == 3 { 1 } else { 2 }
+            );
             drop(stream);
             let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
             assert_eq!(
+                reopened.tail(StreamPath::new("before-cut")?).await?,
+                1,
+                "cut discarded the accepted original prefix"
+            );
+            assert_eq!(
                 reopened.tail(StreamPath::new("batch")?).await?,
-                if phase == 2 { 2 } else { 1 }
+                if phase == 3 {
+                    0
+                } else if phase == 2 {
+                    2
+                } else {
+                    1
+                }
             );
         }
+        let root = tempfile::tempdir()?;
+        let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+        let cut = Arc::new(Cut {
+            phase: 0,
+            frame: AtomicU64::new(0),
+            crashed: AtomicBool::new(false),
+        });
+        {
+            let visibility = stream.inner.visibility.write().await;
+            let installation = stream.cut_persistence(cut.clone());
+            tokio::pin!(installation);
+            assert!(
+                futures::poll!(&mut installation).is_pending(),
+                "cut escaped the original mutation fence"
+            );
+            // Cancellation cannot install a cut later, after its caller left.
+            drop(visibility);
+        }
+        stream.cut_persistence(cut.clone()).await?;
+        assert_eq!(
+            stream.cut_persistence(cut.clone()).await,
+            Err(StreamError::AlreadyExists)
+        );
+        let visibility = stream.inner.visibility.write().await;
+        let installation = stream.cut_persistence(cut);
+        tokio::pin!(installation);
+        assert!(futures::poll!(&mut installation).is_pending());
+        let failure = LocalStreamFailure::new("write", "original owner lost");
+        stream.inner.fail(failure);
+        assert_eq!(
+            futures::poll!(&mut installation),
+            std::task::Poll::Ready(Err(StreamError::Unavailable)),
+            "cut retained a lost original owner"
+        );
+        assert_eq!(stream.failure(), Some(failure));
+        drop(visibility);
         Ok(())
     }
 }
@@ -200,11 +264,13 @@ mod deadlines {
         let stream =
             LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), clock.clone())
                 .await?;
-        stream.cut_persistence(Arc::new(Advance {
-            clock,
-            admitted: AtomicU64::new(0),
-            at: 1,
-        }));
+        stream
+            .cut_persistence(Arc::new(Advance {
+                clock,
+                admitted: AtomicU64::new(0),
+                at: 1,
+            }))
+            .await?;
         let mut request = super::super::replay_work::request(b"deadline".to_vec());
         request.deadline_unix_millis = Some(20);
         assert!(matches!(
@@ -237,11 +303,13 @@ mod deadlines {
         let stream =
             LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), clock.clone())
                 .await?;
-        stream.cut_persistence(Arc::new(Advance {
-            clock,
-            admitted: AtomicU64::new(0),
-            at: 2,
-        }));
+        stream
+            .cut_persistence(Arc::new(Advance {
+                clock,
+                admitted: AtomicU64::new(0),
+                at: 2,
+            }))
+            .await?;
         let mut prepared = frames(3, None)?;
         for frame in &mut prepared {
             frame.deadline = Some(20);

@@ -28,6 +28,9 @@ pub trait PersistenceCut: Send + Sync {
 #[cfg(feature = "test-support")]
 #[derive(Debug, Error)]
 pub enum CutSimulationError {
+    /// The provider could not establish the original durable prefix.
+    #[error("installing the persistence cut failed: {0}")]
+    Install(#[source] StreamError),
     /// The journal lock was poisoned, so nothing was discarded.
     #[error("the journal lock is poisoned")]
     Lock,
@@ -55,30 +58,36 @@ pub fn fail_cut_truncation(fail: bool) {
 #[cfg(feature = "test-support")]
 impl LocalStream {
     /// Routes every later journal append of this provider through `cut`.
-    /// Every frame written so far must already be flushed.
+    /// Seals the accepted prefix before installing the cut under the original
+    /// mutation fence, so a concurrent writer cannot escape either boundary.
     ///
-    /// # Panics
-    ///
-    /// Panics when a written frame is not yet flushed, when the journal lock
-    /// is poisoned, or when this provider's persistence is already cut.
-    pub fn cut_persistence(&self, cut: Arc<dyn PersistenceCut>) {
-        {
-            let journal = self.inner.journal.lock();
-            assert!(journal.is_ok(), "journal lock poisoned");
-            if let Ok(mut journal) = journal {
-                assert!(
-                    journal
-                        .flushed_sequence
-                        .is_some_and(|cut| cut >= journal.appended),
-                    "a frame written before the cut is not flushed"
-                );
+    /// Returns [`StreamError::AlreadyExists`] if a cut is already installed,
+    /// or the provider's failure when the prefix cannot be flushed. Losing the
+    /// provider ends a pending fence wait; dropping this future releases it.
+    pub async fn cut_persistence(&self, cut: Arc<dyn PersistenceCut>) -> Result<(), StreamError> {
+        self.check_available()?;
+        let mut failed = self.inner.failed.subscribe();
+        let installation = std::pin::pin!(async {
+            let _visibility = self.inner.visibility.write().await;
+            self.check_available()?;
+            if self.inner.persistence_cut.get().is_some() {
+                return Err(StreamError::AlreadyExists);
+            }
+            self.seal_accepted().await?;
+            {
+                let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
                 journal.flushed = journal.bytes;
             }
+            self.inner
+                .persistence_cut
+                .set(cut)
+                .map_err(|_| StreamError::AlreadyExists)
+        });
+        let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+        match futures::future::select(unavailable, installation).await {
+            futures::future::Either::Left((error, _)) => Err(error),
+            futures::future::Either::Right((result, _)) => result,
         }
-        assert!(
-            self.inner.persistence_cut.set(cut).is_ok(),
-            "persistence is already cut"
-        );
     }
 
     /// Power loss: discard every journal byte of this epoch not yet flushed,

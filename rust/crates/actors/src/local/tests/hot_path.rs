@@ -211,7 +211,7 @@ async fn publication_and_reopen() -> TestResult {
             data = 1
         )?;
         let physical = Arc::new(PhysicalCut::new(None));
-        provider.inner().cut_persistence(physical.clone());
+        provider.inner().cut_persistence(physical.clone()).await?;
         let mut binding = store.bind_state(claimed, 1)?;
         let before = provider.requests();
         let value = Bytes::from(vec![7; 128]);
@@ -606,7 +606,7 @@ async fn physical_loss(fail_at: usize) -> TestResult {
         let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
         let store = Store::new(provider.clone(), state_root()?);
         place(&store, &address).await?;
-        provider.cut_persistence(physical.clone());
+        provider.cut_persistence(physical.clone()).await?;
         let mut binding = store.bind_state(store.load(&address).await?, 1)?;
         let hold = binding.transaction(|state| {
             state.fund_escrow(crate::escrow::Escrow::new(Some(5)))?;
@@ -745,7 +745,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
                     .await?,
                 CommitOutcome::Committed(_)
             ));
-            provider.cut_persistence(cut.clone());
+            provider.cut_persistence(cut.clone()).await?;
             assert!(matches!(
                 provider.commit(acceptance.clone()).await,
                 Err(StreamError::Unavailable)
@@ -792,7 +792,7 @@ async fn accepted_call_recovery_survives_physical_loss() -> TestResult {
                 })
                 .await?;
             let cut = Arc::new(PhysicalCut::new(Some(fail_at)));
-            provider.cut_persistence(cut.clone());
+            provider.cut_persistence(cut.clone()).await?;
             assert!(matches!(
                 provider.commit(recovery.clone()).await,
                 Err(StreamError::Unavailable)

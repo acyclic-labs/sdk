@@ -75,9 +75,11 @@ async fn local_commands_and_observation_report_the_original_provider_failure() -
         .agent_stream
         .as_ref()
         .ok_or_else(|| Error::Invalid("missing original provider".into()))?;
-    stream.flush().map_err(exchange)?;
     let cut = Arc::new(Cut(AtomicBool::new(false)));
-    stream.cut_persistence(cut.clone());
+    stream
+        .cut_persistence(cut.clone())
+        .await
+        .map_err(exchange)?;
     assert_eq!(
         stream
             .append(AppendRequest {
