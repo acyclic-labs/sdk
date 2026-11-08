@@ -54,7 +54,12 @@ pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
             );
             assert!(
                 filter.matches(&crate::RecordHeaders::new(
-                    vec![key.to_vec().into()],
+                    vec![
+                        key.get(..crate::MAX_RECORD_KEY_BYTES)
+                            .unwrap_or(key)
+                            .to_vec()
+                            .into()
+                    ],
                     vec![]
                 )?),
                 "resource index differs from its original authorized scope"
