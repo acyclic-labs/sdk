@@ -19,20 +19,30 @@ exercises the path without an approval callback. The child advances after the
 first observation; publication must retain the old coherent answer position and
 perform exactly one status read. A committed pending child input forces real
 actor deferral and subsequent delivery. Original runtime cancellation must end
-the held preparation and drop its pending observation. The wait argument is
+the held preparation and drop its pending observation. A second real spawned
+child proves independent answer reads start together while the first original
+answer is held. The result retains the selected sequence, reference order and
+actual bytes of both children. Dropping an answer producer ends the original
+preparation with the actor failure instead of a successful replacement.
+The wait argument is
 derived from the recorded input under `harness-fuzz/corpus/agent_wait_selection`;
 the actor schedule and canonical event wrapper are generated simulation inputs.
 
 Apply each `mutations/preparation_*.patch` independently, run the same control,
 and reverse the patch. They respectively restore a duplicate status read,
-substitute a newer answer position, lose cancellation and bypass actor deferral.
+substitute a newer answer position, lose cancellation, bypass actor deferral,
+serialize independent answer reads and mask an answer producer failure.
 Each must fail the corresponding explicit invariant before publication passes.
 The approval mutations remain applicable to the separate original-request
 control in `approval-request.md`.
 
 An already settled selected child previously needed a readiness observation and
 an execution observation; preparation needs one. Exact answer reads remain one
-per selected answer. Preparation adds no durability barrier. Calls that already
+per selected answer. Independent answer reads previously formed one serial
+chain with one await per selected answer; they now share one join, with one
+future per selected answer and no extra status reads or answer copies. The join
+retains storage proportional to selected answers and ends on the first failure.
+Preparation adds no durability barrier. Calls that already
 crossed the approval owner's effects barrier retain that check. Explicit Allow
 now crosses the same barrier too: its generation selection and directory read
 buy ordering after earlier agent effects, instead of silently bypassing them.

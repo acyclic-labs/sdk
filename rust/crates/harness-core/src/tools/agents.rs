@@ -388,32 +388,35 @@ impl AgentTool {
                 crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
             ));
         }
-        let mut settled = Vec::with_capacity(children.len());
         let mut running = Vec::new();
-        for ((name, child), observed) in children.iter().zip(observations) {
-            let Some(observed) = observed else {
-                running.push(name.as_str());
-                continue;
-            };
-            let answer = match observed.answer {
-                Some(sequence) => Some(observer.answer(child, sequence).await?),
-                None => None,
-            };
-            let mut entry = json!({
-                "name": name,
-                "agent": child.as_str(),
-                "phase": serde_json::to_value(&observed.phase)
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                "answer": answer,
-            });
-            // The fork's branch: its changes reach this agent's project
-            // only through `fs merge` of it. A spawn name names it; an agent
-            // path does not.
-            if name != child.as_str() {
-                entry["branch"] = json!(format!("agents/{name}"));
-            }
-            settled.push(entry);
-        }
+        let settled = futures::future::try_join_all(children.iter().zip(observations).filter_map(
+            |((name, child), observed)| {
+                let Some(observed) = observed else {
+                    running.push(name.as_str());
+                    return None;
+                };
+                Some(async move {
+                    let answer = match observed.answer {
+                        Some(sequence) => Some(observer.answer(child, sequence).await?),
+                        None => None,
+                    };
+                    let mut entry = json!({
+                        "name": name,
+                        "agent": child.as_str(),
+                        "phase": serde_json::to_value(&observed.phase)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        "answer": answer,
+                    });
+                    // The branch is named only when the first reference was
+                    // a spawn name; preserve the original selected ordering.
+                    if name != child.as_str() {
+                        entry["branch"] = json!(format!("agents/{name}"));
+                    }
+                    Ok::<_, Error>(entry)
+                })
+            },
+        ))
+        .await?;
         Ok(ToolPreparation::Ready(ToolResult {
             value: json!({"settled": settled, "running": running}),
         }))

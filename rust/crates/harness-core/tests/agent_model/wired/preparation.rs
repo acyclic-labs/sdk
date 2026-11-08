@@ -16,6 +16,8 @@ use std::sync::{
 struct Probe {
     reads: AtomicUsize,
     answers: Mutex<Vec<u64>>,
+    answer_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    answering: Mutex<Option<oneshot::Sender<()>>>,
     gate: Mutex<Option<oneshot::Receiver<()>>>,
     observing: Mutex<Option<oneshot::Sender<()>>>,
     stop: Mutex<Option<acyclic_actors::guest::CancellationToken>>,
@@ -58,8 +60,20 @@ impl TurnChildren for Children {
         child: &'a AgentPath,
         sequence: u64,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<String>> {
-        self.probe.answers.lock().unwrap().push(sequence);
-        self.original.answer(child, sequence)
+        Box::pin(async move {
+            self.probe.answers.lock().unwrap().push(sequence);
+            let gate = self.probe.answer_gate.lock().unwrap().take();
+            let answer = self.original.answer(child, sequence).await?;
+            if let Some(gate) = gate {
+                if let Some(answering) = self.probe.answering.lock().unwrap().take() {
+                    let _ = answering.send(());
+                }
+                gate.await.map_err(|_| {
+                    acyclic_harness_core::Error::Storage("original answer producer dropped".into())
+                })?;
+            }
+            Ok(answer)
+        })
     }
 }
 
@@ -126,13 +140,22 @@ impl<D: TurnDriver> TurnDriver for Driver<D> {
 }
 
 fn wait(child: &AgentPath) -> ScriptedTurn {
+    wait_selected(&[child])
+}
+
+fn wait_selected(children: &[&AgentPath]) -> ScriptedTurn {
     // Derive this simulation's path from the captured original wait input.
     // The schedule and canonical event wrapper are generated test inputs.
     let (_, mut arguments): (String, serde_json::Value) = serde_json::from_str(include_str!(
         "../../../../harness-fuzz/corpus/agent_wait_selection/recorded-path.json"
     ))
     .unwrap();
-    arguments["agents"][0] = serde_json::json!(child.as_str());
+    arguments["agents"] = serde_json::json!(
+        children
+            .iter()
+            .map(|child| child.as_str())
+            .collect::<Vec<_>>()
+    );
     ScriptedTurn::Events(vec![
         ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
             "selected-child".into(),
@@ -179,7 +202,6 @@ pub(super) async fn check(
         wait(child),
         ScriptedTurn::Text("child releases deferred wait".into()),
         ScriptedTurn::Text("deferred wait finished".into()),
-        wait(child),
     ]));
     let executors = Executors {
         original: StockExecutors::new(
@@ -292,6 +314,9 @@ async fn observe(
         "child releases deferred wait"
     );
 
+    parallel(stream, host, probe, model, parent, child).await?;
+    model.extend([wait(child)]);
+
     let (producer, gate) = oneshot::channel();
     let (observing, observed) = oneshot::channel();
     *probe.observing.lock().unwrap() = Some(observing);
@@ -311,6 +336,122 @@ async fn observe(
         Some(result) => result?,
         None => pending.await?,
     };
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 1);
+    dropped_answer(host, probe, model, parent, child).await
+}
+
+async fn dropped_answer(
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+) -> Result {
+    model.extend([
+        wait(child),
+        ScriptedTurn::Text("masked answer failure".into()),
+    ]);
+    let (producer, gate) = oneshot::channel();
+    let (answering, answered) = oneshot::channel();
+    *probe.answer_gate.lock().unwrap() = Some(gate);
+    *probe.answering.lock().unwrap() = Some(answering);
+    let mut pending = Box::pin(deliver(
+        host,
+        parent,
+        requested("lost-answer-producer", parent),
+    ));
+    match futures::future::select(pending.as_mut(), answered).await {
+        futures::future::Either::Right((answered, _)) => answered?,
+        futures::future::Either::Left(_) => panic!("wait skipped dropped answer observation"),
+    }
+    drop(producer);
+    let error = pending
+        .now_or_never()
+        .expect("answer producer loss did not end preparation")
+        .expect_err("answer producer loss became a successful answer");
+    let Some(Error::Actor(error)) = error.downcast_ref::<Error>() else {
+        return Err("answer producer loss lost its actor error class".into());
+    };
+    assert!(matches!(&**error, acyclic_actors::local::Error::Handler(
+        acyclic_actors::guest::GuestError::Handler(message)
+    ) if message.contains("original answer producer dropped")));
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+async fn parallel(
+    stream: &Arc<MemoryStream>,
+    host: &AgentHost<MemoryStream>,
+    probe: &Probe,
+    model: &ScriptedModelProvider,
+    parent: &AgentPath,
+    child: &AgentPath,
+) -> Result {
+    let request = InboxRecord::Spawn(SpawnRequest {
+        by: super::super::user(),
+        id: intent("parallel-answer-child"),
+        brief: Box::new(answer(&**stream, parent, 0).await?.output),
+        profile: CreationConfig {
+            context: SpawnContext::Fork,
+            template: None,
+            peers: Default::default(),
+        },
+        history: None,
+    });
+    let Delivered::Committed { inbox } = host.send(parent, &super::super::user(), &request).await?
+    else {
+        return Err("parallel child request was not committed".into());
+    };
+    let (_, other) = requested_child(parent, inbox)?;
+    host.drain(parent).await?;
+    model.extend([ScriptedTurn::Text("parallel child answer".into())]);
+    host.drain(&other).await?;
+    let selected = [
+        settled(stream, &within(), child)
+            .await?
+            .unwrap()
+            .answer
+            .unwrap(),
+        settled(stream, &within(), &other)
+            .await?
+            .unwrap()
+            .answer
+            .unwrap(),
+    ];
+    model.extend([
+        wait_selected(&[child, &other]),
+        ScriptedTurn::Text("parallel wait finished".into()),
+    ]);
+    probe.answers.lock().unwrap().clear();
+    let (release, gate) = oneshot::channel();
+    let (answering, answered) = oneshot::channel();
+    *probe.answer_gate.lock().unwrap() = Some(gate);
+    *probe.answering.lock().unwrap() = Some(answering);
+    let mut pending = Box::pin(deliver(host, parent, requested("parallel-answers", parent)));
+    match futures::future::select(pending.as_mut(), answered).await {
+        futures::future::Either::Right((answered, _)) => answered?,
+        futures::future::Either::Left(_) => panic!("wait skipped original answer"),
+    }
+    assert_eq!(
+        *probe.answers.lock().unwrap(),
+        selected,
+        "selected answers waited for an unrelated answer producer"
+    );
+    release
+        .send(())
+        .map_err(|_| "original answer lost its reader")?;
+    assert_eq!(pending.await?.phase, Phase::Idle);
+    assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 2);
+    let value = result(model);
+    for (index, (path, text)) in [
+        (child, "child releases deferred wait"),
+        (&other, "parallel child answer"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(value["settled"][index]["agent"], path.as_str());
+        assert_eq!(value["settled"][index]["answer"], text);
+    }
     Ok(())
 }

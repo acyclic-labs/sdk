@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-core/src/tools/agents.rs b/rust/crates/harness-core/src/tools/agents.rs
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -416,7 +416,7 @@
+                 })
+             },
+         ))
+-        .await?;
++        .await.unwrap_or_default();
+         Ok(ToolPreparation::Ready(ToolResult {
+             value: json!({"settled": settled, "running": running}),
+         }))
