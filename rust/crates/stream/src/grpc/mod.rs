@@ -25,7 +25,6 @@ use crate::wire_codec::{
 use crate::{
     AppendOutcome, CommitId, CommittedEnvelope, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamProvider, wire,
-
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 

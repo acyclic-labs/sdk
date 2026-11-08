@@ -354,16 +354,17 @@ async fn seed_fallback_and_off_markers_keep_the_original_layer_decision() -> Res
     ] {
         let home = Arc::new(MemoryHarnessStorage::new(AgentId::new(), 4096).await?);
         let seed = MemoryHarnessStorage::new(AgentId::new(), 4096).await?;
+        let display_name = path.rsplit('/').next().unwrap_or(path);
         seed.stage(
             OperationId::new(),
             path,
             b"seed content",
             "text/plain",
-            path,
+            display_name,
         )
         .await?;
         if let Some(bytes) = home_bytes {
-            home.stage(OperationId::new(), path, bytes, "text/plain", path)
+            home.stage(OperationId::new(), path, bytes, "text/plain", display_name)
                 .await?;
         }
         let reader = Arc::new(ReplaceAfterProbe {

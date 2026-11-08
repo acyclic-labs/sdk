@@ -577,7 +577,6 @@ async fn selected_discovery_survives_a_serving_process_restart() {
             ),
             "retired serving process returned {failure:?}"
         );
-
     }
     assert!(model.steps.lock().unwrap().is_empty());
 }
