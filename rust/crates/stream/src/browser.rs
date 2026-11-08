@@ -120,7 +120,7 @@ impl BrowserStream {
         if name.is_empty() || limits.capacities().contains(&Some(0)) {
             return Err(StreamError::InvalidArgument);
         }
-        let minted = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
+        let minted = u128::from_be_bytes(crate::new_identity());
         let database = Database::open(name)
             .with_version(1_u32)
             .with_on_upgrade_needed(move |_, database| {

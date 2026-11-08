@@ -39,6 +39,16 @@ class Artifact:
             raise ValueError("select the regular Linux graphcoder build artifact")
         return cls(binary.read_bytes(), sha256, source_sha)
 
+    def install_command(self, destination: str) -> str:
+        """Verify the uploaded bytes before making the destination executable."""
+        path = shlex.quote(destination)
+        verify = f'test "$(sha256sum < {path})" = {shlex.quote(self.sha256 + "  -")}'
+        refusal = shlex.quote(
+            f"step=verify-uploaded-artifact: destination digest differs; "
+            f"recovery: re-upload the verified artifact, then run {verify}")
+        return (f"if ! {verify}; then printf '%s\\n' {refusal} >&2; exit 1; fi; "
+                f"chmod 755 {path}")
+
 
 def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: int):
     """One explicit endpoint; no key, auth-file, or host-login option exists."""
@@ -67,10 +77,10 @@ def catalog(model_name: str, base_url: str, context_tokens: int, output_tokens: 
     }}
 
 
-def run_command(binary: str, state: str, logs: str, model: str, instruction: str) -> str:
-    """Keep prompt and every path as single shell arguments, including newlines."""
+def _invocation(binary: str, state: str, model: str) -> list[str]:
+    """The one environment and flag set both the readiness check and the run use."""
     home = str(PurePosixPath(state) / "home")
-    arguments = [
+    return [
         "HOME=" + home,
         "USERPROFILE=" + home, "CODEX_HOME=" + str(PurePosixPath(state) / "fixture-codex"),
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
@@ -78,8 +88,17 @@ def run_command(binary: str, state: str, logs: str, model: str, instruction: str
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
-        "--prompt=" + instruction,
     ]
+
+
+def doctor_command(binary: str, state: str, model: str) -> str:
+    """GraphCoder's own startup checks for the run's exact flags: every refusal at once."""
+    return 'env -i PATH="$PATH" ' + shlex.join(_invocation(binary, state, model) + ["doctor"])
+
+
+def run_command(binary: str, state: str, logs: str, model: str, instruction: str) -> str:
+    """Keep prompt and every path as single shell arguments, including newlines."""
+    arguments = _invocation(binary, state, model) + ["--prompt=" + instruction]
     # --workspace defaults to the task's native working directory. Redirection
     # preserves GraphCoder's exit status rather than that of a logging pipeline.
     return ('env -i PATH="$PATH" ' + shlex.join(arguments) + " > " + shlex.quote(str(PurePosixPath(logs) / "graphcoder.jsonl"))

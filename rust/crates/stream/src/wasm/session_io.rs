@@ -1,7 +1,7 @@
 //! Binary platform callbacks for the canonical session client, also on Node/Bun.
 use super::*;
 use crate::runtime::PlatformExecutor;
-use crate::session::{Client, transport};
+use crate::session::{Client, Frame, transport};
 use futures::{
     Stream,
     future::{AbortHandle, Abortable},
@@ -75,12 +75,19 @@ fn failure(error: JsValue) -> transport::Failure {
         .ok()
         .and_then(|value| value.as_bool())
         == Some(true);
-    let error = Reflect::get(&error, &JsValue::from_str("code"))
-        .ok()
-        .and_then(|code| code.as_string())
-        .as_deref()
-        .and_then(StreamError::from_code)
-        .unwrap_or(StreamError::Unavailable);
+    let error = match Reflect::get(&error, &"refusal".into()) {
+        Ok(refusal) if refusal.is_undefined() => Reflect::get(&error, &"code".into())
+            .ok()
+            .and_then(|code| code.as_string())
+            .as_deref()
+            .and_then(StreamError::from_code)
+            .unwrap_or(StreamError::Unavailable),
+        Ok(refusal) => acyclic_auth::refusal::javascript::parts(&refusal, |view| {
+            crate::javascript_bytes::snapshot(view, |_| Ok(())).map(|(bytes, ())| bytes)
+        })
+        .map_or(StreamError::Unavailable, wire_codec::status::status_owned),
+        Err(_) => StreamError::Unavailable,
+    };
     transport::Failure { error, transient }
 }
 impl Connection {
@@ -104,10 +111,7 @@ struct Responses {
     ended: bool,
 }
 impl Responses {
-    fn poll(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<wire::SessionFrame, transport::Failure>>> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Frame, transport::Failure>>> {
         if self.ended {
             return Poll::Ready(None);
         }
@@ -171,7 +175,9 @@ impl Responses {
                     return Poll::Ready(Some(Err(StreamError::LimitExceeded.into())));
                 }
                 Poll::Ready(Some(
-                    wire_codec::session::decode_frame(&bytes.to_vec()).map_err(Into::into),
+                    wire_codec::session::decode_frame(&bytes.to_vec())
+                        .map(Into::into)
+                        .map_err(Into::into),
                 ))
             }
         }
@@ -193,7 +199,7 @@ impl Stream for Responses {
         if matches!(result, Poll::Ready(None | Some(Err(_)))) {
             self.ended = true;
         }
-        result.map(|item| item.map(|item| item.map(Into::into)))
+        result
     }
 }
 impl transport::Transport for Endpoint {
@@ -278,15 +284,29 @@ mod tests {
 
     #[wasm_bindgen_test::wasm_bindgen_test]
     async fn javascript_transport_failures_preserve_interruption_disposition() {
+        // Derive adversarial diagnostics from the production status writer.
+        // These are not captures of a deployed member's attribution contract.
+        let canonical = wire_codec::status::error_status(&StreamError::Unavailable);
+        let mut metadata = canonical.metadata().clone();
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        metadata.append("acyclic-original", canonical.message().parse().unwrap());
+        let status = tonic::Status::with_details_and_metadata(
+            tonic::Code::Unknown,
+            canonical.message(),
+            canonical.message().as_bytes().to_vec().into(),
+            metadata,
+        );
+        let reported = wire_codec::status::status(&status);
         for write in [false, true] {
             for (error, transient) in [
                 (StreamError::Unavailable, true),
                 (StreamError::Unavailable, false),
                 (StreamError::AccessDenied, false),
                 (StreamError::InvalidResponse, false),
+                (reported.clone(), true),
+                (reported.clone(), false),
             ] {
-                let original = js_sys::Error::new("original callback failure");
-                Reflect::set(&original, &"code".into(), &error.code().into()).unwrap();
+                let original = super::super::js_error(error.clone());
                 Reflect::set(&original, &"transient".into(), &transient.into()).unwrap();
                 let io = Object::new();
                 let next = Closure::<dyn Fn() -> Promise>::new({
@@ -348,18 +368,36 @@ mod tests {
                         assert_eq!(failure.error, error);
                         assert_eq!(failure.transient, transient);
                     }
-                    Ok(frame) if write && !transient => {
-                        let Some(wire::session_frame::Body::Closed(closed)) =
-                            frame.wire().body.as_ref()
-                        else {
-                            panic!("a rejected interest must close its original channel")
-                        };
-                        assert_eq!(closed.code, error.code());
-                    }
-                    Ok(_) => panic!("an interrupted write must fail the physical connection"),
+                    Ok(_) => panic!("a rejected callback must fail the physical connection"),
                 }
                 drop(responses);
             }
         }
+
+        // Exercise the shipped session pool and public ABI as well as its
+        // physical callback boundary. A peer refusal must finish this request.
+        let connect = Closure::<dyn Fn() -> Promise>::new({
+            let error = super::super::js_error(reported.clone());
+            move || Promise::reject(&error)
+        });
+        let session = super::super::WasmSession::new(
+            connect.as_ref().unchecked_ref::<Function>().clone(),
+            true,
+            None,
+        );
+        let request = wire_codec::heads_request_to_wire(crate::HeadsRequest {
+            retained: Default::default(),
+            durable_through: None,
+            projection: crate::HeadProjection::Tail,
+            paths: Default::default(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        });
+        let actual = session
+            .heads(&request.encode_to_vec(), 0)
+            .await
+            .unwrap_err();
+        assert_eq!(failure(actual).error, reported, "public session refusal");
     }
 }

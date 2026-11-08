@@ -5,7 +5,6 @@ use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeF
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
 use acyclic_stream::{OwnedBytes, Revision};
-use futures::stream::{self, StreamExt};
 
 /// Requests a default batch keeps in flight: one round trip covers a window
 /// instead of one request, and a batch never holds more pending work.
@@ -397,11 +396,17 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         &self,
         requests: Vec<(Digest, ByteRange, u64)>,
     ) -> Vec<Result<Object, Error>> {
-        stream::iter(requests)
-            .map(|(digest, range, maximum)| self.get(digest, range, maximum))
-            .buffered(BATCH_WINDOW)
-            .collect()
-            .await
+        let mut results = Vec::with_capacity(requests.len());
+        let driven = crate::batch::drive(
+            requests,
+            BATCH_WINDOW,
+            |_| Ok::<_, std::convert::Infallible>(()),
+            |(digest, range, maximum)| self.get(digest, range, maximum),
+            |object| results.push(object),
+        )
+        .await;
+        let Ok(()) = driven;
+        results
     }
 
     /// Reads under the caller's original allocation owner.

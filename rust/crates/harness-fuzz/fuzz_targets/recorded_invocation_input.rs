@@ -12,19 +12,12 @@ use acyclic_harness::{
     model::{ModelContentPart, ToolCall, ToolResultContent},
     projection::{SelectedModelContext, select_model_context},
     resources::ProviderRef,
-    tool::{ToolInvocation, ToolResult},
+    tool::ToolResult,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, marker::PhantomData};
 
-#[derive(Deserialize, Serialize, acyclic_harness::HeapLayout)]
-#[heap_layout(crate = acyclic_harness)]
-#[serde(deny_unknown_fields)]
-pub struct Record {
-    pub invocation: ToolInvocation,
-    pub metadata: Value,
-}
+pub use acyclic_harness::tool::RecordedInvocation as Record;
 
 struct Resolver(BTreeMap<String, Vec<u8>>);
 impl ContentResidencyVerifier for Resolver {
@@ -68,6 +61,13 @@ fn reference(path: &str, bytes: &[u8]) -> FileRef {
 }
 
 pub fn assert_replay(record: Record, limits: Limits) {
+    // This vector exercises provisional model admission, before dispatch binds
+    // the execution target and filesystem authority into the same envelope.
+    let record = Record {
+        target: None,
+        filesystem: None,
+        ..record
+    };
     if record
         .invocation
         .validate_recorded(&record.metadata, limits, None)
@@ -194,6 +194,37 @@ pub fn assert_replay(record: Record, limits: Limits) {
     assert_eq!(projected, replay);
 }
 
+pub fn assert_envelope(record: &Record) {
+    // Retain every field when reading an already bound durable envelope.
+    let encoded = serde_json::to_vec(record).unwrap();
+    let decoded: Record = json_from_slice_bounded(
+        PhantomData,
+        &encoded,
+        JsonBounds {
+            maximum_bytes: encoded.len() as u64,
+            maximum_items: 4096,
+            maximum_depth: 256,
+        },
+        None,
+        Some(JsonValueSchema::Root),
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(decoded.invocation, record.invocation);
+    assert_eq!(
+        decoded.metadata, record.metadata,
+        "recorded invocation lost original metadata"
+    );
+    assert_eq!(
+        decoded.target, record.target,
+        "recorded invocation lost original target"
+    );
+    assert_eq!(
+        decoded.filesystem, record.filesystem,
+        "recorded invocation lost original filesystem authority"
+    );
+}
+
 pub fn check(data: &[u8]) {
     let parsed = json_from_slice_bounded(
         PhantomData::<Record>,
@@ -208,6 +239,15 @@ pub fn check(data: &[u8]) {
         &mut |_| Ok(()),
     );
     if let Ok(record) = parsed {
+        // Reserved serde marker maps are refused before persistence. Their
+        // canonical key order can change serde's interpretation, so replay
+        // must prove rejection instead of roundtripping a non-recordable value.
+        if acyclic_harness::conversation::validate_portable_json(&record.invocation.arguments)
+            .is_ok()
+            && acyclic_harness::conversation::validate_portable_json(&record.metadata).is_ok()
+        {
+            assert_envelope(&record);
+        }
         assert_replay(
             record,
             Limits {

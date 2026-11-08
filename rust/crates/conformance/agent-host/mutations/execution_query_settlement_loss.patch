@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-client/src/event_projection.rs b/rust/crates/harness-client/src/event_projection.rs
+--- a/rust/crates/harness-client/src/event_projection.rs
++++ b/rust/crates/harness-client/src/event_projection.rs
+@@ -87,7 +87,7 @@
+     /// No source read, allocation, wait or history scan is performed here.
+     pub fn continuation(&self) -> acyclic_harness_core::Result<ExecutionPosition> {
+         match &self.page {
+-            Some(page) if self.settled && page.next.is_none() => Ok(ExecutionPosition {
++            Some(page) if page.next.is_none() => Ok(ExecutionPosition {
+                 input: self.input.checked_add(1).ok_or_else(|| {
+                     acyclic_harness_core::Error::Invalid(
+                         "execution input continuation overflows; recovery: resume with the original representable input cursor".into(),

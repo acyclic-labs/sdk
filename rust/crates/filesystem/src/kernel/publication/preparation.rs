@@ -67,15 +67,22 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
                 ticket: None,
             });
         }
-        combiner::prepare(
-            self.0.owner,
-            self.0.request,
-            &mut self.0.intent,
-            self.0.limits,
+        // The combiner runs in a funded, erased heap frame: the publication
+        // engine and every caller hold a pointer instead of its change
+        // collection and table reads, so neither their layout nor their
+        // `Send` proof grows with it.
+        crate::heap_future::in_borrowed_frame!(
             accounting,
-            self.0.cancellation,
+            |accounting| combiner::prepare(
+                self.0.owner,
+                self.0.request,
+                &mut self.0.intent,
+                self.0.limits,
+                accounting,
+                self.0.cancellation,
+            ),
+            erase_task
         )
-        .await
     }
 
     async fn authenticate(

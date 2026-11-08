@@ -102,6 +102,8 @@ pub struct ErrorMetadata {
     pub service_code: Option<i32>,
     /// Decoded service diagnostic, separate from the gRPC status message.
     pub service_message: Option<String>,
+    /// Original producer attribution, independent of the service code or message.
+    pub cause: Option<acyclic_auth::refusal::Cause>,
     /// Canonical admission category, when applicable.
     pub contract_code: Option<String>,
     /// Exact detail bytes for service failures, including empty details.
@@ -133,8 +135,15 @@ impl Error {
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
                 metadata.credential_rejected = grpc_code == 16;
-                metadata.service_code = detail.as_ref().map(|value| value.code);
-                metadata.service_message = detail.map(|value| value.message);
+                if let Some(detail) = detail {
+                    metadata.service_code = Some(detail.code);
+                    metadata.service_message = Some(detail.message);
+                    metadata.cause = acyclic_auth::refusal::Cause::reported(
+                        detail.component,
+                        detail.reason,
+                        detail.request_id,
+                    );
+                }
                 metadata.raw_details = Some(raw_details);
             }
             Self::Credential(_) => {
@@ -210,20 +219,18 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "tonic map_err supplies owned status values"
-)]
-fn service_error(status: tonic::Status) -> Error {
-    Error::Service {
-        grpc_code: status.code() as i32,
-        message: status.message().to_owned(),
-        raw_details: status.details().to_vec(),
-        detail: if status.details().is_empty() {
-            None
-        } else {
-            wire::Error::decode(status.details()).ok()
-        },
+impl From<tonic::Status> for Error {
+    fn from(status: tonic::Status) -> Self {
+        Self::Service {
+            grpc_code: status.code() as i32,
+            message: status.message().to_owned(),
+            raw_details: status.details().to_vec(),
+            detail: if status.details().is_empty() {
+                None
+            } else {
+                wire::Error::decode(status.details()).ok()
+            },
+        }
     }
 }
 
@@ -245,7 +252,7 @@ async fn request_error(
             }
         }
     }
-    service_error(status)
+    status.into()
 }
 
 /// Connected Actors client whose operation methods are shared by all targets.
@@ -669,6 +676,7 @@ mod tests {
             let detail = wire::Error {
                 code,
                 message: message.to_owned(),
+                ..Default::default()
             };
             (detail.encode_to_vec(), Some(detail))
         };
@@ -692,7 +700,7 @@ mod tests {
                 "original grpc diagnostic",
                 bytes.clone().into(),
             );
-            let error = service_error(status);
+            let error = Error::from(status);
             let Error::Service {
                 grpc_code,
                 detail: actual,

@@ -945,6 +945,10 @@ mod isolation_tests {
                 .await
                 .unwrap()
         );
+        let (original_file, original_slot) = {
+            let log = medium.shared.log();
+            (Arc::clone(&log.file), log.index["kept"])
+        };
         let kept = observation(&medium, "kept").await;
         let stale = observation(&medium, "kept").await;
         assert!(
@@ -973,6 +977,12 @@ mod isolation_tests {
             medium.read("kept", None).await.unwrap().unwrap().as_ref(),
             b"unchanged"
         );
+        // A reader admitted before replacement retains its original file and
+        // offsets. It must finish without reopening the replacement log.
+        let mut original = [0; 9];
+        read_exact_at(&original_file, original_slot.value, &mut original).unwrap();
+        assert_eq!(&original, b"unchanged");
+        drop(original_file);
         // Compaction and unrelated mutations do not invalidate the original
         // per-key fact. Another handle of this same opened source accepts it.
         let alias = LocalMedium {

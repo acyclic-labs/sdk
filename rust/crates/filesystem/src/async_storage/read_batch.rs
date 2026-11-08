@@ -10,27 +10,42 @@ pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
     read_many_representation::<Decoded, S>(store, requests, context)
 }
 
-pub(crate) fn read_many_stored_sequential<S: AsyncObjectStore + ?Sized>(
-    store: &S,
-    requests: &[ObjectReadRequest],
-    context: &mut AuthorityWork<'_>,
-) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>>
-+ acyclic_stream::ProviderTask {
-    read_many_representation::<Stored, S>(store, requests, context)
-}
-
 // Select the provider future before forming the batch state machine. The
 // decoded path must not also contain the stored representation's read path.
-trait ReadRepresentation {
+pub(crate) trait ReadRepresentation {
+    fn reads_plaintext(id: ObjectId) -> bool;
+
+    fn read_many<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        requests: &[ObjectReadRequest],
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<
+        Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>,
+    > + ProviderTask;
+
     fn read<S: AsyncObjectStore + ?Sized>(
         store: &S,
         request: &ObjectReadRequest,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<ObjectRead, crate::ObjectStoreError>> + ProviderTask;
 }
-struct Decoded;
-struct Stored;
+pub(crate) struct Decoded;
+pub(crate) struct Stored;
 impl ReadRepresentation for Decoded {
+    fn reads_plaintext(_: ObjectId) -> bool {
+        true
+    }
+
+    fn read_many<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        requests: &[ObjectReadRequest],
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<
+        Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>,
+    > + ProviderTask {
+        store.read_many(requests, context)
+    }
+
     fn read<S: AsyncObjectStore + ?Sized>(
         store: &S,
         request: &ObjectReadRequest,
@@ -40,6 +55,20 @@ impl ReadRepresentation for Decoded {
     }
 }
 impl ReadRepresentation for Stored {
+    fn reads_plaintext(id: ObjectId) -> bool {
+        id.storage.is_none()
+    }
+
+    fn read_many<S: AsyncObjectStore + ?Sized>(
+        store: &S,
+        requests: &[ObjectReadRequest],
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<
+        Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>,
+    > + ProviderTask {
+        store.read_many_stored(requests, context)
+    }
+
     fn read<S: AsyncObjectStore + ?Sized>(
         store: &S,
         request: &ObjectReadRequest,
@@ -56,35 +85,15 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
 ) -> Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError> {
     let mut scope = context.scope()?;
     let batch = &mut *scope;
-    if requests.is_empty() {
-        return Err(crate::ObjectStoreError::EmptyReadBatch);
-    }
-    let count = u64::try_from(requests.len()).map_err(|_| crate::WorkError::Overflow)?;
-    batch
-        .admit(WorkCounters {
-            items_examined: count,
-            items_returned: count,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(crate::ObjectStoreError::from)?;
-    batch
-        .charge(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::UNCHARGED
-        })
-        .map_err(crate::ObjectStoreError::from)?;
+    let count = admit_read_batch(requests.len(), batch)?;
     let mut values = batch
         .vec_owned(requests.len())
         .map_err(crate::ObjectStoreError::from)?;
     for request in requests {
         let read = R::read(store, request, batch).await?;
-        let bytes = match read.retention {
-            crate::storage::ObjectReadRetention::Shared => 0,
-            crate::storage::ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
-        };
         values.bytes = values
             .bytes
-            .checked_add(bytes)
+            .checked_add(read.retention.owned_bytes())
             .ok_or(crate::WorkError::Overflow)?;
         values.value.push(read);
     }
@@ -98,6 +107,26 @@ async fn read_many_representation<R: ReadRepresentation, S: AsyncObjectStore + ?
     Ok(authority_parts(
         scope.finish_owned(values).map_err(object_error)?,
     ))
+}
+
+pub(crate) fn admit_read_batch(
+    length: usize,
+    work: &mut AuthorityWork<'_>,
+) -> Result<u64, crate::ObjectStoreError> {
+    if length == 0 {
+        return Err(crate::ObjectStoreError::EmptyReadBatch);
+    }
+    let count = u64::try_from(length).map_err(|_| crate::WorkError::Overflow)?;
+    work.admit(WorkCounters {
+        items_examined: count,
+        items_returned: count,
+        ..WorkCounters::UNCHARGED
+    })?;
+    work.charge(WorkCounters {
+        items_examined: count,
+        ..WorkCounters::UNCHARGED
+    })?;
+    Ok(count)
 }
 
 impl From<crate::AuthorityStoreError> for crate::ObjectStoreError {

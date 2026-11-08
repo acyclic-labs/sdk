@@ -97,7 +97,7 @@ impl<V: AsRef<[u8]>, A> CompiledPrefixIndex<V, A> {
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         work.check().map_err(CompiledPrefixError::Work)?;
-        Self::compile(entries, EntryBytes, Some, work)
+        Self::compile(entries, EntryBytes, Some, true, work)
     }
 }
 
@@ -109,6 +109,25 @@ impl<V, A> CompiledPrefixIndex<V, A> {
     pub fn from_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
         entries: Vec<V>,
         key: K,
+        work: &mut W,
+    ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
+        Self::from_keyed_entries(entries, key, true, work)
+    }
+
+    /// Compiles repeated keys through the same retained table and traversal.
+    /// Matches select the first original entry for that key.
+    pub fn from_repeated_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        work: &mut W,
+    ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
+        Self::from_keyed_entries(entries, key, false, work)
+    }
+
+    fn from_keyed_entries<K: Fn(&V) -> &[u8], W: IndexWork<Allocation = A>>(
+        entries: Vec<V>,
+        key: K,
+        distinct: bool,
         work: &mut W,
     ) -> Result<CompiledPrefixIndex<V, A, K>, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Work};
@@ -128,16 +147,17 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         work.charge_items(entries.len() as u64).map_err(Work)?;
         order.extend(0..entries.len());
         sort(&mut order, &mut |&left, &right| {
-            let left = key.bytes(entries.get(left).ok_or(CompiledPrefixError::Invariant)?);
-            let right = key.bytes(entries.get(right).ok_or(CompiledPrefixError::Invariant)?);
-            work.charge_items(left.len().min(right.len()) as u64 + 1)
+            let left_key = key.bytes(entries.get(left).ok_or(CompiledPrefixError::Invariant)?);
+            let right_key = key.bytes(entries.get(right).ok_or(CompiledPrefixError::Invariant)?);
+            work.charge_items(left_key.len().min(right_key.len()) as u64 + 1)
                 .map_err(Work)?;
-            Ok(left.cmp(right))
+            Ok(left_key.cmp(right_key).then_with(|| left.cmp(&right)))
         })?;
         let index = CompiledPrefixIndex::compile(
             entries,
             key,
             |position| order.get(position).copied(),
+            distinct,
             work,
         )?;
         drop(order);
@@ -204,6 +224,7 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         entries: &[V],
         key: &K,
         position: &impl Fn(usize) -> Option<usize>,
+        distinct: bool,
         work: &mut W,
     ) -> Result<(), CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Invariant, Order, Work};
@@ -220,7 +241,7 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             );
             work.charge_items(left.len().min(right.len()) as u64 + 1)
                 .map_err(Work)?;
-            if left >= right {
+            if left > right || (distinct && left == right) {
                 return Err(Order(position(index).ok_or(Invariant)?));
             }
         }
@@ -231,10 +252,11 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
         entries: Vec<V>,
         key: K,
         position: impl Fn(usize) -> Option<usize>,
+        distinct: bool,
         work: &mut W,
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Invariant, Work};
-        Self::validate_order(&entries, &key, &position, work)?;
+        Self::validate_order(&entries, &key, &position, distinct, work)?;
         let capacity = entries.len().checked_mul(2).ok_or(Capacity)?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<Node>())
@@ -271,11 +293,13 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             let end = node.end;
             let before = node.children.end;
             let mut from = node.children.start;
-            if result
-                .key::<W::Error>(position(from).ok_or(Invariant)?)?
-                .len()
-                == end
+            while from < before
+                && result
+                    .key::<W::Error>(position(from).ok_or(Invariant)?)?
+                    .len()
+                    == end
             {
+                work.charge_items(1).map_err(Work)?;
                 from += 1;
             }
             let first_child = result.nodes.len();

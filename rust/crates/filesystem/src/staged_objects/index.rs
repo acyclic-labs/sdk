@@ -85,6 +85,19 @@ pub(super) struct Index {
 }
 
 impl Index {
+    pub(super) fn lookup(&self, object_id: ObjectId) -> Lookup {
+        match self.objects.get(&object_id) {
+            None => Lookup::Absent,
+            Some(Staged::Resident {
+                object, referenced, ..
+            }) => {
+                referenced.store(true, Ordering::Relaxed);
+                Lookup::Resident(object.bytes().clone())
+            }
+            Some(&Staged::Spilled { offset, length }) => Lookup::Spilled { offset, length },
+        }
+    }
+
     /// Holds the original seal in memory unless the identity is
     /// already staged. Returns whether the object was admitted.
     pub(super) fn admit_resident(

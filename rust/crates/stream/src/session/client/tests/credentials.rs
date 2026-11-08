@@ -89,7 +89,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                     result,
                     Err(transport::Failure {
                         error: StreamError::AccessDenied,
-                        transient: false
+                        transient: false,
                     })
                 ));
                 assert_eq!(
@@ -109,7 +109,7 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                     waiting.now_or_never(),
                     Some(Some(Err(transport::Failure {
                         error: StreamError::AccessDenied,
-                        transient: false
+                        transient: false,
                     })))
                 ),
                 "source notification must retire an idle session without another frame"

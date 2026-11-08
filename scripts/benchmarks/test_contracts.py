@@ -4,6 +4,7 @@ import hashlib
 import itertools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,28 @@ class BenchmarkContracts(unittest.TestCase):
         for field in ("latest", "a" * 39, "A" * 40, "a" * 41):
             with self.assertRaises(ValueError):
                 Artifact(self.artifact.contents, self.sha, field)
+
+    def test_uploaded_identity_precedes_executable_admission(self):
+        # Capture the installed OS executable, rather than inventing tool bytes.
+        source = shutil.which("true")
+        original = Path(source).read_bytes()
+        artifact = Artifact(original, hashlib.sha256(original).hexdigest(), self.source)
+        print(json.dumps({"fixture_source": source, "sha256": artifact.sha256}))
+        destination = self.root / "uploaded ' artifact"
+        for changed in (False, True):
+            # Appending bytes preserves this real executable's successful exit.
+            destination.write_bytes(original + (b"\0" if changed else b""))
+            destination.chmod(0o755)
+            self.assertEqual(subprocess.run([str(destination)], check=False).returncode, 0)
+            destination.chmod(0o644)
+            result = subprocess.run(["bash", "-c", artifact.install_command(str(destination))],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, int(changed),
+                             "uploaded destination identity was accepted after bytes changed")
+            self.assertEqual(bool(destination.stat().st_mode & 0o111), not changed)
+            if changed:
+                self.assertIn("step=verify-uploaded-artifact", result.stderr)
+                self.assertIn("recovery:", result.stderr)
 
     def test_endpoint_has_no_credential_bearing_shape(self):
         for endpoint in ("https://name:password@example.test/v1", "https://example.test/?token=x",

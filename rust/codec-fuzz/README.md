@@ -820,6 +820,70 @@ reason operands are derived mutations, not captured provider failures.
 `original_service_writers_satisfy_the_semantic_oracle` must fail at
 `original member cause`. Restore the patch before the positive check.
 
+The same batch oracle consumes admitted member diagnostics through the public
+owned `ErrorDetail` conversion. A held shared owner must preserve every field;
+once unique, all three string pointers must move into the wire detail.
+`negative-controls/object_batch_diagnostic_copy.patch` restores the borrowed
+conversion and must fail at `unique member projection moves all original
+diagnostic allocations`. These checks reuse the retained mixed-batch writer
+and its derived known/unknown attribution operands; they add no captured wire.
+
+The same `ErrorDetail` protobuf and JSON targets also retain the original
+status bytes through the owned status admission and check that its message and
+detail buffer move rather than copy. Native borrowed admission is compared
+against that same owner in `every_member_refusal_round_trips_its_original_status`.
+
+The JavaScript account's retained WASM control exercises the shipped account
+and request ports, including the actual bounded memory provider's refusal,
+derived future reasons, unknown protobuf fields, repeated binary metadata and
+malformed envelopes. `negative-controls/object_javascript_refusal.patch` removes
+only the original refusal field; the unchanged control must reject it at
+`original provider refusal survives JavaScript`.
+The JavaScript fuzz target uses the same public request port and its actual
+Rust writer, with arbitrary status detail bytes from the existing corpus:
+
+```sh
+node typescript/packages/objects/test/refusal.fuzz.mjs rust/codec-fuzz/corpus/protobuf/acyclic.objects.v1.ErrorDetail
+```
+
+Build the Objects package first using its documented build command. The target
+also accepts arbitrary byte inputs through its exported `fuzz` function, and
+checks the TypeScript adapter retains the same original envelope.
+It also compares the generated protobuf reader with the shipped request's
+detail admission. An unsupported detail category falls back to the original
+top-level category. `negative-controls/object_javascript_category.patch`
+restores category loss; the same WASM control must reject it at
+`unsupported detail code 0 preserves category InvalidArgument`.
+
+The Stream session target reuses that same original Rust refusal producer and
+corpus through the shipped session pool's JavaScript callback boundary:
+
+```sh
+node typescript/packages/stream/test/refusal.fuzz.mjs rust/codec-fuzz/corpus/protobuf/acyclic.objects.v1.ErrorDetail
+```
+
+Build the Objects and Stream packages first. The exported `fuzz` function accepts
+arbitrary diagnostic bytes and checks all gRPC status categories, original opaque
+bytes and terminal completion without an extra connection. Derived operands are
+not captures of deployed member attribution. The retained
+`negative-controls/stream_javascript_refusal.patch` restores the code-only
+callback decoder; the same target must reject the missing original envelope.
+The existing WASM interruption control also drives the real authenticated server
+and public session pool, rejecting one interest between two successful requests
+on the same physical connection. This checks the original channel refusal reaches
+its caller without closing the connection. Browser execution and instrumented
+coverage remain separate qualification obligations.
+
+Actors uses the same canonical `refusal::Cause`. Its original code, message
+and raw detail envelope survive the public client metadata projection, including
+unknown service codes and partial attribution. The protobuf and protobuf JSON
+targets check that projection after their original decoder. The kept
+`negative-controls/actors_cause_metadata.patch` discards only the projected cause;
+`actors_cause_copy.patch` copies the attributed strings. The
+`canonical_error_writers_preserve_original_attribution` property must reject
+them at `original Actors cause` and `original Actors attribution backing`.
+Restore each patch before positive qualification.
+
 The Objects writer admission also opens the real account's availability feed
 through its public binary client and the shared production cursor writer. It
 requires that original opening cursor to decode, and refuses a zero incarnation
@@ -850,12 +914,37 @@ the respective production identity checks; the unchanged property must reject
 each omission. This qualifies request identity, not all range, content,
 transport or topology branches.
 
-The Objects-only export refreshes the first eight bytes that select a generated
+The Objects-only and Actors-only exports refresh the first eight bytes that select a generated
 test decoder when earlier schema entries move. The original protobuf or JSON
 payload after that selector must stay unchanged, as must unrelated corpus rows
 and producer provenance. The exporter uses the same pair writer, admission and
 golden comparison as other protobuf captures; consecutive exports must keep
 both indexes and selected packets byte-identical.
+
+The Actors attribution corpus comes from `ServiceError` and the canonical
+`acyclic_actors::grpc::error_status` writer. Capture it with:
+
+```sh
+cargo run --locked --manifest-path rust/codec-fuzz/Cargo.toml -p acyclic-codec-fuzz --example capture -- --only-actors-protobuf --extend-goldens
+```
+
+The shared protobuf and protobuf JSON oracles enter the owned client status
+conversion, retain malformed and unknown detail bytes, and compare canonical
+Cause values and all three original attribution string pointers. The retained
+`actors_cause_metadata.patch` and `actors_cause_copy.patch` production mutations
+must respectively fail the same property at `original Actors cause` and
+`original Actors attribution backing`. Restore production before admitting the
+positive writer. Source-generated writer packets do not represent a deployed
+service capture.
+
+The native bridge retains the same canonical Cause in its N-API field
+projection. Its existing
+`tests::service_metadata_preserves_original_message_unknown_code_and_bytes`
+property also checks the three original attribution allocations and serialized
+Cause, alongside the unknown service code and raw details. The retained
+`actors_native_cause.patch` and `actors_native_cause_copy.patch` mutations must
+reject dropped attribution and an extra component copy respectively. This
+component property does not replace qualification through the real Node ABI.
 
 The Objects controls below extend the same semantic writer property or persisted
 writer property. Each uses the production entry point and independently held
@@ -980,3 +1069,12 @@ The retained native hidden-raw property crosses its 64-item limit with 65
 elements. Run `node rust/crates/harness-fuzz/typed-json-negative-control.mjs
 --hidden-items` to omit the actual final item guard, require the unchanged
 no-admission assertion to fail, and restore the original passing property.
+
+The native Stream boundary retains the same raw Auth refusal envelope. The
+existing `tests::tail::native_tail_preserves_the_complete_real_observation`
+control exercises the actual authenticated service, TCP client and native
+result, with duplicate metadata and binary header bytes derived from the real
+service rejection. `negative-controls/stream_native_refusal.patch` removes
+that original diagnostic from the shared native conversion; the same control
+must reject it. This Rust component control does not establish Node ABI or
+platform qualification.

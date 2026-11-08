@@ -139,6 +139,10 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The agent host definitively refused a request, which committed
+    /// nothing. It reads as the host error's own text, already classified.
+    #[error("{0}")]
+    Refused(String),
     /// The original exact-edit matcher rejected missing or ambiguous text.
     #[error(transparent)]
     ExactEdit(crate::tool::edit::EditRejection),
@@ -179,10 +183,12 @@ pub enum Error {
     #[error("unsupported capability: {0}")]
     Unsupported(String),
     /// A tool requires a native view whose host device or driver is missing.
-    #[error("native mount unavailable: {device}")]
+    #[error("native mount unavailable: {device}: {reason}")]
     MountUnavailable {
         /// Missing host mount device or driver.
         device: &'static str,
+        /// The probe's exact refusal and its recovery.
+        reason: &'static str,
     },
     /// The request is malformed.
     #[error("invalid request: {0}")]
@@ -695,7 +701,7 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
@@ -936,6 +942,7 @@ impl Error {
             Self::ModelContextOverflow
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)

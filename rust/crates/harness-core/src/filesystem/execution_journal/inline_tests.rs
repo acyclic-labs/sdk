@@ -726,7 +726,7 @@ async fn private_payloads_reject_inline_bodies_at_every_append_entry_point() -> 
 
 #[tokio::test]
 async fn private_payloads_require_original_read_and_write_grants() -> Result<()> {
-    let (mut journal, _issuer) = test_support::journal().await?;
+    let (mut journal, original_issuer) = test_support::journal().await?;
     let operation = OperationId::new();
     initialize(&journal, operation).await?;
     let original = journal.scope.clone();
@@ -757,7 +757,7 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "missing opposite grant for {grant:?}"
         );
     }
-    journal.scope = original;
+    journal.scope = original.clone();
     assert_eq!(journal.records(operation, 0, 64, None).await?.len(), 2);
     crate::executor::append_model_event(
         &journal,
@@ -782,5 +782,25 @@ async fn private_payloads_require_original_read_and_write_grants() -> Result<()>
             "cached replay requires read authority"
         );
     }
+    journal.scope = original;
+    assert!(journal.records(operation, 0, 64, None).await.is_ok());
+    original_issuer.revoke_workload(&journal.scope)?;
+    assert!(matches!(
+        journal.records(operation, 0, 64, None).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(matches!(
+        crate::executor::append_model_event(
+            &journal,
+            operation,
+            "model:0:1",
+            (0, ModelPurpose::Response),
+            &events().remove(0),
+            None,
+            None,
+        )
+        .await,
+        Err(Error::Unauthorized(_))
+    ));
     Ok(())
 }

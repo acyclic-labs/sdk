@@ -1,0 +1,19 @@
+diff --git a/scripts/graphcoder-e2e/frames.mjs b/scripts/graphcoder-e2e/frames.mjs
+index ad2047bed50..0415ddf2c86 100644
+--- a/scripts/graphcoder-e2e/frames.mjs
++++ b/scripts/graphcoder-e2e/frames.mjs
+@@ -68,12 +68,12 @@ export class FailureHistory {
+   #handled = new Map();
+   unexpected(visible, condition) {
+     for (const failure of failures(visible)) if (!expected(failure, condition)
+-      && !expected(failure, this.#handled.get(failure.identity ?? failure.text))) return failure.text;
++      && !expected(failure, this.#handled.get(failure.text))) return failure.text;
+   }
+   accept(visible, condition) {
+     const handled = new Map();
+     for (const failure of failures(visible)) {
+-      const key = failure.identity ?? failure.text, previous = this.#handled.get(key);
++      const key = failure.text, previous = this.#handled.get(key);
+       // The task and explicitly admitted prefix survive clipping/reflow. Other
+       // notices retain exact text identity. Retain only this frame's failures.
+       if (expected(failure, condition)) handled.set(key, condition);

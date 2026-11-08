@@ -76,6 +76,17 @@ struct Embedded {
     client: Client,
     binding: Vec<u8>,
     effects: Arc<AtomicUsize>,
+    delivery: futures::lock::Mutex<()>,
+}
+
+impl Embedded {
+    async fn deliver(&self, agent: &AgentPath) -> Result {
+        // This explicit-placement fixture owns one delivery event at a time.
+        // Client exchanges remain concurrent; a waiter releases on cancellation.
+        let _event = self.delivery.lock().await;
+        self.server.drain(agent).await?;
+        Ok(())
+    }
 }
 
 /// The shared fixture composition for local and browser backend entries.
@@ -197,6 +208,7 @@ pub async fn open<B: Backend + ?Sized>(
         client,
         binding,
         effects,
+        delivery: futures::lock::Mutex::new(()),
     }))
 }
 
@@ -254,7 +266,7 @@ impl Endpoint for Embedded {
                     .map_ok(acyclic_stream::records_only)
                     .await?;
                 input.try_next().await?.ok_or("spawn inbox follow ended")?;
-                self.server.drain(parent).await?;
+                self.deliver(parent).await?;
                 futures::future::pending::<Result<Bytes>>().await
             };
             let result = self.client.actor_call(
@@ -271,10 +283,7 @@ impl Endpoint for Embedded {
         })
     }
     fn drain<'a>(&'a self, agent: &'a AgentPath) -> BoxProviderFuture<'a, Result> {
-        Box::pin(async move {
-            self.server.drain(agent).await?;
-            Ok(())
-        })
+        Box::pin(self.deliver(agent))
     }
     fn read_file<'a>(
         &'a self,

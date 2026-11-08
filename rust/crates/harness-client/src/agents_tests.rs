@@ -2,7 +2,7 @@ use super::*;
 use crate::{AgentId, Phase};
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProvider,
+    AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError,
     runtime::PlatformExecutor,
     session::{self, transport},
 };

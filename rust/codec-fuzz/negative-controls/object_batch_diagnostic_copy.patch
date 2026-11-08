@@ -1,0 +1,15 @@
+diff --git a/rust/crates/objects/src/error.rs b/rust/crates/objects/src/error.rs
+--- a/rust/crates/objects/src/error.rs
++++ b/rust/crates/objects/src/error.rs
+@@ -211,10 +211,5 @@
+ impl From<Error> for wire::ErrorDetail {
+     fn from(error: Error) -> Self {
+-        error_detail(
+-            error.code,
+-            error
+-                .refusal
+-                .and_then(acyclic_auth::refusal::Refusal::into_cause),
+-        )
++        Self::from(&error)
+     }
+ }

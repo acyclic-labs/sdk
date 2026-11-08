@@ -165,6 +165,36 @@ fn metadata(head: &acyclic_objects::Head, original: &wire::BlobInfo) {
     );
 }
 
+fn owned_detail(detail: wire::ErrorDetail) {
+    let error = Error::from_detail(detail.clone()).expect("admitted member detail");
+    let pointers = error.cause().map(|cause| {
+        [
+            cause.component.as_ptr(),
+            cause.reason.as_ptr(),
+            cause.request_id.as_ptr(),
+        ]
+    });
+    // The first conversion must leave the held owner intact. Once it retires,
+    // the second must move the original allocations rather than copy them.
+    assert_eq!(wire::ErrorDetail::from(error.clone()), detail);
+    let moved = wire::ErrorDetail::from(error);
+    assert_eq!(
+        moved, detail,
+        "owned projection preserves every member field"
+    );
+    if let Some(pointers) = pointers {
+        assert_eq!(
+            [
+                moved.component.as_ptr(),
+                moved.reason.as_ptr(),
+                moved.request_id.as_ptr(),
+            ],
+            pointers,
+            "unique member projection moves all original diagnostic allocations"
+        );
+    }
+}
+
 fn batch(bytes: &[u8]) {
     let run = |packet: Bytes, lost| {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -228,6 +258,7 @@ fn batch(bytes: &[u8]) {
                                 "original member request ID"
                             );
                         }
+                        owned_detail(detail);
                     }
                     (Some(wire::put_result::Outcome::Put(reply)), Ok(put)) => {
                         publication(put, &reply, expected);
@@ -289,6 +320,36 @@ fn availability(initial: AvailabilityCursor, candidate: AvailabilityCursor) {
 pub(super) fn check(name: &str, bytes: &[u8]) {
     if !name.starts_with("acyclic.objects.v1.") {
         return;
+    }
+    if name == "acyclic.objects.v1.ErrorDetail" {
+        let mut original = Error::from(wire::ErrorCode::Unavailable).status_parts();
+        original.details = Bytes::copy_from_slice(bytes);
+        let message = original.message.as_ptr();
+        let details = original.details.as_ptr();
+        let expected = original.clone();
+        let admitted = Error::from_status_parts(original);
+        assert_eq!(
+            admitted.status_parts(),
+            expected,
+            "original member status bytes"
+        );
+        if let Some(original) = admitted
+            .refusal
+            .as_ref()
+            .and_then(|refusal| refusal.original())
+        {
+            assert_eq!(
+                original.message.as_ptr(),
+                message,
+                "owned status message moves"
+            );
+            assert_eq!(
+                original.details.as_ptr(),
+                details,
+                "owned status details move"
+            );
+        }
+        assert_eq!(Error::from_status_parts(admitted.status_parts()), admitted);
     }
     // Syntax equivalence and a scripted response cannot detect a server that
     // refuses every request. Admit the original service writers once per
@@ -705,6 +766,10 @@ fn writer_seeds() -> Result<(Vec<Seed>, AvailabilityCursor), Box<dyn std::error:
 mod tests {
     #[test]
     fn original_service_writers_satisfy_the_semantic_oracle() {
+        let captured =
+            acyclic_proto_build::golden::frame("corpus/protobuf/acyclic.objects.v1.ErrorDetail")
+                .expect("retained original service detail writer");
+        super::check("acyclic.objects.v1.ErrorDetail", &captured[8..]);
         let captured = acyclic_proto_build::golden::frame(
             "corpus/protobuf/acyclic.objects.v1.PutBlobRequest-created",
         )

@@ -109,9 +109,7 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary through the shared native capture, exit and physical-close
-/// owner, retaining the original outer deadline without readiness polling.
-async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
+fn graphcoder_command(fixture: &Fixture) -> Command {
     let mut command = Command::new(acyclic_test_support::cargo_binary!("graphcoder"));
     fixture.custody.configure(|key, value| {
         command.env(key, value);
@@ -128,13 +126,26 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .env_remove("OPENAI_API_KEY")
         .current_dir(&fixture.workspace)
         .arg("--workspace")
-        .arg(&fixture.workspace)
+        .arg(&fixture.workspace);
+    command
+}
+
+async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
+    let mut command = graphcoder_command(fixture);
+    command
         .arg("--settings-root")
         .arg(&fixture.settings)
         .arg("--catalog")
         .arg(catalog)
         .args(["--model", "graphcoder-qual/tiny"])
-        .args(args)
+        .args(args);
+    capture(command, stdin).await
+}
+
+/// Runs the binary through the shared native capture, exit and physical-close
+/// owner, retaining the original outer deadline without readiness polling.
+async fn capture(mut command: Command, stdin: &str) -> Output {
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -335,6 +346,73 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     model.close().await;
 }
 
+/// `doctor` reports what startup itself refuses, all at once, and passes a
+/// host that starts; it calls no model.
+#[tokio::test]
+async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    assert_eq!(
+        succeeded(&ready),
+        "ok: a run with these flags starts
+"
+    );
+    // A JSONL run's exact flags are accepted; output flags are inert here.
+    let flagged = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--output-format",
+            "jsonl",
+            "--operation",
+            "doctor-flags",
+            "doctor",
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(
+        succeeded(&flagged),
+        "ok: a run with these flags starts
+"
+    );
+    // Readiness cannot enter a serving or remote conversation mode.
+    let mut host = graphcoder_command(&fixture);
+    host.args(["--host-workspace", "--host-state-directory"])
+        .arg(&fixture.settings)
+        .arg("doctor");
+    let mut remote = graphcoder_command(&fixture);
+    remote.args(["--endpoint", "http://127.0.0.1:1", "doctor"]);
+    for command in [host, remote] {
+        let refused = capture(command, "").await;
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("doctor checks local startup"), "{stderr}");
+        assert!(stderr.contains("recovery:"), "{stderr}");
+    }
+    // State nested in the checkout is the refusal opening meets, with its recovery.
+    let nested = Fixture {
+        workspace: fixture.workspace.clone(),
+        settings: fixture.workspace.join("state"),
+        ..self::fixture()
+    };
+    std::fs::create_dir_all(nested.settings.join(".codex")).unwrap();
+    let refused = graphcoder(&nested, &model.catalog, vec!["doctor"], "").await;
+    let stdout = String::from_utf8_lossy(&refused.stdout);
+    assert_eq!(refused.status.code(), Some(1), "{stdout}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("1 startup refusal(s)"), "{stderr}");
+    assert!(
+        stdout.starts_with("refused: ")
+            && stdout.contains("separate from the checkout")
+            && stdout.contains("recovery:"),
+        "{stdout}"
+    );
+    assert_eq!(model.generated(), 0);
+    model.close().await;
+}
+
 #[tokio::test]
 async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
     let fixture = fixture();
@@ -362,6 +440,11 @@ async fn jsonl_exit_status_retains_prompt_refusals_in_both_output_formats() {
                 .map(|line| serde_json::from_str::<Value>(line).unwrap())
                 .collect::<Vec<_>>();
             assert_eq!(output.status.success(), !refused, "{output:?}");
+            // A nonzero exit carries its reason on stderr in both formats.
+            if refused {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains(": prompt refused refused: "), "{stderr}");
+            }
             let results = records
                 .iter()
                 .filter(|record| record["id"] == "refused")

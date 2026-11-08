@@ -147,7 +147,7 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
         .shared();
         let operation = async {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-17", completion).await?;
-            Ok(0)
+            Ok(())
         };
         let host = async {
             let mut owner = BufReader::new(owner);
@@ -180,7 +180,13 @@ fn acknowledged_snapshot_precedes_cancellation_and_keeps_the_original_producer()
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );
-        assert_eq!(result.unwrap(), 143);
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<acyclic_harness::completion::Exit>()
+                .map(|exit| exit.code().get()),
+            Some(143)
+        );
         diagnostic.unwrap();
         assert!(producer.is_closed());
         assert!(report.snapshot().is_empty());
@@ -353,7 +359,7 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
         drop(producer);
         let operation = async {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-18", completion).await?;
-            Ok(0)
+            Ok(())
         };
         let (result, _, _failure_report) = observe(
             &report,
@@ -393,6 +399,108 @@ async fn full_diagnostic_pipe() -> io::Result<(io::PipeReader, InheritedOutput)>
         assert_ne!(written?, 0);
     }
     Ok((reader, output))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_output_retains_cause_and_progress_with_native_backpressure() -> io::Result<()> {
+    use std::{future::poll_fn, io::Read as _, task::Poll};
+
+    let runtime = acyclic_native_runtime::coordination_runtime()?;
+    runtime.block_on(async {
+        CliCompletion::executed(Ok(()), None)
+            .write_failure(std::future::pending().boxed().shared(), || {
+                panic!("successful completion admitted an output descriptor")
+            })
+            .await
+            .into_result()
+            .unwrap();
+        for case in ["open", "closed", "blocked", "stopped", "producer-lost"] {
+            let (reader, output) = if matches!(case, "blocked" | "stopped" | "producer-lost") {
+                full_diagnostic_pipe().await?
+            } else {
+                let (reader, writer) = io::pipe()?;
+                (
+                    reader,
+                    InheritedOutput::from_file(std::os::fd::OwnedFd::from(writer).into())?,
+                )
+            };
+            let mut reader = Some(reader);
+            if case == "closed" {
+                drop(reader.take());
+            }
+            let cause: Failure = Box::new(acyclic_harness::completion::Exit::new(
+                std::num::NonZeroU8::new(17).unwrap(),
+                "original failure",
+            ));
+            let original = std::ptr::from_ref(cause.as_ref());
+            let completion =
+                CliCompletion::rejected(CliPhase::Execution, cause, FailureReport::Written);
+            let (terminate, signal) = tokio::sync::oneshot::channel();
+            let mut terminate = Some(terminate);
+            let shutdown = async {
+                signal
+                    .await
+                    .map_err(|_| Arc::new(io::Error::from(io::ErrorKind::BrokenPipe)))?;
+                Ok(143)
+            }
+            .boxed()
+            .shared();
+            if case == "stopped" {
+                terminate.take().unwrap().send(()).unwrap();
+            }
+            let delivery = completion.write_failure(shutdown, || Ok(output));
+            tokio::pin!(delivery);
+            let completion = if matches!(case, "blocked" | "producer-lost") {
+                poll_fn(|cx| {
+                    assert!(
+                        delivery.as_mut().poll(cx).is_pending(),
+                        "full original pipe lost backpressure"
+                    );
+                    Poll::Ready(())
+                })
+                .await;
+                if case == "blocked" {
+                    terminate.take().unwrap().send(()).unwrap();
+                } else {
+                    drop(terminate.take());
+                }
+                poll_fn(|cx| {
+                    let Poll::Ready(completion) = delivery.as_mut().poll(cx) else {
+                        panic!("failure output retained a lost shutdown producer")
+                    };
+                    Poll::Ready(completion)
+                })
+                .await
+            } else {
+                delivery.await
+            };
+            let failure = completion.into_result().unwrap_err();
+            let expected = failure.render();
+            assert!(std::ptr::eq(original, failure.cause.as_ref()));
+            assert_eq!(failure.code().get(), 17);
+            assert!(matches!(failure.failure_report, FailureReport::Written));
+            match (case, failure.stderr_report) {
+                ("open", FailureReport::Written) => {
+                    let mut bytes = String::new();
+                    reader.take().unwrap().read_to_string(&mut bytes)?;
+                    assert_eq!(bytes, expected);
+                }
+                ("closed", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe)
+                }
+                ("blocked" | "stopped", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::Interrupted)
+                }
+                ("producer-lost", FailureReport::Incomplete(Some(error))) => {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe)
+                }
+                (_, other) => panic!("original stderr disposition lost: {case}: {other:?}"),
+            }
+            drop(terminate);
+        }
+        Ok(())
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -470,7 +578,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     stopped.await.unwrap();
                     completion.await??;
                 }
-                Ok(0)
+                Ok(())
             };
             let original = observe(&report, Ok(Some(port)), shutdown, true, operation);
             let mut host = Box::pin(diagnostics(original, Some((receiver, writer))));
@@ -580,7 +688,7 @@ fn report_and_physical_terminal_progress_with_full_diagnostics() -> io::Result<(
                     io::ErrorKind::BrokenPipe
                 );
             } else {
-                assert_eq!(result.unwrap(), 0);
+                result.unwrap();
             }
             assert!(retired.load(Ordering::Acquire));
             assert!(report.snapshot().is_empty());
@@ -660,7 +768,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                     if operation_error {
                         Err(Box::new(io::Error::from(io::ErrorKind::PermissionDenied)) as Failure)
                     } else {
-                        Ok(19)
+                        Ok(())
                     }
                 };
                 let original = observe(
@@ -688,7 +796,7 @@ fn diagnostic_terminal_never_waits_for_an_unread_final_message() -> io::Result<(
                         io::ErrorKind::PermissionDenied
                     );
                 } else {
-                    assert_eq!(result.unwrap(), 19);
+                    result.unwrap();
                 }
                 assert_eq!(
                     matches!(failure, Some(OutputFailure::Formatting)),
@@ -729,7 +837,7 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
                 stopped.await.unwrap();
                 retiring.await.unwrap();
                 cleaned.set(true);
-                Ok(0)
+                Ok(())
             };
             let controller = async {
                 terminate.send(()).unwrap();
@@ -739,7 +847,7 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
                 observe(&report, Ok(Some(port)), shutdown, true, operation),
                 controller
             );
-            assert_eq!(result.unwrap(), 0);
+            result.unwrap();
             assert!(cleaned.get());
             if let Err(error) = diagnostic {
                 assert!(matches!(
@@ -786,7 +894,7 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
         .shared();
         let operation = async {
             completion.as_mut().await??;
-            Ok(0)
+            Ok(())
         };
         // Retain an additional live primitive so the real acknowledgement
         // exceeds the channel credit. Reading its prefix leaves it blocked.
@@ -816,7 +924,13 @@ fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer
             observe(&report, Ok(Some(port)), shutdown, false, operation),
             host
         );
-        assert_eq!(result.unwrap(), 143);
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<acyclic_harness::completion::Exit>()
+                .map(|exit| exit.code().get()),
+            Some(143)
+        );
         assert_eq!(diagnostic.unwrap_err().kind(), io::ErrorKind::Interrupted);
         release.send(()).unwrap();
         completion.await.unwrap().unwrap();

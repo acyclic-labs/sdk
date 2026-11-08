@@ -164,9 +164,9 @@ proptest! {
         let measured = acyclic_test_support::measure(|| {
             planned = Some(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None));
         });
-        // One pending-call vector, one component vector and one selection vector,
+        // One call vector, sort permutation, radix table, component vector and selection vector,
         // regardless of how many candidate boundaries the budget rejects.
-        prop_assert_eq!(measured.count_total, 3);
+        prop_assert_eq!(measured.count_total, 5);
         let (through, planned_maximum) = planned.unwrap().unwrap();
         prop_assert_eq!(planned_maximum, super::super::compaction::mandatory_messages(&source, through, &mut None).unwrap().len() + 1);
         // Negative control: rebuilding dependencies for a candidate, as the old
@@ -175,7 +175,7 @@ proptest! {
             std::hint::black_box(policy.projection_budget(&source, &count, maximum, policy.recent_tokens, &mut None).unwrap());
             std::hint::black_box(super::super::compaction::mandatory_messages(&source, through, &mut None).unwrap());
         });
-        prop_assert!(duplicated.count_total > 3);
+        prop_assert!(duplicated.count_total > 5);
         prop_assert!(units.iter().all(|&(first, last)| through <= first || through > last));
         let (retained, reference) = compact(&source, planned_maximum, through).unwrap();
         prop_assert!(whole_units(&source, &retained, &units));
@@ -235,49 +235,22 @@ fn call_boundaries_keep_signed_protocols_and_tight_budgets_drop_whole_units() ->
     assert!(!retained.messages.contains(&source.messages[2]));
     validate_compaction(&proof, &source, &retained, None)?;
     assert!(compact(&source, 4, source.messages.len()).is_err());
-    Ok(())
-}
-
-#[test]
-fn negative_control_detects_call_result_links_that_omit_required_reasoning() {
-    for provider in 0..3 {
-        let (source, units) = transcript(&[(provider, 1, false, false)], "signature");
-        let cut = units[0].0 + 2;
-        // Former selection: both call and result are already retained. Linking
-        // only them never restores the reasoning immediately before the call.
-        let mut selected: Vec<_> = (0..source.messages.len()).map(|i| i >= cut).collect();
-        for (result_index, result) in source.messages.iter().enumerate() {
-            for part in result.content.parts() {
-                if let ModelContentPart::ToolResult { call_id, .. } = part {
-                    for (call_index, call) in source.messages.iter().enumerate() {
-                        if call.content.parts().iter().any(|part| {
-                            matches!(part, ModelContentPart::ToolCall(call) if &call.call_id == call_id)
-                        }) && (selected[call_index] || selected[result_index]) {
-                            selected[call_index] = true;
-                            selected[result_index] = true;
-                        }
-                    }
-                }
-            }
-        }
-        let broken = context(
-            source
-                .messages
-                .iter()
-                .zip(selected)
-                .filter_map(|(message, keep)| keep.then(|| message.clone()))
-                .collect(),
-            None,
-        );
-        assert!(!whole_units(&source, &broken, &units));
-        assert!(broken.messages.iter().any(|message| {
-            message
-                .content
-                .parts()
-                .iter()
-                .any(|part| matches!(part, ModelContentPart::ToolCall(_)))
-        }));
+    // A closed id can start an independent exchange. The original input pins
+    // the earlier component without pinning this later reuse of the same id.
+    let mut reused = source.clone();
+    reused.messages.insert(5, call(2));
+    let mut result = source.messages[4].clone();
+    if let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) = &mut result.content {
+        *content = ToolResultContent::Json {
+            value: serde_json::json!(2),
+        };
     }
+    reused.messages.insert(6, result);
+    let (retained, proof) = compact(&reused, 5, reused.messages.len())?;
+    assert!(whole_units(&reused, &retained, &[(1, 4), (5, 6)]));
+    assert!(!retained.messages.contains(&reused.messages[5]));
+    validate_compaction(&proof, &reused, &retained, None)?;
+    Ok(())
 }
 
 #[cfg(feature = "filesystem")]
@@ -289,14 +262,8 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
         recent_tokens: 3,
         ..ThresholdCompaction::default()
     };
-    let mut rejected = 0;
-    let mut admitted = 0;
-    for items in 0..512 {
-        let mut budget = owned_context_budget();
-        budget.items_examined = items;
-        let cancel = acyclic_fs::CancellationToken::new();
-        let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
-        let result = crate::executor::with_history_io(Some(&io), |work| {
+    let plan = |io: &crate::executor::PreparationIo| {
+        crate::executor::with_history_io(Some(io), |work| {
             policy.projection_budget(
                 &source,
                 &count,
@@ -304,19 +271,43 @@ fn rejected_exchange_selection_releases_every_temporary_allocation() -> Result<(
                 policy.recent_tokens,
                 work,
             )
-        });
-        if result.is_err() {
-            rejected += 1;
-        } else {
-            admitted += 1;
+        })
+    };
+    let budget = owned_context_budget();
+    let cancel = acyclic_fs::CancellationToken::new();
+    let measured = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
+    let mut result = None;
+    let physical = acyclic_test_support::measure(|| result = Some(plan(&measured)));
+    result.unwrap()?;
+    let remaining = measured.remaining()?;
+    let required_items = budget.items_examined - remaining.items_examined;
+    let required_allocations = budget.allocation_operations - remaining.allocation_operations;
+    assert_eq!(
+        required_allocations, physical.count_total,
+        "physical backing and original claims differ"
+    );
+    assert_eq!(measured.owned_bytes()?, 0);
+    // Exercise every original admission boundary through the exact successful
+    // cost, rather than stopping at a fixed allowance unrelated to the input.
+    for (allocations, required) in [(false, required_items), (true, required_allocations)] {
+        for credit in 0..=required {
+            let mut budget = owned_context_budget();
+            if allocations {
+                budget.allocation_operations = credit;
+            } else {
+                budget.items_examined = credit;
+            }
+            let cancel = acyclic_fs::CancellationToken::new();
+            let io = crate::executor::PreparationIo::from_budget(budget, &cancel)?;
+            let result = plan(&io);
+            assert_eq!(result.is_ok(), credit == required);
+            assert_eq!(
+                io.owned_bytes()?,
+                0,
+                "selection leaked custody at {credit} credit (allocations={allocations})"
+            );
         }
-        assert_eq!(
-            io.owned_bytes()?,
-            0,
-            "selection leaked custody at {items} items"
-        );
     }
-    assert!(rejected > 0 && admitted > 0);
     Ok(())
 }
 

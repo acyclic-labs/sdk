@@ -30,22 +30,42 @@ fn cancellation_wakes_an_os_condition_without_a_timer() {
 
 #[test]
 fn cancellation_notification_ends_with_its_registration() {
-    for cancelled_first in [false, true] {
+    for (funded, cancelled_first) in [(false, false), (false, true), (true, false), (true, true)] {
         let token = CancellationToken::new();
+        let root = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &root)
+            .map_err(|(error, _)| error)
+            .unwrap();
         let observed = Arc::new(AtomicBool::new(false));
         if cancelled_first {
             token.cancel();
         }
         let notification_observed = Arc::clone(&observed);
-        let registration = token
-            .on_cancel(None, move || {
+        let baseline = original.live_allocation_bytes();
+        let operations = original.receipt().allocation_operations;
+        let mut registration = None;
+        let physical = acyclic_test_support::measure(|| {
+            registration = Some(token.on_cancel(funded.then_some(&original), move || {
                 notification_observed.store(true, Ordering::Release);
-            })
-            .unwrap();
+            }));
+        });
+        let registration = registration.unwrap().unwrap();
+        if funded {
+            assert_eq!(
+                original.live_allocation_bytes() - baseline,
+                u64::try_from(physical.bytes_current).unwrap(),
+                "original cancellation credit omits live allocator backing"
+            );
+            assert_eq!(
+                original.receipt().allocation_operations - operations,
+                physical.count_total
+            );
+        }
         assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
         drop(registration);
         token.cancel();
         assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
+        assert_eq!(original.live_allocation_bytes(), baseline);
     }
 }
 

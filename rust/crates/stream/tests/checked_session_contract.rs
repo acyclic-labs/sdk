@@ -125,6 +125,20 @@ proptest! {
         check(&input, Fault::None).map_err(TestCaseError::fail)?;
     }
 
+    #[test]
+    fn shared_fuzz_oracle_checks_arbitrary_resource_lengths(length in 1_usize..8192) {
+        let seed = include_bytes!("../fuzz/corpus/follow_contract/guard-checked");
+        let (_, bytes) = seed.split_first().ok_or_else(|| TestCaseError::fail("empty checked-follow corpus seed"))?;
+        let mut subscription = wire::SessionSubscription::decode(bytes)?;
+        let Some(wire::session_subscription::Kind::Follow(follow)) = &mut subscription.kind else {
+            return Err(TestCaseError::fail("checked-follow corpus seed has no follow"));
+        };
+        follow.resource = acyclic_stream::wire_codec::session::stream_resource(&"a".repeat(length));
+        let input = tagged(0, &subscription);
+        prop_assert_eq!(check(&input, Fault::None), Ok(()));
+        prop_assert_eq!(check(&input, Fault::DropChecked), Err("checked guard"));
+    }
+
     // Malformed nonempty IDs, missing predecessor positions and conflating
     // delivery cannot silently become an unchecked subscription.
     #[test]

@@ -142,7 +142,9 @@ impl Collection {
         proven_at: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Hold, crate::FsError> {
-        let admitted = self.admit(&proof.objects, |_| false, proven_at).await?;
+        let admitted = self
+            .admit(&proof.objects, |_| false, proven_at, accounting)
+            .await?;
         let hold = self.register_with_accounting(
             Held::Generation {
                 root: proof.generation_id.object_id(),

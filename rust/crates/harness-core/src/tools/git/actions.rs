@@ -4,13 +4,11 @@ use super::*;
 /// Largest committed file `git show REV:PATH` returns, matching blame and grep.
 const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
+impl<P, O, S> WorkspaceGitExecutor<'_, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     /// Captures the live workspace as a commit tree.
     pub(super) async fn capture_commit(

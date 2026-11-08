@@ -1,4 +1,5 @@
 export type * from "./contract.js";
+export type { Refusal } from "./refusal.js";
 export { snapshotBytes } from "./owned-bytes.js";
 export { materializeGuestAdmission } from "./guest-admission.js";
 export type { GuestAdmissionHost } from "./guest-admission.js";
