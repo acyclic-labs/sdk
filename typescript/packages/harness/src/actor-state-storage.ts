@@ -85,7 +85,6 @@ export class ActorStateStorage {
 
   /** The original EventStreamLedger journal port for this actor's one journal. */
   journal(appended?: (changes: readonly StreamChange[]) => void) {
-    const subscribers = new Set<{ after: number; ready: () => void }>();
     let maximumFrameBytes = 0;
     return {
       configure: async (configuration: Uint8Array, maximum: number, authority: Uint8Array): Promise<Uint8Array> => {
@@ -118,12 +117,6 @@ export class ActorStateStorage {
         const count = Math.min(page, head - from);
         return [header, ...(count === 0 ? [] : await this.state.readJournal(BigInt(from), count))];
       },
-      changed: (after: number, ready: () => void): (() => void) => {
-        if (this.durable > after) { ready(); return () => {}; }
-        const subscriber = { after, ready };
-        subscribers.add(subscriber);
-        return () => { subscribers.delete(subscriber); };
-      },
       append: async (index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]): Promise<number> => {
         const accepted = this.run(view => {
           const tail = Number(view.journalTail);
@@ -145,9 +138,6 @@ export class ActorStateStorage {
         if (accepted === undefined) return this.run(view => Number(view.journalTail));
         await this.state.flush();
         if (accepted.head > this.durable) { this.durable = accepted.head; this.bytes = accepted.total; }
-        for (const subscriber of subscribers) {
-          if (this.durable > subscriber.after) { subscribers.delete(subscriber); subscriber.ready(); }
-        }
         return accepted.head;
       },
     };

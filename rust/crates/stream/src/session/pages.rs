@@ -44,7 +44,7 @@ impl Visibility {
         let mut children = Vec::with_capacity(page.children.len());
         for mut child in page.children {
             if !self.permits(
-                &*capability,
+                &capability,
                 crate::StreamMethod::ChildrenPage
                     .authorization()
                     .admitted
@@ -60,7 +60,7 @@ impl Visibility {
                 let target = format!("{}/{}", child.path, relative);
                 StreamPath::validate(&target)?;
                 if self.permits(
-                    &*capability,
+                    &capability,
                     crate::authorization::FOLLOW_ACTION.as_str(),
                     &target,
                     crate::StreamMethod::Follow.authorization().scope,

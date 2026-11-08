@@ -1,20 +1,17 @@
 //! One retained result, independent of the caller waiting for it.
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicBool, Ordering},
-};
+use crate::OperationTermination;
+use crate::operation_claim::Signal;
+use std::sync::{Arc, OnceLock};
 use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::sync::Notify;
 
 struct State<T, H, I> {
     identity: I,
     result: OnceLock<T>,
-    finished: AtomicBool,
-    changed: Notify,
+    terminal: Signal,
     // The result and event retire before their original admission token.
     storage: H,
 }
@@ -86,8 +83,11 @@ impl<F: Future, H, A: Unpin, I> Future for Operation<F, H, A, I> {
 
 impl<T, H, I> Drop for Producer<T, H, I> {
     fn drop(&mut self) {
-        self.0.finished.store(true, Ordering::Release);
-        self.0.changed.notify_one();
+        self.0.terminal.publish(if self.0.result.get().is_some() {
+            OperationTermination::Released
+        } else {
+            OperationTermination::ProducerDropped
+        });
     }
 }
 
@@ -102,8 +102,7 @@ impl<T, H, I> Completion<T, H, I> {
         let state = Arc::new(State {
             identity,
             result: OnceLock::new(),
-            finished: AtomicBool::new(false),
-            changed: Notify::new(),
+            terminal: Signal::new(),
             storage,
         });
         (Self(Arc::clone(&state)), Producer(state))
@@ -114,24 +113,16 @@ impl<T, H, I> Completion<T, H, I> {
     }
 
     /// Borrows the original result. Cancellation cannot consume it or redirect
-    /// the wait to another producer. Each waiter passes one terminal wake onward.
+    /// the wait to another producer. All registered observers wake independently.
     pub async fn result(&self) -> Result<&T, ProducerDropped> {
-        let state = &self.0;
-        let notified = state.changed.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        if !state.finished.load(Ordering::Acquire) {
-            notified.await;
-        }
-        let result = state.result.get().ok_or(ProducerDropped);
-        state.changed.notify_one();
-        result
+        self.0.terminal.terminated().await;
+        self.0.result.get().ok_or(ProducerDropped)
     }
 
     /// Moves the exact result and funding to the sole remaining observer.
     /// A live producer or another observer leaves this handle intact.
     pub fn try_take(self) -> Result<(I, Option<T>, H), Self> {
-        if !self.0.finished.load(Ordering::Acquire) {
+        if !self.0.terminal.is_terminated() {
             return Err(self);
         }
         match Arc::try_unwrap(self.0) {

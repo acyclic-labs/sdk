@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/session/resources.rs b/rust/crates/stream/src/session/resources.rs
+index c4ff6a4a893..491ecfbb835 100644
+--- a/rust/crates/stream/src/session/resources.rs
++++ b/rust/crates/stream/src/session/resources.rs
+@@ -161,7 +161,7 @@ impl ResourceAuthorization {
+                 PolicyDecision::Allow,
+             )?;
+         }
+-        authorize(&request, policy)
++        authorize(&request, PolicyDecision::Allow)
+     }
+     /// Pushes semantic filesystem grant prefixes into the provider index. The
+     /// full lossless path is still authorized per entry after indexed selection.

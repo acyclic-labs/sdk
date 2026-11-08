@@ -49,7 +49,8 @@ impl<R, H> Pending<R, H> {
 
     /// Borrows the original result without copying its receipt or native error.
     /// Cancelling a wait never cancels the producer or consumes its result.
-    /// Each completion wakes one waiter, which passes the wake onward in O(1).
+    /// Completion wakes every registered observer independently, with constant
+    /// work per observer and no dependency on another observer being polled.
     pub async fn result(&self) -> Result<&R, StreamError> {
         self.completion
             .result()

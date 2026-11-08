@@ -28,6 +28,17 @@ async fn scoped_custody(
             let error = task.await.err().ok_or("cancelled task completed")?;
             assert_eq!(error.kind(), io::ErrorKind::Interrupted);
             assert_eq!(error.to_string(), "TaskCancelled");
+            let cause = error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<JoinFailure>())
+                .expect("task cancellation lost its original typed cause");
+            match cause {
+                JoinFailure::Native(error) => assert!(error.is_cancelled()),
+                #[cfg(feature = "test-support")]
+                JoinFailure::Cancelled(_) => {}
+                #[cfg(feature = "test-support")]
+                JoinFailure::Panicked { .. } => panic!("cancellation became a panic"),
+            }
         } else {
             drop(task);
         }
@@ -112,10 +123,16 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
                     .unwrap()
                     .clone()
             };
-            assert!(Arc::ptr_eq(
-                &retained(&first_error),
-                &retained(&later_error)
-            ));
+            assert!(
+                Arc::ptr_eq(&retained(&first_error), &retained(&later_error)),
+                "shared completion replaced the original operation error"
+            );
+            assert!(
+                retained(&first_error)
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<oneshot::error::RecvError>()),
+                "shared completion replaced the original typed cause"
+            );
 
             let completion = TaskCompletion::new(super::super::spawn(async {
                 panic!("private physical task payload")
@@ -123,6 +140,13 @@ fn original_tasks_conform_to_scoped_and_shared_completion_custody() {
             let error = completion.wait().await.unwrap_err();
             assert_eq!(error.to_string(), "TaskPanicked");
             assert!(!format!("{error:?}").contains("private physical task payload"));
+            assert!(
+                retained(&error)
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<JoinFailure>())
+                    .is_some_and(|cause| !cause.cancelled()),
+                "shared completion replaced the original typed cause"
+            );
         });
 }
 

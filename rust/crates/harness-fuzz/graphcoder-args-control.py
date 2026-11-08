@@ -203,6 +203,13 @@ additional_controls = {
             "catalog-installed",
             b"catalog argument-shape-",
         ),
+        (
+            "rust/crates/harness/src/local/host_owner/sessions.rs",
+            b"    Recover {},",
+            b"    Recover,",
+            "null",
+            b"native session action unknown fields must be refused",
+        ),
     ],
     "command_result": [
         (

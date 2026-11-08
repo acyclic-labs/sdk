@@ -755,10 +755,10 @@ fn finalize_step(
     previous: &Phase,
     cursor: u64,
 ) -> Result<Step, Error> {
-    let before = control(&state);
     let queued = !state.queued.is_empty() || state.overflow.is_some();
     let approval_ready = approval_position(&state).is_some();
     let pending = state.archive_pending.len();
+    let before = control(&state);
     let alarm = kernel::alarm(before, queued, approval_ready, pending);
     #[cfg(feature = "test-support")]
     control_trace::record(
@@ -1006,9 +1006,9 @@ async fn run<T: TurnDriver + ?Sized>(
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<(), Error> {
     let approval = approval_position(state);
-    let before = control(state);
     let queued = !state.queued.is_empty();
     let approval_ready = approval.is_some();
+    let before = control(state);
     let picked = kernel::pick(before, alarm_wake, queued, approval_ready);
     #[cfg(feature = "test-support")]
     control_trace::record(
@@ -1196,8 +1196,8 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
 
 /// Archive cascade: bounded fan-out to open children, then one report upward.
 fn cascade(state: &mut AgentState, outs: &mut Vec<Out>) -> Result<(), Error> {
-    let before = control(state);
     let pending = state.archive_pending.len();
+    let before = control(state);
     let step = kernel::cascade(before, pending);
     #[cfg(feature = "test-support")]
     control_trace::record(state, Decision::Cascade(before, pending, step));

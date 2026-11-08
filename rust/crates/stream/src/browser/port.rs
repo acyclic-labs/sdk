@@ -6,21 +6,16 @@ pub(super) struct BrowserPort<'a> {
     transaction: Option<Transaction<'a>>,
     head: u64,
     bytes: u64,
-    changed: Option<crate::change::Subscription>,
 }
 
 impl<'a> BrowserPort<'a> {
-    pub(super) fn new(
-        stream: &'a BrowserStream,
-        transaction: Transaction<'a>,
-    ) -> Result<Self, StreamError> {
-        Ok(Self {
+    pub(super) fn new(stream: &'a BrowserStream, transaction: Transaction<'a>) -> Self {
+        Self {
             stream,
             transaction: Some(transaction),
             head: 0,
             bytes: 0,
-            changed: Some(stream.inner.publications.journal.subscribe()?),
-        })
+        }
     }
 }
 
@@ -188,17 +183,6 @@ impl CommandJournal for BrowserPort<'_> {
         Ok(AppendIf::Accepted {
             sequence: next,
             at_millis,
-        })
-    }
-
-    fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
-        let head = self.head;
-        let registration = self.changed.take().ok_or(StreamError::Unavailable);
-        Box::pin(async move {
-            if head > after {
-                return Ok(());
-            }
-            registration?.changed().await
         })
     }
 }

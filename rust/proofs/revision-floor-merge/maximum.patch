@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/lib/revision.rs b/rust/crates/stream/src/lib/revision.rs
+--- a/rust/crates/stream/src/lib/revision.rs
++++ b/rust/crates/stream/src/lib/revision.rs
+@@ -334,7 +334,7 @@
+                     if !revision.same_authority(next) {
+                         return Err(StreamError::RevisionForeign);
+                     }
+-                    if revision.index < next.index {
++                    if revision.index > next.index {
+                         revision = next.clone();
+                     }
+                 }
