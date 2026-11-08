@@ -270,7 +270,6 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
     let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
     let request = super::prepared_fixture(&stream).await?;
     let meter = Arc::new(crate::test_meter::Meter::local());
-    let failing = AtomicBool::new(false);
     let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
     {
         let operation = schedule.scope(async {
@@ -297,7 +296,6 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
                 .lock()
                 .map_err(|_| "journal poisoned")?
                 .file = read_only;
-            failing.store(true, Ordering::Release);
             let result = match prepared {
                 Some(prepared) => {
                     let (packet, allocation) = prepared.into_parts();
@@ -330,27 +328,21 @@ async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::
             Ok::<_, Box<dyn std::error::Error>>(())
         });
         tokio::pin!(operation);
-        let mut parked = false;
+        let mut producer = None;
         loop {
             tokio::select! {
-                result = futures::future::poll_fn(|cx| {
-                    if parked {
-                        return Poll::Pending;
-                    }
-                    let result = operation.as_mut().poll(cx);
-                    // Freeze this observer before the worker publishes failure,
-                    // then drive the worker solely through its real boundaries.
-                    if result.is_pending() && failing.load(Ordering::Acquire) {
-                        parked = true;
-                    }
-                    result
-                }) => { result?; break; }
+                result = &mut operation, if producer.is_none() => { result?; break; }
                 boundary = boundaries.recv() => {
                     let boundary = boundary.ok_or("native failure boundary producer ended")?;
-                    if parked && stream.failure().is_some() && boundary.name == "task:completed" {
+                    if producer.is_none() && boundary.name == "task:submitted" {
+                        producer = Some(boundary.owner);
+                        boundary.release();
+                    } else if producer == Some(boundary.owner) && boundary.name == "task:completed" {
+                        // Nested persistence acknowledgements cannot stand in
+                        // for this original mutation's completed output.
                         let pending = futures::poll!(operation.as_mut()).is_pending();
                         boundary.release();
-                        parked = false;
+                        producer = None;
                         assert!(pending, "failure watch replaced the original native I/O error");
                     } else {
                         boundary.release();
