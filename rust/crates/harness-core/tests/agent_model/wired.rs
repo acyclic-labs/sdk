@@ -23,6 +23,7 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/settlement.rs"]
 mod settlement;
 
 const LIMITS: TurnLimits = TurnLimits {
