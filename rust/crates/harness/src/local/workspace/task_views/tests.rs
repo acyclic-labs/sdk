@@ -184,6 +184,26 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
         .as_ref()
         .ok_or_else(|| Error::NotFound("original binding owner".into()))?
         .downgrade();
+    let key = source
+        ._binding
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("original binding owner".into()))?
+        .key;
+    let (ready, duplicate) =
+        bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation)?;
+    assert!(
+        duplicate.is_none(),
+        "ready binding created another producer"
+    );
+    let reused = ready.mounts().await?;
+    assert!(Arc::ptr_eq(
+        &reused,
+        bound
+            .binding
+            .as_ref()
+            .ok_or_else(|| Error::NotFound("original binding".into()))?
+    ));
+    drop(reused);
     let root = source
         .destination
         .ancestors()
@@ -201,6 +221,13 @@ async fn native_guard_retains_the_original_binding_until_physical_retirement() -
     assert!(
         original.upgrade().is_some(),
         "physical native guard lost the original binding owner"
+    );
+    assert!(
+        matches!(
+            bindings::Bindings::select(&workspace.bindings, key, &work, &cancellation),
+            Err(Error::Conflict(_))
+        ),
+        "retired result was reconstructed from physical custody"
     );
     // The owned guard is the last slot owner. Dropping it performs the real
     // projection retirement and then releases the keyed binding generation.
