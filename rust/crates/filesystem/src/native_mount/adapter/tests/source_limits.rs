@@ -570,7 +570,7 @@ fn physical_cleanup_worker(
     #[cfg(target_os = "linux")]
     if matches!(path, PhysicalCleanupPath::FuseLoop) {
         return crate::native_mount::fuse::tests::retirement::retire_source_in_physical_loop(
-            mounted,
+            mounted, None,
         );
     }
     #[cfg(target_os = "macos")]

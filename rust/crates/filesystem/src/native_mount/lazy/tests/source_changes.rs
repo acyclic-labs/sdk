@@ -218,8 +218,24 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_eq!(listed, 3, "a, b, and empty");
     drop(cursor);
-    view.cancel_cleanup(None)?;
-    assert!(view.physically_retired()?);
+    #[cfg(target_os = "linux")]
+    {
+        let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+        assert!(page.next_cursor().is_some());
+        let view = Arc::new(view);
+        assert!(
+            crate::native_mount::fuse::tests::retirement::retire_source_in_physical_loop(
+                view.clone(),
+                Some(page),
+            )?
+        );
+        assert!(view.physically_retired()?);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        view.cancel_cleanup(None)?;
+        assert!(view.physically_retired()?);
+    }
     Ok(())
 }
 #[test]

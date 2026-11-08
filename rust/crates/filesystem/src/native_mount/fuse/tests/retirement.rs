@@ -170,15 +170,24 @@ fn terminal_worker_retires_destination(
 /// the remaining source-join obligation.
 pub(in crate::native_mount) fn retire_source_in_physical_loop(
     source: Arc<dyn MountFilesystem>,
+    page: Option<MountDirectoryPage>,
 ) -> Result<bool, NativeMountError> {
-    let (callbacks, _) = shared_sources(posix_config())
-        .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+    let callbacks: Arc<dyn MountFilesystem> = if page.is_some() {
+        Arc::clone(&source)
+    } else {
+        let (callbacks, _) = shared_sources(posix_config())
+            .map_err(|cause| NativeMountError::Driver(cause.to_string()))?;
+        Arc::new(callbacks)
+    };
     let work = fuse_fixture_work();
-    let core = projection_core(
-        Arc::new(callbacks),
-        crate::WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )?;
+    let core = projection_core(callbacks, crate::WorkBudget::UNBOUNDED, work.cancellation())?;
+    if let Some(page) = page {
+        let mut state = core.state_to_finish();
+        let mut stream = state.directory_stream(core.source.as_ref(), ROOT_INODE, 0, &work)?;
+        stream.page = Some(page);
+        let storage = state.streams.prepare_park(&work)?;
+        state.streams.park(ROOT_INODE, stream, storage);
+    }
     core.stop();
     let state = Arc::new(Mutex::new(FuseSessionState {
         path: super::super::FuseOwned::empty(vec![0]),
