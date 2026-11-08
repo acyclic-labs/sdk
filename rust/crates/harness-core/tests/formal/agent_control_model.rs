@@ -20,6 +20,7 @@ struct Kernel {
     cascade: fn(Control, usize) -> Cascade,
     alarm: fn(Control, bool, bool, usize) -> Option<u64>,
     satisfy: fn(Control) -> Control,
+    until: fn(u32, usize, bool, Option<u64>) -> Wait,
 }
 
 const PRODUCTION: Kernel = Kernel {
@@ -30,6 +31,7 @@ const PRODUCTION: Kernel = Kernel {
     cascade: production::cascade,
     alarm: production::alarm,
     satisfy: production::satisfy,
+    until: production::until,
 };
 
 #[derive(Clone, Copy)]
@@ -236,4 +238,21 @@ fn archive_drains_and_reports_exactly_once(kernel: Kernel) {
         model.reports == u8::from(!reported),
         "archive reported wrongly"
     );
+}
+
+/// A condition wait parks the turn only when its open children can still
+/// meet it, so a parked wait on children always has a child that will wake
+/// it; only a sleep naming no child parks on its deadline alone. Otherwise
+/// the turn continues and its call reports why.
+fn parks_only_on_a_reachable_condition(kernel: Kernel) {
+    let need: u32 = kani::any();
+    let open: usize = kani::any();
+    let sleep: bool = kani::any();
+    let deadline: Option<u64> = kani::any();
+    let parks = (need > 0 && need as usize <= open) || (sleep && deadline.is_some());
+    match (kernel.until)(need, open, sleep, deadline) {
+        Wait::Await(waited) => assert!(parks && waited == deadline),
+        Wait::Continue => assert!(!parks),
+        _ => panic!("a condition wait only parks or continues"),
+    }
 }
