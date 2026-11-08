@@ -1,6 +1,9 @@
 //! Standard coding tools and shared host executors.
 mod agents;
 pub(crate) use agents::awaited;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use agents::check_agent_wait_selection;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
     SpawnAgentInput, WaitAgentInput, bind_agent_tools, definitions as agent_tool_definitions,

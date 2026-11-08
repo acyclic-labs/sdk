@@ -37,7 +37,10 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+};
 
 /// Revision of the agent tools, selected for the model over other revisions.
 pub const REVISION: &str = "agent-2";
@@ -125,8 +128,10 @@ fn rejected(reason: impl Into<String>) -> ToolResult {
     super::rejected_input(Error::Invalid(reason.into()))
 }
 
-fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> std::result::Result<T, ToolResult> {
-    serde_json::from_value(arguments).map_err(|error| rejected(error.to_string()))
+fn decode<'de, T: Deserialize<'de>>(
+    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
+) -> std::result::Result<T, ToolResult> {
+    T::deserialize(arguments).map_err(|error| rejected(error.to_string()))
 }
 
 /// Path-safe key of one call, ordered by model step: effects of later steps
@@ -472,6 +477,18 @@ async fn waited(
     }
     Ok((children, need, input.timeout_ms))
 }
+
+#[inline]
+fn wait_identity(child: &AgentPath) -> [u8; 16] {
+    #[cfg(any(test, feature = "test-support"))]
+    selection_checks::IDENTITIES.with(|count| count.set(count.get() + 1));
+    child.id_bytes()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+mod selection_checks;
+#[cfg(feature = "test-support")]
+pub use selection_checks::check as check_agent_wait_selection;
 
 /// What a call of `tool` with `arguments` waits for before it dispatches: for
 /// a `wait` fewer of whose children settled than it needs, the
