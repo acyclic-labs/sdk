@@ -15,6 +15,15 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "stream-codec-path-admission": [
+    "rust/crates/stream/src/codec_fuzz.rs", "acyclic-stream",
+    "codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle",
+    "shared persistence oracle rejected", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [
+      { patch: "rust/proofs/stream-codec-path-admission/followed.patch", label: "refused-follow-context", diagnostic: "shared persistence oracle rejected" },
+      { patch: "rust/proofs/stream-codec-path-admission/foreign.patch", label: "refused-foreign-context", diagnostic: "shared persistence oracle rejected" },
+    ] },
+  ],
   "revision-floor-merge": [
     "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
     "revision::tests::minimum_cut_refuses_incarnation_replacement_in_every_input_order",

@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/codec_fuzz.rs b/rust/crates/stream/src/codec_fuzz.rs
+--- a/rust/crates/stream/src/codec_fuzz.rs
++++ b/rust/crates/stream/src/codec_fuzz.rs
+@@ -205,7 +205,7 @@
+         }
+     }
+     if let Ok(value) = crate::wire::Record::decode(bytes) {
+-        let Ok(followed) = crate::StreamPath::new("codec/events") else {
++        let Ok(followed) = crate::StreamPath::new("/codec/events") else {
+             return false;
+         };
+         for context in [None, Some(&followed)] {

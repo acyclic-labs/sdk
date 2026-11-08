@@ -205,7 +205,9 @@ pub fn check(bytes: &[u8]) -> bool {
         }
     }
     if let Ok(value) = crate::wire::Record::decode(bytes) {
-        let followed = crate::StreamPath::new("codec/events").expect("canonical fixture path");
+        let Ok(followed) = crate::StreamPath::new("codec/events") else {
+            return false;
+        };
         for context in [None, Some(&followed)] {
             if let Ok(record) = crate::wire_codec::record(value.clone(), context) {
                 if crate::wire_codec::record(
@@ -278,7 +280,9 @@ fn persisted_fact_admitted<T: PartialEq>(
 }
 
 fn wire_records_admitted(envelope: &crate::CommittedEnvelope) -> bool {
-    let foreign = crate::StreamPath::new("codec/other").expect("canonical fixture path");
+    let Ok(foreign) = crate::StreamPath::new("codec/other") else {
+        return false;
+    };
     for mutation in &envelope.mutations {
         let records = match mutation {
             crate::CommittedMutation::Append(append) => &append.records,
