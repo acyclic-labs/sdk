@@ -7,6 +7,11 @@ pub(crate) struct HistoryCursor {
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
 impl HistoryCursor {
+    const PAGE_BUDGET: std::num::NonZeroU32 = match std::num::NonZeroU32::new(crate::REPLAY_PAGE) {
+        Some(budget) => budget,
+        None => panic!("replay page budget must be nonzero"),
+    };
+
     async fn initial(
         path: Option<&PathState>,
         from: u64,
@@ -109,19 +114,23 @@ impl HistoryCursor {
     }
     pub(crate) fn at(next: u64) -> Self {
         Self {
-            records: Self::pinned(PinnedHistory::empty(next), next),
+            records: crate::pages::PinnedCursor::new(
+                PinnedHistory::empty(next),
+                next,
+                Self::PAGE_BUDGET,
+            ),
             end: None,
             awaiting_creation: false,
             opening_tail: None,
             registration: None,
         }
     }
-    fn pinned(history: PinnedHistory, next: u64) -> crate::pages::PinnedCursor<PinnedHistory> {
-        crate::pages::PinnedCursor::new(history, next, crate::REPLAY_PAGE)
-            .expect("the stream replay page is nonzero")
-    }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
-        let mut records = Self::pinned(PinnedHistory::new(path, tail), next);
+        let mut records = crate::pages::PinnedCursor::new(
+            PinnedHistory::new(path, tail),
+            next,
+            Self::PAGE_BUDGET,
+        );
         if let Some(page) = path.prefix_window(next, tail) {
             records.seed_page(page);
         }
