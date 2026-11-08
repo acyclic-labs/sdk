@@ -15,6 +15,19 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "session-local-refusal": [
+    "rust/crates/stream/src/session/frame.rs", "acyclic-stream",
+    "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+    "local socket lost its original refusal", ["--features", "serde,test-support"],
+    { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+      positive: [
+        "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
+        "session::tests::sockets::receive_refusal_releases_owner_before_uncredited_frames_drain",
+        "session::tests::sockets::host_shutdown_closes_all_channels_without_data_credit",
+        "session::tests::sockets::a_socket_the_host_ends_after_its_final_frame_ends_cleanly_for_the_peer",
+        "session::tests::queue_scaling::credited_tail_selection_visits_one_head_independent_of_stalled_follows",
+      ] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],

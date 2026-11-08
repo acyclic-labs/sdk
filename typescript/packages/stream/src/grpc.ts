@@ -287,20 +287,22 @@ function providerError(error: unknown, operation: string): Error {
 /** Retain the original status bytes; Connect's decoded Any values are projections. */
 function grpcRefusal(error: ConnectError): StreamRefusal {
   const encoder = new TextEncoder();
+  const metadata: Array<readonly [string, Uint8Array]> = [];
+  for (const [name, value] of error.metadata) {
+    if (name.startsWith("acyclic-")) metadata.push([name, encoder.encode(value)]);
+  }
   return {
     status: error.code,
     message: error.rawMessage,
     details: Buffer.from(error.metadata.get("grpc-status-details-bin") ?? "", "base64"),
-    metadata: Array.from(error.metadata)
-      .filter(([name]) => name.startsWith("acyclic-"))
-      .map(([name, value]) => [name, encoder.encode(value)] as const),
+    metadata,
   };
 }
 
 /** Platform callbacks use Rust codes; public aliases never enter the session engine. */
 function sessionTransportError(error: unknown, transient: boolean): unknown {
   if (!(error instanceof ConnectError)) return error;
-  return Object.assign(new Error(error.rawMessage, { cause: error }), {
+  return Object.assign(new Error(error.rawMessage), {
     code: grpcErrorCode(error.code, error.rawMessage), transient, refusal: grpcRefusal(error),
   });
 }
