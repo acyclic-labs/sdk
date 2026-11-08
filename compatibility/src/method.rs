@@ -263,11 +263,11 @@ pub fn product_authorization(
         variants.push(name.to_owned());
         rows.push(format!("auth_action::method::MethodAuth {{method:{method_type}::{name},route:{route:?},admitted:{},scope: auth_action::method::Scope::Exact,rules:&[{}]}}", rust_actions(&required), rules.join(",")));
     }
-    render_authorization(&service, method_type, &variants, &rows)
+    render_authorization(service.full_name(), method_type, &variants, &rows)
 }
 
 fn render_authorization(
-    service: &prost_reflect::ServiceDescriptor,
+    service: &str,
     method_type: &str,
     variants: &[String],
     rows: &[String],
