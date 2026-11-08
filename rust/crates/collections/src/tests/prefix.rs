@@ -46,7 +46,7 @@ fn prefix_generated_operations() -> Result<(), &'static str> {
                         .map_err(TestCaseError::fail)?;
                     expected.entry(key).or_insert(value);
                     if !extract {
-                        if value % 7 == 0 {
+                        if value.is_multiple_of(7) {
                             let removed = index.remove_if(key, |_| !miss);
                             if miss {
                                 prop_assert!(removed.is_none());
@@ -388,7 +388,7 @@ fn verify_selected_drain(
     work.maximum_claims = Some(0);
     prop_assert!(extracted.index().first(work).is_err());
     let mut entries = extracted.into_entries(|n| drain_items += n);
-    if value % 2 == 0 {
+    if value.is_multiple_of(2) {
         // Withdrawing a partial consumer must retire only
         // the unconsumed subtree, never its delivered leaf.
         let entry = entries.next();
