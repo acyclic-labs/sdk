@@ -102,7 +102,8 @@ test("installed native OpenCode records its original session through the shared 
       ]);
       assert.equal(admission.code, 0, admission.stderr);
       step = "exercise native MCP spawn with the same isolated provider profile";
-      const toolNames = requests[0].body.tools.map(tool => tool.function.name);
+      t.diagnostic(JSON.stringify({ role: "native-provider-requests", requests }));
+      const toolNames = requests.find(request => request.body.tools?.length)?.body.tools.map(tool => tool.function.name) ?? [];
       const tool = name => {
         const matches = toolNames.filter(tool => tool === `acyclic-sessions_${name}`);
         assert.equal(matches.length, 1, "installed native MCP tool absent: " + name);
@@ -113,6 +114,7 @@ test("installed native OpenCode records its original session through the shared 
       const childAnswer = "native-opencode-child-completed", answer = "native-opencode-parent-completed";
       const script = join(root, "model.json"), record = join(root, "model-requests.jsonl");
       await writeFile(script, JSON.stringify({ cases: { native: { steps: [
+        ...Array.from({ length: 2 }, () => ({ when: { contains: "Generate a title for this conversation:" }, text: ["Native coordination"] })),
         { when: { user: prompt }, tools: [{ id: "native-spawn", name: tool("spawn"),
           arguments: { reference: "writing-child", prompt: childPrompt } }] },
         { when: { user: childPrompt }, tools: [{ id: "child-write", name: "write",
@@ -138,7 +140,7 @@ test("installed native OpenCode records its original session through the shared 
       const calls = (await readFile(record, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
       t.diagnostic(JSON.stringify({ role: "native-model-coordination", requests: calls }));
       assert.deepEqual(calls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
-        Array.from({ length: 5 }, (_, step) => [200, step]), "native child dropped the selected provider configuration");
+        Array.from({ length: 7 }, (_, step) => [200, step]), "native child dropped the selected provider configuration");
       const waited = calls.at(-1).body.messages.findLast(message => message.role === "tool" && message.tool_call_id === "native-wait");
       assert.ok(waited, "native wait response absent");
       const childReply = JSON.parse(waited.content);
