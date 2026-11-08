@@ -30,7 +30,7 @@ table describes their assertions, rather than claiming an executed proof result.
 | `State::complete` | Arbitrary Ready/Failed observation, absent/foreign producer, both terminal contradictions and identical terminal replay; preserved identity/cut/generation and exact state on refusal | Producer observation provenance |
 | `State::demand` | Unprepared, Await, Swap and Failed from every admitted restored state; Unprepared after swap | Producer observation |
 | `State::swap` | Arbitrary restored state and request: absent/foreign identity, incomplete/failed terminal, stale/exhausted generation, regressed head and successful exact cut; every refusal leaves the complete state unchanged | Storage conditional commit |
-| `State::fork` | Pending, settled inherited prefix and prefix exclusion | Failed pending and empty state |
+| `State::fork` | Every admitted restored state, full-width generation and prefix; unfinished/ready/failed pending refusal, range refusal before pending refusal, empty and settled success preserving the whole state | Storage provenance and producer lifetime |
 
 The fan-out harness checks a retained `Pending` value. It does not observe the
 producer itself, so its name refers to pending identity rather than producer
@@ -78,6 +78,28 @@ git apply -R rust/proofs/model-epochs/mutations/admit-foreign-completion.patch
 ```
 
 These commands describe the qualification procedure, not an executed result.
+
+The fan-out harness checks arbitrary valid restored states, including empty
+epochs and failed preparations, rather than one generation-zero prepare/swap
+trace. Eight cover goals require both range-refusal cases, all three pending
+terminal states and empty, settled and maximum-generation success. The actual
+fork function returns the exact settled state or the contract's typed refusal.
+It has two constant-size guards and no waits, history traversal or producer
+observations.
+
+```sh
+cargo kani --manifest-path rust/proofs/model-epochs/Cargo.toml --harness fanout_preserves_settled_coverage_and_pending_identity
+```
+
+The retained mutations independently omit each production fork guard. Each must
+fail the same harness; restore the guard before the positive run:
+
+```sh
+git apply rust/proofs/model-epochs/mutations/fork-with-pending-summary.patch
+git apply -R rust/proofs/model-epochs/mutations/fork-with-pending-summary.patch
+git apply rust/proofs/model-epochs/mutations/fork-outside-common-prefix.patch
+git apply -R rust/proofs/model-epochs/mutations/fork-outside-common-prefix.patch
+```
 
 `epochs.qnt` is a separate design model with bounded agents, heads and proposals.
 It has no checked refinement to the Rust implementation. Its `omitSummary`
