@@ -297,6 +297,15 @@ impl FuseProjection {
         };
         let current = source.lookup_with_meter(&child.spelled, work)?;
         let mut detached = self.detach_name(&child.spelled, current.as_ref(), work)?;
+        let remove_binding = {
+            let state = self.core.state()?;
+            work.charge(Items.delta(1))?;
+            state
+                .inode_by_path
+                .get(child.key())
+                .map(|inode| state.prepare_remove_binding(*inode, child.key(), work))
+                .transpose()?
+        };
         let removed = self.source_write(work, || {
             Ok(source.remove(
                 &child.spelled,
@@ -307,9 +316,8 @@ impl FuseProjection {
         let mut state = self.core.state()?;
         removed?;
         state.install_detached_handles(&mut detached);
-        work.charge(Items.delta(1))?;
-        if let Some(inode) = state.inode_by_path.get(child.key()).copied() {
-            state.remove_binding(inode, child.key(), work)?;
+        if let Some(remove_binding) = remove_binding {
+            remove_binding(&mut state);
         }
         Ok(())
     }

@@ -238,11 +238,25 @@ impl ProjectionState {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        self.unbind(inode, path, work)?;
-        if self.inode_by_path.get(path) == Some(&inode) {
-            self.inode_by_path.remove(path);
-        }
+        self.prepare_remove_binding(inode, path, work)?(self);
         Ok(())
+    }
+
+    // The caller retains the names fence until installation. FORGET can remove
+    // the original inode in between, but cannot change its binding positions.
+    pub(super) fn prepare_remove_binding<'p>(
+        &self,
+        inode: u64,
+        path: &'p MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<impl FnOnce(&mut Self) + use<'p>, NativeMountError> {
+        let unbind = self.prepare_unbind(inode, path, work)?;
+        Ok(move |state| {
+            unbind(state);
+            if state.inode_by_path.get(path) == Some(&inode) {
+                state.inode_by_path.remove(path);
+            }
+        })
     }
 
     #[allow(
@@ -456,30 +470,45 @@ impl ProjectionState {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let Some(entry) = self.by_inode.get_mut(&inode) else {
-            return Ok(());
-        };
+        self.prepare_unbind(inode, path, work)?(self);
+        Ok(())
+    }
+
+    fn prepare_unbind(
+        &self,
+        inode: u64,
+        path: &MountPath,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
         let mut matched = None;
-        for (index, binding) in entry.bindings.iter().enumerate() {
-            work.charge(Items.delta(1))?;
-            if *binding.path == *path {
-                matched = Some(index);
-                break;
+        if let Some(entry) = self.by_inode.get(&inode) {
+            for (index, binding) in entry.bindings.iter().enumerate() {
+                work.charge(Items.delta(1))?;
+                if *binding.path == *path {
+                    let copied = (entry.bindings.len() - index - 1)
+                        .checked_mul(std::mem::size_of::<Binding>())
+                        .ok_or(crate::WorkError::Overflow)? as u64;
+                    matched = Some((index, copied, work.reserve_work(Copy.delta(copied))?));
+                    break;
+                }
             }
         }
-        if let Some(index) = matched {
-            let copied = (entry.bindings.len() - index - 1)
-                .checked_mul(std::mem::size_of::<Binding>())
-                .ok_or(crate::WorkError::Overflow)? as u64;
-            work.admit(Copy.delta(copied))?;
-            entry.bindings.remove(index);
-            work.record_admitted(Copy.delta(copied))?;
-        }
-        if entry.bindings.is_empty() && entry.lookup_references == 0 && entry.open_handles == 0 {
-            let entry = self.by_inode.remove(&inode).ok_or(libc::EIO)?;
-            self.forget_file(entry.lookup.node.file_id, inode);
-        }
-        Ok(())
+        Ok(move |state| {
+            let Some(entry) = state.by_inode.get_mut(&inode) else {
+                return;
+            };
+            if let Some((index, copied, mut completion)) = matched {
+                entry.bindings.remove(index);
+                completion.record_deferred(Copy.delta(copied));
+            }
+            if entry.bindings.is_empty()
+                && entry.lookup_references == 0
+                && entry.open_handles == 0
+                && let Some(entry) = state.by_inode.remove(&inode)
+            {
+                state.forget_file(entry.lookup.node.file_id, inode);
+            }
+        })
     }
 
     pub(super) fn forget_file(&mut self, file_id: crate::FileId, inode: u64) {

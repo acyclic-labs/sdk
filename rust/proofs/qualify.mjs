@@ -15,6 +15,20 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "native-unlink-completion-credit": [
+    "rust/crates/filesystem/src/native_mount/fuse/lookup.rs", "acyclic-fs",
+    "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",
+    "unlink refused after its source was accepted",
+    ["--no-default-features", "--features", "memory,native-mount"],
+    { mutations: [
+      { patch: "rust/proofs/native-unlink-completion-credit/late-preparation.patch", label: "late-preparation", diagnostic: "unlink refused after its source was accepted" },
+    ], positive: [
+      "native_mount::fuse::tests::detach::unlink_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::unlink_completion_retains_copy_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::rename_completion_retains_credit_after_source_acceptance",
+      "native_mount::fuse::tests::detach::allocation_refusal_precedes_unlink_and_replacement",
+    ] },
+  ],
   "native-rename-reviewed-completion": [
     "rust/crates/filesystem/src/native_mount/fuse/identity.rs", "acyclic-fs",
     "native_mount::fuse::tests::cache::rename_completion_preserves_only_current_bindings",

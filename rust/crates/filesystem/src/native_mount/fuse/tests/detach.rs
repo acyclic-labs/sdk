@@ -156,12 +156,14 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
 
 fn completion_retains_credit_after_source_acceptance(
     rename: bool,
+    copy_credit: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     #[derive(Default)]
     struct CompletionPressure {
         accepted: AtomicBool,
         held: parking_lot::Mutex<Option<crate::NativeWorkReservation>>,
+        copy_credit: bool,
     }
     impl ViewObserver for CompletionPressure {
         fn view_changed(&self, _: ViewStamp, _: crate::native_mount::ViewOrigin) {
@@ -188,12 +190,15 @@ fn completion_retains_credit_after_source_acceptance(
                         // fence. Another accepted operation takes all free credit.
                         let available = {
                             let state = work.state.lock();
-                            state.budget.items_examined - state.work.items_examined
+                            if self.copy_credit {
+                                super::super::Copy
+                                    .delta(state.budget.bytes_copied - state.work.bytes_copied)
+                            } else {
+                                super::super::Items
+                                    .delta(state.budget.items_examined - state.work.items_examined)
+                            }
                         };
-                        *held = Some(work.reserve_work(crate::WorkCounters {
-                            items_examined: available,
-                            ..crate::WorkCounters::UNCHARGED
-                        })?);
+                        *held = Some(work.reserve_work(available)?);
                     }
                 }
                 Ok(())
@@ -213,7 +218,10 @@ fn completion_retains_credit_after_source_acceptance(
         &crate::CancellationToken::new(),
     )
     .map_err(|(cause, _)| cause)?;
-    let pressure = Arc::new(CompletionPressure::default());
+    let pressure = Arc::new(CompletionPressure {
+        copy_credit,
+        ..CompletionPressure::default()
+    });
     let source = crate::native_mount::adapter::tests::access::bind_test_access(
         MemorySource::new_at_meter(
             Arc::new(crate::native_mount::SharedCheckout::new(checkout)),
@@ -246,6 +254,14 @@ fn completion_retains_credit_after_source_acceptance(
             .ino
             .0;
         let (handle, _) = projection.open_node(inode, libc::O_RDONLY, &original)?;
+        if copy_credit {
+            projection.link_name(
+                inode,
+                ROOT_INODE,
+                std::ffi::OsStr::new("survivor"),
+                &original,
+            )?;
+        }
         Some((inode, handle))
     };
     let observer: Arc<dyn ViewObserver> = pressure.clone();
@@ -264,17 +280,15 @@ fn completion_retains_credit_after_source_acceptance(
     };
     assert!(pressure.accepted.load(Ordering::Acquire));
     assert!(pressure.held.lock().is_some());
-    assert!(matches!(
-        original.reserve_work(crate::WorkCounters {
-            items_examined: 1,
-            ..crate::WorkCounters::UNCHARGED
-        }),
-        Err(crate::NativeTreeMaterializationError::Work(
-            crate::WorkError::BudgetExceeded {
-                counter: "items_examined",
-                ..
-            }
-        ))
+    let (credit, expected) = if copy_credit {
+        (super::super::Copy, "bytes_copied")
+    } else {
+        (super::super::Items, "items_examined")
+    };
+    assert!(matches!(original.reserve_work(credit.delta(1)),
+        Err(crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
+            counter, ..
+        })) if counter == expected
     ));
     drop(pressure.held.lock().take());
     assert!(source.lookup(&name("before"))?.is_none());
@@ -288,6 +302,12 @@ fn completion_retains_credit_after_source_acceptance(
             .open_file
             .clone();
         assert_eq!(file.file().read_range(0, 8)?.as_ref(), b"original");
+        if copy_credit {
+            assert_eq!(
+                source.read_range(&name("survivor"), 0, 8)?.as_ref(),
+                b"original"
+            );
+        }
     } else {
         assert!(source.lookup(&name("after"))?.is_some());
     }
@@ -296,6 +316,12 @@ fn completion_retains_credit_after_source_acceptance(
         "{} refused after its source was accepted: {result:?}",
         if rename { "rename" } else { "unlink" }
     );
+    if copy_credit && let Some((inode, _)) = retained {
+        let state = projection.core.state().map_err(NativeMountError::from)?;
+        let entry = state.by_inode.get(&inode).ok_or("original inode lost")?;
+        assert_eq!(entry.bindings.len(), 1);
+        assert_eq!(*entry.bindings[0].path, name("survivor"));
+    }
     original.admit(crate::WorkCounters::UNCHARGED)?;
     Ok(())
 }
@@ -303,13 +329,19 @@ fn completion_retains_credit_after_source_acceptance(
 #[test]
 fn rename_completion_retains_credit_after_source_acceptance()
 -> Result<(), Box<dyn std::error::Error>> {
-    completion_retains_credit_after_source_acceptance(true)
+    completion_retains_credit_after_source_acceptance(true, false)
 }
 
 #[test]
 fn unlink_completion_retains_credit_after_source_acceptance()
 -> Result<(), Box<dyn std::error::Error>> {
-    completion_retains_credit_after_source_acceptance(false)
+    completion_retains_credit_after_source_acceptance(false, false)
+}
+
+#[test]
+fn unlink_completion_retains_copy_credit_after_source_acceptance()
+-> Result<(), Box<dyn std::error::Error>> {
+    completion_retains_credit_after_source_acceptance(false, true)
 }
 
 #[test]
