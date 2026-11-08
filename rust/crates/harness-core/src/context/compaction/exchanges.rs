@@ -43,13 +43,15 @@ pub(super) fn exchange_groups(
                 None => crate::Error::Invalid(cause.to_string()),
             })
         }),
-        Err(CompiledPrefixError::Capacity | CompiledPrefixError::Order(_)) => {
-            original.with(|work| {
-                Err(compaction_error(
-                    work,
-                    "tool dependency index cannot be represented",
-                ))
-            })
-        }
+        Err(
+            CompiledPrefixError::Capacity
+            | CompiledPrefixError::Order(_)
+            | CompiledPrefixError::Invariant,
+        ) => original.with(|work| {
+            Err(compaction_error(
+                work,
+                "tool dependency index cannot be represented",
+            ))
+        }),
     }
 }
