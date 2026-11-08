@@ -7,11 +7,12 @@
 //! dispatches, the turn commits what its earlier calls recorded (see
 //! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
 //! reachable by name, from the next call on. `wait` records nothing and holds
-//! nothing: until enough of the named children settle, its call does not
-//! dispatch (see [`awaited`]) and the turn commits
+//! nothing: until enough of the named children settle, preparation defers
+//! its call and the turn commits
 //! [`crate::agent::Wait::Until`], which their settlements or its timeout
-//! resume; dispatched, it reads each child's status once (see
-//! [`crate::agent::settled`]) and returns each one's last answer.
+//! resume. Preparation selects each child's status once (see
+//! [`crate::agent::settled`]); the original claim publishes that selection
+//! and each settled child's exact answer, without reading its status again.
 //!
 //! A child works on its own fork of its parent's project. Neither settling
 //! nor `wait` joins that fork into the parent: the parent merges it
@@ -29,8 +30,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
     tool::{
-        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry,
-        ToolResult, json_projection_schema, schema,
+        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolPreparation,
+        ToolRegistry, ToolResult, json_projection_schema, schema,
     },
 };
 use acyclic_stream::BoxProviderFuture;
@@ -39,7 +40,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashSet},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Revision of the agent tools, selected for the model over other revisions.
@@ -117,6 +121,8 @@ struct Turn {
     /// Held from a spawn's limit check through its record, so concurrent
     /// spawns of one turn see each other.
     spawning: futures::lock::Mutex<()>,
+    /// The first unfinished wait consumes the actor deadline release.
+    released: AtomicBool,
 }
 
 struct AgentTool {
@@ -149,9 +155,12 @@ impl AgentTool {
     ) -> Result<ToolResult> {
         let turn = &*self.turn;
         if self.name == "wait" {
-            return self
-                .wait(invocation.operation_id, invocation.arguments)
-                .await;
+            return match self.prepare_wait(invocation.operation_id, &invocation.arguments, true).await? {
+                ToolPreparation::Ready(result) => Ok(result),
+                ToolPreparation::Deferred(_) => {
+                    Err(Error::Conflict("released wait deferred its result".into()))
+                }
+            };
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
@@ -367,35 +376,52 @@ impl AgentTool {
         Ok(None)
     }
 
-    /// Reads the named children once; see [`WaitAgentInput`]. Its call
-    /// dispatches once enough settled, its timeout passed, or its open
-    /// children can no longer meet it (see [`awaited`]). An unsettled child is
-    /// reported with its actual phase; a condition the open children cannot
-    /// meet is the named failure naming each child that cannot settle.
-    async fn wait(&self, operation: crate::OperationId, arguments: Value) -> Result<ToolResult> {
+    /// Select every status and answer position once under this turn's
+    /// authority. Readiness and the result consume the same observations.
+    async fn prepare_wait(&self, operation: crate::OperationId, arguments: &Value, released: bool) -> Result<ToolPreparation> {
         let Some(observer) = &self.turn.observer else {
-            return Ok(rejected("this host observes no children"));
+            return Ok(ToolPreparation::Ready(rejected(
+                "this host observes no children",
+            )));
         };
-        let (children, need, _) = match waited(&**observer, operation, arguments).await {
+        let (children, mut need, timeout_ms) = match waited(&**observer, operation, arguments.clone()).await {
             Ok(waited) => waited,
-            Err(error @ Error::Invalid(_)) => return Ok(super::rejected_input(error)),
+            Err(error @ Error::Invalid(_)) => return Ok(ToolPreparation::Ready(super::rejected_input(error))),
             Err(error) => return Err(error),
         };
-        let open = self.open().await?;
+        let observations = futures::future::try_join_all(children.iter().map(|(name, child)| {
+            let observer = &**observer;
+            async move { observer.settled(child).await.map_err(|error| (name, error)) }
+        }))
+        .await;
+        let observations = match observations {
+            Ok(observed) => observed,
+            Err((name, Error::NotFound(_))) => {
+                return Ok(ToolPreparation::Ready(rejected(format!(
+                    "{name} names no child of this agent"
+                ))));
+            }
+            Err((_, error)) => return Err(error),
+        };
+        let mut unsettled = BTreeSet::new();
+        for ((_, child), observed) in children.iter().zip(&observations) {
+            if observed.is_some() {
+                need = need.saturating_sub(1);
+            } else if !released {
+                unsettled.insert(child.clone());
+            }
+        }
+        if !released && need != 0 {
+            return Ok(ToolPreparation::Deferred(
+                crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
+            ));
+        }
         let mut settled = Vec::with_capacity(children.len());
-        let mut unsettled = Vec::new();
-        let mut stranded = Vec::new();
-        for (name, child) in &children {
-            let observed = match observer.settled(child).await {
-                Ok(Some(observed)) => observed,
-                Ok(None) => {
-                    running.push(name.as_str());
-                    continue;
-                }
-                Err(Error::NotFound(_)) => {
-                    return Ok(rejected(format!("{name} names no child of this agent")));
-                }
-                Err(error) => return Err(error),
+        let mut running = Vec::new();
+        for ((name, child), observed) in children.iter().zip(observations) {
+            let Some(observed) = observed else {
+                running.push(name.as_str());
+                continue;
             };
             let answer = match observed.answer {
                 Some(sequence) => Some(observer.answer(child, sequence).await?),
@@ -416,20 +442,14 @@ impl AgentTool {
             // The fork's branch: its changes reach this agent's project
             // only through `fs merge` of it. A spawn name names it; an agent
             // path does not.
-            if AgentPath::try_from(name.clone()).is_err() {
+            if name != child.as_str() {
                 entry["branch"] = json!(format!("agents/{name}"));
             }
             settled.push(entry);
         }
-        if settled.len() + unsettled.len() < need as usize {
-            return Ok(rejected(format!(
-                "wait cannot be satisfied: {}",
-                stranded.join(", ")
-            )));
-        }
-        Ok(ToolResult {
-            value: json!({"settled": settled, "unsettled": unsettled}),
-        })
+        Ok(ToolPreparation::Ready(ToolResult {
+            value: json!({"settled": settled, "running": running}),
+        }))
     }
 }
 
@@ -490,60 +510,38 @@ mod selection_checks;
 #[cfg(feature = "test-support")]
 pub use selection_checks::check as check_agent_wait_selection;
 
-/// What a call of `tool` with `arguments` waits for before it dispatches: for
-/// a `wait` fewer of whose children settled than it needs, the
-/// [`crate::agent::Until`] over those still unsettled, needing the rest. Each
-/// child's status is read once; nothing waits here. The turn then commits
-/// [`crate::agent::Wait::Until`], holding no delivery, and its call
-/// dispatches when their settlements or its timeout resume it.
-///
-/// # Errors
-/// Stream failures reading a child's status.
-///
-/// `released` is set when a deadline resumed the turn: the first wait the
-/// turn reaches is the one that deadline held, so it takes the release and
-/// dispatches, whether or not its condition now holds.
-pub(crate) async fn awaited(
-    children: &dyn TurnChildren,
-    operation: crate::OperationId,
-    tool: &str,
-    arguments: &Value,
-    released: &std::sync::atomic::AtomicBool,
-) -> Result<Option<crate::agent::Until>> {
-    if tool != "wait" || released.swap(false, std::sync::atomic::Ordering::AcqRel) {
-        return Ok(None);
-    }
-    // A malformed wait dispatches to receive its error.
-    let (named, mut need, timeout_ms) = match waited(children, operation, arguments.clone()).await {
-        Ok(waited) => waited,
-        Err(Error::Invalid(_)) => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let mut unsettled = BTreeSet::new();
-    for (_, child) in named {
-        match children.settled(&child).await {
-            Ok((_, true)) => need -= 1,
-            // A wait naming no child dispatches to receive its error.
-            Err(Error::NotFound(_)) => return Ok(None),
-            Ok((_, false)) => {
-                unsettled.insert(child);
-            }
-            Err(error) => return Err(error),
-        }
-        if need == 0 {
-            return Ok(None);
-        }
-    }
-    Ok(Some(
-        crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
-    ))
-}
-
 fn agent(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
 
 impl ToolExecutor for AgentTool {
+    fn prepare<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        _context: Option<&'a ToolContext>,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<Option<crate::tool::ToolPreparationFuture<'a>>> {
+        if self.name != "wait" {
+            return Ok(None);
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.is_some_and(|io| io.original_native_work().is_some()) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "agent wait preparation has no native observation producer",
+            });
+        }
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move {
+                let released = self.turn.released.swap(false, Ordering::AcqRel);
+                self.prepare_wait(invocation.operation_id, &invocation.arguments, released)
+                    .await
+                    .map(|prepared| (prepared, None))
+            },
+        )?))
+    }
+
     /// The effect is what a replay reproduces: a replayed spawn runs its child.
     fn replays_recorded(&self) -> bool {
         false
@@ -710,6 +708,7 @@ pub fn bind_agent_tools(
         templates: agent.profile.clone().zip(templates),
         volumes: agent.volumes.clone(),
         spawning: futures::lock::Mutex::new(()),
+        released: AtomicBool::new(matches!(agent.phase, crate::agent::Phase::Waiting { .. })),
     });
     for (name, definition) in selected(names)? {
         let tool = Tool {
@@ -814,52 +813,6 @@ mod tests {
         fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
             Box::pin(async { Err(Error::Invalid("no answer selected".into())) })
         }
-    }
-
-    #[tokio::test]
-    async fn a_deadline_release_goes_to_the_first_wait_it_reaches() -> Result<()> {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-        let [a, b] = ["a", "b"].map(|name| {
-            TurnEffect::child(
-                &agent,
-                &spawn_intent(name, 0).map_err(|error| Error::Invalid(error.to_string()))?,
-            )
-            .map_err(|error| Error::Invalid(error.to_string()))
-        });
-        let (a, b) = (a?, b?);
-        let children = Children {
-            agent: agent.clone(),
-            settled: BTreeSet::from([a.clone()]),
-            stream: Arc::new(acyclic_stream::MemoryStream::default()),
-        };
-        let both = json!({"agents": [a.as_str(), b.as_str()], "timeout_ms": 5});
-        let first = json!({"agents": [a.as_str()]});
-        // Unreleased, an unmet condition holds the wait until its deadline.
-        let operation = crate::OperationId::from_bytes([1; 16]);
-        let held = awaited(&children, operation, "wait", &both, &AtomicBool::new(false)).await?;
-        assert!(held.is_some_and(|until| until.need == 1 && until.timeout_ms == Some(5)));
-        // The release goes to the first wait even when its condition already
-        // holds, so a later wait in the turn is still held.
-        let released = AtomicBool::new(true);
-        assert!(
-            awaited(&children, operation, "send", &both, &released)
-                .await?
-                .is_none()
-        );
-        assert!(released.load(Ordering::Acquire), "only a wait takes it");
-        assert!(
-            awaited(&children, operation, "wait", &first, &released)
-                .await?
-                .is_none()
-        );
-        assert!(!released.load(Ordering::Acquire));
-        assert!(
-            awaited(&children, operation, "wait", &both, &released)
-                .await?
-                .is_some()
-        );
-        Ok(())
     }
 
     #[tokio::test]

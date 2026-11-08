@@ -180,7 +180,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
     };
     owner.open(id, &request).await?;
     assert_eq!(
-        owner.dispatch(id, &*storage.journal(), None).await?,
+        owner.outcome(id, &*storage.journal(), None).await?,
         Some(InteractionOutcome::Approved {})
     );
     assert_eq!(
@@ -224,7 +224,7 @@ async fn approval_dispatch_and_verification_retain_one_original_request() -> Res
     for cancel in [false, true] {
         let (producer, release) = oneshot::channel();
         *reads.release.lock().unwrap() = Some(release);
-        let mut pending = Box::pin(owner.dispatch(id, &*journal, None));
+        let mut pending = Box::pin(owner.outcome(id, &*journal, None));
         assert!(pending.as_mut().now_or_never().is_none());
         if cancel {
             drop(producer);
