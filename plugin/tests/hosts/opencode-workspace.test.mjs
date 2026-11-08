@@ -145,7 +145,9 @@ test("installed native OpenCode records its original session through the shared 
       assert.ok(waited, "native wait response absent");
       const childReply = JSON.parse(waited.content);
       assert.equal(childReply.status.settled, true);
-      assert.equal(await readFile(join(childReply.cwd, "native-child.txt"), "utf8"), "native-opencode-child-write");
+      const reopened = await request({ kind: "reopen", task: childReply.task });
+      assert.equal(reopened.code, 0, reopened.stderr);
+      assert.equal(await readFile(join(JSON.parse(reopened.stdout).cwd, "native-child.txt"), "utf8"), "native-opencode-child-write");
       const session = await request({ kind: "hook", host: "opencode", event: "NativeSession", input: { task: childReply.task } });
       assert.equal(session.code, 0, session.stderr);
       const childId = JSON.parse(session.stdout).id;
