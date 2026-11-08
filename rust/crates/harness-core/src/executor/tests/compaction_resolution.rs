@@ -171,19 +171,15 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
                             cause: acyclic_fs::NativeTreeMaterializationError::Work(_),
                             ..
                         }),
-                        0..=2,
+                        0..=2 | 4,
                     ) => true,
-                    (Err(Error::NativeFilesystem { .. }), 4) => true,
                     _ => false,
                 },
                 "fault {fault}: {admission:?}"
             );
             let result = execution.ensure_started(&journal, &input).await;
             assert!(
-                matches!(
-                    result,
-                    Err(Error::NativeWork { .. } | Error::NativeFilesystem { .. })
-                ),
+                matches!(result, Err(Error::NativeWork { .. })),
                 "fault {fault}: {result:?}"
             );
             assert!(journal.0.lock().unwrap().is_empty());
@@ -191,10 +187,7 @@ async fn native_resolution_failures_reject_before_journal_or_model_work() -> Res
             // Negative control: the previous `.ok()` fallback treats this same
             // failed writer lookup as an unavailable writer and admits Disabled.
             let rejected = execution.context.unwrap().0.private_summaries(Some(&io));
-            assert!(matches!(
-                rejected,
-                Err(Error::NativeWork { .. } | Error::NativeFilesystem { .. })
-            ));
+            assert!(matches!(rejected, Err(Error::NativeWork { .. })));
             let dropped = rejected.ok();
             let mutant = if dropped.is_some() {
                 CompactionPolicy::default()

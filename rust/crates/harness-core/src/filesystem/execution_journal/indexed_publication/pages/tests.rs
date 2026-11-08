@@ -200,6 +200,10 @@ async fn composed_cut_retains_original_native_construction() -> Result<()> {
                     Some(commit)
                 }
                 Err(error) => {
+                    assert!(
+                        !error.is_tool_failure(),
+                        "native construction fault became model feedback: {error:?}"
+                    );
                     match mode {
                         1 => assert!(matches!(
                             error,

@@ -1279,10 +1279,6 @@ mod tests {
                 let denial = trial.recorded_tool_result(operation, call_id, Some(&refused));
                 let cause = match &denial {
                     Err(Error::NativeWork { cause, .. }) => Some(cause),
-                    Err(Error::NativeFilesystem { source, .. }) => match source.as_ref() {
-                        acyclic_fs::FsError::NativeKernel(cause) => Some(cause),
-                        _ => None,
-                    },
                     _ => None,
                 };
                 assert!(
