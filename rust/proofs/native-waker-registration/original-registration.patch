@@ -1,0 +1,284 @@
+--- a/rust/crates/native-runtime/src/wake.rs
++++ b/rust/crates/native-runtime/src/wake.rs
+@@ -63,45 +63,6 @@
+     }
+ }
+ 
+-/// Registers one observer without invoking its clone or retirement callbacks
+-/// under the owner's lock. Unchanged observers and terminal reads use one
+-/// lock and no clone. A replacement clones outside the lock, then rechecks
+-/// publication under the same lock before installing its wake. Readiness is
+-/// observed without taking the outcome; a returned guard retains its custody
+-/// until every unused incoming observer has retired outside the lock.
+-pub(crate) fn poll_registered<S, G>(
+-    mut lock: impl FnMut() -> G,
+-    waker: &std::task::Waker,
+-    ready: impl Fn(&S) -> bool,
+-    slot: impl Fn(&mut S) -> &mut Option<std::task::Waker>,
+-) -> std::task::Poll<G>
+-where
+-    G: std::ops::DerefMut<Target = S>,
+-{
+-    let mut state = lock();
+-    if ready(&state) {
+-        return std::task::Poll::Ready(state);
+-    }
+-    if slot(&mut state)
+-        .as_ref()
+-        .is_some_and(|current| current.will_wake(waker))
+-    {
+-        return std::task::Poll::Pending;
+-    }
+-    drop(state);
+-    let waker = waker.clone();
+-    let mut state = lock();
+-    if ready(&state) {
+-        drop(state);
+-        drop(waker);
+-        return std::task::Poll::Ready(lock());
+-    }
+-    let retired = slot(&mut state).replace(waker);
+-    drop(state);
+-    drop(retired);
+-    std::task::Poll::Pending
+-}
+-
+ #[cfg(all(test, not(loom)))]
+ mod tests {
+     use super::*;
+--- a/rust/crates/native-runtime/src/completion/state.rs
++++ b/rust/crates/native-runtime/src/completion/state.rs
+@@ -75,34 +75,21 @@
+     }
+ }
+ 
+-pub(crate) enum CompletionOutcome<T> {
+-    Result(io::Result<T>),
+-    Panic(Box<dyn std::any::Any + Send>, Option<Waker>),
+-}
+-
+ impl<T> CompletionState<T> {
+-    pub(crate) fn poll_result(
+-        state: &CompletionMutex<Self>,
+-        waker: &Waker,
+-    ) -> Poll<CompletionOutcome<T>> {
+-        let mut state = std::task::ready!(crate::wake::poll_registered(
+-            || {
+-                state
+-                    .lock()
+-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            },
+-            waker,
+-            |state| !state.task_pending && (state.panic.is_some() || state.result.is_some()),
+-            |state| &mut state.waker,
+-        ));
+-        if let Some(panic) = state.panic.take() {
+-            return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
++    pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
++        if !self.task_pending
++            && let Some(result) = self.result.take()
++        {
++            return Poll::Ready(result);
+         }
+-        state
+-            .result
+-            .take()
+-            .map(CompletionOutcome::Result)
+-            .map_or(Poll::Pending, Poll::Ready)
++        if !self
++            .waker
++            .as_ref()
++            .is_some_and(|current| current.will_wake(waker))
++        {
++            self.waker = Some(waker.clone());
++        }
++        Poll::Pending
+     }
+ }
+ 
+@@ -117,16 +104,15 @@
+ impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
+     #[cfg(feature = "test-support")]
+     fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
+-        crate::wake::poll_registered(
+-            || {
+-                self.lock()
+-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            },
+-            waker,
+-            |state| !state.task_pending && (state.result.is_some() || state.panic.is_some()),
+-            |state| &mut state.waker,
+-        )
+-        .map(drop)
++        let mut state = self
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
++            Poll::Ready(())
++        } else {
++            state.waker = Some(waker.clone());
++            Poll::Pending
++        }
+     }
+ 
+     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
+--- a/rust/crates/native-runtime/src/completion/mod.rs
++++ b/rust/crates/native-runtime/src/completion/mod.rs
+@@ -4,7 +4,7 @@
+ #[cfg(any(windows, target_os = "linux"))]
+ pub(crate) use file::submit_file_io;
+ pub use state::NativeCompletionProducer;
+-pub(crate) use state::{CompletionOutcome, CompletionState, TaskTerminal};
++pub(crate) use state::{CompletionState, TaskTerminal};
+ 
+ mod fence;
+ mod file;
+@@ -266,16 +266,22 @@
+         let Some(state) = this.state.as_ref() else {
+             return Poll::Ready(Err(io::ErrorKind::InvalidInput.into()));
+         };
++        let mut state = state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if !state.task_pending
++            && let Some(payload) = state.panic.take()
++        {
++            let waker = state.waker.take();
++            drop(state);
++            drop(waker);
++            this.resume_panic(payload);
++        }
++        let result = state.poll_result(context.waker());
+         // Result publication does not retire the allocation. A worker or
+         // another completion owner may still hold this shared state.
+-        match CompletionState::poll_result(state, context.waker()) {
+-            Poll::Pending => Poll::Pending,
+-            Poll::Ready(CompletionOutcome::Result(result)) => Poll::Ready(result),
+-            Poll::Ready(CompletionOutcome::Panic(payload, retired)) => {
+-                drop(retired);
+-                this.resume_panic(payload);
+-            }
+-        }
++        drop(state);
++        result
+     }
+ }
+ 
+@@ -333,12 +339,10 @@
+             completion.complete_after(self.predecessor.take());
+         }
+         if let Some(state) = &self.state {
+-            let retired = state
++            state
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+-                .waker
+-                .take();
+-            drop(retired);
++                .waker = None;
+         }
+         let Some(waiter) = self.waiter.take() else {
+             return;
+--- a/rust/crates/native-runtime/src/completion/fence.rs
++++ b/rust/crates/native-runtime/src/completion/fence.rs
+@@ -53,26 +53,22 @@
+             drop(state);
+             self.complete();
+         } else {
+-            let retired = state.successor.take();
+-            let skipped = state.skipped_successor.replace(Arc::clone(self));
+-            drop(state);
+-            drop(skipped);
+-            drop(retired);
++            state.successor = None;
++            state.skipped_successor = Some(Arc::clone(self));
+         }
+     }
+ 
+     pub(crate) fn ready_or_register(&self, waker: &Waker) -> bool {
+-        crate::wake::poll_registered(
+-            || {
+-                self.state
+-                    .lock()
+-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            },
+-            waker,
+-            |state| state.complete,
+-            |state| &mut state.successor,
+-        )
+-        .is_ready()
++        let mut state = self
++            .state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if state.complete {
++            true
++        } else {
++            state.successor = Some(waker.clone());
++            false
++        }
+     }
+ 
+     pub(crate) fn complete(&self) {
+--- a/rust/crates/native-runtime/src/process_tree/events/signal.rs
++++ b/rust/crates/native-runtime/src/process_tree/events/signal.rs
+@@ -33,12 +33,18 @@
+     }
+ 
+     pub(super) fn poll(&self, context: &mut Context<'_>) -> Poll<ProcessWaitOutcome> {
+-        let state = std::task::ready!(crate::wake::poll_registered(
+-            || self.0.lock().unwrap_or_else(PoisonError::into_inner),
+-            context.waker(),
+-            |state| state.outcome.is_some(),
+-            |state| &mut state.waker,
+-        ));
+-        state.outcome.clone().map_or(Poll::Pending, Poll::Ready)
++        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
++        if let Some(outcome) = &state.outcome {
++            Poll::Ready(outcome.clone())
++        } else {
++            if state
++                .waker
++                .as_ref()
++                .is_none_or(|waker| !waker.will_wake(context.waker()))
++            {
++                state.waker = Some(context.waker().clone());
++            }
++            Poll::Pending
++        }
+     }
+ }
+--- a/rust/crates/native-runtime/src/workers/job_observation_tests.rs
++++ b/rust/crates/native-runtime/src/workers/job_observation_tests.rs
+@@ -120,13 +120,10 @@
+             if let Some(original) = original {
+                 let state = original.try_lock();
+                 assert!(state.is_ok(), "callback under original completion lock");
+-                if let Ok(state) = state {
+-                    drop(state);
+-                    let result = CompletionState::poll_result(&original, Waker::noop());
++                if let Ok(mut state) = state {
++                    let result = state.poll_result(Waker::noop());
+                     assert!(result.is_ready(), "original terminal not published");
+-                    if let Poll::Ready(crate::completion::CompletionOutcome::Result(result)) =
+-                        result
+-                    {
++                    if let Poll::Ready(result) = result {
+                         *self.consumed.lock().unwrap_or_else(PoisonError::into_inner) =
+                             Some(result);
+                     }
+@@ -560,7 +557,13 @@
+                 let wake = Arc::new(CountWake(AtomicUsize::new(0)));
+                 let waker = Waker::from(Arc::clone(&wake));
+                 let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+-                assert!(CompletionState::poll_result(original, &waker).is_pending());
++                assert!(
++                    original
++                        .lock()
++                        .unwrap_or_else(PoisonError::into_inner)
++                        .poll_result(&waker)
++                        .is_pending()
++                );
+                 let fence = Arc::new(OperationFence::default());
+                 if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
+                     *completion = Some(Arc::clone(&fence));

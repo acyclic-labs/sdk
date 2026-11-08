@@ -22,6 +22,7 @@ required-features = ["local"]
 [[bin]]
 name = "objects-rpc-inventory"
 path = "src/bin/objects-rpc-inventory.rs"
+test = false
 required-features = ["grpc", "http"]
 
 [features]

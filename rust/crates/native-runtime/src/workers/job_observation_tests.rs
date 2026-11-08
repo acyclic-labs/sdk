@@ -120,10 +120,13 @@ where
             if let Some(original) = original {
                 let state = original.try_lock();
                 assert!(state.is_ok(), "callback under original completion lock");
-                if let Ok(mut state) = state {
-                    let result = state.poll_result(Waker::noop());
+                if let Ok(state) = state {
+                    drop(state);
+                    let result = CompletionState::poll_result(&original, Waker::noop());
                     assert!(result.is_ready(), "original terminal not published");
-                    if let Poll::Ready(result) = result {
+                    if let Poll::Ready(crate::completion::CompletionOutcome::Result(result)) =
+                        result
+                    {
                         *self.consumed.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(result);
                     }
@@ -557,13 +560,7 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
                 let wake = Arc::new(CountWake(AtomicUsize::new(0)));
                 let waker = Waker::from(Arc::clone(&wake));
                 let original = task.state.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-                assert!(
-                    original
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .poll_result(&waker)
-                        .is_pending()
-                );
+                assert!(CompletionState::poll_result(original, &waker).is_pending());
                 let fence = Arc::new(OperationFence::default());
                 if let Some(NativeJob::Task { completion, .. }) = task.pending.as_mut() {
                     *completion = Some(Arc::clone(&fence));

@@ -57,7 +57,7 @@ if (browsers.length) out.push("### Parallel browser checks", "", ...table(["Chec
 const contracts = read("generated-contracts.json");
 if (contracts) {
   const report = JSON.parse(contracts);
-  if (report.revision !== 1) throw new Error("unsupported generated contract timing revision");
+  if (report.revision !== 2) throw new Error("unsupported generated contract timing revision");
   if (!["success", "failed", "incomplete"].includes(report.status)) throw new Error("unsupported generated contract timing state");
   // Cancellation before source discovery still belongs to this run, but has
   // no observed source identity. Only successful reports require one.
@@ -70,9 +70,6 @@ if (contracts) {
     ["Recorded completion state", cell(report.status)],
     ["Last recorded phase", cell(report.phase)],
     ["Observed source", cell(report.source_commit ?? "not observed")],
-    ["Cargo identity", cell(report.cargo_version)],
-    ["Direct rustc probe (Cargo selection may differ)", cell(report.rustc_error ?? report.rustc_version)],
-    ["Toolchain inspection", seconds((report.toolchain_ms + report.rustc_ms) / 1000)],
     ["Cargo metadata", seconds(report.metadata_ms / 1000)],
     ["Cargo build (including lock waits)", seconds(report.build_ms / 1000)],
     ["Cargo fresh artifacts (all / requested)", `${report.artifacts.filter(item => item.fresh).length} / ${report.artifacts.filter(item => item.fresh && item.requested).length}`],
@@ -110,7 +107,7 @@ const slowest = (kind, label, count) => {
     // nextest names each suite after its binary id, `<package>[::<binary>]`.
     out.push("<details><summary>Rerun a slow Rust test alone</summary>", "", "```sh",
       ...tests.slice(0, count).map(test =>
-        `cargo nextest run -p ${test.suite.split("::")[0]} --all-features -E 'binary_id(=${test.suite}) & test(=${test.name})'`),
+        `cargo nextest run --tests -p ${test.suite.split("::")[0]} --all-features -E 'binary_id(=${test.suite}) & test(=${test.name})'`),
       "```", "", "</details>", "");
   }
   const totals = suites[kind].map(suite => ({

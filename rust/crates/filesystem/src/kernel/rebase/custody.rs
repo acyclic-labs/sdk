@@ -230,7 +230,7 @@ impl ProofDataCustody {
         if completed
             .original_cache_ledger
             .as_ref()
-            .is_some_and(|original| ledger.shares_retained_ledger(original))
+            .is_some_and(|original| ledger.shares_retained_ledger(original.as_ptr()))
         {
             completed.original_cache_bytes
         } else {
@@ -250,7 +250,7 @@ impl ProofDataCustody {
         if completed
             .original_cache_ledger
             .as_ref()
-            .is_some_and(|original| !std::sync::Weak::ptr_eq(original, &ledger))
+            .is_some_and(|original| !std::ptr::eq(original.as_ptr(), Arc::as_ptr(ledger)))
         {
             return Err(crate::FsError::AccountingHandoffActive);
         }
@@ -264,7 +264,9 @@ impl ProofDataCustody {
             .ok_or(WorkError::Overflow)?;
         completed.original_cache_bytes = original;
         completed.live_cache_bytes = live;
-        completed.original_cache_ledger = Some(ledger);
+        if completed.original_cache_ledger.is_none() {
+            completed.original_cache_ledger = Some(Arc::downgrade(ledger));
+        }
         Ok(())
     }
 

@@ -34,6 +34,9 @@ fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::erro
     let watched = path(&["corpus", "file"])?;
     let file_id = FileId::new();
     let stamp = ledger.stamp();
+    let before = work.receipt().items_examined;
+    assert!(ledger.binding_unchanged_since(&watched, stamp, &mut work)?);
+    let binding_work = work.receipt().items_examined - before;
     {
         let mut carrier = NativeDemandCarrier::Borrowed(&mut work);
         for index in 0..20_000 {
@@ -42,6 +45,9 @@ fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::erro
             ledger.record(&ViewChange::Node(FileId::new()), &mut carrier)?;
         }
     }
+    let before = work.receipt().items_examined;
+    assert!(ledger.binding_unchanged_since(&watched, stamp, &mut work)?);
+    assert_eq!(work.receipt().items_examined - before, binding_work);
     assert!(ledger.unchanged_since(&watched, Some(file_id), stamp, &mut work)?);
     assert!(ledger.unchanged_since(&path(&["corpus"])?, None, stamp, &mut work)?);
     assert!(!ledger.unchanged_since(&path(&["writes"])?, None, stamp, &mut work)?);
@@ -50,6 +56,17 @@ fn unrelated_changes_never_invalidate_a_lookup() -> Result<(), Box<dyn std::erro
         &mut NativeDemandCarrier::Borrowed(&mut work),
     )?;
     assert!(!ledger.unchanged_since(&watched, Some(file_id), stamp, &mut work)?);
+    assert!(ledger.binding_unchanged_since(&watched, stamp, &mut work)?);
+    ledger.record(
+        &ViewChange::Bound(&path(&["corpus"])?),
+        &mut NativeDemandCarrier::Borrowed(&mut work),
+    )?;
+    assert!(!ledger.binding_unchanged_since(&watched, stamp, &mut work)?);
+    for change in [ViewChange::Everything, ViewChange::Unconfirmed] {
+        let stamp = ledger.stamp();
+        ledger.record(&change, &mut NativeDemandCarrier::Borrowed(&mut work))?;
+        assert!(!ledger.binding_unchanged_since(&watched, stamp, &mut work)?);
+    }
     Ok(())
 }
 
@@ -259,6 +276,7 @@ fn failed_record_cannot_vouch_for_an_old_lookup() -> Result<(), Box<dyn std::err
                 .is_err()
         );
         assert!(!ledger.unchanged_since(&path(&["node"])?, Some(node), stamp, &mut setup)?);
+        assert!(!ledger.binding_unchanged_since(&path(&["node"])?, stamp, &mut setup)?);
     }
     Ok(())
 }

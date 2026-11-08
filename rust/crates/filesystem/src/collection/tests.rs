@@ -305,12 +305,18 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         ))
     ));
     assert_eq!(denied.live_allocation_bytes(), baseline);
-    assert_eq!(denied.receipt().bytes_copied, before.bytes_copied);
+    assert_eq!(denied.receipt(), before);
 
     let original =
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
+    let initial_live = original.live_allocation_bytes();
+    let held = crate::kernel::allocation::retained::Retained::<Vec<u8>>::allocate(
+        4096,
+        &mut KernelAccounting::native(&original, &cancellation),
+    )?;
     let baseline = original.live_allocation_bytes();
+    let before = original.receipt();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let owned = clone_generation_root_with_accounting(
             &working,
@@ -319,9 +325,24 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         .expect("original-funded parent copy");
         assert_eq!(owned.0, working);
         assert!(original.live_allocation_bytes() > baseline);
-        panic!("unwind after the completed physical parent copy");
+        assert_eq!(
+            original.receipt().allocation_operations,
+            before.allocation_operations + 1
+        );
+        assert_eq!(
+            original.receipt().bytes_copied,
+            before.bytes_copied + std::mem::size_of::<crate::GenerationId>() as u64
+        );
+        std::panic::panic_any("unwind after the completed physical parent copy");
     }));
-    assert!(unwind.is_err());
+    assert_eq!(
+        unwind
+            .as_ref()
+            .err()
+            .and_then(|cause| cause.downcast_ref::<&'static str>())
+            .copied(),
+        Some("unwind after the completed physical parent copy")
+    );
     assert_eq!(original.live_allocation_bytes(), baseline);
     let cancelled = crate::CancellationToken::new();
     cancelled.cancel();
@@ -334,6 +355,9 @@ fn original_root_factory_keeps_completed_copy_and_retires_buffers_on_unwind()
         Err(crate::FsError::Cancelled(_))
     ));
     assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    drop(held);
+    assert_eq!(original.live_allocation_bytes(), initial_live);
     Ok(())
 }
 

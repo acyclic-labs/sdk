@@ -139,6 +139,10 @@ pub enum Error {
     /// An immutable identity or revision precondition failed.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The agent host definitively refused a request, which committed
+    /// nothing. It reads as the host error's own text, already classified.
+    #[error("{0}")]
+    Refused(String),
     /// The original exact-edit matcher rejected missing or ambiguous text.
     #[error(transparent)]
     ExactEdit(crate::tool::edit::EditRejection),
@@ -695,7 +699,7 @@ impl Error {
             Self::OutputOmitted(_) => ErrorCode::Invalid,
             Self::Cleanup(failure) => failure.classification.code,
             Self::NotFound(_) => ErrorCode::NotFound,
-            Self::Conflict(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
+            Self::Conflict(_) | Self::Refused(_) | Self::ExactEdit(_) => ErrorCode::Conflict,
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
@@ -936,6 +940,7 @@ impl Error {
             Self::ModelContextOverflow
             | Self::NotFound(_)
             | Self::Conflict(_)
+            | Self::Refused(_)
             | Self::ExactEdit(_)
             | Self::TaskFailed { .. }
             | Self::GoalBlocked(_)

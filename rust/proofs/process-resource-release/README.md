@@ -54,7 +54,8 @@ property requires cleanup only for objects actually initialized by that cut,
 exact original accounting counts, original child custody and release of the
 original funded preparation frame. There are no timed probes.
 
-The retained `original-spawn-retirement.patch` restores `unix.rs` exactly to
+The retained `original-spawn-retirement.patch` restores the complete `unix.rs`,
+including its original argument-allocation body, exactly to
 `fc6be5bd0676092c38f736f0410d78d532b45c14`, retaining this stronger property.
 That source has no native-object owner during callback unwind. The fixed owner
 uses the existing terminal delivery primitive to finish both cleanup slots.

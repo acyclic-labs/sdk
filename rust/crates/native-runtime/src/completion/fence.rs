@@ -53,22 +53,26 @@ impl OperationFence {
             drop(state);
             self.complete();
         } else {
-            state.successor = None;
-            state.skipped_successor = Some(Arc::clone(self));
+            let retired = state.successor.take();
+            let skipped = state.skipped_successor.replace(Arc::clone(self));
+            drop(state);
+            drop(skipped);
+            drop(retired);
         }
     }
 
     pub(crate) fn ready_or_register(&self, waker: &Waker) -> bool {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.complete {
-            true
-        } else {
-            state.successor = Some(waker.clone());
-            false
-        }
+        crate::wake::poll_registered(
+            || {
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
+            waker,
+            |state| state.complete,
+            |state| &mut state.successor,
+        )
+        .is_ready()
     }
 
     pub(crate) fn complete(&self) {

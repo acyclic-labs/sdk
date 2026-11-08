@@ -28,10 +28,11 @@ The Unix control uses real socket readiness, production registration and the
 original native producer/dispatch. A consumer panic must leave the original
 typed payload retained and settle an independent quiet source and late observer
 with the same cause. It has no timed probe or retry. The patch restores the
-exact producer file from `31f178b42d19355775cf845dcb023f2824252f88`.
+complete producer file, including registration retirement, from `31f178b42d19355775cf845dcb023f2824252f88`.
 
 ```sh
 git apply rust/proofs/native-completion-callbacks/original-producer-unwind.patch
+git diff --exit-code 31f178b42d19355775cf845dcb023f2824252f88 -- rust/crates/native-runtime/src/process_tree/events/mod.rs
 # Require runtime failure: native producer lost typed panic custody.
 cargo nextest run --locked -p acyclic-native-runtime --all-features --lib -E 'test(=process_tree::events::tests::native_producer_retains_original_consumer_panic)'
 git apply -R rust/proofs/native-completion-callbacks/original-producer-unwind.patch

@@ -19,7 +19,7 @@
     "licenses": "bun test scripts/check-js-licenses.test.mjs && bun scripts/check-js-licenses.mjs",
     "check:no-polling": "node scripts/check-no-polling.mjs",
     "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/check-sdk-readmes.mjs compile",
-    "check:baselines": "node --test scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
+    "check:baselines": "node --test scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs scripts/native-producer-entrypoints.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs scripts/archive-utils.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs scripts/stage-npm-package.test.mjs && bun scripts/check-baselines.mjs"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.75.0",

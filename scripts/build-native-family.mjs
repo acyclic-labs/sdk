@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { basename, delimiter, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generate } from "./proto-codegen.mjs";
 
 
 /** One maintained producer, specialized only by immutable Rust-generated facts. */
@@ -865,7 +866,7 @@ function rustMetadata() {
 
 /** Explicit production generation gate; use before building or refreshing trusted source inventory. */
 function assertCurrentNativeFamily() {
-  const actual = JSON.parse(execFileSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, family.key], { cwd: root, encoding: "utf8" }));
+  const actual = JSON.parse(generate(["native-family", root, family.key], { offline: true }));
   if (JSON.stringify(actual) !== JSON.stringify(family)) throw new Error("Rust native family metadata drift");
 }
 

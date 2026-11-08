@@ -4,7 +4,7 @@ pub(crate) use file::FileCompletion;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use file::submit_file_io;
 pub use state::NativeCompletionProducer;
-pub(crate) use state::{CompletionState, TaskTerminal};
+pub(crate) use state::{CompletionOutcome, CompletionState, TaskTerminal};
 
 mod fence;
 mod file;
@@ -266,22 +266,16 @@ impl<T> Future for NativeCompletion<T> {
         let Some(state) = this.state.as_ref() else {
             return Poll::Ready(Err(io::ErrorKind::InvalidInput.into()));
         };
-        let mut state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.task_pending
-            && let Some(payload) = state.panic.take()
-        {
-            let waker = state.waker.take();
-            drop(state);
-            drop(waker);
-            this.resume_panic(payload);
-        }
-        let result = state.poll_result(context.waker());
         // Result publication does not retire the allocation. A worker or
         // another completion owner may still hold this shared state.
-        drop(state);
-        result
+        match CompletionState::poll_result(state, context.waker()) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(CompletionOutcome::Result(result)) => Poll::Ready(result),
+            Poll::Ready(CompletionOutcome::Panic(payload, retired)) => {
+                drop(retired);
+                this.resume_panic(payload);
+            }
+        }
     }
 }
 
@@ -339,10 +333,12 @@ impl<T> Drop for NativeCompletion<T> {
             completion.complete_after(self.predecessor.take());
         }
         if let Some(state) = &self.state {
-            state
+            let retired = state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .waker = None;
+                .waker
+                .take();
+            drop(retired);
         }
         let Some(waiter) = self.waiter.take() else {
             return;

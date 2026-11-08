@@ -563,9 +563,12 @@ where
                 request.maximum_generations,
                 request.maximum_changes,
                 request.maximum_conflicts,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
             )
             .await
-            .map_err(|error| status(&error))?;
+            .map_err(|failure| status(&failure.error))?
+            .value;
         Ok(Response::new(rebase_message(outcome)))
     }
 

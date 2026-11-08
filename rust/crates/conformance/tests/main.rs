@@ -1,5 +1,9 @@
 //! Existing integration scenarios share one executable entrypoint.
 
+#[cfg(feature = "local-runner")]
+#[path = "../src/bin/qualify/tools/benchmark_access.rs"]
+mod benchmark_access;
+
 #[cfg(feature = "inference")]
 #[path = "inference.rs"]
 mod inference;

@@ -12,8 +12,7 @@ fn separator(byte: u8, windows: bool) -> bool {
 }
 
 fn drive(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+    matches!(path.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic())
 }
 
 // Keep roots distinct: a drive-relative path is never its absolute root, and
@@ -21,22 +20,20 @@ fn drive(path: &str) -> bool {
 fn spelling(path: &str, windows: bool) -> (bool, bool, &str) {
     let bytes = path.as_bytes();
     if windows
-        && bytes.len() >= 4
-        && separator(bytes[0], true)
-        && separator(bytes[1], true)
-        && bytes[2] == b'?'
-        && separator(bytes[3], true)
+        && let Some((prefix, rest)) = path.split_at_checked(4)
+        && matches!(prefix.as_bytes(), [first, second, b'?', last]
+            if separator(*first, true) && separator(*second, true) && separator(*last, true))
     {
-        let rest = &path[4..];
-        if rest
-            .get(..3)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC"))
-            && rest
+        if let Some((prefix, tail)) = rest.split_at_checked(4)
+            && prefix
+                .get(..3)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC"))
+            && prefix
                 .as_bytes()
-                .get(3)
+                .last()
                 .is_some_and(|byte| separator(*byte, true))
         {
-            return (true, true, &rest[4..]);
+            return (true, true, tail);
         }
         if drive(rest)
             && rest
@@ -49,7 +46,8 @@ fn spelling(path: &str, windows: bool) -> (bool, bool, &str) {
     }
     let rooted = bytes.first().is_some_and(|byte| separator(*byte, windows))
         || windows && drive(path) && bytes.get(2).is_some_and(|byte| separator(*byte, true));
-    let unc = windows && bytes.len() >= 2 && separator(bytes[0], true) && separator(bytes[1], true);
+    let unc = windows
+        && matches!(bytes, [first, second, ..] if separator(*first, true) && separator(*second, true));
     (unc, rooted, path)
 }
 

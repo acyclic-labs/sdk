@@ -40,7 +40,7 @@ export function captureContractCommand(root, executable, args, phase) {
 
 // Cargo remains the authority for source, toolchain, lockfile and feature
 // freshness. Never discover or execute a binary by guessing its target path.
-/** @param {{ phase?: string, toolchain_ms?: number, rustc_ms?: number, cargo_version?: string, rustc_version?: string, rustc_error?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
+/** @param {{ phase?: string, target_directory?: string, metadata_ms?: number, build_ms?: number, artifacts?: { package_id: string, name: string, kinds: string[], features: string[], fresh: boolean, executable: string | null, requested: boolean }[] }} report */
 export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_CARGO_BIN || "cargo", report = {}, saveProgress = () => {}, requestedFeatures = []) {
   if (targets.length === 0) throw new Error("Rust contract target set is empty");
   const capture = (phase, args, executable = cargo) => {
@@ -55,15 +55,6 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
     }
   };
   const manifest = ["--manifest-path", join(root, "Cargo.toml"), "--locked"];
-  report.cargo_version = capture("toolchain", ["--version"]).trim();
-  // A direct probe is useful context, but Cargo config/wrappers may select a
-  // different compiler. Do not present this as the build's compiler identity.
-  try {
-    report.rustc_version = capture("rustc", ["-Vv"], process.env.RUSTC || "rustc").trim();
-  } catch (error) {
-    report.rustc_error = String(error);
-    saveProgress();
-  }
   const metadata = parseContractJson(capture("metadata", ["metadata", ...manifest, "--no-deps", "--format-version=1"]), `contract-metadata: malformed output from ${cargo}`);
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */

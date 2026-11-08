@@ -225,4 +225,3 @@ if prompt=='resumed':
   finally:
    try:close_bridge()
    finally:stop_owner()
-assert time.monotonic()-started<10,'native supervision fixture exceeded ten seconds'

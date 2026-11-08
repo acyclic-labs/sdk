@@ -466,11 +466,14 @@ fn release_broadcast() {
             let workers = NativeWorkers::single(sender, AdmissionState::new());
             let flags = std::array::from_fn::<_, 3, _>(|_| Arc::new(Woken(AtomicUsize::new(0))));
             let nodes = flags.each_ref().map(|flag| {
-                workers
+                let node = crate::capacity_waiter(None);
+                let retired = workers
                     .admission
                     .lock()
                     .unwrap()
-                    .register(&Waker::from(flag.clone()), None)
+                    .register_existing(&node, Waker::from(flag.clone()));
+                drop(retired);
+                node
             });
             workers.admission.lock().unwrap().queued_jobs = 1;
             let admission = workers.admission.clone();

@@ -75,21 +75,34 @@ impl<T> Default for CompletionState<T> {
     }
 }
 
+pub(crate) enum CompletionOutcome<T> {
+    Result(io::Result<T>),
+    Panic(Box<dyn std::any::Any + Send>, Option<Waker>),
+}
+
 impl<T> CompletionState<T> {
-    pub(crate) fn poll_result(&mut self, waker: &Waker) -> Poll<io::Result<T>> {
-        if !self.task_pending
-            && let Some(result) = self.result.take()
-        {
-            return Poll::Ready(result);
+    pub(crate) fn poll_result(
+        state: &CompletionMutex<Self>,
+        waker: &Waker,
+    ) -> Poll<CompletionOutcome<T>> {
+        let mut state = std::task::ready!(crate::wake::poll_registered(
+            || {
+                state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
+            waker,
+            |state| !state.task_pending && (state.panic.is_some() || state.result.is_some()),
+            |state| &mut state.waker,
+        ));
+        if let Some(panic) = state.panic.take() {
+            return Poll::Ready(CompletionOutcome::Panic(panic, state.waker.take()));
         }
-        if !self
-            .waker
-            .as_ref()
-            .is_some_and(|current| current.will_wake(waker))
-        {
-            self.waker = Some(waker.clone());
-        }
-        Poll::Pending
+        state
+            .result
+            .take()
+            .map(CompletionOutcome::Result)
+            .map_or(Poll::Pending, Poll::Ready)
     }
 }
 
@@ -104,15 +117,16 @@ pub(crate) trait TaskTerminal: Send + Sync {
 impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
     #[cfg(feature = "test-support")]
     fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
-        let mut state = self
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.task_pending && (state.result.is_some() || state.panic.is_some()) {
-            Poll::Ready(())
-        } else {
-            state.waker = Some(waker.clone());
-            Poll::Pending
-        }
+        crate::wake::poll_registered(
+            || {
+                self.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
+            waker,
+            |state| !state.task_pending && (state.result.is_some() || state.panic.is_some()),
+            |state| &mut state.waker,
+        )
+        .map(drop)
     }
 
     fn stage_panic(&self, payload: Box<dyn std::any::Any + Send>) {
