@@ -21,3 +21,6 @@ test-support = []
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 dirs = { workspace = true, optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../../../../host-platform", optional = true }
+
+[lints]
+workspace = true
