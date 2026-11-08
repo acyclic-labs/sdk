@@ -77,13 +77,23 @@ pub struct MountLookup {
     pub metadata: FileMetadata,
 }
 
-/// Facts selected from the same candidate that completed a write.
+/// Facts selected from the same candidate that completed a mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MountWriteFacts {
-    /// Exact adopted node and metadata, disclosed only with List permission.
+    /// Exact adopted node and metadata. Existing-file mutations disclose these
+    /// only with List permission; creation returns the newly authored facts.
     pub lookup: MountLookup,
     /// Original invalidation position, recorded before adoption and fact selection.
     pub stamp: super::ViewStamp,
+}
+
+/// Completion of an installed mutation, including optional authorized facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MountMutationResult {
+    /// Original invalidation position recorded before adoption.
+    pub stamp: super::ViewStamp,
+    /// Absent when unrequested or metadata disclosure is not authorized.
+    pub facts: Option<MountWriteFacts>,
 }
 
 /// Completion of an entire admitted write, including optional authorized facts.

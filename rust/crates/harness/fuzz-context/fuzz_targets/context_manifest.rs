@@ -1,10 +1,19 @@
 #![no_main]
+//! Check context and hook admission against their configured bounds and round trips.
 
 use acyclic_harness::{
-    context::{Context, ContextDiscoveryLimits, ContextManifest},
+    context::{Context, ContextDiscoveryLimits, ContextManifest, ContextSummary},
     conversation::Limits,
 };
 use libfuzzer_sys::fuzz_target;
+
+fn round_trip<T: serde::de::DeserializeOwned + serde::Serialize + PartialEq>(input: &[u8]) {
+    if let Ok(value) = serde_json::from_slice::<T>(input) {
+        assert!(serde_json::to_vec(&value).is_ok_and(|encoded| {
+            serde_json::from_slice::<T>(&encoded).is_ok_and(|decoded| decoded == value)
+        }));
+    }
+}
 
 fuzz_target!(|input: &[u8]| {
     for instruction_bytes in [0, 1, 16, 4096] {
@@ -15,7 +24,7 @@ fuzz_target!(|input: &[u8]| {
         if bounds.validate_instruction(input).is_ok() {
             assert!(instruction_bytes > 0 && input.len() as u64 <= instruction_bytes);
             assert!(!input.contains(&0));
-            assert_eq!(std::str::from_utf8(input).unwrap().as_bytes(), input);
+            assert!(std::str::from_utf8(input).is_ok());
         }
     }
     let limits = Limits {
@@ -24,29 +33,20 @@ fuzz_target!(|input: &[u8]| {
         context_messages: 16,
         ..Default::default()
     };
-    if input.len() > limits.render_bytes as usize {
-        return;
-    }
     if let Ok(hooks) = serde_json::from_slice::<acyclic_harness::hooks::Hooks>(input)
         && let Ok(encoded) = hooks.encode(limits.file_bytes)
     {
-        let decoded: acyclic_harness::hooks::Hooks = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.encode(limits.file_bytes).unwrap(), encoded);
-        assert_eq!(hooks.is_empty(), decoded.is_empty());
+        assert!(
+            serde_json::from_slice::<acyclic_harness::hooks::Hooks>(&encoded).is_ok_and(
+                |decoded| decoded
+                    .encode(limits.file_bytes)
+                    .is_ok_and(|bytes| bytes == encoded)
+                    && hooks.is_empty() == decoded.is_empty()
+            )
+        );
     }
-    if let Ok(source) = serde_json::from_slice::<Context>(input) {
-        let encoded = serde_json::to_vec(&source).unwrap();
-        assert_eq!(serde_json::from_slice::<Context>(&encoded).unwrap(), source);
-    }
-    macro_rules! round_trip {
-        ($ty:ty) => {
-            if let Ok(value) = serde_json::from_slice::<$ty>(input) {
-                let encoded = serde_json::to_vec(&value).unwrap();
-                assert_eq!(serde_json::from_slice::<$ty>(&encoded).unwrap(), value);
-            }
-        };
-    }
-    round_trip!(acyclic_harness::context::ContextSummary);
+    round_trip::<Context>(input);
+    round_trip::<ContextSummary>(input);
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {
             path_bytes,
@@ -60,8 +60,9 @@ fuzz_target!(|input: &[u8]| {
                     .iter()
                     .all(|skill| skill.source.path.len() <= path_bytes)
             );
-            let bytes = manifest.encode(limits).unwrap();
-            assert_eq!(ContextManifest::decode(&bytes, limits).unwrap(), manifest);
+            assert!(manifest.encode(limits).is_ok_and(|bytes| {
+                ContextManifest::decode(&bytes, limits).is_ok_and(|decoded| decoded == manifest)
+            }));
         }
     }
 });

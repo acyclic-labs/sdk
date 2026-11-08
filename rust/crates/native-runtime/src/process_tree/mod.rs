@@ -53,10 +53,12 @@ pub use launch::{CaptureRequest, CaptureStop, LaunchFailure};
 mod pump;
 mod stream;
 pub use stream::{ProcessCaptureStream, ProcessChunk};
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 mod stdio;
+#[cfg(any(unix, windows))]
+pub use stdio::ProcessPipeReader;
 #[cfg(windows)]
-pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
+pub use stdio::ProcessPipeWriter;
 #[cfg(windows)]
 mod spawner;
 pub use pump::{

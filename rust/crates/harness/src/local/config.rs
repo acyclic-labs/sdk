@@ -158,7 +158,7 @@ impl LocalHarnessConfig {
 
     /// Opens workspace coordination without a model, tools, settings or agent execution.
     /// The trusted harness owner must start this outside the native host sandbox.
-    #[cfg(feature = "native-execution")]
+    #[cfg(any(test, feature = "native-execution"))]
     #[must_use]
     pub fn native_host(workspace: impl Into<PathBuf>) -> Self {
         let mut config = Self::configuration(workspace.into(), None);

@@ -253,7 +253,8 @@ fn callback_runtime_completes_ready_work_without_parking_current_thread()
             source.volume_id()?;
             let created = boundary(source.cancellation(), |work| {
                 source.create_file(&path, metadata(), None, work)
-            })?;
+            })?
+            .lookup;
             source.write_range(&path, 0, Bytes::from_static(b"base"))?;
             let attached = source.open_file(&path)?;
             attached.write_range(4, Bytes::from_static(b"-open"))?;

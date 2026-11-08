@@ -58,6 +58,10 @@ pub use windows::terminal;
 
 #[cfg(unix)]
 pub use process_tree::PreparedClosedProcess;
+#[cfg(any(unix, windows))]
+pub use process_tree::ProcessPipeReader;
+#[cfg(windows)]
+pub use process_tree::ProcessPipeWriter;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureProgress, CaptureRequest, CaptureSchedule,
     CaptureStop, CaptureWakes, ControlledCapture, LaunchFailure, OwnedCaptureInput,
@@ -76,8 +80,6 @@ pub use process_tree::{
     ProcessHostPartialProgress, ProcessHostPhase, ProcessHostProgress, run_external_process_host,
     run_external_process_host_with_progress,
 };
-#[cfg(windows)]
-pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
 
 mod file;
 mod io_progress;

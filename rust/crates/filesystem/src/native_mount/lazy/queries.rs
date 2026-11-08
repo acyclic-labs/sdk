@@ -228,7 +228,7 @@ where
         Ok(Resolution::Unauthored(lookup, allocation))
     }
 
-    pub(super) async fn project_authored(
+    pub(super) fn project_authored(
         &self,
         lookup: MountLookup,
         work: &crate::NativeMaterializationWork,
@@ -265,7 +265,7 @@ where
         let projected = mount_lookup(&lookup, file_id);
         drop(lookup);
         if self.detached_by_id(file_id)?.is_some() {
-            return Ok((self.project_authored(projected, work).await?, None));
+            return Ok((self.project_authored(projected, work)?, None));
         }
         Ok((projected, pin))
     }

@@ -203,7 +203,7 @@ pub(super) fn linux_listings_that_name_one_file_repeatedly_split_without_loss()
     inner.write_range(&name("a"), 0, Bytes::from_static(b"first"))?;
     for alias in &aliases[1..] {
         crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
-            inner.hard_link(&name("a"), &name(alias), work)
+            inner.hard_link(&name("a"), &name(alias), None, false, work)
         })?;
     }
     crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
@@ -429,13 +429,13 @@ impl MountFilesystem for GatedSource {
         open_file_with_lookup_with_meter(path: &MountPath, access: crate::native_mount::MountOpenAccess, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
         open_created_with_meter(path: &MountPath, created: &MountLookup, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         detach_file_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-        create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
-        create_symbolic_link(path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
-        create_special(path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+        create_file(path: &MountPath, metadata: FileMetadata, stamp: Option<ViewStamp>, work: &crate::NativeMaterializationWork) -> Result<MountWriteFacts, MountSourceError>;
+        create_symbolic_link(path: &MountPath, target: crate::kernel::OwnedSourceChunk, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountWriteFacts, MountSourceError>;
+        create_special(path: &MountPath, kind: MountNodeKind, device: Option<(u32,u32)>, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountWriteFacts, MountSourceError>;
         list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<(crate::native_mount::MountAttributePage, crate::NativeAllocation), MountSourceError>;
         write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: crate::native_mount::MountAttributeWriteMode, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         remove_attribute(path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-        hard_link(source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
+        hard_link(source: &MountPath, destination: &MountPath, expected: Option<FileId>, facts: bool, work: &crate::NativeMaterializationWork) -> Result<MountMutationResult, MountSourceError>;
         folded_path_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<Option<(MountPath,u64)>, MountSourceError>;
         view_is_stable_with_meter(work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError>;
         view_stamp_with_meter(work: &crate::NativeMaterializationWork) -> Result<Option<ViewStamp>, MountSourceError>;
@@ -479,7 +479,7 @@ impl MountFilesystem for GatedSource {
         path: &MountPath,
         metadata: FileMetadata,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<MountWriteFacts, MountSourceError> {
         self.pass(path, &self.gated_directory);
         self.inner.create_directory(path, metadata, work)
     }

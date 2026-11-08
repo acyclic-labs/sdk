@@ -7,7 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    ) -> Result<Option<super::MountWriteFacts>, MountSourceError> {
+    ) -> Result<MountMutationResult, MountSourceError> {
         let cancellation = work.cancellation();
         let rename = match &change {
             ViewChange::Moved { from, to, .. } => Some([*from, *to]),
@@ -69,7 +69,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             CheckoutCandidate<'a, A, O>,
             crate::facade::PreparedCandidateAdoption,
         ) -> Result<bool, MountSourceError>,
-    ) -> Result<Option<(MountPublication, Option<super::MountWriteFacts>)>, MountSourceError> {
+    ) -> Result<Option<(MountPublication, MountMutationResult)>, MountSourceError> {
         carrier.check(cancellation, lifetime)?;
         if self.view_gate.generation() != candidate.epoch {
             return Ok(None);
@@ -201,7 +201,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 state.retain_operation_id(operation)?;
             }
             state.recorded_view = state.checkout.root().file_table;
-            Ok(Some((state.publication, facts)))
+            Ok(Some((
+                state.publication,
+                MountMutationResult {
+                    stamp: recorded_stamp,
+                    facts,
+                },
+            )))
         }
         .await;
         notify();

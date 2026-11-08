@@ -1,6 +1,6 @@
 use super::super::{
-    MountAttributePage, MountAttributeWriteMode, MountDirectoryPage, MountRangeAllocation,
-    MountSourceError, ViewObserver,
+    MountAttributePage, MountAttributeWriteMode, MountDirectoryPage, MountMutationResult,
+    MountRangeAllocation, MountSourceError, MountWriteFacts, ViewObserver,
 };
 use super::session::{FuseSessionState, run_fuse_session};
 use super::{
@@ -9,7 +9,7 @@ use super::{
     ROOT_INODE, ViewStamp, callback_errno, confirm_name, name_is_bound,
 };
 use crate::FileId;
-use crate::kernel::FileMetadata;
+use crate::kernel::{FileMetadata, MetadataField};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::path::Path;

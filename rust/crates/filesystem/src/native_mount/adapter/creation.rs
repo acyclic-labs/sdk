@@ -4,7 +4,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
         build: impl FnOnce(NamespacePath) -> AuthoredMutation,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<super::MountWriteFacts, MountSourceError> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         carrier.check(cancellation, Some(&self.cancellation))?;
@@ -93,9 +93,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 .await
                 .map_err(|(error, _)| error)?;
         }
-        Ok(MountLookup {
-            node: mount_node(created.record),
-            metadata: created.metadata,
+        Ok(super::MountWriteFacts {
+            lookup: MountLookup {
+                node: mount_node(created.record),
+                metadata: created.metadata,
+            },
+            stamp: publication.1.stamp,
         })
     }
 }

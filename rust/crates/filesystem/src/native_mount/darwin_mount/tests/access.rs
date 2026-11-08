@@ -49,7 +49,9 @@ fn native_access_nfs_revokes_policy_after_open_before_first_read() -> TestResult
 fn native_access_nfs_unlink_does_not_upgrade_existing_handles() -> TestResult {
     let (source, context, work) = checkout_context(MountPublication::Manual)?;
     let path = MountPath::root().child(b"file".to_vec());
-    let created = source.create_file(&path, FileMetadata::default(), None, &work)?;
+    let created = source
+        .create_file(&path, FileMetadata::default(), None, &work)?
+        .lookup;
     source.write_range(&path, 0, Bytes::from_static(b"original"))?;
     publish_test_access(
         &source,
