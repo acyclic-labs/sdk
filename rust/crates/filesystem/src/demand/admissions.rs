@@ -2,8 +2,6 @@ use super::*;
 #[cfg(any(test, feature = "native-mount"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
 use crate::kernel::ProofDataCustody;
-#[cfg(any(test, feature = "native-watch"))]
-use crate::kernel::allocation::AllocationLedger;
 use crate::sync::atomic::{AtomicU64, Ordering, fence};
 use std::sync::Arc;
 
@@ -50,19 +48,6 @@ impl Admissions {
     }
 }
 impl DemandWork {
-    #[cfg(any(test, feature = "native-watch"))]
-    pub(crate) fn admissions<T>(
-        &mut self,
-        select: fn(&mut Admissions) -> &mut T,
-    ) -> Result<(&mut T, &mut AllocationLedger, &mut WorkCounters, WorkBudget), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        Ok((
-            select(&mut self.roots),
-            &mut self.allocations,
-            &mut self.work,
-            self.budget,
-        ))
-    }
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
         let Some(shared) = &self.roots.allocation_accounting else {
             return Ok(());
