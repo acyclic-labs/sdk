@@ -87,8 +87,8 @@ additional_controls = {
     "native_stdin_binary": [
         (
             "plugin/src/main.rs",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;",
-            b"let action = serde_json::from_value(read_json(io::stdin().lock(), Some(65_536))?)?;",
+            b"let action = read_json(io::stdin().lock(), None)?;",
+            b"let action = read_json(io::stdin().lock(), Some(65_536))?;",
             "null",
             b"workspace envelope must reach the original workspace client",
         ),

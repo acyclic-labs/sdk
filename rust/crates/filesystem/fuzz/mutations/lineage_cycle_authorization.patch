@@ -5,7 +5,7 @@
                  .map_err(WorkspaceError::from)?;
              if std::mem::replace(visited, true) {
 -                return Err(WorkspaceLineageError::TraversalLimit);
-+                return Ok(records);
++                return Ok(());
              }
              let record = match self.lookup(id, accounting).await? {
                  // A workspace this lineage never registered is outside it,
