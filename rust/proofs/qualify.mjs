@@ -1035,6 +1035,13 @@ const claims = {
     "approval wake uncertainty lost its original request", ["--features", "local"],
     { target: ["--test", "main"] },
   ],
+  "filesystem-stream-category": [
+    "rust/crates/filesystem/src/wire_service/errors.rs", "acyclic-fs",
+    "wire_service::errors::tests::every_stream_category_survives_the_authority_wrapper",
+    "filesystem retained Stream refusal changed category", ["--no-default-features", "--features", "memory"],
+    { oracle: "rust/crates/filesystem/src/wire_service/errors/tests.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"] },
+  ],
   "session-local-refusal": [
     "rust/crates/stream/src/session/frame.rs", "acyclic-stream",
     "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
