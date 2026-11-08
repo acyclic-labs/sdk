@@ -72,6 +72,11 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         let projection = crate::native_mount::fuse::FuseProjection { core: core.clone() };
         let entry = core
             .request(|work| {
+                if !existing {
+                    let absent =
+                        projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)?;
+                    assert_eq!(absent.attr.ino.0, 0);
+                }
                 if existing {
                     projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("held"), work)
                 } else if creation == Creation::HardLink {
