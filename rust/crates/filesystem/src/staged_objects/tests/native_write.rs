@@ -145,7 +145,8 @@ async fn native_flush_caller_cancellation_refuses_before_admission()
         let std::task::Poll::Ready(result) = futures::poll!(publishing.as_mut()) else {
             panic!("a cancelled writer still waits for its original lease");
         };
-        if exit == 3 {
+        // Original-ledger failure has priority when both scopes share a token.
+        if exit == 1 || exit == 3 {
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Native(

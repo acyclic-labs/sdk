@@ -139,7 +139,8 @@ async fn native_spill_denial_corruption_and_abandoned_frame_preserve_original_pr
         };
         drop(future);
         drop(spill_file);
-        if exit == 3 {
+        // Original-ledger failure has priority when both scopes share a token.
+        if exit == 1 || exit == 3 {
             assert!(matches!(
                 result,
                 Err(ObjectStoreError::Native(
