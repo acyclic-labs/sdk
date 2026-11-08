@@ -1,6 +1,18 @@
 # Original status retention
 
-Run `cargo fuzz run grpc_status fuzz/corpus/grpc_status` from the stream crate.
+From the repository root, run the retained target with the same pinned nightly
+used by the other native fuzz qualifications:
+
+```sh
+cargo +nightly-2026-07-01 fuzz run --dev --target x86_64-unknown-linux-gnu \
+  --fuzz-dir rust/crates/stream/fuzz grpc_status \
+  rust/crates/stream/fuzz/corpus/grpc_status -- -runs=128 -seed=1 -print_final_stats=1
+```
+
+The run count bounds a qualification sample; it is not a parser or product limit.
+Retain the original libFuzzer coverage and feature counters, rather than inferring
+instrumentation from an ordinary crate build. Apply the omission below to the
+same instrumented target to verify it finds the planted retention defect.
 The target calls the production status decoder and encoder. It varies diagnostic
 bytes across all 17 gRPC codes, comparing original status, message, opaque details,
 repeated product metadata, category and recovery classification. The same oracle
