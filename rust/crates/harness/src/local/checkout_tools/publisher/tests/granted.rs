@@ -20,13 +20,9 @@ async fn host_executor_grants_reach_shells_and_hooks_without_erasing_refusals() 
     let signed = &fixture.signed;
     let task = crate::runtime::Bindings {
         scope: RuntimeScope::new(
-            Capabilities::new(
-                signed
-                    .capabilities()
-                    .iter()
-                    .map(str::to_owned)
-                    .chain([crate::tools::shell::PLATFORM.capability()]),
-            ),
+            Capabilities::new(signed.capabilities().iter().map(str::to_owned).chain([
+                crate::contract::capability::tool_call(crate::tools::shell::PLATFORM.name),
+            ])),
             Default::default(),
         )?,
         ..crate::runtime::Bindings::local()
