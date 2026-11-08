@@ -18,6 +18,10 @@ run() {
 }
 
 features=filesystem-local,native-execution,test-support
+if [[ -z "${VIRTIOFS_VMM_BINARY:-}" || -z "${VIRTIOFS_VMM_SHA256:-}" ]]; then
+    printf 'step=select pinned VMM; recovery: VIRTIOFS_VMM_BINARY=/path/to/cloud-hypervisor VIRTIOFS_VMM_SHA256=<sha256> bash scripts/validate-virtiofs.sh\n' >&2
+    exit 1
+fi
 status=0
 run 'compile filesystem tests' cargo test --locked -p acyclic-fs --lib --no-run || status=$?
 run 'compile local owner and daemon tests' cargo test --locked -p acyclic-harness --features "$features" --lib --bin acyclic-virtiofsd --test main --no-run || status=$?
@@ -26,7 +30,8 @@ if (( status != 0 )); then
     printf 'step=virtiofs compile gates; recovery: bash scripts/validate-virtiofs.sh\n' >&2
     exit "$status"
 fi
-run 'prepare real guest artifacts' python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest || exit "$?"
+run 'prepare real guest artifacts' python3 -B scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest \
+    --vmm "$VIRTIOFS_VMM_BINARY" --vmm-sha256 "$VIRTIOFS_VMM_SHA256" || exit "$?"
 export ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest
 
 status=0

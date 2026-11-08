@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.request
 
 
 def run(step, command, **kwargs):
@@ -34,25 +33,14 @@ def run(step, command, **kwargs):
     return result.stdout
 
 
-def fetch(url, limit):
-    try:
-        with urllib.request.urlopen(url, timeout=None) as response:
-            contents = response.read(limit + 1)
-        if len(contents) > limit:
-            raise ValueError("release response exceeds its admitted artifact size")
-        return contents
-    except (OSError, ValueError) as error:
-        raise RuntimeError(
-            f"step=fetch public guest tool: {error}; "
-            f"recovery: curl --fail --location {shlex.quote(url)}"
-        ) from error
-
-
 def digest(contents):
     return hashlib.sha256(contents).hexdigest()
 
 
-def prepare(output, recovery):
+def prepare(output, recovery, vmm_path, vmm_sha256):
+    vmm = vmm_path.read_bytes()
+    if digest(vmm) != vmm_sha256:
+        raise RuntimeError(f"step=verify pinned VMM: digest mismatch; recovery: {recovery}")
     root = output / "root"
     for directory in ["bin", "dev", "proc", "sys", "modules", "mnt/acyclic"]:
         (root / directory).mkdir(parents=True, exist_ok=True)
@@ -125,15 +113,6 @@ poweroff -f
     initramfs = gzip.compress(archive, mtime=0)
     (output / "initramfs.gz").write_bytes(initramfs)
 
-    metadata_url = "https://api.github.com/repos/cloud-hypervisor/cloud-hypervisor/releases/latest"
-    metadata = json.loads(fetch(metadata_url, 2 * 1024 * 1024))
-    asset = next(asset for asset in metadata["assets"] if asset["name"] == "cloud-hypervisor-static")
-    expected = asset.get("digest", "")
-    if not expected.startswith("sha256:"):
-        raise RuntimeError(f"step=verify official VMM release: missing SHA256 digest; recovery: {recovery}")
-    vmm = fetch(asset["browser_download_url"], 64 * 1024 * 1024)
-    if "sha256:" + digest(vmm) != expected:
-        raise RuntimeError(f"step=verify official VMM release: digest mismatch; recovery: {recovery}")
     executable = output / "cloud-hypervisor"
     executable.write_bytes(vmm)
     executable.chmod(0o755)
@@ -142,8 +121,7 @@ poweroff -f
         "busybox": {"source": str(busybox), "sha256": digest(busybox.read_bytes())},
         "modules": modules,
         "initramfs_sha256": digest(initramfs),
-        "cloud_hypervisor": {"metadata": metadata_url, "release": metadata["tag_name"],
-                             "asset": asset["browser_download_url"], "digest": expected},
+        "cloud_hypervisor": {"source": str(vmm_path), "digest": "sha256:" + vmm_sha256},
     }
     (output / "provenance.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -151,21 +129,24 @@ poweroff -f
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--vmm", type=Path, required=True)
+    parser.add_argument("--vmm-sha256", required=True)
     args = parser.parse_args()
-    recovery = shlex.join([sys.executable, __file__, "--output", str(args.output)])
+    if len(args.vmm_sha256) != 64 or any(char not in "0123456789abcdef" for char in args.vmm_sha256):
+        parser.error("--vmm-sha256 must be a lowercase SHA-256 digest")
+    recovery = shlex.join([sys.executable, *sys.argv])
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError(f"step=select guest architecture: Linux x86_64 required; recovery: {recovery}")
     output = args.output.resolve()
     if output.exists():
-        unused = output.with_name(output.name + "-new")
         raise RuntimeError("step=select unused guest artifact directory: destination exists; recovery: "
-                           + shlex.join([sys.executable, __file__, "--output", str(unused)]))
+                           + recovery + " --output " + shlex.quote(str(output.with_name(output.name + "-new"))))
     output.parent.mkdir(parents=True, exist_ok=True)
     # Failed preparation leaves no partially usable guest or downloaded VMM.
     with tempfile.TemporaryDirectory(prefix=".acyclic-guest-", dir=output.parent) as temporary:
         prepared = Path(temporary) / "guest"
         prepared.mkdir()
-        prepare(prepared, recovery)
+        prepare(prepared, recovery, args.vmm.resolve(), args.vmm_sha256)
         if output.exists():
             raise RuntimeError(f"step=publish guest artifacts: destination appeared; recovery: {recovery}")
         prepared.rename(output)

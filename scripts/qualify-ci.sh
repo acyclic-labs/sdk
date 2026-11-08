@@ -58,11 +58,17 @@ install_tool() {
   local strip="${6:-0}" temporary
   if [[ ! -f "$archive" ]] || ! sha256_matches "$checksum" "$archive"; then
     temporary="$(mktemp "${archive}.XXXXXXXX")"
-    if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-      --max-time 30 "$url" --output "$temporary" ||
+    if ! {
+      if [[ -n "${PINNED_ASSET_FETCHER:-}" ]]; then
+        "$PINNED_ASSET_FETCHER" "$checksum" "$url" "$temporary"
+      else
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+          --max-time 30 "$url" --output "$temporary"
+      fi
+    } ||
       ! sha256_matches "$checksum" "$temporary"; then
       rm -f -- "$temporary"
-      echo "could not fetch a verified $url" >&2
+      printf 'step=fetch pinned release: %s; recovery: bash scripts/qualify-ci.sh %q\n' "$url" "$lane" >&2
       return 1
     fi
     mv -- "$temporary" "$archive"
