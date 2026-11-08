@@ -21,6 +21,9 @@ mod work_custody;
 #[cfg(not(target_arch = "wasm32"))]
 mod commit_index;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod replay_index;
+
 mod head;
 mod key_seek;
 mod subtree;

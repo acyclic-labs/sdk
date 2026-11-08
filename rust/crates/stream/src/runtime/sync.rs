@@ -1,11 +1,12 @@
 pub(crate) use crate::query_sync::SyncMutex as Mutex;
 #[cfg(loom)]
-pub(crate) use loom::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use loom::sync;
 #[cfg(not(loom))]
-pub(crate) use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync;
+
+#[cfg(any(
+    all(feature = "session", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub(crate) use sync::Arc;
+pub(crate) use sync::atomic::{AtomicU64, Ordering};

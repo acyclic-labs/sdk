@@ -1,0 +1,8 @@
+diff --git a/rust/crates/stream/src/owned_bytes/mod.rs b/rust/crates/stream/src/owned_bytes/mod.rs
+--- a/rust/crates/stream/src/owned_bytes/mod.rs
++++ b/rust/crates/stream/src/owned_bytes/mod.rs
+@@ -372,3 +372,3 @@
+         let (value, capacity) = match self.retained_capacity {
+-            Some(capacity) if capacity <= budget || capacity <= self.len() => (self, capacity),
++            Some(capacity) => (self, capacity),
+             _ => {

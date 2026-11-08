@@ -1,0 +1,11 @@
+diff --git a/rust/crates/stream/src/local/local_inner.rs b/rust/crates/stream/src/local/local_inner.rs
+--- a/rust/crates/stream/src/local/local_inner.rs
++++ b/rust/crates/stream/src/local/local_inner.rs
+@@ -58,7 +58,6 @@ impl LocalInner {
+         // Wake every caller waiting for a flush, so it sees the poison.
+         self.synced.send_modify(|_| {});
+         // Parked revision waits end too: this incarnation serves nothing more.
+-        self.provider.revisions.close();
+         StreamError::Unavailable
+     }
+ 

@@ -1,0 +1,64 @@
+diff --git b/rust/crates/stream/src/session/resources.rs a/rust/crates/stream/src/session/resources.rs
+index 2de5beea204..a9d29a95846 100644
+--- b/rust/crates/stream/src/session/resources.rs
++++ a/rust/crates/stream/src/session/resources.rs
+@@ -206,6 +206,13 @@ impl ResourceAuthorization {
+                     .strip_prefix(volume_resource)
+                     .and_then(|tail| tail.strip_prefix('/'))
+                 {
++                    // A prefix pattern's trailing `/` is not a component,
++                    // exactly as `resource_matches` reads it.
++                    let path = if resource.resource.prefix {
++                        path.trim_end_matches('/')
++                    } else {
++                        path
++                    };
+                     path_ranges(path, resource.resource.prefix, &mut ranges)?;
+                 }
+             }
+@@ -224,23 +231,15 @@ impl ResourceAuthorization {
+             .resource
+             .name
+             .strip_prefix(volume_resource)
+-            .and_then(|tail| {
+-                if tail.is_empty() {
+-                    Some("")
+-                } else {
+-                    tail.strip_prefix('/')
+-                }
+-            })
++            .and_then(|tail| tail.strip_prefix('/'))
+         {
+             let mut ranges = Vec::new();
+             path_ranges(path, self.resource.prefix, &mut ranges)?;
+-            if !ranges.is_empty() {
+-                wire.all_of.push(wire::SessionFilterClause {
+-                    keys: ranges,
+-                    attributes: vec![],
+-                    all_keys: true,
+-                });
+-            }
++            wire.all_of.push(wire::SessionFilterClause {
++                keys: ranges,
++                attributes: vec![],
++                all_keys: true,
++            });
+         }
+         crate::FollowFilter::new(wire)
+     }
+@@ -369,15 +368,6 @@ fn path_ranges(
+     prefix: bool,
+     ranges: &mut Vec<wire::KeyRange>,
+ ) -> Result<(), StreamError> {
+-    // Prefix matching ignores its final separator at both grant and call scope.
+-    let encoded = if prefix {
+-        encoded.trim_end_matches('/')
+-    } else {
+-        encoded
+-    };
+-    if prefix && encoded.is_empty() {
+-        return Ok(());
+-    }
+     let mut key = Vec::new();
+     for (index, component) in encoded.split('/').enumerate() {
+         if index != 0 {

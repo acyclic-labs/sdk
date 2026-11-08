@@ -29,7 +29,6 @@ export class Actors extends DurableObject<Env> {
     configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => this.journal.configure(configuration, maximum, authority),
     flush: () => this.journal.flush(),
     read: (index: number, page: number) => this.journal.read(index, page),
-    changed: (after: number, ready: () => void) => this.journal.changed(after, ready),
     append: async (index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]) => {
       // Durable recovery exists BEFORE publishing any state or routing changes.
       await this.ctx.storage.setAlarm(Date.now());

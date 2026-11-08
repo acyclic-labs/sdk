@@ -26,10 +26,19 @@ errors, complete receipts and actual arithmetic/allocation counts in the existin
 generated kernel property. A production mutation substitutes general charging
 and must fail the scalar arithmetic bound. Native ledger costs remain separate.
 
+The [child-selection control](children-selection/README.md) binds actual provider
+pages to the original parent, cursor, hierarchy fence and projection, including
+authorization-hidden children. Its production mutation restores tail-only
+validation; it does not establish flat supervisor/root ancestry.
+
 The [ready-source allocation control](ready-source-allocation/README.md) retains
 actual committed records and physical heap measurements while replacing a former
 scheduler comparison with a production mutation. It qualifies ready-record
-allocation only; source-index comparison and wake-drain complexity remain open.
+allocation only. The [bounded provider-turn control](ready-source-turn/README.md)
+challenges actual wake draining, parent registration and record delivery on the
+same scheduler. The [source-index control](ready-source-index/README.md) separately
+bounds physical lookup work in the shared fixed-width index. Wake-hint queue
+allocation and complete operation cost remain open.
 
 The [exact budget-refusal control](budget-errors/README.md) extends the existing
 generated verifier oracle with an isolated refusal for every declared counter.
@@ -108,8 +117,63 @@ explicit until their checked refinement, original counters and independent
 negative controls exist. In particular, a single-member memory fixture cannot
 certify non-owner members, partial writes, upgrades or larger fork trees.
 
+The [follow digest control](follow-digest-cost/README.md) measures the actual
+digest's scratch allocation as admitted clauses repeat at fixed size. Its
+retained production mutation discards that scratch buffer; the same signed
+provider-hop control must reject it. An independent v1 framing oracle retains
+format stability without using a copied authorization builder as a cost oracle.
+
+The [change marker control](change-marker-cost/README.md) measures original
+attribute probes against the fixture's marker position. Its retained mutation
+repeats the production lookup, replacing a copied classifier and simulated old
+calls while keeping the retained-version identity and refusal property.
+
+The [source index control](ready-source-index/README.md) binds the scheduler's
+original channel identities to the shared fixed-width collection. Actual
+record delivery traverses all 64 branch positions; a repeated production
+lookup must fail the original physical node/key examination bound.
+
+### Selectable large-follow workload
+
+The Session swarm and opening-allocation properties run quick growth cases by
+default. Set `ACYCLIC_STREAM_FOLLOW_SCALE=large` to select 10,000 live follows
+in each property, using the same drivers and assertions. The swarm retains its
+MemoryStream and eight-node gRPC paths, paired cross-stream transactions,
+per-node connection and byte counters, and event-driven retirement. The
+allocation property retains both public and reviewed opening paths with every
+interest alive. Neither path adds a latency deadline or changes its negative
+controls.
+
+From the repository root, select either existing property:
+
+```sh
+ACYCLIC_STREAM_FOLLOW_SCALE=large cargo test --locked -p acyclic-stream --lib session::client::tests::tenk::agent_transactions_share_one_session_per_node_as_the_swarm_grows -- --exact --nocapture
+ACYCLIC_STREAM_FOLLOW_SCALE=large cargo test --locked -p acyclic-stream --lib session::client::tests::allocations::follow_opening_allocations_grow_only_by_the_public_per_interest_cost -- --exact --nocapture
+```
+
+In PowerShell, set `$env:ACYCLIC_STREAM_FOLLOW_SCALE = 'large'` before the
+chosen `cargo test` command. Remove the variable afterward to restore quick
+cases. Other values refuse with the selection and recovery instructions.
+Selection preserves the workload; qualification requires running that selected
+workload and recording its result. It does not establish restart, upgrade or
+cross-platform coverage.
+
+The [retained commit index control](retained-commit-index/README.md) binds
+Streams' original retained slots and the shared boxed index to one radix
+selection loop. It challenges original comparison admission and retains
+prepared completion after cancellation. The [binary replay control](replay-index/README.md)
+extends the same traversal to borrowed variable-width identities, exact prefix
+and trailing-zero comparisons, snapshot rebuild and prepaid completion/recovery
+after interleaved growth. Whole-request cost remains a separate obligation.
+
 Run `node rust/proofs/qualify.mjs conversation-observation` to challenge the
 native parent/child volume property with the original duplicate-settlement
 observation path, then restore the exact production source and rerun the same
 property. Both phases retain the original oracle bytes, source hashes and exact
 test-selection checks under `target/conversation-observation`.
+
+The [native custody control](native-custody/README.md) groups original scoped
+task, shared error, persistence dependency, caller-drop and physical close
+mutations under one qualifier. It restores each exact production source before
+challenging the next defect and runs the existing component properties once
+after all nine mutations. It adds no parallel implementation or test fixture.

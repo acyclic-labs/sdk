@@ -48,6 +48,7 @@ impl AttributeStorage {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn control_bytes(&self) -> usize {
         match self {
             Self::Owned(values) => {

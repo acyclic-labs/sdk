@@ -237,7 +237,7 @@ struct Shared {
     /// The root's exclusive lock. It unlocks before its file closes, so a
     /// child forked meanwhile, which shares the open file description until
     /// it execs, never keeps the root owned after this store drops.
-    lock: acyclic_native_runtime::FileLock,
+    _root_lock: acyclic_native_runtime::FileLock,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
 
@@ -592,7 +592,7 @@ impl LocalMedium {
     /// forked during a spawn holds one until it execs.
     #[cfg(test)]
     pub(crate) fn lock_description(&self) -> std::io::Result<std::fs::File> {
-        self.shared.lock.try_clone()
+        self.shared._root_lock.try_clone()
     }
 
     /// The files created and flushes issued since open.
@@ -710,7 +710,7 @@ fn open_root(
         close_started: false,
         #[cfg(test)]
         counts: Counts::default(),
-        lock,
+        _root_lock: lock,
         _anchor: anchor,
     })
 }

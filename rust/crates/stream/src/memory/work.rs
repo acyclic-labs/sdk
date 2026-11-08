@@ -124,6 +124,7 @@ impl MemoryStream {
         Ok(Default::default())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn adopt(&self, _bytes: usize) -> Result<Allocation, StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {

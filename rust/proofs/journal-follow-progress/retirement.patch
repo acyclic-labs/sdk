@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/journal_provider.rs b/rust/crates/stream/src/journal_provider.rs
+--- a/rust/crates/stream/src/journal_provider.rs
++++ b/rust/crates/stream/src/journal_provider.rs
+@@ -345,7 +345,7 @@
+         if *this.done {
+             return std::task::Poll::Ready(None);
+         }
+-        if this.retired.poll(context).is_ready() {
++        if false && this.retired.poll(context).is_ready() {
+             *this.done = true;
+             return std::task::Poll::Ready(Some(Err(StreamError::Unavailable)));
+         }

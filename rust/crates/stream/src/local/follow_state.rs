@@ -12,17 +12,19 @@ struct FollowState {
 impl crate::snapshot::Snapshot for Box<FollowState> {
     #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
-    type Output = Result<Option<crate::Record>, StreamError>;
-    async fn read(&mut self) -> Self::Output {
+    type Output = Option<crate::Record>;
+    async fn read(&mut self) -> Result<Self::Output, StreamError> {
         let state = &mut **self;
         state
             .provider
-            .accepted_snapshot(state.provider.inner.provider.next_checked_record(
-                &state.path,
-                &mut state.cursor,
-                &mut state.anchor,
-                &state.filter,
-            ))
+            .accepted_snapshot(|| {
+                state.provider.inner.provider.next_checked_record(
+                    &state.path,
+                    &mut state.cursor,
+                    &mut state.anchor,
+                    &state.filter,
+                )
+            })
             .await?
     }
 }

@@ -58,28 +58,26 @@ fn compiled_prefix_matches_original_keys_and_refuses_original_read_credit() {
                     }
                     .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
                     prop_assert_eq!(index.entries().as_ptr(), original_vector);
-                    for ((position, entry), original_backing) in
-                        index.entries().iter().enumerate().zip(&key_backing)
-                    {
+                    for (position, entry) in index.entries().iter().enumerate() {
                         prop_assert_eq!(entry.original, position);
-                        prop_assert_eq!(entry.key.as_ptr(), *original_backing);
+                        prop_assert_eq!(
+                            entry.key.as_ptr(),
+                            *key_backing
+                                .get(position)
+                                .ok_or_else(|| TestCaseError::fail(
+                                    "original key backing is missing"
+                                ))?
+                        );
                     }
-                    let queries =
-                        std::iter::once(query.as_slice()).chain(keys.iter().flat_map(|key| {
-                            (0..=key.len())
-                                .map(|end| key.get(..end).expect("generated prefix is within key"))
-                        }));
-                    for query in queries {
-                        verify_matches(&index, &keys, query, &mut work)?;
-                    }
+                    verify_prefix_queries(&index, &keys, &query, &mut work)?;
                     work.cancelled = true;
-                    prop_assert_eq!(
-                        index.matches(&[], |_| true, &mut work).err(),
-                        Some("cancelled")
-                    );
+                    prop_assert!(matches!(
+                        index.matches(&[], |_| true, &mut work),
+                        Err(CompiledPrefixError::Work("cancelled"))
+                    ));
                     drop(index);
                     prop_assert_eq!(work.live.get(), 0);
-                    verify_compilation_refusal(&keys, repeated)?;
+                    verify_prefix_construction_refusals(&keys, repeated)?;
                 }
                 Ok(())
             },
@@ -89,7 +87,44 @@ fn compiled_prefix_matches_original_keys_and_refuses_original_read_credit() {
 
 #[test]
 fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
-    verify_compiled_prefix_funding();
+    compiled_prefix_unstable_view_refusal();
+    compiled_prefix_population_work();
+    compiled_prefix_width_and_refusals();
+    compiled_prefix_physical_retirement();
+}
+
+fn compiled_prefix_unstable_view_refusal() {
+    // A caller can violate its stable-view contract through interior state.
+    // A changed label is a typed invariant failure, never absence or a panic.
+    let changed = std::cell::Cell::new(false);
+    let mut original = Work::default();
+    let index = CompiledPrefixIndex::from_entries(
+        vec![b"root/a".to_vec(), b"root/b".to_vec()],
+        |entry: &Vec<u8>| {
+            if changed.get() {
+                // Retain the real first edge so lookup reaches the original
+                // shared label, rather than refusing an empty edge first.
+                entry.get(..1).unwrap_or_default()
+            } else {
+                entry.as_slice()
+            }
+        },
+        &mut original,
+    )
+    .unwrap();
+    changed.set(true);
+    assert!(
+        matches!(
+            index.matches(b"root/a", |_| true, &mut original),
+            Err(CompiledPrefixError::Invariant)
+        ),
+        "changed original prefix label became absence"
+    );
+    drop(index);
+    assert_eq!(original.live.get(), 0);
+}
+
+fn compiled_prefix_population_work() {
     for repeated in [false, true] {
         for population in [1_u32, 100_000] {
             let mut keys = (0..population)
@@ -134,8 +169,7 @@ fn compiled_prefix_cost_and_backing_do_not_grow_with_unrelated_keys() {
     }
 }
 
-#[test]
-fn compiled_prefix_supports_arbitrary_key_width() {
+fn compiled_prefix_width_and_refusals() {
     // Width is supplied by the real key, with no fixed-size encoding or hash.
     let long = vec![0; 70_000];
     let mut longer = long.clone();
@@ -147,10 +181,7 @@ fn compiled_prefix_supports_arbitrary_key_width() {
     assert_eq!(matches.shortest.unwrap().entry.len(), 70_000);
     drop(index);
     assert_eq!(work.live.get(), 0);
-}
 
-#[test]
-fn sorted_prefix_compilation_refuses_unfunded_or_duplicate_entries() {
     for maximum in [Some(0), Some(1), None] {
         let mut work = Work {
             maximum_items: maximum,
@@ -177,7 +208,7 @@ fn sorted_prefix_compilation_refuses_unfunded_or_duplicate_entries() {
     ));
 }
 
-fn verify_compiled_prefix_funding() {
+fn compiled_prefix_physical_retirement() {
     let mut work = Work {
         observe_retirement: true,
         ..Work::default()
@@ -194,7 +225,7 @@ fn verify_compiled_prefix_funding() {
             acyclic_test_support::current_allocations()
                 .unwrap()
                 .bytes_current,
-            i64::try_from(work.live.get()).expect("live credit fits allocator counter")
+            work.live_bytes()
         );
         drop(index);
         drop(original);
@@ -220,7 +251,7 @@ fn verify_compiled_prefix_funding() {
             acyclic_test_support::current_allocations()
                 .unwrap()
                 .bytes_current,
-            i64::try_from(work.live.get()).expect("live credit fits allocator counter")
+            work.live_bytes()
         );
         drop(index);
         drop(original);
@@ -233,73 +264,76 @@ fn verify_compiled_prefix_funding() {
     assert!(!work.early_refund.get());
 }
 
-fn verify_matches(
+fn verify_prefix_queries(
     index: &RecordIndex,
     keys: &[Vec<u8>],
     query: &[u8],
     work: &mut Work,
-) -> Result<(), TestCaseError> {
-    for mode in 0..3 {
-        let accept = |key: &Vec<u8>| match mode {
-            0 => true,
-            1 => !key.is_empty(),
-            _ => key.len().is_multiple_of(2),
-        };
-        let before = work.items;
-        let matches = index
-            .matches(query, |entry| accept(&entry.key), work)
-            .map_err(TestCaseError::fail)?;
-        let expected = keys
-            .iter()
-            .filter(|key| key.len() < query.len() && query.starts_with(key))
-            .filter(|key| accept(key))
-            .min_by_key(|key| key.len());
-        prop_assert_eq!(
-            matches.exact.as_ref().map(|matched| &matched.entry.key),
-            keys.iter().find(|key| key.as_slice() == query)
-        );
-        prop_assert_eq!(
-            matches.shortest.as_ref().map(|matched| &matched.entry.key),
-            expected
-        );
-        for matched in [matches.exact, matches.shortest].into_iter().flatten() {
-            let entry = matched.entry;
+) -> TestCaseResult {
+    let queries = std::iter::once(query).chain(keys.iter().flat_map(|key| {
+        (0..=key.len()).map(|end| key.get(..end).expect("prefix ends inside original key"))
+    }));
+    for query in queries {
+        for mode in 0..3 {
+            let accept = |key: &Vec<u8>| match mode {
+                0 => true,
+                1 => !key.is_empty(),
+                _ => key.len().is_multiple_of(2),
+            };
+            let before = work.items;
+            let matches = index
+                .matches(query, |entry| accept(&entry.key), work)
+                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+            let expected = keys
+                .iter()
+                .filter(|key| key.len() < query.len() && query.starts_with(key))
+                .filter(|key| accept(key))
+                .min_by_key(|key| key.len());
             prop_assert_eq!(
-                matched.position,
-                entry.original,
-                "matched original position"
+                matches.exact.as_ref().map(|matched| &matched.entry.key),
+                keys.iter().find(|key| key.as_slice() == query)
             );
-            prop_assert!(std::ptr::eq(
-                entry,
-                index
+            prop_assert_eq!(
+                matches.shortest.as_ref().map(|matched| &matched.entry.key),
+                expected
+            );
+            for matched in [matches.exact, matches.shortest].into_iter().flatten() {
+                let entry = matched.entry;
+                prop_assert_eq!(
+                    matched.position,
+                    entry.original,
+                    "matched original position"
+                );
+                let original = index
                     .entries()
                     .get(entry.original)
-                    .expect("matched original entry")
-            ));
-            prop_assert_eq!(
-                entry.original,
-                index
-                    .entries()
-                    .iter()
-                    .position(|original| original.key == entry.key)
-                    .ok_or_else(|| TestCaseError::fail("missing original representative"))?
-            );
+                    .ok_or_else(|| TestCaseError::fail("matched entry lost original position"))?;
+                prop_assert!(std::ptr::eq(entry, original));
+                prop_assert_eq!(
+                    entry.original,
+                    index
+                        .entries()
+                        .iter()
+                        .position(|original| original.key == entry.key)
+                        .unwrap()
+                );
+            }
+            prop_assert!(work.items - before <= 12 * query.len() as u64 + 3);
+            let used = work.items - before;
+            work.maximum_items = Some(work.items);
+            if used != 0 {
+                prop_assert!(matches!(
+                    index.matches(query, |entry| accept(&entry.key), work),
+                    Err(CompiledPrefixError::Work("items refused"))
+                ));
+            }
+            work.maximum_items = None;
         }
-        prop_assert!(work.items - before <= 12 * query.len() as u64 + 3);
-        let used = work.items - before;
-        work.maximum_items = Some(work.items);
-        if used != 0 {
-            prop_assert_eq!(
-                index.matches(query, |entry| accept(&entry.key), work).err(),
-                Some("items refused")
-            );
-        }
-        work.maximum_items = None;
     }
     Ok(())
 }
 
-fn verify_compilation_refusal(keys: &[Vec<u8>], repeated: bool) -> Result<(), TestCaseError> {
+fn verify_prefix_construction_refusals(keys: &[Vec<u8>], repeated: bool) -> TestCaseResult {
     for maximum_claims in [Some(0), Some(1)] {
         let mut refused = Work {
             maximum_claims,

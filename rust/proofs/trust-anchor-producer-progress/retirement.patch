@@ -1,0 +1,18 @@
+diff --git a/rust/crates/stream/src/trust_feed.rs b/rust/crates/stream/src/trust_feed.rs
+--- a/rust/crates/stream/src/trust_feed.rs
++++ b/rust/crates/stream/src/trust_feed.rs
+@@ -438,10 +438,10 @@
+ ) -> Result<Arc<[BlockId]>, StreamError> {
+     match anchor {
+         Some(anchor) => {
+-            anchor.changed().await.map_err(|_| {
+-                follower.fence(FenceCause::AnchorLost);
+-                StreamError::Unavailable
+-            })?;
++            if anchor.changed().await.is_err() {
++                future::pending::<()>().await;
++                return Err(StreamError::Unavailable);
++            }
+             Ok(anchor.borrow_and_update().clone())
+         }
+         None => future::pending().await,

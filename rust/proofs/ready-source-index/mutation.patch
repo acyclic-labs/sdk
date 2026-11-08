@@ -1,0 +1,10 @@
+diff --git a/rust/crates/stream/src/runtime/sources.rs b/rust/crates/stream/src/runtime/sources.rs
+--- a/rust/crates/stream/src/runtime/sources.rs
++++ b/rust/crates/stream/src/runtime/sources.rs
+@@ -68,5 +68,6 @@
+     pub(crate) fn get_mut(&mut self, id: &u64) -> Option<&mut Entry<S>> {
+         let mut work = SourceIndexWork::default();
++        let _ = infallible(self.entries.get_mut(id.to_be_bytes(), &mut work));
+         let entry = infallible(self.entries.get_mut(id.to_be_bytes(), &mut work));
+         #[cfg(test)]
+         assert!(

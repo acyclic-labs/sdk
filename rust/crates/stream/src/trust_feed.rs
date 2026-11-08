@@ -1,4 +1,5 @@
-//! Follows the signed trust Streams into one [`Follower`]: the environment
+//! Follows the signed trust Streams into one
+//! [`Follower`](acyclic_auth::trust::Follower): the environment
 //! Stream and one child Stream per followed account, multiplexed in one task
 //! with no task or timer per account. Freshness is follow lag: a record is
 //! served as soon as its Stream delivers it, never on a refresh interval.

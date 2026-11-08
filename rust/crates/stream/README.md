@@ -211,7 +211,10 @@ On browser WASM builds, `BrowserStream::open(name, limits)` binds that same Rust
 
 Persistent providers share `Replicated<J: CommandJournal>` for canonical replay
 and conditional publication. The journal port supplies `append_if(expected,
-frames)`, `read(from, page)` and an atomically registered `changed(after)` event.
+frames)` and `read(from, page)`. A separately refreshed replica also requires
+`JournalNotifications` with an atomically registered `changed(after)` event.
+The exclusively owned host journal shares one live provider between openers
+and needs no journal notification callback.
 Storage cursors are opaque and strictly increasing within the retained journal;
 they are separate from Stream sequence numbers and applied revision indexes.
 Catch-up pins its first observed journal head and reads bounded pages through

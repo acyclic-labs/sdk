@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/postgres.rs b/rust/crates/stream/src/postgres.rs
+--- a/rust/crates/stream/src/postgres.rs
++++ b/rust/crates/stream/src/postgres.rs
+@@ -64,7 +64,7 @@ impl RefreshOwner {
+ impl Drop for RefreshOwner {
+     fn drop(&mut self) {
+         if let Some(provider) = self.provider() {
+-            provider.fail();
++            drop(provider);
+         }
+     }
+ }
