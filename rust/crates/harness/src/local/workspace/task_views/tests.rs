@@ -117,7 +117,6 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
             "registered binding observer lost its successful preparation"
         );
         drop(mounts);
-        drop(observer);
         checkout_available
     };
     // Complete and retire the actual preparation before reporting the assertion.
