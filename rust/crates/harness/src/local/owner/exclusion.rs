@@ -732,14 +732,18 @@ mod tests {
 
     impl Unlisted {
         fn new(path: &Path) -> Self {
+            #[cfg(windows)]
+            let path = path.canonicalize().unwrap();
+            #[cfg(not(windows))]
+            let path = path.to_path_buf();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o311)).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o311)).unwrap();
             }
             #[cfg(windows)]
-            assert!(icacls(path, &["/deny", EVERYONE_LIST]));
-            Self(path.to_path_buf())
+            assert!(icacls(&path, &["/deny", EVERYONE_LIST]));
+            Self(path)
         }
     }
 
