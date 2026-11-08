@@ -66,13 +66,15 @@ without purchasing a model. It uses the shared process owner and exclusive
 fixture profiles, including a profile path containing spaces:
 
 ```
-ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_GRAPHCODER=/absolute/graphcoder E2E_AGY=/absolute/agy node --test --test-concurrency=1 plugin/tests/hosts/agy-capture-admission.test.mjs
+ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_GRAPHCODER=/absolute/graphcoder E2E_AGY=/absolute/agy E2E_MOCK_MODEL=/absolute/harness-mock-model node --test --test-concurrency=1 plugin/tests/hosts/agy-capture-admission.test.mjs
 ```
 
 Windows also requires the shared `E2E_PROCESS_HOST` and `E2E_SCRATCH_ROOT`.
 The native host produces the callback inputs and its terminal. This control
-checks admission and refusal, not a successful model/tool turn, background
-process retirement at a tool boundary, or reusable cwd across generations.
+checks admission and refusal, then uses the shared deterministic model producer
+to exercise native writes and model-issued MCP coordination to a writing child.
+It does not qualify background process retirement at a tool boundary, ADC
+authentication, resume or reusable cwd across generations.
 Repeated native error steps fail this control immediately and retire its
 process before restoring the directory. This distinguishes refusal from a
 Stop response that continually re-enters the same failed admission. That
