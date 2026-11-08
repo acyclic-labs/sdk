@@ -20,6 +20,15 @@ try {
     reads++;
     return { data: info };
   } } } });
+  for (const original of [undefined, "allow", "ask", "deny",
+    { edit: "allow", task: "allow", external_directory: "ask" }]) {
+    const permission = original === undefined ? {} : typeof original === "string"
+      ? { "*": original } : { ...original };
+    const config = original === undefined ? {} : { permission: structuredClone(original) };
+    await hooks.config(config);
+    assert.deepEqual(config.permission, { ...permission, task: "deny" },
+      "native default permissions changed outside the delegation fence");
+  }
   await assert.rejects(hooks["tool.execute.before"]({ tool: "task", sessionID: info.id }),
     /step=admit native delegation: use acyclic-sessions_spawn/);
   await hooks["tool.execute.before"]({ tool: "read", sessionID: info.id });
