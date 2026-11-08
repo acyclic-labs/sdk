@@ -213,7 +213,7 @@ fn native_access_filters_hidden_pages_and_metadata() -> Result<(), Box<dyn std::
     assert!(first.entries.is_empty());
     let cursor = first
         .next_cursor
-        .as_deref()
+        .as_ref()
         .ok_or("hidden page lost its continuation")?;
     let next = source.read_directory_with_meter(&MountPath::root(), Some(cursor), 1, &work)?;
     assert_eq!(next.entries.len(), 1);
