@@ -15,6 +15,16 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "revision-floor-merge": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::minimum_cut_refuses_incarnation_replacement_in_every_input_order",
+    "revision floor lost an original participant or maximum", ["--no-default-features"],
+    { mutations: [
+      { patch: "rust/proofs/revision-floor-merge/participant.patch", label: "discarded-explicit-participant", diagnostic: "revision floor lost an original participant or maximum" },
+      { patch: "rust/proofs/revision-floor-merge/maximum.patch", label: "regressed-explicit-maximum", diagnostic: "revision floor lost an original participant or maximum" },
+      { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
+    ] },
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
