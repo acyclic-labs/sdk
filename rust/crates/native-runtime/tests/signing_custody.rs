@@ -6,6 +6,8 @@ use acyclic_native_runtime::{
     signing_key::{SigningCustody, SigningKeyReference},
 };
 use std::{io, path::Path, process::Command};
+#[path = "signing_reference/oracle.rs"]
+mod reference_oracle;
 
 #[test]
 fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()> {
@@ -40,14 +42,35 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 let key = SigningKeyReference::create(SigningCustody::Configured)?;
                 key.reference()
                     .with_seed(SigningCustody::Configured, |_| ())?;
-                std::fs::write(record, serde_json::to_vec(&key.reference())?)?;
+                let encoded = serde_json::to_vec(&key.reference())?;
+                reference_oracle::check(&encoded);
+                std::fs::write(record, encoded)?;
                 key.observe_publication(PublicationStage::Installed);
                 Ok(())
             }
-            Some("read") => {
+            Some("read") | Some("mismatch") => {
                 let reference: SigningKeyReference =
                     serde_json::from_slice(&std::fs::read(record)?)?;
-                reference.with_seed(SigningCustody::Configured, |_| ())
+                if operation == "mismatch" {
+                    let error = reference
+                        .with_seed(SigningCustody::Configured, |_| {
+                            panic!("foreign store reached seed")
+                        })
+                        .unwrap_err();
+                    let cause = error.get_ref().and_then(|cause| {
+                        cause.downcast_ref::<acyclic_native_runtime::signing_key::CustodyFailure>()
+                    });
+                    assert!(
+                        cause.is_some_and(|cause| matches!(
+                            cause.cause,
+                            acyclic_native_runtime::signing_key::CustodyCause::StoreMismatch
+                        )),
+                        "{error}"
+                    );
+                    Ok(())
+                } else {
+                    reference.with_seed(SigningCustody::Configured, |_| ())
+                }
             }
             _ => Err(io::ErrorKind::InvalidInput.into()),
         };
@@ -75,6 +98,34 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+    // A different private directory and a different backend both refuse at
+    // selection, before a native service or missing credential is consulted.
+    for policy in ["private-file", "native"] {
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "explicit_private_custody_reopens_and_refuses_public_access",
+                "--nocapture",
+            ])
+            .env("CUSTODY_CONTROL_OPERATION", "mismatch")
+            .env("CUSTODY_CONTROL_RECORD", &record)
+            .env("ACYCLIC_SIGNING_CUSTODY", policy)
+            .env_remove("ACYCLIC_SIGNING_CUSTODY_DIRECTORY");
+        if policy == "private-file" {
+            command.env(
+                "ACYCLIC_SIGNING_CUSTODY_DIRECTORY",
+                root.path().join("other-store"),
+            );
+        }
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!root.path().join("other-store").exists());
     }
     let entries = || std::fs::read_dir(root.path().join("acyclic/signing-seeds"));
     let paths = entries()?

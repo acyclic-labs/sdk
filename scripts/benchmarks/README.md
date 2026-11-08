@@ -81,7 +81,10 @@ The environment must already admit native FUSE mounts: a usable `/dev/fuse`,
 `fusermount3`, the binary's runtime libraries, mount authority, and a task working
 directory other than `/`. Host Docker/FUSE availability alone does not prove
 container readiness. Setup runs `graphcoder doctor` with the run's exact flags:
-it lists every startup refusal at once, each with its recovery. The adapter
+it checks read-only prerequisites without opening state, creating signing authority
+or starting MCP children. Doctor and execution share the same explicit private-file
+custody under the trial state directory. Storage and credential-service access
+are admitted only when execution opens the harness. The adapter
 never changes container privileges or task
 images. Native mount admission inside the actual task images still needs a
 credential-free qualification before a run. Loopback endpoint addresses refer

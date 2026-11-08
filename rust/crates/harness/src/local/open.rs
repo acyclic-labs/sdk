@@ -4,7 +4,6 @@ struct Opening {
     config: LocalHarnessConfig,
     /// The agents' defaults, from which their tools and turns are built.
     preset: crate::preset::Preset,
-    state_location: config::StateLocation,
     tools: ToolRegistry,
     compaction: crate::context::CompactionPolicy,
     /// The configured compaction choice, reselected when `agent.ts` changes
@@ -39,38 +38,27 @@ struct Storage {
 }
 
 pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
-    let opening = Opening::configure(config).await?;
+    let mut opening = Opening::configure(config)?;
+    opening.config = opening.config.prepare_state()?;
     if let Some(refusal) = opening.host_refusals().into_iter().next() {
         return Err(refusal);
     }
+    let opening = opening.activate().await?;
     let storage = opening.storage().await?;
     opening.finish(storage).await
 }
 
-/// Every refusal opening `config` meets, from the same checks in the same
-/// order: the host checks all at once, then (when they pass) the real
-/// storage opening and completion, so a successful check opens the same harness.
+/// Read-only local prerequisites. Never captures a checkout, opens storage,
+/// creates signing authority or starts configured MCP children.
 pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
-    let opening = match Opening::configure(config).await {
-        Ok(opening) => opening,
-        Err(error) => return vec![error],
-    };
-    let mut refusals = opening.host_refusals();
-    let opened = if refusals.is_empty() {
-        let storage = opening.storage().await;
-        match storage {
-            Ok(storage) => opening.finish(storage).await.map(drop),
-            Err(error) => Err(error),
-        }
-    } else {
-        opening.checkout().map(drop)
-    };
-    refusals.extend(opened.err());
-    refusals
+    match Opening::configure(config) {
+        Ok(opening) => opening.host_refusals(),
+        Err(error) => vec![error],
+    }
 }
 
 impl Opening {
-    async fn configure(config: LocalHarnessConfig) -> Result<Self> {
+    fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let models = config.models.as_ref().map(|(models, _)| Arc::clone(models));
@@ -111,8 +99,7 @@ impl Opening {
                     .validate()?;
             }
         }
-        let mut config = config.prepare_state()?;
-        let state_location = config.state_location()?;
+        let mut config = config;
         let passive = config.model.is_none();
         if passive && (!config.default_tools.is_empty() || !config.tools.is_empty()) {
             return Err(Error::Invalid(
@@ -124,29 +111,6 @@ impl Opening {
         }
         let preset = config.preset_value();
         let tools = configure_tools(&mut config)?;
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let installation = match &settings_configuration {
-            Some(settings) => {
-                let mcp =
-                    crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings)).await?;
-                let root =
-                    std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
-                mcp.install(
-                    tools,
-                    &root,
-                    config.mcp_limits,
-                    Arc::new(crate::secrets::EnvSecrets),
-                )
-                .await?
-            }
-            None => crate::mcp::McpInstallation {
-                tools,
-                capabilities: Capabilities::default(),
-                diagnostics: Vec::new(),
-            },
-        };
-        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-        let tools = installation.tools;
         let compaction = if let Some((model, provider)) = &config.model {
             compaction::select(config.compaction.clone(), model, provider.as_ref())?
         } else {
@@ -165,7 +129,6 @@ impl Opening {
         Ok(Self {
             config,
             preset,
-            state_location,
             tools,
             compaction_choice,
             compaction,
@@ -174,19 +137,55 @@ impl Opening {
             #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             settings: settings_configuration,
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            capabilities: installation.capabilities,
+            capabilities: Capabilities::default(),
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            diagnostics: installation.diagnostics,
+            diagnostics: Vec::new(),
             #[cfg(any(test, feature = "native-execution"))]
             native_mounts,
         })
+    }
+
+    /// Activation belongs exclusively to opening, after the read-only checks.
+    async fn activate(self) -> Result<Self> {
+        #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+        {
+            let mut opening = self;
+            let installation = match &opening.settings {
+                Some(settings) => {
+                    let mcp =
+                        crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings))
+                            .await?;
+                    let root = std::fs::canonicalize(opening.config.project.root())
+                        .map_err(Error::process_io)?;
+                    mcp.install(
+                        opening.tools,
+                        &root,
+                        opening.config.mcp_limits,
+                        Arc::new(crate::secrets::EnvSecrets),
+                    )
+                    .await?
+                }
+                None => crate::mcp::McpInstallation {
+                    tools: opening.tools,
+                    capabilities: Capabilities::default(),
+                    diagnostics: Vec::new(),
+                },
+            };
+            opening.tools = installation.tools;
+            opening.capabilities = installation.capabilities;
+            opening.diagnostics = installation.diagnostics;
+            Ok(opening)
+        }
+        #[cfg(not(any(feature = "mcp-stdio", feature = "mcp-http")))]
+        Ok(self)
     }
 
     /// Captures the checkout and selects its control directory, refusing a
     /// caller's overlapping control directory before capture can publish the
     /// checkout's incarnation token.
     fn checkout(&self) -> Result<(PathBuf, Option<owner::Checkout>)> {
-        let selected_directory = match (&self.state_location, &self.config.project) {
+        let state_location = self.config.state_location()?;
+        let selected_directory = match (&state_location, &self.config.project) {
             (config::StateLocation::Directory(directory), LocalProject::Workspace(path)) => {
                 Some(owner::separated_directory(directory, Some(path))?)
             }
@@ -203,9 +202,7 @@ impl Opening {
         let directory = match selected_directory {
             Some(directory) => directory,
             None => owner::separated_directory(
-                &self
-                    .state_location
-                    .resolve(&self.config.project, checkout.as_ref())?,
+                &state_location.resolve(&self.config.project, checkout.as_ref())?,
                 checkout.as_ref().map(|checkout| checkout.path.as_path()),
             )?,
         };
@@ -237,6 +234,24 @@ impl Opening {
                 "local workspace {} is not a directory",
                 path.display()
             )));
+        }
+        let location = self.config.state_location().and_then(|location| {
+            let (config::StateLocation::Directory(directory)
+            | config::StateLocation::ProjectRoot(directory)) = location;
+            let checkout = match &self.config.project {
+                LocalProject::Workspace(path) => Some(path.as_path()),
+                LocalProject::Volume { .. } => None,
+            };
+            owner::planned_separated_directory(&directory, checkout).map(drop)
+        });
+        refusals.extend(location.err());
+        if !self.config.without_user_settings {
+            refusals.extend(
+                acyclic_native_runtime::signing_key::SigningCustody::Configured
+                    .validate()
+                    .err()
+                    .map(storage),
+            );
         }
         refusals
     }
