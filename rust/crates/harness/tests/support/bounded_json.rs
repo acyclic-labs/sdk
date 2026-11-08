@@ -13,6 +13,13 @@ pub fn check(input: &[u8]) {
         maximum_items: 1_048_576,
         maximum_depth: 256,
     };
+    // Record seeds are generated internal format values, not provider captures.
+    // The signing payload reuses the native-runtime internal v1 corpus seed.
+    #[cfg(not(target_arch = "wasm32"))]
+    check_record::<acyclic_native_runtime::signing_key::SigningKeyReference>(input, bounds);
+    check_record::<acyclic_harness::conversation::wire::Notice>(input, bounds);
+    check_record::<acyclic_harness::conversation::wire::Provenance>(input, bounds);
+    check_record::<acyclic_harness::conversation::wire::WireItem>(input, bounds);
     let raw = serde_json::from_slice::<&serde_json::value::RawValue>(input);
     let mut admissions = 0;
     let mut scratch = 0_u64;
@@ -75,6 +82,28 @@ pub fn check(input: &[u8]) {
     compact.clear();
     serde_json::to_writer(&mut compact, &Expanded { source: raw.get() }).unwrap();
     check_first_cause(&compact, bounds);
+}
+
+fn check_record<T>(input: &[u8], bounds: JsonBounds)
+where
+    T: serde::de::DeserializeOwned + serde::Serialize + acyclic_harness::HeapLayout,
+{
+    let Ok(expected) = serde_json::from_slice::<T>(input) else {
+        return;
+    };
+    let decoded = json_from_slice_bounded(
+        std::marker::PhantomData::<T>,
+        input,
+        bounds,
+        None,
+        None,
+        &mut |_| Ok(()),
+    )
+    .expect("record layout must admit every Serde record form");
+    assert_eq!(
+        serde_json::to_vec(&decoded).unwrap(),
+        serde_json::to_vec(&expected).unwrap()
+    );
 }
 
 fn account_scratch(scratch: &mut u64, event: JsonCodecCharge) {

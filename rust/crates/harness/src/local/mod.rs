@@ -42,7 +42,7 @@ pub mod host_workspace;
 pub use endpoint::Connection;
 mod observer;
 pub(crate) mod open;
-mod owner;
+pub(crate) mod owner;
 mod owner_record;
 #[cfg(feature = "serve")]
 mod serve;
@@ -149,9 +149,9 @@ impl LocalHarness {
         Box::pin(open::open(config))
     }
 
-    /// Every refusal [`Self::open`] would meet for `config`, each naming what
-    /// is missing and its recovery, from the same checks opening runs. Empty
-    /// means this host opens. Like opening, it may create the state directory.
+    /// Read-only configuration, workspace, mount and custody-policy checks.
+    /// Never creates state or authority, captures a checkout or starts MCP
+    /// children. Success does not open storage or probe a credential service.
     pub fn doctor(
         config: LocalHarnessConfig,
     ) -> acyclic_stream::BoxProviderFuture<'static, Vec<Error>> {

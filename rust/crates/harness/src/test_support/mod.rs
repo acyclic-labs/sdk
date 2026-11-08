@@ -3,6 +3,15 @@
 pub use acyclic_harness_core::test_support::*;
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
+/// Runs the production local state-directory separation and preparation boundary.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub fn separated_local_state_directory(
+    path: &std::path::Path,
+    checkout: Option<&std::path::Path>,
+) -> crate::Result<std::path::PathBuf> {
+    crate::local::owner::separated_directory(path, checkout)
+}
+
 /// Checks arbitrary sequential schedules against the native child ready queue.
 /// This exercises the production registrations, queue and waiter callbacks;
 /// physical event-hub concurrency remains a separate contract.
