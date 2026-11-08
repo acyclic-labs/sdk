@@ -1,0 +1,13 @@
+diff --git a/rust/crates/conformance/tests/graphcoder_backends.rs b/rust/crates/conformance/tests/graphcoder_backends.rs
+index 99597bb9981..cfc0a754599 100644
+--- a/rust/crates/conformance/tests/graphcoder_backends.rs
++++ b/rust/crates/conformance/tests/graphcoder_backends.rs
+@@ -97,7 +97,7 @@ fn write_arguments(request: &Value) -> Value {
+         let value = match name {
+             "path" | "display_name" => "conformance.txt",
+             "media_type" => "text/plain",
+-            _ => WRITTEN,
++            _ => "",
+         };
+         arguments.insert(name.to_owned(), value.into());
+     }
