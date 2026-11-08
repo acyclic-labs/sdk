@@ -261,6 +261,9 @@ pub use streams::{StreamOperationWindowStore, StreamOperationWindowStoreError};
 /// Operation-window failure.
 #[derive(Debug, Error)]
 pub enum OperationWindowError<E: std::error::Error + 'static> {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Durable adapter failed.
     #[error("operation-window store failed: {0}")]
     Store(E),

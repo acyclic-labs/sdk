@@ -332,17 +332,10 @@ impl RevisionTracker {
                 let Some(mut revision) = revision? else {
                     continue;
                 };
-                while explicit
-                    .peek()
-                    .is_some_and(|next| next.scope < revision.scope)
-                {
-                    cut.push(explicit.next().unwrap().clone());
+                while let Some(next) = explicit.next_if(|next| next.scope < revision.scope) {
+                    cut.push(next.clone());
                 }
-                if explicit
-                    .peek()
-                    .is_some_and(|next| next.scope == revision.scope)
-                {
-                    let next = explicit.next().unwrap();
+                if let Some(next) = explicit.next_if(|next| next.scope == revision.scope) {
                     if !revision.same_authority(next) {
                         return Err(StreamError::RevisionForeign);
                     }
@@ -655,6 +648,23 @@ mod tests {
             }
             proptest::prop_assert!(cut.observe(next.clone()).is_ok());
             proptest::prop_assert!(cut.covers(&first) && cut.covers(&next));
+
+            // Compare the streaming floor merge with independent canonical
+            // construction, including an explicit scope before, at and after
+            // the observed scope, and either empty side.
+            for observed in [vec![], vec![first.clone()], vec![other.clone()], vec![first.clone(), other.clone()]] {
+                let tracker = RevisionTracker::default();
+                for revision in &observed {
+                    tracker.observe(revision);
+                }
+                for minimum in [RevisionCut::default(), RevisionCut::of(next.clone()), RevisionCut::of(other.clone()), RevisionCut::new([next.clone(), other.clone()]).unwrap()] {
+                    let expected = RevisionCut::new(observed.iter().cloned().chain(minimum.iter().cloned()));
+                    proptest::prop_assert_eq!(tracker.floor(&minimum), expected, "revision floor lost an original participant or maximum");
+                }
+            }
+            let tracker = RevisionTracker::default();
+            tracker.observe(&first);
+            proptest::prop_assert_eq!(tracker.floor(&RevisionCut::of(Revision { incarnation: incarnation ^ 1, ..next })), Err(StreamError::RevisionForeign), "revision floor accepted a foreign incarnation");
         }
     }
 

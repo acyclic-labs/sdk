@@ -61,8 +61,11 @@ where
                         child.workspace(),
                         snapshot.authored_generation,
                         initial.authored_generation,
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
                     )
                     .await
+                    .map_err(|failure| failure.error)
                     .map_err(S::lineage_error)?;
                 child
                     .exactify(

@@ -117,19 +117,13 @@ fn delayed_retirement_cannot_unregister_a_new_actor_for_the_same_key() -> Result
     drop(registry.actor(key, &mut accounting)?);
     let mut entries = registry.entries.lock().unwrap();
     let retired = entries.idle[0].take().unwrap();
-    let weak = retired.downgrade();
-    let dropping = std::thread::spawn(move || drop(retired));
-    // The real last-owner destructor blocks on this held registry lock after
-    // the Arc becomes non-upgradeable, exactly the replacement race.
-    while weak.strong_count() != 0 {
-        std::thread::yield_now();
-    }
+    // Install the successor before delivering the original owner's retirement.
+    // The final drop below executes the real destructor against that successor.
     let replacement = Volume::new(&mut accounting)?;
-    *entries.live.get_or_try_insert_with(
-        key,
-        &mut accounting,
-        |_| Ok(RetainedWeak::default()),
-    )? = replacement.downgrade();
+    let slot = entries
+        .live
+        .get_or_try_insert_with(key, &mut accounting, |_| Ok(RetainedWeak::default()))?;
+    let retired_weak = std::mem::replace(slot, replacement.downgrade());
     replacement
         .registration
         .set(Registration {
@@ -139,11 +133,12 @@ fn delayed_retirement_cannot_unregister_a_new_actor_for_the_same_key() -> Result
         .unwrap_or_else(|_| unreachable!("new replacement"));
     entries.idle[0] = Some(replacement.clone());
     drop(entries);
-    dropping.join().unwrap();
-    assert!(same_actor(
-        &replacement,
-        &registry.actor(key, &mut accounting)?
-    ));
+    drop(retired_weak);
+    drop(retired);
+    assert!(
+        same_actor(&replacement, &registry.actor(key, &mut accounting)?),
+        "stale actor retirement unregistered its successor"
+    );
     Ok(())
 }
 

@@ -124,17 +124,10 @@ pub(super) fn decode(
     probe(4, canonical.len() as u64, 0);
     accounting.record_completed(copied)?;
     let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
-    let control = const {
-        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
-            String,
-            KernelOwnedAllocation,
-        )>()) {
-            Ok(bytes) => bytes as u64,
-            Err(_) => panic!("workspace name Arc layout overflow"),
-        }
-    };
-    owned
-        .allocation
-        .absorb(&mut accounting.claim_owned(control, 1)?)?;
-    Ok(WorkspaceName(Arc::new((name, owned.allocation))))
+    Ok(WorkspaceName(
+        crate::kernel::allocation::retained::RetainedArc::from_owned(
+            crate::kernel::Owned::new(name, owned.allocation, owned.bytes),
+            accounting,
+        )?,
+    ))
 }

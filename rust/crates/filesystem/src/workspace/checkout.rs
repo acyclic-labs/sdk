@@ -28,14 +28,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     ) -> W::Output<Generation<A, O>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .checkout_accounted(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
+            .observed_generation_accounted(GenerationSelector::Head, &mut accounting)
+            .await;
         work.finish(result, &accounting)
     }
 
@@ -48,15 +42,25 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     ) -> W::Output<Generation<A, O>, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
-            .checkout_accounted(
-                GenerationSelector::Exact(id),
-                CheckoutMode::read_only_pinned(),
-                &mut accounting,
-                cancellation,
-            )
-            .await
-            .and_then(|checkout| Generation::observed(self, checkout, &mut accounting));
+            .observed_generation_accounted(GenerationSelector::Exact(id), &mut accounting)
+            .await;
         work.finish(result, &accounting)
+    }
+
+    pub(crate) async fn observed_generation_accounted(
+        &self,
+        selector: GenerationSelector,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Generation<A, O>, WorkspaceError> {
+        let cancellation = accounting.cancellation();
+        self.checkout_accounted(
+            selector,
+            CheckoutMode::read_only_pinned(),
+            accounting,
+            cancellation,
+        )
+        .await
+        .and_then(|checkout| Generation::observed(self, checkout, accounting))
     }
 
     /// Opens a private transaction against the current head.

@@ -242,10 +242,10 @@ impl Authority {
                 action,
                 resource,
             });
-        self.check(&**capability, target, binding.scope, channels)?;
+        self.check(capability, target, binding.scope, channels)?;
         for (action, resource) in &binding.additional {
             self.check(
-                &**capability,
+                capability,
                 Target::Resource { action, resource },
                 Scope::Exact,
                 channels,

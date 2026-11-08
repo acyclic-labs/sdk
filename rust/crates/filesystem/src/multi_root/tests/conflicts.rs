@@ -199,6 +199,9 @@ async fn conflicted_publication_projects_edits_and_continues_durably_case()
             .as_ref(),
         b"resolved\n"
     );
-    assert!(coordinator.pending_operations().await?.is_empty());
+    assert!(
+        coordinator.store.load(operation_id).await?.is_none(),
+        "terminal publication record survived acknowledgement"
+    );
     Ok(())
 }

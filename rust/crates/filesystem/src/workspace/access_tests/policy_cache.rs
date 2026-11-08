@@ -259,6 +259,12 @@ fn caller_facts_capability_attenuation_expiry_and_history_match_the_reference()
                     if now == 10 {
                         assert_eq!(view.valid_until(), Some(20));
                         assert!(!view.decide(Action::Read, resource.path, 20).allowed);
+                        // A wall clock stepped back revokes nothing: every
+                        // time condition is an expiry.
+                        assert_eq!(
+                            view.decide(Action::Read, resource.path, 5),
+                            view.decide(Action::Read, resource.path, now)
+                        );
                     }
                 }
             }

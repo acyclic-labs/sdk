@@ -10,7 +10,7 @@ mod input;
 
 // Use the same OS pipe input as the native entry. Dropping the original
 // producer closes the write endpoint and completes read_to_end with EOF.
-fn read_pipe(bytes: &[u8]) -> input::Result<serde_json::Value> {
+fn read_pipe(bytes: &[u8], maximum: Option<u64>) -> input::Result<serde_json::Value> {
     use std::io::Write;
     std::thread::scope(|scope| {
         let (reader, mut writer) = std::io::pipe().expect("create native input pipe");
@@ -20,7 +20,7 @@ fn read_pipe(bytes: &[u8]) -> input::Result<serde_json::Value> {
             }
             Ok::<(), std::io::Error>(())
         });
-        let decoded = input::read_json(reader);
+        let decoded = input::read_json(reader, maximum);
         if let Err(error) = producer.join().expect("join native input producer") {
             // A refused reader may close before the producer finishes. The
             // original-value oracle still checks whether that refusal is valid.
@@ -44,7 +44,8 @@ fn read_failure() {
     let original = (&file)
         .read(&mut [0_u8; 1])
         .expect_err("write-only input must refuse an OS read");
-    let error = input::read_json(file).expect_err("native input read failure must be refused");
+    let error =
+        input::read_json(file, None).expect_err("native input read failure must be refused");
     let actual = error
         .downcast_ref::<std::io::Error>()
         .expect("native input read failure must retain its OS error");
@@ -53,7 +54,7 @@ fn read_failure() {
 }
 
 fn check(bytes: &[u8]) {
-    let admitted = read_pipe(bytes);
+    let admitted = read_pipe(bytes, Some(65_536));
     if bytes.len() > 65_536 {
         assert!(
             admitted.is_err(),
@@ -65,6 +66,14 @@ fn check(bytes: &[u8]) {
             (Err(_), Err(_)) => {}
             _ => panic!("native input admission changed its original JSON"),
         }
+    }
+    match (
+        read_pipe(bytes, None),
+        serde_json::from_slice::<serde_json::Value>(bytes),
+    ) {
+        (Ok(actual), Ok(original)) => assert_eq!(actual, original),
+        (Err(_), Err(_)) => {}
+        _ => panic!("native request admission changed its original JSON"),
     }
     if let Ok(text) = std::str::from_utf8(bytes)
         && let Ok(task) = input::parse_task(text)
@@ -98,6 +107,6 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     }))
     .unwrap();
     if encoded.len() <= 65_536 {
-        read_pipe(&encoded).expect("an in-bound JSON input must be admitted");
+        read_pipe(&encoded, Some(65_536)).expect("an in-bound JSON input must be admitted");
     }
 });

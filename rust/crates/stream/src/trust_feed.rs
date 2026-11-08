@@ -17,7 +17,7 @@ use futures::{
     FutureExt as _, StreamExt as _,
     channel::mpsc,
     future::{self, BoxFuture, Either},
-    stream::{BoxStream, FuturesUnordered},
+    stream::{BoxStream, FuturesUnordered, StreamFuture},
 };
 use std::{
     collections::HashMap,
@@ -100,14 +100,14 @@ type Opening<'a> = BoxFuture<'a, Result<(u64, u64, Records), StreamError>>;
 
 enum Reading<'a> {
     Opening(Opening<'a>),
-    Records(Records),
+    Records(StreamFuture<Records>),
 }
 
 /// Each pending read owns its original follow. A refused record moves that
 /// owner into the blocked map, so no successor is read or queued behind it.
 struct Next<'a> {
     key: Option<String>,
-    reading: Option<Reading<'a>>,
+    reading: Reading<'a>,
 }
 
 impl Future for Next<'_> {
@@ -115,7 +115,7 @@ impl Future for Next<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let (event, records) = match this.reading.as_mut().expect("pending original read") {
+        let (event, records) = match &mut this.reading {
             Reading::Opening(opening) => match futures::ready!(opening.as_mut().poll(cx)) {
                 Ok((tail, position, records)) => (Event::Opened { tail, position }, records),
                 Err(StreamError::AccessDenied) if this.key.is_some() => {
@@ -123,14 +123,12 @@ impl Future for Next<'_> {
                 }
                 Err(error) => (Event::Ended(error), futures::stream::empty().boxed()),
             },
-            Reading::Records(records) => {
-                let event = match futures::ready!(records.as_mut().poll_next(cx)) {
+            Reading::Records(read) => {
+                let (record, records) = futures::ready!(Pin::new(read).poll(cx));
+                let event = match record {
                     Some(Ok(record)) => Event::Record(record),
                     Some(Err(error)) => Event::Ended(error),
                     None => Event::Ended(StreamError::Unavailable),
-                };
-                let Some(Reading::Records(records)) = this.reading.take() else {
-                    unreachable!("original read retains its follow")
                 };
                 (event, records)
             }
@@ -142,7 +140,7 @@ impl Future for Next<'_> {
 fn read(key: Option<String>, records: Records) -> Next<'static> {
     Next {
         key,
-        reading: Some(Reading::Records(records)),
+        reading: Reading::Records(records.into_future()),
     }
 }
 
@@ -514,7 +512,7 @@ fn open<'a, S: Source>(
     };
     Next {
         key,
-        reading: Some(Reading::Opening(opened.boxed())),
+        reading: Reading::Opening(opened.boxed()),
     }
 }
 

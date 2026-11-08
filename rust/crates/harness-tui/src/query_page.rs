@@ -102,7 +102,7 @@ impl<C> QueryPage<C> {
 mod tests {
     use super::*;
     use crate::{
-        PromptInput, Screen, Viewport,
+        PromptInput, QueryController, Screen, Viewport,
         ratatui::{
             Terminal,
             backend::TestBackend,
@@ -157,10 +157,20 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, 12))?;
             let mut areas = Screen::default().areas(terminal.get_frame().area(), &input);
             panel.wrap(areas.overlay_columns());
+            let mut controller = QueryController::default();
+            let mut pending = std::pin::pin!(None);
+            controller.select("live".to_owned(), pending.as_mut());
+            controller.page = Some(panel);
+            // The original read may already be ready while its consumer has
+            // not settled it. Navigation must preserve that same pinned slot.
+            controller.invalidate(|_| true);
+            controller.start(1, pending.as_mut(), |_, _| std::future::ready(()));
+            let original_read = std::ptr::from_ref(pending.as_ref().get_ref().as_ref().unwrap());
             let mut top = 0;
             let mut seen = BTreeMap::new();
             let mut styled = false;
             loop {
+                let panel = controller.page.as_ref().unwrap();
                 // Inspect the completed render, not the backend's sparse
                 // diff-write history beneath earlier wide glyphs.
                 let painted = terminal.draw(|frame| {
@@ -203,30 +213,77 @@ mod tests {
                     }
                     seen.insert(top + row, text.replace(' ', ""));
                 }
-                if panel.page_boundary(
-                    &mut top,
-                    -isize::try_from(areas.transcript.height)?,
-                    areas.overlay_rows(0),
-                ) {
+                let before = top;
+                let rows = -isize::try_from(areas.transcript.height)?;
+                let allocations = acyclic_test_support::measure(|| {
+                    assert!(
+                        !controller.scroll(
+                            &mut top,
+                            rows,
+                            areas.overlay_rows(0),
+                            pending.as_mut(),
+                            |_| panic!("pending navigation reopened the source"),
+                        ),
+                        "pending navigation must preserve the admitted page"
+                    );
+                });
+                assert_eq!(
+                    allocations.count_total, 0,
+                    "local query scroll must not allocate"
+                );
+                assert_eq!(
+                    std::ptr::from_ref(pending.as_ref().get_ref().as_ref().unwrap()),
+                    original_read,
+                    "local query scroll must retain the original read"
+                );
+                if top == before {
                     break;
                 }
             }
-            assert_eq!(seen.into_values().collect::<String>(), expected);
-            assert!(styled, "the paged paint must reach the styled source");
-            assert_eq!(panel.next.as_deref(), Some("original-continuation"));
             assert_eq!(
-                panel.source.as_ptr(),
+                seen.into_values().collect::<String>(),
+                expected,
+                "pending refresh must leave every admitted row reachable"
+            );
+            assert!(styled, "the paged paint must reach the styled source");
+            assert_eq!(
+                controller.page.as_ref().unwrap().next.as_deref(),
+                Some("original-continuation")
+            );
+            assert_eq!(
+                controller.page.as_ref().unwrap().source.as_ptr(),
                 original_source,
                 "resize retains the admitted source"
             );
             while top != 0 {
-                assert!(!panel.page_boundary(
+                let before = top;
+                assert!(!controller.scroll(
                     &mut top,
                     isize::try_from(areas.transcript.height)?,
-                    areas.overlay_rows(0)
+                    areas.overlay_rows(0),
+                    pending.as_mut(),
+                    |_| panic!("pending navigation reopened newest"),
                 ));
+                assert!(top < before, "pending refresh must permit scrolling back");
             }
-            assert!(panel.page_boundary(&mut top, 1, areas.overlay_rows(0)));
+            assert!(!controller.scroll(
+                &mut top,
+                1,
+                areas.overlay_rows(0),
+                pending.as_mut(),
+                |_| panic!("pending navigation reopened newest")
+            ));
+            // Settling the original read releases the single source-page
+            // transition. A zero gesture or collapsed view cannot spend it.
+            pending.set(None);
+            for (rows, height) in [(0, areas.overlay_rows(0)), (-1, 0)] {
+                assert!(
+                    !controller.scroll(&mut top, rows, height, pending.as_mut(), |_| panic!(
+                        "empty navigation reopened the source"
+                    ))
+                );
+            }
+            panel = controller.page.take().unwrap();
 
             // The former single-row renderer loses the actual patch suffix.
             let unwrapped = terminal.draw(|frame| {
@@ -251,6 +308,47 @@ mod tests {
         panel.wrap(0);
         assert!(panel.lines.is_empty());
         assert_eq!(panel.source.as_ptr(), original_source);
+
+        // With no read outstanding, the same navigation transfers the opaque
+        // cursor exactly once, after every retained row has been reachable.
+        panel.wrap(20);
+        let mut controller = QueryController::default();
+        let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
+        controller.select("live".to_owned(), pending.as_mut());
+        let tail = panel.lines.len().saturating_sub(1);
+        controller.page = Some(panel);
+        let mut top = 0;
+        while top < tail {
+            let before = top;
+            assert!(
+                !controller.scroll(&mut top, -20, 1, pending.as_mut(), |_| panic!(
+                    "forward navigation reopened newest"
+                ))
+            );
+            assert!(top > before, "source paging must make local progress");
+            assert_eq!(controller.source().map(String::as_str), Some("live"));
+        }
+        assert!(
+            controller.scroll(&mut top, -1, 1, pending.as_mut(), |_| panic!(
+                "forward navigation reopened newest"
+            ))
+        );
+        assert_eq!(
+            controller.source().map(String::as_str),
+            Some("original-continuation")
+        );
+        assert!(controller.page.is_none());
+        assert_eq!(top, 0);
+        assert!(
+            !controller.scroll(&mut top, -1, 1, pending.as_mut(), |_| panic!(
+                "unfilled page spent another cursor"
+            ))
+        );
+        let mut older = QueryPage::new(vec![Line::raw("older")], None, true);
+        older.wrap(20);
+        controller.page = Some(older);
+        assert!(controller.scroll(&mut top, 1, 1, pending.as_mut(), |_| "live".to_owned()));
+        assert_eq!(controller.source().map(String::as_str), Some("live"));
 
         // Both projections use the same source-style walk. Unstyled gaps
         // must reset emphasis, including after a wrapped row or a resize.

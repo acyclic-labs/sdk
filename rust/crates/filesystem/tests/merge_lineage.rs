@@ -22,14 +22,12 @@ use acyclic_fs::{
     GenerationId, Head, IdempotencyKey, JoinOutcome, MemoryMergeResolutionCache, MergeDriver,
     MergeDriverMode, MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, OperationId, ProposedCommit, ResolutionKey, StreamAuthorityStore,
-    WorkBudget, WorkspaceGraph, WorkspaceId, WorkspaceLineageError, WorkspaceLineageRecord,
-    WorkspaceLineageStore, resolve_merge_plan,
+    StreamGitCompatStore, WorkBudget, WorkspaceGraph, WorkspaceLineageError, resolve_merge_plan,
 };
 use acyclic_stream::MemoryStream;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use thiserror::Error;
 
 fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
@@ -381,67 +379,58 @@ fn typed_conflict_categories_and_keys_survive_immutable_planning() {
     }
 }
 
-#[derive(Clone, Default)]
-struct SharedLineageStore(Arc<Mutex<BTreeMap<WorkspaceId, WorkspaceLineageRecord>>>);
-
-#[derive(Debug, Error)]
-#[error("lineage test store unavailable")]
-struct LineageStoreError;
-
-impl WorkspaceLineageStore for SharedLineageStore {
-    type Error = LineageStoreError;
-
-    async fn load(
-        &self,
-        workspace_id: WorkspaceId,
-    ) -> Result<Option<WorkspaceLineageRecord>, Self::Error> {
-        self.0
-            .lock()
-            .map_err(|_| LineageStoreError)
-            .map(|records| records.get(&workspace_id).cloned())
-    }
-
-    async fn compare_and_swap(
-        &self,
-        workspace_id: WorkspaceId,
-        expected_revision: u64,
-        replacement: WorkspaceLineageRecord,
-    ) -> Result<bool, Self::Error> {
-        let mut records = self.0.lock().map_err(|_| LineageStoreError)?;
-        if records
-            .get(&workspace_id)
-            .map_or(0, |record| record.revision)
-            != expected_revision
-        {
-            return Ok(false);
-        }
-        records.insert(workspace_id, replacement);
-        Ok(true)
-    }
-}
-
 #[tokio::test]
 async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let store = SharedLineageStore::default();
-    let graph = WorkspaceGraph::new(store.clone());
     let root = unbounded!(fs, create_workspace("graph-root"))?;
-    graph.register_root(&root).await?;
+    let (provider, _) = fs.authority_records(root.id().volume_id())?;
+    let graph = WorkspaceGraph::new(StreamGitCompatStore::new(StreamAuthorityStore::new(
+        provider.clone(),
+    )));
+    graph
+        .register_root(
+            &root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(|failure| failure.error)?;
     let child = graph
-        .fork(&root, "graph-child", IdempotencyKey::from_bytes([1; 16]))
-        .await?;
+        .fork(
+            &root,
+            "graph-child",
+            IdempotencyKey::from_bytes([1; 16]),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
     let grandchild = graph
         .fork(
             &child,
             "graph-grandchild",
             IdempotencyKey::from_bytes([2; 16]),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
-        .await?;
+        .await?
+        .value;
     drop(graph);
 
-    let restarted = WorkspaceGraph::new(store);
-    let ancestors = restarted.ancestors(grandchild.id(), 3).await?;
+    let restarted = WorkspaceGraph::new(StreamGitCompatStore::new(StreamAuthorityStore::new(
+        provider,
+    )));
+    let ancestors = restarted
+        .ancestors(
+            grandchild.id(),
+            3,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     assert_eq!(
         ancestors
             .iter()
@@ -450,14 +439,39 @@ async fn recursive_lineage_and_direct_parent_authorization_survive_restart()
         vec![child.id(), root.id()]
     );
     restarted
-        .authorize_join(grandchild.id(), child.id())
-        .await?;
+        .authorize_join(
+            grandchild.id(),
+            child.id(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     assert!(matches!(
-        restarted.authorize_join(grandchild.id(), root.id()).await,
+        restarted
+            .authorize_join(
+                grandchild.id(),
+                root.id(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::UnauthorizedJoin)
     ));
     assert!(matches!(
-        restarted.ancestors(grandchild.id(), 1).await,
+        restarted
+            .ancestors(
+                grandchild.id(),
+                1,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new()
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error),
         Err(WorkspaceLineageError::TraversalLimit)
     ));
     Ok(())

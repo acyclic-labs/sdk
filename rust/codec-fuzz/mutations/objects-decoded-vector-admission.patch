@@ -1,0 +1,7 @@
+diff --git a/rust/crates/objects/src/blob.rs b/rust/crates/objects/src/blob.rs
+--- a/rust/crates/objects/src/blob.rs
++++ b/rust/crates/objects/src/blob.rs
+@@ -381,2 +381,2 @@
+-        allocation.admit(admitted)?;
++        // Decoded allocation proceeds without original admission.
+         let mut values = Vec::new();

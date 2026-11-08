@@ -51,7 +51,10 @@
 //! stalled past that grace fails its commit; no commit references a lost
 //! blob. An index key of a holder that crashed before committing pins its
 //! child; it never refuses wrongly in the unsafe direction.
-use crate::blob::{Envelope, corrupt, decode_batch, decode_incarnation, encode_batch, invalid};
+use crate::blob::{
+    DecodeAllocation, Envelope, corrupt, decode_batch_admitted, decode_incarnation, encode_batch,
+    invalid,
+};
 use crate::identity::fresh as version;
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
@@ -60,10 +63,14 @@ use crate::{
 };
 use crate::{Observation, Observed};
 use acyclic_auth::refusal::Cause;
-use acyclic_stream::{AppliedRevisions, OwnedBytes, Revision};
+use acyclic_stream::{AppliedRevisions, OwnedBytes, ProviderPlatform, Revision};
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+
+mod read;
 
 const PAGE: usize = 1000;
 
@@ -280,8 +287,9 @@ impl<M> Clone for Store<M> {
     }
 }
 
-#[derive(Default)]
 struct State {
+    prefix: String,
+    scrub: Scrub,
     gate: tokio::sync::RwLock<()>,
     availability: crate::AvailabilitySource,
     /// This account's revisions, opened from the medium on first use.
@@ -289,6 +297,19 @@ struct State {
     /// Over a volatile medium, the blob versions this process wrote and has
     /// not flushed.
     written: Mutex<HashMap<Digest, Vec<Written>>>,
+}
+
+impl State {
+    fn new(prefix: String, scrub: Scrub) -> Self {
+        Self {
+            prefix,
+            scrub,
+            gate: tokio::sync::RwLock::default(),
+            availability: crate::AvailabilitySource::default(),
+            revisions: tokio::sync::OnceCell::default(),
+            written: Mutex::default(),
+        }
+    }
 }
 
 /// One unflushed blob version, with what a flush of it covers.
@@ -385,13 +406,17 @@ impl<M: Medium> Store<M> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .entry(id)
-                .or_default(),
+                .or_insert_with(|| {
+                    Arc::new(State::new(
+                        format!("{}/", id.to_hex()),
+                        Arc::clone(&self.scrub),
+                    ))
+                }),
         );
         Ok(Account {
             medium: Arc::clone(&self.medium),
-            prefix: format!("{}/", id.to_hex()),
             state,
-            scrub: Arc::clone(&self.scrub),
+            _medium: PhantomData,
         })
     }
 
@@ -402,11 +427,11 @@ impl<M: Medium> Store<M> {
 }
 
 /// One account's blobs over a shared medium.
-pub struct Account<M> {
-    medium: Arc<M>,
-    prefix: String,
+/// `P` owns or borrows that medium; the default retains its shared owner.
+pub struct Account<M, P = Arc<M>> {
+    medium: P,
     state: Arc<State>,
-    scrub: Scrub,
+    _medium: PhantomData<fn() -> M>,
 }
 
 /// A prefix's listing, one page per call.
@@ -433,13 +458,12 @@ impl<M: Medium> Pages<'_, M> {
     }
 }
 
-impl<M> Clone for Account<M> {
+impl<M, P: Clone> Clone for Account<M, P> {
     fn clone(&self) -> Self {
         Self {
-            medium: Arc::clone(&self.medium),
-            prefix: self.prefix.clone(),
+            medium: self.medium.clone(),
             state: Arc::clone(&self.state),
-            scrub: Arc::clone(&self.scrub),
+            _medium: PhantomData,
         }
     }
 }
@@ -463,9 +487,11 @@ impl MemoryObjects {
     fn over_memory(medium: MemoryMedium) -> Self {
         Self {
             medium: Arc::new(medium),
-            prefix: format!("{}/", Digest::of(b"memory").to_hex()),
-            state: Arc::default(),
-            scrub: Arc::default(),
+            state: Arc::new(State::new(
+                format!("{}/", Digest::of(b"memory").to_hex()),
+                Arc::default(),
+            )),
+            _medium: PhantomData,
         }
     }
 }
@@ -516,7 +542,7 @@ fn canonical(mut references: Vec<Digest>) -> Vec<Digest> {
     references
 }
 
-impl<M> Account<M> {
+impl<M, P: Deref<Target = M>> Account<M, P> {
     /// The account's original physical availability producer. A repair service
     /// that writes bytes outside this engine must publish completion here,
     /// including same-reference repairs, and fail it on lost producer custody.
@@ -525,34 +551,47 @@ impl<M> Account<M> {
         &self.state.availability
     }
 
-    /// This account's medium.
-    pub(crate) fn shared_medium(&self) -> Arc<M> {
-        Arc::clone(&self.medium)
+    /// Borrows the original medium for a call tied to this account.
+    pub(crate) fn borrowed_medium(&self) -> &M {
+        &self.medium
     }
 
+    /// The same account, sharing its state, over `medium`.
+    pub(crate) fn over<N, Q: Deref<Target = N>>(&self, medium: Q) -> Account<N, Q> {
+        Account {
+            medium,
+            state: Arc::clone(&self.state),
+            _medium: PhantomData,
+        }
+    }
+}
+
+impl<M> Account<M> {
     /// Transfers the original medium owner while retiring account-local state.
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) fn into_medium(self) -> Arc<M> {
         self.medium
     }
+}
 
-    /// The same account, sharing its state, over `medium`.
-    pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
-        Account {
-            medium,
-            prefix: self.prefix.clone(),
-            state: Arc::clone(&self.state),
-            scrub: Arc::clone(&self.scrub),
-        }
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> DecodeAllocation for Account<M, P> {
+    fn admit(&self, bytes: usize) -> Result<(), Error> {
+        self.medium.allocate(bytes as u64).map_err(medium)
+    }
+
+    fn capacity(&self, admitted: usize, actual: usize) -> Result<(), Error> {
+        self.medium
+            .allocation_capacity(admitted, actual)
+            .map_err(medium)
     }
 }
 
-impl<M: Medium> Account<M> {
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> Account<M, P> {
     fn payload_key(&self, digest: &Digest, version: &[u8; 16]) -> String {
         let hex = digest.to_hex();
         format!(
             "{}p/{}/{hex}.{}",
-            self.prefix,
+            self.state.prefix,
             &hex[..2],
             hex::encode(version)
         )
@@ -581,7 +620,10 @@ impl<M: Medium> Account<M> {
     /// Waits until the medium is as a clean close leaves it.
     async fn scrubbed(&self) -> Result<(), Error> {
         if self.medium.recovered() {
-            self.scrub.get_or_try_init(|| self.scrub_medium()).await?;
+            self.state
+                .scrub
+                .get_or_try_init(|| self.scrub_medium())
+                .await?;
         }
         Ok(())
     }
@@ -609,15 +651,17 @@ impl<M: Medium> Account<M> {
                 continue;
             };
             let account = Account {
-                medium: Arc::clone(&self.medium),
-                prefix: format!("{account}/"),
-                state: Arc::default(),
-                scrub: Arc::clone(&self.scrub),
+                medium: &*self.medium,
+                state: Arc::new(State::new(
+                    format!("{account}/"),
+                    Arc::clone(&self.state.scrub),
+                )),
+                _medium: PhantomData,
             };
             let repaired = account.repair().await?;
             self.medium.flush(&repaired).await.map_err(medium)?;
             // Past every key of this account.
-            after = Some(format!("{}{}", account.prefix, char::MAX));
+            after = Some(format!("{}{}", account.state.prefix, char::MAX));
         }
         self.medium.settle();
         Ok(())
@@ -628,7 +672,7 @@ impl<M: Medium> Account<M> {
         let mut repaired = Vec::new();
         let mut blobs = HashMap::new();
         let mut parents: HashMap<Digest, Vec<Digest>> = HashMap::new();
-        let mut pages = self.pages(format!("{}e/", self.prefix));
+        let mut pages = self.pages(format!("{}e/", self.state.prefix));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 let digest = self.digest_from_key(&key)?;
@@ -687,7 +731,7 @@ impl<M: Medium> Account<M> {
         }
         // A root batch is acknowledged only once its closure and index keys
         // are durable, so one missing any of them was never acknowledged.
-        let mut pages = self.pages(format!("{}r/", self.prefix));
+        let mut pages = self.pages(format!("{}r/", self.state.prefix));
         while let Some(page) = pages.next().await? {
             for (key, _) in page {
                 if self.batch_survived(&key, &blobs).await? {
@@ -710,13 +754,13 @@ impl<M: Medium> Account<M> {
         let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
             return Ok(true);
         };
-        let members = match decode_batch(&bytes) {
+        let members = match decode_batch_admitted(&bytes, self) {
             Ok(members) => members,
             Err(error) if error.code == ErrorCode::Corrupt => return Ok(false),
             Err(error) => return Err(error),
         };
         let (root, name) = key
-            .strip_prefix(&format!("{}r/", self.prefix))
+            .strip_prefix(&format!("{}r/", self.state.prefix))
             .and_then(|rest| rest.split_once('/'))
             .ok_or_else(corrupt)?;
         let tag = format!("r{root}.{name}");
@@ -736,14 +780,14 @@ impl<M: Medium> Account<M> {
     }
 
     fn incarnation_key(&self) -> String {
-        format!("{}incarnation", self.prefix)
+        format!("{}incarnation", self.state.prefix)
     }
 
     /// Reads back the incarnation this account was created with, creating it
     /// for a new or wiped account, and claims the next run.
     async fn open_revisions(&self) -> Result<Issued, Error> {
         let key = self.incarnation_key();
-        let account = AppliedRevisions::storage_scope("objects", self.prefix.as_bytes());
+        let account = AppliedRevisions::storage_scope("objects", self.state.prefix.as_bytes());
         let observed = self.medium.observe(key.clone()).await.map_err(medium)?;
         let (incarnation, run) = match observed
             .as_ref()
@@ -779,15 +823,19 @@ impl<M: Medium> Account<M> {
 
     fn envelope_key(&self, digest: &Digest) -> String {
         let hex = digest.to_hex();
-        format!("{}e/{}/{hex}", self.prefix, &hex[..2])
+        format!("{}e/{}/{hex}", self.state.prefix, &hex[..2])
     }
 
     fn root_prefix(&self, root: &RootId) -> String {
-        format!("{}r/{}/", self.prefix, Digest::of(root.as_bytes()).to_hex())
+        format!(
+            "{}r/{}/",
+            self.state.prefix,
+            Digest::of(root.as_bytes()).to_hex()
+        )
     }
 
     fn index_prefix(&self, child: &Digest) -> String {
-        format!("{}i/{}/", self.prefix, child.to_hex())
+        format!("{}i/{}/", self.state.prefix, child.to_hex())
     }
 
     /// Whether any key exists under `prefix`.
@@ -904,7 +952,7 @@ impl<M: Medium> Account<M> {
     }
 
     fn epoch_key(&self) -> String {
-        format!("{}epoch", self.prefix)
+        format!("{}epoch", self.state.prefix)
     }
 
     /// Holds `envelope`'s version of `digest` in the unflushed set for one
@@ -1187,7 +1235,7 @@ impl<M: Medium> Account<M> {
         else {
             return Ok(None);
         };
-        match Envelope::decode(&bytes.bytes) {
+        match Envelope::decode_admitted(&bytes.bytes, self) {
             Ok(envelope) => Ok(Some((bytes.observation, envelope))),
             Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => Ok(None),
             Err(error) => Err(error),
@@ -1202,7 +1250,7 @@ impl<M: Medium> Account<M> {
             return Ok(());
         };
         if self.medium.volatile() {
-            match Envelope::decode(&bytes) {
+            match Envelope::decode_admitted(&bytes, self) {
                 Ok(_) => {}
                 Err(error) if error.code == ErrorCode::Corrupt => {
                     self.medium.remove_if(observation).await.map_err(medium)?;
@@ -1399,64 +1447,7 @@ impl<M: Medium> Account<M> {
     }
 
     async fn manifest(&self, digest: &Digest, envelope: &Envelope) -> Result<Manifest, Error> {
-        Manifest::decode(&self.read_payload(digest, envelope, None).await?)
-    }
-
-    /// Appends the selected logical bytes of `digest` to `out`.
-    fn select<'a>(
-        &'a self,
-        digest: Digest,
-        envelope: Envelope,
-        range: std::ops::Range<u64>,
-        out: &'a mut Vec<OwnedBytes>,
-    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
-        Box::pin(async move {
-            if range.is_empty() {
-                return Ok(());
-            }
-            match envelope.kind {
-                Kind::Blob => {
-                    let whole = range.start == 0 && range.end == envelope.length;
-                    // A whole read checks its bytes; a partial one first
-                    // proves a payload a crash could have torn complete.
-                    if !whole
-                        && self.medium.volatile()
-                        && !self.complete(&digest, &envelope).await?
-                    {
-                        return Err(ErrorCode::NotFound.into());
-                    }
-                    out.push(
-                        self.read_payload(&digest, &envelope, (!whole).then_some(range))
-                            .await?,
-                    );
-                }
-                Kind::Manifest => {
-                    let manifest = self.manifest(&digest, &envelope).await?;
-                    let mut offset = 0u64;
-                    for part in manifest.parts {
-                        let end = offset.checked_add(part.length).ok_or_else(corrupt)?;
-                        let start = range.start.max(offset);
-                        let stop = range.end.min(end);
-                        if start < stop {
-                            let (_, child) = self
-                                .stored_envelope(&part.digest)
-                                .await?
-                                .ok_or_else(corrupt)?;
-                            if child.length != part.length {
-                                return Err(corrupt());
-                            }
-                            self.select(part.digest, child, start - offset..stop - offset, out)
-                                .await?;
-                        }
-                        if end >= range.end {
-                            break;
-                        }
-                        offset = end;
-                    }
-                }
-            }
-            Ok(())
-        })
+        Manifest::decode_admitted(&self.read_payload(digest, envelope, None).await?, self)
     }
 
     /// Every reference held by a retained root. Unsupported formats retain
@@ -1471,7 +1462,7 @@ impl<M: Medium> Account<M> {
         };
         let mut references = Vec::new();
         for (key, _) in self
-            .list_all(&format!("{}r/", self.prefix))
+            .list_all(&format!("{}r/", self.state.prefix))
             .await
             .map_err(suspended)?
         {
@@ -1494,7 +1485,7 @@ impl<M: Medium> Account<M> {
         else {
             return Ok(None);
         };
-        match decode_batch(&bytes) {
+        match decode_batch_admitted(&bytes, self) {
             Ok(batch) => Ok(Some(batch)),
             Err(error) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
                 self.medium.remove_if(observation).await.map_err(medium)?;
@@ -1514,62 +1505,74 @@ impl<M: Medium> Account<M> {
         }
     }
 
-    pub(crate) async fn get_inner(
-        &self,
-        digest: Digest,
-        range: ByteRange,
-        maximum_bytes: u64,
-    ) -> Result<Object, Error> {
+    pub(crate) async fn head_inner(&self, digest: Digest) -> Result<Head, Error> {
         acyclic_observability::async_operation!(
-            "acyclic.objects.get",
+            "acyclic.objects.head",
             |error: &Error| error.code.as_str_name(),
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                // Everything committed by `served` is visible to the read after it.
                 let served = self.read_revision().await?;
-                // Reading the payload proves the blob complete; an empty selection
-                // reads none, so it checks the payload instead.
-                let (_, envelope) = self
-                    .stored_envelope(&digest)
+                let envelope = self
+                    .blob(&digest)
                     .await?
                     .ok_or(Error::from(ErrorCode::NotFound))?;
-                let selected = range.resolve(envelope.length)?;
-                if selected.is_empty() && !self.complete(&digest, &envelope).await? {
-                    return Err(ErrorCode::NotFound.into());
+                let mut head = Self::head_of(digest, envelope);
+                head.revision = served;
+                Ok(head)
+            }
+        )
+    }
+
+    pub(crate) async fn retain_inner(
+        &self,
+        root: &RootId,
+        references: Vec<Digest>,
+    ) -> Result<Retained, Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.retain",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let references = canonical(references);
+                if references.is_empty() {
+                    return Err(invalid());
                 }
-                if selected.end - selected.start > maximum_bytes {
-                    return Err(ErrorCode::QuotaExceeded.into());
-                }
-                let mut parts = Vec::new();
-                self.select(digest, envelope.clone(), selected.clone(), &mut parts)
-                    .await?;
-                let body = match parts.len() {
-                    0 => OwnedBytes::new(),
-                    1 => parts.pop().ok_or_else(corrupt)?,
-                    _ => {
-                        self.medium
-                            .allocate(selected.end - selected.start)
-                            .map_err(medium)?;
-                        let mut bytes = Vec::new();
-                        bytes
-                            .try_reserve_exact(
-                                usize::try_from(selected.end - selected.start)
-                                    .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?,
-                            )
-                            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-                        for part in &parts {
-                            bytes.extend_from_slice(part);
-                        }
-                        self.medium.finish_allocation(bytes).map_err(medium)?
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                self.medium
+                    .allocate(references.len() as u64 * 32)
+                    .map_err(medium)?;
+                let batch = encode_batch(&references);
+                // Each retain owns its batch and keys, so a concurrent release of an
+                // equal batch never removes them.
+                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+                let tag = Self::batch_tag(root, &name);
+                // The index-key vector is charged before any key is written, so a
+                // refused charge leaves nothing to clean up. Every key has one
+                // length: a fixed-width prefix and this tag.
+                let key = self.index_key(&references[0], &tag).len();
+                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
+                self.medium.allocate(held).map_err(medium)?;
+                // Every write is withheld before the first key: n keys, then either
+                // their n removals or the batch and the one flush. A
+                // refused budget leaves nothing behind, and removing the keys of a
+                // retain that failed is never refused.
+                let n = references.len() as u64;
+                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
+                let key = format!("{}{name}", self.root_prefix(root));
+                match self.commit_batch(&references, &tag, &key, batch).await {
+                    Ok(()) => {}
+                    Err(Commit::Unknown(error)) => return Err(error),
+                    Err(Commit::Failed(error)) => {
+                        self.unreference(&references, &tag).await?;
+                        return Err(error);
                     }
-                };
-                if body.len() as u64 != selected.end - selected.start {
-                    return Err(corrupt());
+                    Err(Commit::Unflushed(error)) => return Err(error),
                 }
-                Ok(
-                    Object::new(Self::head_of(digest, envelope), selected.start, body)
-                        .served_at(served),
-                )
+                Ok(Retained {
+                    references: references.len() as u64,
+                    revision: Some(issued.commit()),
+                })
             }
         )
     }
@@ -1613,7 +1616,7 @@ impl<M: Medium> Account<M> {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl<M: Medium> crate::Blobs for Account<M> {
+impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Account<M, P> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         acyclic_observability::async_operation!(
             "acyclic.objects.availability",
@@ -1705,21 +1708,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.head",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let served = self.read_revision().await?;
-                let envelope = self
-                    .blob(&digest)
-                    .await?
-                    .ok_or(Error::from(ErrorCode::NotFound))?;
-                let mut head = Self::head_of(digest, envelope);
-                head.revision = served;
-                Ok(head)
-            }
-        )
+        self.head_inner(digest).await
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
@@ -1765,7 +1754,11 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     let wanted = limit - digests.len();
                     let keys = self
                         .medium
-                        .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
+                        .list(
+                            &format!("{}e/", self.state.prefix),
+                            cursor.as_deref(),
+                            wanted,
+                        )
                         .await
                         .map_err(medium)?;
                     for (key, _) in &keys {
@@ -1792,53 +1785,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.retain",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let references = canonical(references);
-                if references.is_empty() {
-                    return Err(invalid());
-                }
-                let issued = self.issued().await?;
-                let _gate = self.state.gate.read().await;
-                self.medium
-                    .allocate(references.len() as u64 * 32)
-                    .map_err(medium)?;
-                let batch = encode_batch(&references);
-                // Each retain owns its batch and keys, so a concurrent release of an
-                // equal batch never removes them.
-                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-                let tag = Self::batch_tag(root, &name);
-                // The index-key vector is charged before any key is written, so a
-                // refused charge leaves nothing to clean up. Every key has one
-                // length: a fixed-width prefix and this tag.
-                let key = self.index_key(&references[0], &tag).len();
-                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-                self.medium.allocate(held).map_err(medium)?;
-                // Every write is withheld before the first key: n keys, then either
-                // their n removals or the batch and the one flush. A
-                // refused budget leaves nothing behind, and removing the keys of a
-                // retain that failed is never refused.
-                let n = references.len() as u64;
-                self.medium.reserve_writes(2 * n + 2).map_err(medium)?;
-                let key = format!("{}{name}", self.root_prefix(root));
-                match self.commit_batch(&references, &tag, &key, batch).await {
-                    Ok(()) => {}
-                    Err(Commit::Unknown(error)) => return Err(error),
-                    Err(Commit::Failed(error)) => {
-                        self.unreference(&references, &tag).await?;
-                        return Err(error);
-                    }
-                    Err(Commit::Unflushed(error)) => return Err(error),
-                }
-                Ok(Retained {
-                    references: references.len() as u64,
-                    revision: Some(issued.commit()),
-                })
-            }
-        )
+        self.retain_inner(root, references).await
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
@@ -1955,7 +1902,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     epoch,
                     ..Collection::default()
                 };
-                let mut pages = self.pages(format!("{}e/", self.prefix));
+                let mut pages = self.pages(format!("{}e/", self.state.prefix));
                 while let Some(page) = pages.next().await? {
                     for (key, _) in page {
                         let digest = self.digest_from_key(&key)?;
@@ -1974,7 +1921,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     }
                 }
                 // Payloads of no envelope or of a removed version: none can return.
-                let mut pages = self.pages(format!("{}p/", self.prefix));
+                let mut pages = self.pages(format!("{}p/", self.state.prefix));
                 while let Some(page) = pages.next().await? {
                     for (key, size) in page {
                         let (digest, version) = self.payload_of(&key)?;
@@ -2084,7 +2031,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 loop {
                     let page = self
                         .medium
-                        .list(&format!("{}e/", self.prefix), after.as_deref(), PAGE)
+                        .list(&format!("{}e/", self.state.prefix), after.as_deref(), PAGE)
                         .await
                         .map_err(medium)?;
                     for (key, _) in &page {
@@ -2101,6 +2048,15 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 }
             }
         )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: crate::ObjectsNativeRequest<Digest>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<crate::ObjectsNativeFuture<'_, bool>, crate::NativeObjectsError> {
+        crate::native::contains(self, request, meter)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

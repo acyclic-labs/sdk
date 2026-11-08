@@ -1,6 +1,7 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
 pub mod allocation;
+pub use allocation::retained::{Retained, RetainedAllocation};
 pub use allocation::{KernelAccounting, KernelOwnedAllocation};
 mod attribute;
 mod attribute_access;
@@ -63,6 +64,7 @@ mod rebase;
 mod regular_mutation;
 mod retention;
 mod search;
+pub(crate) mod serde_decode;
 pub(crate) mod sort;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_state;

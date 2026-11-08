@@ -163,11 +163,6 @@ pub trait MultiRootPublicationStore: Send + Sync {
         replacement: MultiRootPublication,
     ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
-    /// Lists durable operations that may require restart recovery.
-    fn list_operations(
-        &self,
-    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + ProviderTask;
-
     /// Removes a terminal record only when its exact revision still matches.
     fn compare_and_delete(
         &self,
@@ -290,7 +285,16 @@ where
 {
     type Error = WorkspaceLineageError<S::Error>;
     async fn resolve(&self, workspace_id: WorkspaceId) -> Result<Workspace<A, O>, Self::Error> {
-        let record = self.1.resolve(workspace_id).await?;
+        let record = self
+            .1
+            .resolve(
+                workspace_id,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
         let workspace = self
             .0
             .open_workspace(
@@ -554,7 +558,12 @@ where
                 return Ok(false);
             }
             if graph
-                .authorize_join(root.source_workspace_id, root.target_workspace_id)
+                .authorize_join(
+                    root.source_workspace_id,
+                    root.target_workspace_id,
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
                 .await
                 .is_err()
             {
@@ -562,7 +571,12 @@ where
             }
             if let Some(filtered) = root.merge_workspace_id
                 && graph
-                    .authorize_join(filtered, root.source_workspace_id)
+                    .authorize_join(
+                        filtered,
+                        root.source_workspace_id,
+                        crate::WorkBudget::UNBOUNDED,
+                        &crate::CancellationToken::new(),
+                    )
                     .await
                     .is_err()
             {
@@ -610,6 +624,9 @@ pub enum MultiRootPublicationError<
     P: std::error::Error + 'static,
     A: std::error::Error + 'static,
 > {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Durable state failed.
     #[error("multi-root publication store failed: {0}")]
     Store(S),
@@ -685,12 +702,6 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
     ) -> Result<bool, Self::Error> {
         self.records
             .compare_and_swap(operation_id, expected_revision, replacement)
-            .map_err(|_| MemoryMultiRootPublicationStoreError)
-    }
-
-    async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
-        self.records
-            .keys()
             .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 

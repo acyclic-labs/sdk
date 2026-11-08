@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/staged_objects/read.rs b/rust/crates/filesystem/src/staged_objects/read.rs
+--- a/rust/crates/filesystem/src/staged_objects/read.rs
++++ b/rust/crates/filesystem/src/staged_objects/read.rs
+@@ -69,7 +69,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
+                 entries.value.resize_with(position, || PlannedRead::Durable);
+                 plan = Some(ReadPlan {
+                     entries,
+-                    durable: position,
++                    durable: 0,
+                 });
+             }
+             let entry = match found {

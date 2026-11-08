@@ -15,6 +15,58 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "exact-extraction-custody": [
+    "rust/crates/collections/src/lib.rs", "acyclic-collections",
+    "tests::prefix::prefix_extraction_preserves_exact_keys_original_custody_and_bounded_work",
+    "exact extraction retired original backing", [],
+    { oracle: "rust/crates/collections/src/tests/prefix.rs", mutations: [
+      { patch: "rust/crates/collections/src/tests/early_exact_retirement.patch", label: "early-retirement", diagnostic: "exact extraction retired original backing" },
+    ] },
+  ],
+  "recovered-metadata-custody": [
+    "rust/crates/filesystem/src/kernel/serde_decode/original.rs", "acyclic-fs",
+    "core_state::codec_fuzz::production_metadata_corpus_preserves_original_decode_custody",
+    "metadata decoder replaced original accounting ledger", ["--no-default-features", "--features", "local,memory,test-support"],
+    { oracle: "rust/crates/filesystem/src/core_state/codec_fuzz.rs", mutations: [
+      { patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_detached_frame.patch", label: "detached-decoder", diagnostic: "metadata decoder replaced original accounting ledger" },
+      { source: "rust/crates/filesystem/src/kernel/serde_decode.rs", patch: "rust/crates/filesystem/fuzz/mutations/metadata_decode_unfunded_bytes.patch", label: "unfunded-bytes", diagnostic: "metadata decoder omitted owned byte payload funding" },
+    ] },
+  ],
+  "recovered-record-retirement": [
+    "rust/crates/filesystem/src/record_store.rs", "acyclic-fs",
+    "record_store::tests::record_retirement_never_holds_the_record_lock",
+    "record backing retired while its record lock was held", ["--no-default-features", "--features", "local,memory,test-support"],
+    { mutations: [{ patch: "rust/crates/filesystem/fuzz/mutations/record_retirement_lock.patch", label: "locked-retirement", diagnostic: "record backing retired while its record lock was held" }] },
+  ],
+
+  "query-navigation": [
+    "rust/crates/harness-tui/src/query_controller.rs", "acyclic-harness-tui",
+    "query_page::tests::wrapped_query_pages_reveal_every_row_before_the_source_continuation",
+    "pending refresh must leave every admitted row reachable", ["--features", "tui"],
+    { mutations: [
+      { patch: "rust/proofs/query-navigation/progress.patch", label: "progress", diagnostic: "pending refresh must leave every admitted row reachable" },
+      { patch: "rust/proofs/query-navigation/safety.patch", label: "safety", diagnostic: "pending navigation must preserve the admitted page" },
+      { patch: "rust/proofs/query-navigation/cost.patch", label: "cost", diagnostic: "local query scroll must not allocate" },
+    ] },
+  ],
+  "objects-explicit-close": [
+    "rust/crates/objects/src/local.rs", "acyclic-objects",
+    "local::outcome_tests::owned_close_reports_physical_completion_and_failure",
+    "implicit Drop performed unobserved durability", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-implicit-close.patch", label: "implicit-close", diagnostic: "implicit Drop performed unobserved durability" }] },
+  ],
+  "objects-cost-observation": [
+    "rust/crates/objects/src/tests.rs", "acyclic-objects",
+    "tests::a_repeat_put_observes_metadata_and_probes_presence_without_writes",
+    "version observations must remain distinct from payload reads", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-conflated-observations.patch", label: "conflated-observations", diagnostic: "version observations must remain distinct from payload reads" }] },
+  ],
+  "objects-cost-forwarding": [
+    "rust/crates/objects/src/tests.rs", "acyclic-objects",
+    "tests::a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once",
+    "cost recorder suppressed the original local flush", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [{ patch: "rust/codec-fuzz/mutations/objects-recorder-skipped-flush.patch", label: "skipped-flush", diagnostic: "cost recorder suppressed the original local flush" }] },
+  ],
   "fixed-index-read-admission": [
     "rust/crates/collections/src/lib.rs", "acyclic-collections",
     "tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors",
@@ -28,6 +80,37 @@ const claims = {
         { source: "rust/crates/collections/src/recent.rs", patch: "rust/crates/collections/src/tests/swallowed_window_refusal.patch", label: "swallowed-window-refusal", diagnostic: "recent window refusal must not become a cache miss" },
       ],
     },
+  ],
+  "persistence-cut-boundary": [
+    "rust/crates/stream/src/local/persistence_cut.rs", "acyclic-stream",
+    "local::tests::journal_batch::cuts::a_batch_cut_recovers_only_its_flushed_prefix",
+    "a frame written before the cut is not flushed", ["--no-default-features", "--features", "local,test-support"],
+    { oracle: "rust/crates/stream/src/local/tests/journal_batch.rs",
+      nextest: ["--profile", "ci", "--no-tests=fail", "--retries", "0"],
+      mutations: [
+        { patch: "rust/proofs/persistence-cut-boundary/flush.patch", label: "unflushed-prefix", diagnostic: "a frame written before the cut is not flushed" },
+        { patch: "rust/proofs/persistence-cut-boundary/fence.patch", label: "unfenced-installation", diagnostic: "cut escaped the original mutation fence" },
+        { patch: "rust/proofs/persistence-cut-boundary/failure.patch", label: "lost-owner", diagnostic: "cut retained a lost original owner" },
+      ] },
+  ],
+  "stream-codec-path-admission": [
+    "rust/crates/stream/src/codec_fuzz.rs", "acyclic-stream",
+    "codec_fuzz::emitted_persistence_seeds_satisfy_shared_oracle",
+    "shared persistence oracle rejected", ["--no-default-features", "--features", "local,test-support"],
+    { mutations: [
+      { patch: "rust/proofs/stream-codec-path-admission/followed.patch", label: "refused-follow-context", diagnostic: "shared persistence oracle rejected" },
+      { patch: "rust/proofs/stream-codec-path-admission/foreign.patch", label: "refused-foreign-context", diagnostic: "shared persistence oracle rejected" },
+    ] },
+  ],
+  "revision-floor-merge": [
+    "rust/crates/stream/src/lib/revision.rs", "acyclic-stream",
+    "revision::tests::minimum_cut_refuses_incarnation_replacement_in_every_input_order",
+    "revision floor lost an original participant or maximum", ["--no-default-features"],
+    { mutations: [
+      { patch: "rust/proofs/revision-floor-merge/participant.patch", label: "discarded-explicit-participant", diagnostic: "revision floor lost an original participant or maximum" },
+      { patch: "rust/proofs/revision-floor-merge/maximum.patch", label: "regressed-explicit-maximum", diagnostic: "revision floor lost an original participant or maximum" },
+      { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
+    ] },
   ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
@@ -53,6 +136,28 @@ const claims = {
         { patch: "rust/proofs/call-dependent-resource/credential.patch", label: "detached-original-current-credential", diagnostic: "dependent resource detached from the original credential renewal" },
         { patch: "rust/proofs/call-dependent-resource/policy.patch", label: "discarded-dependent-owner-policy", diagnostic: "dependent disclosure ignored the owner's current policy" },
         { patch: "rust/proofs/call-dependent-resource/index.patch", label: "discarded-dependent-index-normalization", diagnostic: "resource index differs from its original authorized scope" },
+      ],
+    },
+  ],
+  "config-composition-cut": [
+    "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
+        { patch: "rust/proofs/config-composition-cut/generations.patch", label: "discarded-original-layer-generations", diagnostic: "composition identity discarded its original layer generations" },
+      ],
+    },
+  ],
+  "config-retained-cut": [
+    "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "original dependency observation was discarded", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
+        { patch: "rust/proofs/config-retained-cut/identity.patch", label: "discarded-original-read-cut-identity", diagnostic: "settings input identity aliased a different dependency cut" },
       ],
     },
   ],
@@ -1007,7 +1112,9 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
-      require(result.output.includes("Starting 1 test across 1 binary"));
+      const started = invocation[0] === "cargo" && invocation[1] === "nextest"
+        ? "Starting 1 test across 1 binary" : "running 1 test";
+      require(result.output.includes(started));
     }
     console.log(`step=${label}; command=${JSON.stringify(invocation)}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
