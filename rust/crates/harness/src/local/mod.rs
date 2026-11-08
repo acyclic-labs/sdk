@@ -42,7 +42,7 @@ pub mod host_workspace;
 pub use endpoint::Connection;
 mod observer;
 pub(crate) mod open;
-mod owner;
+pub(crate) mod owner;
 mod owner_record;
 #[cfg(feature = "serve")]
 mod serve;
