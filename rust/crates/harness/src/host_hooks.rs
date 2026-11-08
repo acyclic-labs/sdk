@@ -31,7 +31,13 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
 
 /// Claude lifecycle boundaries used for workspace coordination, and the
 /// spawn permission prompt the harness approval chain answers.
-pub const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"];
+pub const CLAUDE_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "Stop",
+    "SessionEnd",
+    "PermissionRequest",
+    "PreToolUse",
+];
 
 /// Only the plugin's registered spawn prompt reaches the harness.
 /// Native tools and other coordination prompts retain Claude's permissions.
@@ -60,6 +66,8 @@ fn command_group(executable: &str, event: &str) -> Value {
     let mut group = Map::new();
     if event == "PermissionRequest" {
         group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
+    } else if event == "PreToolUse" {
+        group.insert("matcher".into(), json!("^(Agent|Task)$"));
     }
     group.insert(
         "hooks".into(),
