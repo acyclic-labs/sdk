@@ -2,5 +2,5 @@
 #![cfg(loom)]
 #[path = "../src/device_flush.rs"]
 mod device_flush;
-#[path = "../src/sync.rs"]
-mod sync;
+#[path = "../src/sync/locks.rs"]
+pub mod sync;

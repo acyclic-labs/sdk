@@ -1,17 +1,10 @@
 //! Model builds instrument the same queue and completion locks as native runs.
-#[cfg(not(loom))]
-pub use inline::{Condvar, Mutex, MutexGuard};
-#[cfg(loom)]
-pub use loom::sync::{Condvar, Mutex, MutexGuard};
+mod locks;
+pub use locks::{Condvar, Mutex, MutexGuard};
 #[cfg(not(loom))]
 pub(crate) use std::sync::mpsc;
 
-#[cfg(not(loom))]
-#[path = "sync/inline.rs"]
-mod inline;
-
 #[cfg(loom)]
-#[path = "sync/mpsc.rs"]
 pub(crate) mod mpsc;
 
 /// Reference counts whose release orders what their holders wrote, as an
