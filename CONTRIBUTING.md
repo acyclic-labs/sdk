@@ -9,6 +9,11 @@ an entry to `provenance/manifest.json` before it is merged.
 
 ## Build and test
 
+Release tool installers accept `PINNED_ASSET_FETCHER`, an executable called
+with the expected SHA-256, upstream URL and destination file. Configure an
+offline provider to use preseeded inputs; a provider failure is terminal and
+never falls back to a network download. Installers still verify the received bytes.
+
 The Cargo configuration enables Tokio's `tokio_unstable` API for every workspace
 build. Deterministic simulations use `acyclic_native_runtime::testing::seeded_runtime`
 to seed randomized `select!` order, including selections in dependencies.

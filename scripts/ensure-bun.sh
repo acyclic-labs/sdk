@@ -51,15 +51,22 @@ file_bytes() {
   fi
 }
 if [[ ! -x "$binary" || "$(file_bytes "$binary")" != "$expected_binary_bytes" || "$(digest "$binary")" != "$expected_binary" ]]; then
-  command -v curl >/dev/null
   command -v unzip >/dev/null
   temporary="$(mktemp -d)"
   archive="$temporary/$target.zip"
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-    --max-filesize 134217728 \
-    "https://github.com/oven-sh/bun/releases/download/bun-v$version/$target.zip" \
-    --output "$archive"
-  [[ "$(digest "$archive")" == "$expected" ]]
+  url="https://github.com/oven-sh/bun/releases/download/bun-v$version/$target.zip"
+  if ! {
+    if [[ -n "${PINNED_ASSET_FETCHER:-}" ]]; then
+      "$PINNED_ASSET_FETCHER" "$expected" "$url" "$archive"
+    else
+      curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --max-filesize 134217728 "$url" --output "$archive"
+    fi
+  } || [[ "$(digest "$archive")" != "$expected" ]]; then
+    rm -rf -- "$temporary"
+    printf 'step=fetch pinned Bun: %s; recovery: source scripts/ensure-bun.sh\n' "$url" >&2
+    return 1
+  fi
   unzip -q "$archive" -d "$temporary/extracted"
   mkdir -p "$directory"
   install -m 0755 "$temporary/extracted/$target/bun" "$binary.tmp"
