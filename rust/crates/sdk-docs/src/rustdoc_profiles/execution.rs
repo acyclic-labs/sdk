@@ -1,6 +1,6 @@
 use super::{
-    ProfileError, ProfileSpec, RustdocObservation, observe_binary_rustdoc, observe_rustdoc,
-    package_by_name,
+    observe_binary_rustdoc, observe_rustdoc, package_by_name, ProfileError, ProfileSpec,
+    RustdocObservation,
 };
 use crate::CommandOutput;
 use cargo_metadata::{Metadata, MetadataCommand, TargetKind};
