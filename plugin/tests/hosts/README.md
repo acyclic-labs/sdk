@@ -12,8 +12,9 @@ choose the interleaving of two child call chains, up to two queued sends, spawn
 replay, duplicate waits and forward/reverse reply reads. All calls are submitted
 before responses are consumed. Each native turn holds its physical view until
 its peer reaches that turn's pipe; there are no clock waits. The oracle checks
-original task/prompt identities, turn counts and shared wait results, then rejects
-three mutations of those actual replies. The fixture emits the original call and
+original task/prompt identities, replayed view identity, turn counts and shared
+wait results, then rejects mutations of those actual replies (four for the
+retained replay input). The fixture emits the original call and
 reply trace in its result, retained by the scripted runner. Its selector exposes
 `concurrent:codex` and `concurrent:claude-code`; other hosts require captured
 completion records before qualification.

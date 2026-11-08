@@ -56,6 +56,8 @@ def verify(calls, replies, recovery):
                                    "accepted": [], "wait": None}
         child = children[reference]
         require(row.get("task") == child["task"], "reply changed its child's task")
+        if tool == "spawn":
+            require(row.get("cwd") == child["cwd"], "spawn replay changed its physical view")
         if tool in ("spawn", "send"):
             accepted = (row.get("id"), row.get("inbox"))
             require(isinstance(accepted[0], str) and type(accepted[1]) is int,
@@ -103,6 +105,15 @@ def fuzz(data, client):
     aliased = deepcopy(replies)
     aliased[second]["task"] = replies[spawn[0]]["task"]
     controls.append(aliased)
+    seen = set()
+    for index in spawn:
+        reference = calls[index][1]
+        if reference in seen:
+            moved = deepcopy(replies)
+            moved[index]["cwd"] += "/changed-view"
+            controls.append(moved)
+            break
+        seen.add(reference)
     early = deepcopy(replies)
     wait = next(i for i, call in enumerate(calls) if call[0] == "wait")
     early[wait]["reply"] = {"kind": "pending"}
@@ -116,7 +127,7 @@ def fuzz(data, client):
         except McpFailure:
             continue
         raise McpFailure("qualify concurrent session oracle",
-                         "a planted identity, progress or turn-count defect escaped",
+                         "a planted identity, view, progress or turn-count defect escaped",
                          client.recovery)
     return {"input": bytes(data).hex(), "calls": calls, "replies": replies,
             "negative_controls": len(controls)}
