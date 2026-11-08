@@ -25,6 +25,9 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
     enum Creation {
         ExistingFile,
         ExistingDirectory,
+        RenamedFile,
+        RenamedDirectory,
+        ReplacedFile,
         File,
         Directory,
         SymbolicLink,
@@ -34,6 +37,9 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
     for creation in [
         Creation::ExistingFile,
         Creation::ExistingDirectory,
+        Creation::RenamedFile,
+        Creation::RenamedDirectory,
+        Creation::ReplacedFile,
         Creation::File,
         Creation::Directory,
         Creation::SymbolicLink,
@@ -41,11 +47,18 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
         Creation::HardLink,
     ] {
         let (source, around) = shared_sources(posix_config())?;
-        let path = name("held");
-        let directory = matches!(creation, Creation::ExistingDirectory | Creation::Directory);
+        let mut path = name("held");
+        let directory = matches!(
+            creation,
+            Creation::ExistingDirectory | Creation::RenamedDirectory | Creation::Directory
+        );
         let existing = matches!(
             creation,
-            Creation::ExistingFile | Creation::ExistingDirectory
+            Creation::ExistingFile
+                | Creation::ExistingDirectory
+                | Creation::RenamedFile
+                | Creation::RenamedDirectory
+                | Creation::ReplacedFile
         );
         if existing || creation == Creation::HardLink {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
@@ -59,6 +72,11 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                     };
                     around.create_file(&path, FileMetadata::default(), None, work)
                 }
+            })?;
+        }
+        if creation == Creation::ReplacedFile {
+            crate::native_mount::adapter::boundary(around.cancellation(), |work| {
+                around.create_file(&name("renamed"), FileMetadata::default(), None, work)
             })?;
         }
         let source = Arc::new(source);
@@ -130,6 +148,33 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                 }
             })
             .map_err(|(cause, _)| cause)?;
+        if matches!(
+            creation,
+            Creation::RenamedFile | Creation::RenamedDirectory | Creation::ReplacedFile
+        ) {
+            core.request(|work| {
+                let destination =
+                    projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("renamed"), work)?;
+                assert_eq!(
+                    destination.attr.ino.0 != 0,
+                    creation == Creation::ReplacedFile
+                );
+                projection.rename_name(
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("held"),
+                    ROOT_INODE,
+                    std::ffi::OsStr::new("renamed"),
+                    if creation == Creation::ReplacedFile {
+                        0
+                    } else {
+                        RENAME_NOREPLACE
+                    },
+                    work,
+                )
+            })
+            .map_err(|(cause, _)| cause)?;
+            path = name("renamed");
+        }
         if directory {
             crate::native_mount::adapter::boundary(around.cancellation(), |work| {
                 around.create_file(
@@ -180,13 +225,9 @@ fn node_changes_preserve_cached_name_bindings() -> Result<(), Box<dyn std::error
                 .invalidation
                 .denied
         );
-        assert!(
-            notifications
-                .entries
-                .borrow()
-                .iter()
-                .any(|(parent, name)| { *parent == ROOT_INODE && name == b"held" })
-        );
+        assert!(notifications.entries.borrow().iter().any(|(parent, name)| {
+            *parent == ROOT_INODE && *name == *path.components().last().expect("named binding")
+        }));
     }
     Ok(())
 }
