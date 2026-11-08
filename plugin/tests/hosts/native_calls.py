@@ -10,9 +10,9 @@ import os
 import signal
 from native_mcp import McpFailure
 
-# Retained input program, not a provider fixture: two sends, spawn replay,
-# duplicate waits, alternating children, and reverse response consumption.
-CORPUS = (bytes.fromhex("0eaa80"),)
+# Programs, not provider fixtures: zero/one/two sends; a parked wait before
+# the peer spawn; spawn replay; duplicate waits; both reply consumption orders.
+CORPUS = tuple(bytes.fromhex(seed) for seed in ("00", "01", "0eaa80"))
 
 
 def program(data):

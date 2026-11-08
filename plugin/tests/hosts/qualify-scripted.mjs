@@ -28,6 +28,7 @@ export function scriptedScenario(artifacts,codex,selection){
  const graphcoder=artifacts.artifacts.graphcoder.path;
  if(kind==='concurrent')return {name,selection,
   args:[join(here,'concurrent-spawn.py'),binary,graphcoder,name],
+  observations:run=>run.stdout.trim().split('\n').map(line=>JSON.parse(line)),
   accepts:run=>run.stdout.includes('"concurrent_spawns_settled": true')};
  if(kind==='scale')return {name,selection,
   args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],
@@ -46,9 +47,11 @@ export async function runScriptedScenario({scenario,processes,directory,env,
  const run=await processes.runOwned('python3',scenario.args,{cwd,env,scopeMountRoot:env.HOME});
  const seconds=(performance.now()-started)/1000;
  await writeFile(join(directory,scenario.name+'.log'),run.stdout+run.stderr,{flag:'wx'});
+ const accepted=!expired()&&run.code===0&&scenario.accepts(run);
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,
    name:scenario.name,seconds,exit:run.code,expired:expired(),
-   accepted:!expired()&&run.code===0&&scenario.accepts(run)};
+   accepted,
+   observations:accepted?scenario.observations?.(run):undefined};
  return receipt;
 }
 

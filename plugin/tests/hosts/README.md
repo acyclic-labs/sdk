@@ -7,6 +7,9 @@ completion records, without a live model:
 python3 plugin/tests/hosts/concurrent-spawn.py ACYCLIC GRAPHCODER claude-code 0eaa80
 ```
 
+Omit the final hex argument to run the retained zero-, one- and two-send
+programs. The zero-send program parks a wait before admitting the peer spawn.
+
 `native_calls.fuzz(bytes, client)` directs the real initialized MCP client. Bytes
 choose the interleaving of two child call chains, up to two queued sends, spawn
 replay, duplicate waits and forward/reverse reply reads. All calls are submitted
@@ -15,7 +18,7 @@ its peer reaches that turn's pipe; there are no clock waits. The oracle checks
 original task/prompt identities, replayed view identity, turn counts and shared
 wait results, then rejects mutations of those actual replies (four for the
 retained replay input). The fixture emits the original call and
-reply trace in its result, retained by the scripted runner. Its selector exposes
+reply trace in its result and the scripted qualification receipt. Its selector exposes
 `concurrent:codex` and `concurrent:claude-code`; other hosts require captured
 completion records before qualification.
 

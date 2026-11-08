@@ -67,14 +67,10 @@ sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.std
 '''
 
 
-def main():
+def main(data):
     recovery = shlex.join([sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
     binary, graphcoder = (str(pathlib.Path(p).resolve()) for p in sys.argv[1:3])
     host = sys.argv[3]
-    try:
-        data = bytes.fromhex(sys.argv[4]) if len(sys.argv) == 5 else CORPUS[0]
-    except ValueError as error:
-        raise RuntimeError(f'step=decode concurrent call program: {error}; recovery: {recovery}') from error
     if host not in POLICIES:
         raise RuntimeError(f'step=admit captured host completion: unsupported host {host}; recovery: {recovery}')
     flags = POLICIES[host]
@@ -147,4 +143,10 @@ def main():
 if __name__ == '__main__':
     if len(sys.argv) not in (4, 5):
         raise SystemExit(__doc__)
-    main()
+    try:
+        programs = (bytes.fromhex(sys.argv[4]),) if len(sys.argv) == 5 else CORPUS
+    except ValueError as error:
+        recovery = shlex.join([sys.executable, str(pathlib.Path(__file__).resolve()), *sys.argv[1:]])
+        raise RuntimeError(f'step=decode concurrent call program: {error}; recovery: {recovery}') from error
+    for data in programs:
+        main(data)
