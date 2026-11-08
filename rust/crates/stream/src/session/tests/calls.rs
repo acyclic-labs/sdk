@@ -158,6 +158,8 @@ async fn dependent_resources_keep_original_call_grants_and_live_trust() -> TestR
     ] {
         crate::codec_fuzz::filesystem_paths(path)?;
     }
+    #[cfg(feature = "test-support")]
+    crate::codec_fuzz::filesystem_paths(&vec![b'x'; crate::MAX_RECORD_KEY_BYTES + 1])?;
     for (name, prefix) in [
         ("fs:/volume/visible", true),
         ("fs:/volume/visible/", true),
