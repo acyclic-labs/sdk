@@ -4,8 +4,9 @@
 //! (`graphcoder-seams serve`, its own verifier). Only the endpoint
 //! differs for the client, and only the seams for the server. Each runs one
 //! scenario on the loopback fixture model, a shell call held for one human
-//! approval, a file write, a spawned child's turn and a reconnect while the
-//! approval is pending, and must commit the same history shape.
+//! approval, a file write and version-pinned read, a spawned child's turn and
+//! a reconnect while the approval is pending, and must commit the same history
+//! shape.
 //!
 //! Build the binary first, with fixture signing custody:
 //! `cargo build -p graphcoder --features acyclic-native-runtime/test-support`.
@@ -176,7 +177,19 @@ fn answer(
             &json!({"command": "echo conformance-shell"}),
         ),
         1 => call("write", "write", &write_arguments(request)),
-        2 => call(
+        2 => {
+            // Select the original publication, not whichever path head exists
+            // when the read executes. A write receipt alone proves no bytes.
+            let written: Value =
+                serde_json::from_str(outputs.lock().unwrap().get("write").expect("write result"))
+                    .unwrap();
+            call(
+                "read",
+                "read",
+                &json!({"path": written["path"], "version": written["version"]}),
+            )
+        }
+        3 => call(
             "spawn",
             "spawn",
             &json!({"task": CHILD, "name": "child", "role": "worker"}),
@@ -648,6 +661,20 @@ impl Shape {
                 .is_some_and(|version| !version.is_empty()),
             "write named no immutable version: {written}"
         );
+        let read = parsed("read");
+        assert_eq!(read["path"], written["path"], "read selected another path");
+        assert_eq!(
+            read["version"], written["version"],
+            "read selected another immutable publication"
+        );
+        assert_eq!(
+            read["text"], WRITTEN,
+            "immutable read differs from the requested write"
+        );
+        assert!(
+            read["page"].is_null(),
+            "read returned a partial view: {read}"
+        );
         // The child's path under the root, less the backend's agent ids.
         let spawned = parsed("spawn");
         let child: Vec<&str> = spawned["agent"]
@@ -664,7 +691,12 @@ impl Shape {
             .collect();
         Self {
             answer: answer.trim().to_owned(),
-            results: vec![parsed("shell"), written["path"].clone(), child.into()],
+            results: vec![
+                parsed("shell"),
+                written["path"].clone(),
+                read["text"].clone(),
+                child.into(),
+            ],
             steps,
         }
     }
