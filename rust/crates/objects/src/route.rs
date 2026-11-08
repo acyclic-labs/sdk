@@ -72,8 +72,7 @@ pub async fn put_blob(
         return Err(wire::ErrorCode::DigestMismatch.into());
     }
     let references = convert::digests(&request.references)?;
-    let put = blobs.put_sealed(body, references).await?;
-    durable(blobs, &put).await?;
+    let put = blobs.put_durable(body, references).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
 
@@ -99,7 +98,7 @@ pub async fn put_blobs(
             Err(error) => outcomes.push(Some(Err(error))),
         }
     }
-    let mut published = blobs.put_batch_sealed(admitted).await.into_iter();
+    let mut published = blobs.put_batch_durable(admitted).await.into_iter();
     for outcome in &mut outcomes {
         if outcome.is_none() {
             *outcome = Some(published.next().ok_or_else(|| {
@@ -110,22 +109,7 @@ pub async fn put_blobs(
             })?);
         }
     }
-    let mut outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
-    let durable: Vec<Digest> = outcomes
-        .iter()
-        .flatten()
-        .filter_map(|put| put.verified().map(|verified| verified.digest))
-        .collect();
-    if !durable.is_empty()
-        && let Err(error) = blobs.flush(Some(&durable)).await
-    {
-        // No member it covered is acknowledged; repeating one is safe.
-        for outcome in &mut outcomes {
-            if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
-                *outcome = Err(error.clone());
-            }
-        }
-    }
+    let outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
     let revision = covering(outcomes.iter().flatten());
     let results = outcomes
         .into_iter()
@@ -167,15 +151,6 @@ fn covering<'a>(puts: impl Iterator<Item = &'a crate::Put>) -> Option<Revision> 
     covering
 }
 
-/// A remote put is acknowledged durable: its client has no commit to defer
-/// the flush to.
-async fn durable(blobs: &dyn Blobs, put: &crate::Put) -> Result<(), Error> {
-    match put.verified() {
-        Some(verified) => blobs.flush(Some(&[verified.digest])).await,
-        None => Ok(()),
-    }
-}
-
 fn put_revision(put: &crate::Put) -> Option<Revision> {
     put.verified()
         .and_then(|verified| verified.revision.clone())
@@ -190,8 +165,7 @@ pub async fn put_manifest(
     request: wire::PutManifestRequest,
 ) -> Result<Served<wire::PutResponse>, Error> {
     let manifest = convert::from_manifest(request.manifest.as_ref())?;
-    let put = blobs.put_manifest(manifest).await?;
-    durable(blobs, &put).await?;
+    let put = blobs.put_manifest_durable(manifest).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
 

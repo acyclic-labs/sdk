@@ -811,7 +811,8 @@ impl Medium for Shared {
         listed
     }
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
-        self.inner.flush(keys).await
+        self.inner.flush(keys).await?;
+        self.after("flush", "").await.map_err(MediumError::Failed)
     }
     fn volatile(&self) -> bool {
         self.inner.volatile()
@@ -1958,6 +1959,45 @@ fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wir
         body: body.to_vec().into(),
         references: references.iter().copied().map(Into::into).collect(),
     }
+}
+
+#[cfg(objects_server)]
+#[tokio::test]
+async fn a_remote_put_excludes_collection_until_its_flush_finishes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::over(Counting::default(), false);
+    let account = Store::new(medium.clone()).account(b"account")?;
+    account.flush(None).await?;
+    // Each request gets its own medium wrapper, preserving the account's
+    // shared state rather than constructing an independent Store.
+    let request = account.over(std::sync::Arc::new(medium.clone()));
+    let (mut flushed, release) = medium.park("flush", "");
+    let putting = crate::route::put_blob(&request, wire_member(b"body", b"body", &[]));
+    tokio::pin!(putting);
+    // The put has published its payload. Stop its flush before the final
+    // existence check, then drive a concurrent collector on the same account.
+    drive_to_park(putting.as_mut(), &mut flushed).await;
+    let (started, collecting) = tokio::sync::oneshot::channel();
+    let collector = async {
+        started.send(()).unwrap();
+        let mut swept = 0;
+        for _ in 0..3 {
+            swept += account.collect().await?.swept;
+        }
+        Ok::<_, crate::Error>(swept)
+    };
+    let finish = async {
+        collecting.await.unwrap();
+        release.send(()).unwrap();
+        putting.await
+    };
+    // These futures share one task. The collector runs until its lock wait
+    // before `finish` can receive the event and release the flush. Without
+    // exclusion all three passes complete and flush returns MissingReference.
+    let (collected, put) = tokio::join!(biased; collector, finish);
+    assert!(put.is_ok(), "put lost its blob before flush: {put:?}");
+    assert_eq!(collected?, 1);
+    Ok(())
 }
 
 #[cfg(objects_server)]

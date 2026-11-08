@@ -297,6 +297,33 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// Stores a manifest after checking every part's length and every edge's existence.
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error>;
 
+    /// Publishes and flushes a blob before acknowledging it. Providers with a
+    /// collector must exclude collection for the whole operation.
+    async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        let put = self.put_sealed(body, references).await?;
+        flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    /// Publishes and flushes a manifest under the same collection exclusion.
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        let put = self.put_manifest(manifest).await?;
+        flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    /// Publishes an ordered batch, then flushes its successful members once,
+    /// excluding collection throughout. A failed flush fails every verified
+    /// member it covered; unknown outcomes and member failures stay unchanged.
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let mut outcomes = self.put_batch_sealed(requests).await;
+        flush_puts(self, &mut outcomes).await;
+        outcomes
+    }
+
     /// Reads one logical range of at most `maximum_bytes`. A manifest's range
     /// selects only the intersecting parts.
     async fn get(
@@ -462,6 +489,30 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 }
 
+pub(crate) async fn flush_put<B: Blobs + ?Sized>(blobs: &B, put: &Put) -> Result<(), Error> {
+    match put.verified() {
+        Some(verified) => blobs.flush(Some(&[verified.digest])).await,
+        None => Ok(()),
+    }
+}
+
+pub(crate) async fn flush_puts<B: Blobs + ?Sized>(blobs: &B, outcomes: &mut [Result<Put, Error>]) {
+    let durable: Vec<Digest> = outcomes
+        .iter()
+        .flatten()
+        .filter_map(|put| put.verified().map(|verified| verified.digest))
+        .collect();
+    if !durable.is_empty()
+        && let Err(error) = blobs.flush(Some(&durable)).await
+    {
+        for outcome in outcomes {
+            if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
+                *outcome = Err(error.clone());
+            }
+        }
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
@@ -483,6 +534,18 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     }
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         (**self).put_manifest(manifest).await
+    }
+    async fn put_durable(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        (**self).put_durable(body, references).await
+    }
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        (**self).put_manifest_durable(manifest).await
+    }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        (**self).put_batch_durable(requests).await
     }
     async fn get(
         &self,

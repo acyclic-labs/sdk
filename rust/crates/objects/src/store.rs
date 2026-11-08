@@ -282,6 +282,7 @@ impl<M> Clone for Store<M> {
 
 #[derive(Default)]
 struct State {
+    /// Keeps collection out of a publish and its durability acknowledgement.
     gate: tokio::sync::RwLock<()>,
     availability: crate::AvailabilitySource,
     /// This account's revisions, opened from the medium on first use.
@@ -536,8 +537,11 @@ impl<M> Account<M> {
         self.medium
     }
 
-    /// The same account, sharing its state, over `medium`.
-    pub(crate) fn over<N>(&self, medium: Arc<N>) -> Account<N> {
+    /// The same account over a wrapper of its original medium. Shares collection
+    /// exclusion, pending writes, revisions, availability and crash recovery.
+    /// `medium` must address the same physical storage and key namespace; create
+    /// request-specific wrappers here instead of opening an independent store.
+    pub fn over<N>(&self, medium: Arc<N>) -> Account<N> {
         Account {
             medium,
             prefix: self.prefix.clone(),
@@ -1579,6 +1583,17 @@ impl<M: Medium> Account<M> {
         body: crate::Sealed,
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
+        self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        self.publish_blob(body, references).await
+    }
+
+    /// Publishes while the caller holds this account's collection exclusion.
+    async fn publish_blob(
+        &self,
+        body: crate::Sealed,
+        references: Vec<Digest>,
+    ) -> Result<Put, Error> {
         acyclic_observability::async_operation!(
             "acyclic.objects.put",
             |error: &Error| error.code.as_str_name(),
@@ -1586,7 +1601,6 @@ impl<M: Medium> Account<M> {
             async {
                 let references = canonical(references);
                 let issued = self.issued().await?;
-                let _gate = self.state.gate.read().await;
                 let digest = Digest::sealed(&body);
                 let body = body.into_bytes();
                 let length = body.len() as u64;
@@ -1598,6 +1612,48 @@ impl<M: Medium> Account<M> {
                         length,
                         stored: length,
                         references,
+                        // Assigned by `publish`.
+                        version: [0; 16],
+                        dying: None,
+                        condemned: 0,
+                    },
+                )
+                .await
+                .map(|put| issued.committed(put))
+            }
+        )
+    }
+    async fn publish_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
+        acyclic_observability::async_operation!(
+            "acyclic.objects.put_manifest",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if manifest.parts.is_empty() {
+                    return Err(invalid());
+                }
+                let length = manifest.length()?;
+                let issued = self.issued().await?;
+                for part in &manifest.parts {
+                    let envelope = self
+                        .blob(&part.digest)
+                        .await?
+                        .ok_or(Error::from(ErrorCode::MissingReference))?;
+                    if envelope.length != part.length {
+                        return Err(invalid());
+                    }
+                }
+                let encoded = manifest.encode();
+                let digest = Digest::of(&encoded);
+                let stored = encoded.len() as u64;
+                self.publish(
+                    digest,
+                    encoded.into(),
+                    Envelope {
+                        kind: Kind::Manifest,
+                        length,
+                        stored,
+                        references: canonical(manifest.references()),
                         // Assigned by `publish`.
                         version: [0; 16],
                         dying: None,
@@ -1632,47 +1688,54 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        acyclic_observability::async_operation!(
-            "acyclic.objects.put_manifest",
-            |error: &Error| error.code.as_str_name(),
-            acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                if manifest.parts.is_empty() {
-                    return Err(invalid());
-                }
-                let length = manifest.length()?;
-                let issued = self.issued().await?;
-                let _gate = self.state.gate.read().await;
-                for part in &manifest.parts {
-                    let envelope = self
-                        .blob(&part.digest)
-                        .await?
-                        .ok_or(Error::from(ErrorCode::MissingReference))?;
-                    if envelope.length != part.length {
-                        return Err(invalid());
-                    }
-                }
-                let encoded = manifest.encode();
-                let digest = Digest::of(&encoded);
-                let stored = encoded.len() as u64;
-                self.publish(
-                    digest,
-                    encoded.into(),
-                    Envelope {
-                        kind: Kind::Manifest,
-                        length,
-                        stored,
-                        references: canonical(manifest.references()),
-                        // Assigned by `publish`.
-                        version: [0; 16],
-                        dying: None,
-                        condemned: 0,
-                    },
-                )
-                .await
-                .map(|put| issued.committed(put))
-            }
+        self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        self.publish_manifest(manifest).await
+    }
+
+    async fn put_durable(
+        &self,
+        body: crate::Sealed,
+        references: Vec<Digest>,
+    ) -> Result<Put, Error> {
+        self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        let put = self.publish_blob(body, references).await?;
+        crate::provider::flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        self.issued().await?;
+        let _gate = self.state.gate.read().await;
+        let put = self.publish_manifest(manifest).await?;
+        crate::provider::flush_put(self, &put).await?;
+        Ok(put)
+    }
+
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        if requests.is_empty() {
+            return Vec::new();
+        }
+        if let Err(error) = self.issued().await {
+            return requests.into_iter().map(|_| Err(error.clone())).collect();
+        }
+        let _gate = self.state.gate.read().await;
+        let mut outcomes = Vec::with_capacity(requests.len());
+        let driven = crate::batch::drive(
+            requests,
+            crate::BATCH_WINDOW,
+            |_| Ok::<_, std::convert::Infallible>(()),
+            |(body, references)| self.publish_blob(body, references),
+            |put| outcomes.push(put),
         )
+        .await;
+        let Ok(()) = driven;
+        crate::provider::flush_puts(self, &mut outcomes).await;
+        outcomes
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {

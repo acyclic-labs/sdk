@@ -31,6 +31,25 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().put_manifest(manifest).await
     }
+    async fn put_durable(
+        &self,
+        body: crate::Sealed,
+        references: Vec<Digest>,
+    ) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_durable(body, references).await
+    }
+    async fn put_manifest_durable(&self, manifest: Manifest) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_manifest_durable(manifest).await
+    }
+    async fn put_batch_durable(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch_durable(requests).await
+    }
     async fn get(
         &self,
         digest: Digest,
