@@ -1,17 +1,18 @@
 #![no_main]
 
 // The native settings loader selects project entries through this same module.
-#[path = "../../harness-core/src/native_settings/workspace.rs"]
-mod workspace;
+use acyclic_harness_core::native_settings::test_support::{
+    workspace_equivalent, workspace_matches,
+};
 
 fn same(left: &str, right: &str, windows: bool) {
-    assert!(workspace::equivalent(left, right, windows));
-    assert!(workspace::equivalent(right, left, windows));
+    assert!(workspace_equivalent(left, right, windows));
+    assert!(workspace_equivalent(right, left, windows));
 }
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     assert!(
-        !workspace::equivalent("C:", "C:/", true),
+        !workspace_equivalent("C:", "C:/", true),
         "workspace roots must remain distinct"
     );
     let text = String::from_utf8_lossy(bytes);
@@ -22,30 +23,29 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     for windows in [false, true] {
         same(left, left, windows);
         assert_eq!(
-            workspace::equivalent(left, right, windows),
-            workspace::equivalent(right, left, windows)
+            workspace_equivalent(left, right, windows),
+            workspace_equivalent(right, left, windows)
         );
-        if workspace::equivalent(left, right, windows)
-            && workspace::equivalent(right, third, windows)
+        if workspace_equivalent(left, right, windows) && workspace_equivalent(right, third, windows)
         {
             same(left, third, windows);
         }
-        assert!(!workspace::equivalent("", ".", windows));
+        assert!(!workspace_equivalent("", ".", windows));
     }
-    assert!(workspace::matches(
+    assert!(workspace_matches(
         left,
         std::path::Path::new(left),
         std::path::Path::new(right)
     ));
-    assert!(workspace::matches(
+    assert!(workspace_matches(
         right,
         std::path::Path::new(left),
         std::path::Path::new(right)
     ));
-    assert!(!workspace::equivalent("C:/x", "D:/x", true));
-    assert!(!workspace::equivalent("C:/ß", "C:/SS", true));
+    assert!(!workspace_equivalent("C:/x", "D:/x", true));
+    assert!(!workspace_equivalent("C:/ß", "C:/SS", true));
     same("C:/Σ", "C:/ς", true);
-    assert!(!workspace::equivalent(
+    assert!(!workspace_equivalent(
         r"\\.\server\share",
         r"\\server\share",
         true
@@ -83,12 +83,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                 };
                 let alias = format!("{}{path}{separator}.", if verbatim { r"\\?\" } else { "" });
                 same(&canonical, &alias, true);
-                assert!(!workspace::equivalent(
+                assert!(!workspace_equivalent(
                     &canonical,
                     &format!("{alias}{separator}different"),
                     true
                 ));
-                assert!(!workspace::equivalent(
+                assert!(!workspace_equivalent(
                     &canonical,
                     &canonical.replacen(":\\", ":", 1),
                     true
@@ -104,12 +104,12 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
                     alias.to_lowercase()
                 };
                 same(&unc, &alias, true);
-                assert!(!workspace::equivalent(
+                assert!(!workspace_equivalent(
                     &unc,
                     &format!("/{server}/{share}"),
                     true
                 ));
-                assert!(!workspace::equivalent(
+                assert!(!workspace_equivalent(
                     &unc,
                     &format!("{alias}{separator}different"),
                     true
@@ -118,8 +118,8 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         }
     }
     let posix = format!("/root/a{}", parts.join("/"));
-    assert!(!workspace::equivalent(&posix, &posix.to_uppercase(), false));
-    assert!(!workspace::equivalent(
+    assert!(!workspace_equivalent(&posix, &posix.to_uppercase(), false));
+    assert!(!workspace_equivalent(
         &posix,
         &posix.replace('/', "\\"),
         false

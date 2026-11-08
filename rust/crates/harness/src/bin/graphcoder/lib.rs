@@ -7,6 +7,12 @@
 acyclic_test_support::counting_allocator!();
 
 mod args;
+/// Shipping argument and input boundaries for decoder conformance and fuzzing.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    pub use crate::args::{Args, Command, InputFormat, OutputFormat};
+    pub use crate::headless::input::{Request, parse};
+}
 mod headless;
 mod lifecycle;
 mod usage_export;

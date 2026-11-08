@@ -1,10 +1,9 @@
 //! UTF-8 round-trip oracle for classification before the immutable file is pinned.
-#[path = "../../harness-core/src/filesystem/host/reads/media_type.rs"]
-mod media_type;
 use acyclic_harness::conversation::FileDescriptor;
+use acyclic_harness::test_support::workspace_media_type;
 
 pub fn classify(bytes: &[u8]) -> &'static str {
-    media_type::classify(bytes)
+    workspace_media_type(bytes)
 }
 
 pub fn matches(bytes: &[u8], actual: &str) -> bool {

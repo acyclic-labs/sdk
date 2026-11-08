@@ -1,6 +1,22 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
 pub use acyclic_harness_core::test_support::*;
+
+/// Calls the state owner's production separation and directory admission boundary.
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub fn separated_state_directory(
+    path: &std::path::Path,
+    checkout: Option<&std::path::Path>,
+) -> crate::Result<std::path::PathBuf> {
+    crate::local::owner::separated_directory(path, checkout)
+}
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use crate::local::host_process::children::answer::validation as native_answer;
+
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
 /// Checks arbitrary sequential schedules against the native child ready queue.

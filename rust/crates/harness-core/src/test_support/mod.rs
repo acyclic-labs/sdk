@@ -1,5 +1,16 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+/// Classifies pinned workspace bytes with the production media boundary.
+#[cfg(feature = "filesystem")]
+pub fn workspace_media_type(bytes: &[u8]) -> &'static str {
+    crate::filesystem::host::reads::media_type::classify(bytes)
+}
+
+/// Native agent-diff operand selected by the production filesystem command parser.
+pub fn agent_diff(arguments: &[String]) -> Option<&str> {
+    crate::tools::fs_command::agent_diff(arguments)
+}
+
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
 

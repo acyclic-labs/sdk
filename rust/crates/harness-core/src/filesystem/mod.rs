@@ -127,7 +127,7 @@ pub(crate) use native_directory::NativeDirectory;
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
-mod host;
+pub(crate) mod host;
 pub(crate) use host::map_error;
 use host::*;
 pub use host::{FilesystemHost, VolumeImportPlan, filesystem_key, workspace_ref};

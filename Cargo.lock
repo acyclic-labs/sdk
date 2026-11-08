@@ -726,6 +726,7 @@ dependencies = [
  "clap",
  "diffy",
  "futures",
+ "graphcoder",
  "harness-mock-model",
  "libfuzzer-sys",
  "proptest",

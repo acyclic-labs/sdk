@@ -23,7 +23,7 @@ use std::future::Future as _;
 use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
-mod answer;
+pub(crate) mod answer;
 use answer::{EVENT_LIMIT, NativeAnswer};
 
 #[cfg(any(test, feature = "test-support"))]

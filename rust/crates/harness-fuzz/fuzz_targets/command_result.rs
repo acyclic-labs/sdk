@@ -1,10 +1,7 @@
 #![no_main]
 
-// Exercise the shared production codec with the harness's exact core types.
+use acyclic_harness::client::{HeadlessOutcome, decode_command_result, encode_command_result};
 use acyclic_harness_core::{Error, InteractionRejection, OperationId, Result, wire};
-#[path = "../../harness/src/client/command_result.rs"]
-mod command_result;
-use command_result::{HeadlessOutcome, decode_command_result, encode_command_result};
 use serde_json::{Value, json};
 
 fn check(sequence: u64, result: &Result<Value>, completion: &str, exit: u8) {

@@ -5,7 +5,7 @@ use acyclic_harness::{agent::IntentId, interaction::ApprovalBinding};
 /// binding instead of discovering a potentially different pending action.
 #[derive(serde::Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
-pub(super) enum Request {
+pub enum Request {
     Prompt {
         prompt: String,
         id: Option<String>,
@@ -20,6 +20,6 @@ pub(super) enum Request {
     },
 }
 
-pub(super) fn parse(line: &str) -> serde_json::Result<Request> {
+pub fn parse(line: &str) -> serde_json::Result<Request> {
     serde_json::from_str(line)
 }

@@ -1,11 +1,10 @@
 #![no_main]
 
 // SettingsConfig::configured_model calls this same production TOML admission.
-#[path = "../../harness-core/src/native_settings/model_selection.rs"]
-mod selection;
+use acyclic_harness_core::native_settings::test_support::parse_model_selection;
 
 fn check(bytes: &[u8]) {
-    if let Ok(selected) = selection::parse(bytes) {
+    if let Ok(selected) = parse_model_selection(bytes) {
         let text = std::str::from_utf8(bytes).unwrap();
         let original: toml::Value = toml::from_str(text).unwrap();
         let model = original.get("model").map(|value| value.as_str().unwrap());
@@ -27,7 +26,7 @@ fn check(bytes: &[u8]) {
             )]))
             .unwrap();
             assert_eq!(
-                selection::parse(canonical.as_bytes()).unwrap(),
+                parse_model_selection(canonical.as_bytes()).unwrap(),
                 Some(selected)
             );
         } else {
@@ -51,7 +50,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             check(encoded.as_bytes());
             if provider.is_some() && !model.trim().is_empty() {
                 assert_eq!(
-                    selection::parse(encoded.as_bytes()).unwrap(),
+                    parse_model_selection(encoded.as_bytes()).unwrap(),
                     Some(format!("oracle/{model}")),
                     "an explicit provider must retain the entire model name"
                 );
@@ -72,7 +71,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             ("model = 'vendor/'", None),
         ] {
             assert_eq!(
-                selection::parse(input.as_bytes()).ok(),
+                parse_model_selection(input.as_bytes()).ok(),
                 expected.map(|value| value.map(str::to_owned)),
                 "model settings admission changed"
             );

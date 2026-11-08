@@ -1,6 +1,9 @@
 //! Completion from the native host's original turn terminal.
 use super::{Outcome, Value};
 
+#[cfg(feature = "test-support")]
+pub mod validation;
+
 /// Byte bound of a retained answer.
 pub(super) const ANSWER_LIMIT: usize = 4096;
 /// Byte bound of one native event line and of a retained answer's source.
