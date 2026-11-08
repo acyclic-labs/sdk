@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/session/frame.rs b/rust/crates/stream/src/session/frame.rs
+index b701ed432db..402dc6b2748 100644
+--- a/rust/crates/stream/src/session/frame.rs
++++ b/rust/crates/stream/src/session/frame.rs
+@@ -87,7 +87,7 @@ impl Frame {
+                     ..Default::default()
+                 }),
+             ),
+-            original: Some(Original::Error(error)),
++            original: None,
+         }
+     }
+ 
