@@ -27,6 +27,8 @@ fn bind_url(value: &mut Value, url: &str) {
 /// or `{{tool_result:/pointer}}` throughout a response. Strings insert raw text;
 /// other values insert compact JSON. Pointers use RFC 6901 escaping. Missing or
 /// malformed templates fail explicitly. Copied values are never re-expanded.
+/// `{"$request_line":{"pointer":"/text","prefix":"Path: ","suffix":"/file"}}`
+/// copies the suffix of exactly one matching line, then appends `suffix`.
 pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
     let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
     let mut value = serde_json::to_value(step).map_err(|error| error.to_string())?;
@@ -47,8 +49,35 @@ fn lookup<'a>(source: &'a Value, pointer: &str) -> Result<&'a Value, String> {
         .ok_or_else(|| format!("missing template pointer {pointer}"))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestLine {
+    pointer: String,
+    prefix: String,
+    suffix: String,
+}
+
+fn request_line(specification: Value, request: &Value) -> Result<Value, String> {
+    let line: RequestLine =
+        serde_json::from_value(specification).map_err(|error| error.to_string())?;
+    let text = lookup(request, &line.pointer)?
+        .as_str()
+        .ok_or("request line pointer must select a string")?;
+    let mut matches = text
+        .lines()
+        .filter_map(|text| text.strip_prefix(&line.prefix));
+    let copied = matches.next().ok_or("request line prefix did not match")?;
+    if matches.next().is_some() {
+        return Err("request line prefix is ambiguous".into());
+    }
+    Ok(Value::String(format!("{copied}{}", line.suffix)))
+}
+
 fn bind(value: &mut Value, request: &Value, result: &Value) -> Result<(), String> {
     match value {
+        Value::Object(fields) if fields.len() == 1 && fields.contains_key("$request_line") => {
+            *value = request_line(fields.remove("$request_line").unwrap(), request)?;
+        }
         Value::Object(fields)
             if fields.len() == 1
                 && (fields.contains_key("$request") || fields.contains_key("$tool_result")) =>
