@@ -23,7 +23,7 @@ cargo test --locked -p acyclic-harness-core --features filesystem,test-support -
 | --- | --- |
 | `serial_settlement_observation.patch` | `actor checkpoint waited for inbox observation` |
 | `settlement_waits_after_failure.patch` | `actor refusal waited for the inbox producer` |
-| `settlement_accepts_older_inbox.patch` | `an older actor checkpoint covered a newer inbox cut` |
+| `settlement_accepts_older_inbox.patch` | `an unconsumed child inbox was reported settled` |
 
 These controls complete by directly advancing the pending future once at each
 explicit event; even a broken serialization fails an assertion immediately.
