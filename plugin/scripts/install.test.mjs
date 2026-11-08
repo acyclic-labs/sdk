@@ -319,7 +319,7 @@ for (const [name, layout] of Object.entries(layouts)) {
   });
 }
 
-scenario("the acyclic-plugin command recovers when install scripts were skipped", async () => {
+scenario("the acyclic-plugin command runs when install scripts were skipped", async () => {
   const owner = scope("npm-no-scripts-"), home = join(owner.root, "consumer");
   mkdirSync(home);
   try {

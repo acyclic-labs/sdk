@@ -116,6 +116,15 @@ writeFileSync(
   join(plugin, "bin", "platform-binaries.json"),
   `${JSON.stringify(manifest, null, 2)}\n`,
 );
+// A platform-specific archive runs directly after extraction. Universal npm
+// packages retain the installer placeholder until the consumer selects its OS.
+const entries = Object.entries(manifest.targets);
+if (entries.length === 1) {
+  const [[target, entry]] = entries;
+  const launcher = join(plugin, "bin", target.startsWith("win32-") ? "acyclic.exe" : "acyclic");
+  copyFileSync(join(plugin, "bin", entry.path), launcher);
+  if (!target.startsWith("win32-")) chmodSync(launcher, 0o755);
+}
 
 const marketplace = {
   name: "acyclic",
