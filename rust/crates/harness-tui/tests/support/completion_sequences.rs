@@ -10,6 +10,10 @@ fn candidate(menu: &mut CompletionMenu, path: &str) -> Result<(), std::io::Error
     menu.set_file(&format!("workspace/{path}"), Some(b""))
 }
 
+/// Exercise production completion parsing, acceptance and undo semantics.
+///
+/// # Panics
+/// Panics when a production transition violates the shared semantic invariants.
 pub fn exercise(data: &[u8]) -> Result<(), std::io::Error> {
     exercise_with(data, false)
 }
@@ -175,6 +179,9 @@ fn assert_on_graphemes(editor: &Editor) {
 
 /// Production JSON file parsing preserves aliases, tool flags and theme spelling.
 /// Shared by shrinking properties and the instrumented completion fuzz target.
+///
+/// # Panics
+/// Panics if production parsing or acceptance changes command or theme semantics.
 pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), std::io::Error> {
     let mut menu = CompletionMenu::default();
     let definition = serde_json::json!([{"name":name,"aliases":[alias],"action":{"kind":"tool","tool":"shell"}}, {"name":"palette","aliases":["t"],"action":{"kind":"theme"}}]);
@@ -185,7 +192,10 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
     assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
-    let selected = menu.items().position(|item| item.value == alias).unwrap();
+    let selected = menu
+        .items()
+        .position(|item| item.value == alias)
+        .ok_or_else(|| std::io::Error::other(format!("completion alias missing: {alias:?}")))?;
     for _ in 0..selected {
         menu.cycle(false);
     }

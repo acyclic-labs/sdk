@@ -83,3 +83,6 @@ path = "fuzz_targets/transcript_anchor.rs"
 test = false
 doc = false
 bench = false
+
+[lints]
+workspace = true

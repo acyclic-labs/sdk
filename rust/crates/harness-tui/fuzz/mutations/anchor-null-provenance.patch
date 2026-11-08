@@ -1,0 +1,10 @@
+diff --git a/rust/crates/harness-tui/src/transcript_anchor.rs b/rust/crates/harness-tui/src/transcript_anchor.rs
+--- a/rust/crates/harness-tui/src/transcript_anchor.rs
++++ b/rust/crates/harness-tui/src/transcript_anchor.rs
+@@ -67,5 +67,5 @@
+ fn source_origin<'de, D: serde::Deserializer<'de>>(
+     deserializer: D,
+ ) -> Result<Option<TranscriptOrigin>, D::Error> {
+-    TranscriptOrigin::deserialize(deserializer).map(Some)
++    Option::<TranscriptOrigin>::deserialize(deserializer)
+ }

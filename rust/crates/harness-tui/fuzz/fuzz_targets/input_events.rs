@@ -1,3 +1,4 @@
+//! Exercise input event transitions through the shared semantic oracle.
 #![no_main]
 
 #[path = "../../tests/support/input_sequences.rs"]
