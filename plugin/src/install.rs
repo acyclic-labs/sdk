@@ -19,9 +19,13 @@ pub(super) fn run(args: &[String]) -> Result<()> {
         return Err("unknown native host".into());
     }
     for pair in args.get(2..).unwrap_or_default().chunks(2) {
-        if !matches!(pair, [name, _] if matches!(name.as_str(), "--plugin-root" | "--settings")) {
-            return Err("installer options: --plugin-root PATH, --settings PATH".into());
+        if !matches!(pair, [name, _] if matches!(name.as_str(), "--plugin-root" | "--settings" | "--host-version"))
+        {
+            return Err("installer options: --plugin-root PATH, --settings PATH, --host-version VERSION (agy)".into());
         }
+    }
+    if host != "agy" && option(args, "--host-version").is_some() {
+        return Err("step=select native release: --host-version requires agy; recovery=acyclic install agy --host-version VERSION --plugin-root PATH".into());
     }
     if host == "codex" {
         check_codex()?;
@@ -321,10 +325,12 @@ fn codex_plugin_exchange(package: Option<&Path>) -> Result<Value> {
                     }
                     3 => {
                         let trust = codex_hook_trust(&result).map_err(io::Error::other)?;
-                        if trust.is_empty() {committed = true;} else {
-                            next.extend(codex_frame(4, "config/batchWrite", json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]})).map_err(io::Error::other)?);
-                            expected = 4;
+                        let mut edits = vec![json!({"keyPath":"agents.enabled", "value":false, "mergeStrategy":"upsert"}), json!({"keyPath":"features.multi_agent_v2", "value":false, "mergeStrategy":"upsert"})];
+                        if !trust.is_empty() {
+                            edits.push(json!({"keyPath":"hooks.state", "value":trust, "mergeStrategy":"upsert"}));
                         }
+                        next.extend(codex_frame(4, "config/batchWrite", json!({"edits":edits})).map_err(io::Error::other)?);
+                        expected = 4;
                     }
                     _ => committed = true,
                 }

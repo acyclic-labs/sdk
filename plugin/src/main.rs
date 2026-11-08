@@ -234,13 +234,19 @@ fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH] [--host-version VERSION (agy)]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
 }
 
 fn hook(host: &str, event: &str, input: Value) -> Value {
+    if host == "claude-code" && event == "PreToolUse" {
+        return json!({"hookSpecificOutput":{"hookEventName":"PreToolUse", "permissionDecision":"deny", "permissionDecisionReason":"step=admit native delegation: use the installed Acyclic spawn tool; recovery=call mcp__plugin_acyclic_acyclic-sessions__spawn"}});
+    }
+    if host == "agy" && event == "PreToolUse" {
+        return json!({"decision":"deny","reason":"step=admit native delegation: use the installed acyclic_sessions spawn tool; recovery=call acyclic_sessions/spawn"});
+    }
     let result = (|| -> Result<Value> {
         let mut input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
         let event = if host == "agy" {

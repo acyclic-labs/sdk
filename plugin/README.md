@@ -64,11 +64,28 @@ acyclic host pi --
 For writing AGY swarms, select the native `accept-edits` mode explicitly:
 
 ```sh
-acyclic install agy
+acyclic install agy --host-version 1.5.3
 acyclic host agy -- --sandbox --mode accept-edits
 acyclic install opencode
 acyclic host opencode -- --model provider/model
 ```
+
+Use a versioned native archive instead of a latest-only installation script.
+The publisher's [release manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
+names the versioned URL and SHA-512 digest. Verify the downloaded archive before
+execution. Plugin installation checks the requested `--host-version`, records
+`host-version.json` in the installed plugin, and verifies the native version
+again after installation. This installs the plugin; it does not replace the
+native executable.
+
+AGY `--print-timeout DURATION` is inherited unchanged. When no deadline is
+selected, both root and managed children receive native `--print-timeout 0`,
+which waits for completion without a deadline. The plugin blocks AGY
+`invoke_subagent` and `define_subagent`, OpenCode Task, and Claude Agent/Task;
+Codex installation and the shared launcher select `agents.enabled=false` and disable the overriding multi-agent v2 feature.
+Delegation uses the installed coordination tools. Each managed child's harness
+transcript starts with versioned `acyclic.host_context` metadata containing its
+AgentPath and admitted cwd, before the first native event.
 
 For AGY terminal writes, select a native session policy containing
 `"permissions":{"allow":["write_file(.)"]}` using `--settings` (a JSON file
@@ -83,7 +100,9 @@ AGY's `plan` mode is for investigation and planning; `accept-edits` permits file
 edits in the workspace while retaining native terminal permissions. Headless MCP
 coordination also needs the native policy to allow `mcp(acyclic_sessions/spawn)`
 and `mcp(acyclic_sessions/wait)`. The launcher forwards the selected mode and
-settings to every managed child.
+settings to every managed child. MCP rules name individual tools literally;
+use separate `mcp(acyclic_sessions/TOOL)` rules for spawn, send, wait, cancel,
+archive and resume, rather than a regular expression or pipe-separated name.
 
 Use the same absolute per-trial HOME for AGY installation and launch; on Windows
 select the same USERPROFILE too. Its native profile is

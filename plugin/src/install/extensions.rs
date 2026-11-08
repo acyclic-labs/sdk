@@ -131,6 +131,22 @@ pub(super) fn install_agy(
         "recovery argv: {}",
         serde_json::to_string(&(executable, "install", "agy", "--plugin-root", package,))?
     );
+    let version_output = native_output("agy", &["--version"])?;
+    let version = std::str::from_utf8(&version_output.stdout)?.trim();
+    if version.is_empty() {
+        return Err(format!(
+            "step=identify Antigravity release: native version is empty; {recovery}"
+        )
+        .into());
+    }
+    if let Some(expected) = args
+        .windows(2)
+        .find_map(|pair| (pair[0] == "--host-version").then_some(pair[1].as_str()))
+    {
+        if version != expected {
+            return Err(format!("step=admit Antigravity release: installed={version}, required={expected}; recovery=install the requested native release, then repeat the original acyclic install command").into());
+        }
+    }
     // The native manager copies this complete immutable closure into its own
     // profile. Only installation needs staging; no product operation pays it.
     let stage = tempfile::Builder::new()
@@ -168,10 +184,21 @@ pub(super) fn install_agy(
         fs::write(stage.path().join(name), source)
             .map_err(|error| format!("step=stage Antigravity asset {name}: {error}; {recovery}"))?;
     }
+    let receipt = json!({"version":1,"host":"agy","native_version":version});
+    fs::write(
+        stage.path().join("host-version.json"),
+        serde_json::to_vec(&receipt)?,
+    )
+    .map_err(|error| format!("step=record Antigravity release: {error}; {recovery}"))?;
     let path = stage.path().to_str().ok_or_else(|| {
         format!("step=admit Antigravity plugin path: non-Unicode path; {recovery}")
     })?;
     native_output("agy", &["plugin", "validate", path, "--strict", "--json"])?;
     native_output("agy", &["plugin", "install", path])?;
+    let installed = native_output("agy", &["--version"])?;
+    if std::str::from_utf8(&installed.stdout)?.trim() != version {
+        return Err(format!("step=verify installed Antigravity release: native release changed during installation; {recovery}").into());
+    }
+    println!("{}", json!({"installed_native_host":receipt}));
     Ok(())
 }

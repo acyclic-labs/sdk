@@ -73,11 +73,17 @@ test("native AGY fences capture, executes tools and settles managed children", a
       step = "admit original native AGY interface";
       const version = await run(agy, ["--version"]);
       assert.equal(version.code, 0, version.stderr);
-      assert.equal(version.stdout.trim(), "1.5.2", "use the native release that produced the retained hook corpus");
+      assert.equal(version.stdout.trim(), "1.5.3", "use the qualified native release");
       step = "install the shipping package through the native plugin manager";
       const staged = await nativePackage(binary, join(root, "package with spaces"))();
-      const installed = await run(staged.executable, ["install", "agy", "--plugin-root", staged.packageRoot]);
+      const refusedVersion = await run(staged.executable, ["install", "agy", "--host-version", "1.5.2", "--plugin-root", staged.packageRoot]);
+      assert.notEqual(refusedVersion.code, 0, "installer accepted an unqualified native release");
+      assert.match(refusedVersion.stderr, /installed=1\.5\.3, required=1\.5\.2/);
+      const installed = await run(staged.executable, ["install", "agy", "--host-version", "1.5.3", "--plugin-root", staged.packageRoot]);
       assert.equal(installed.code, 0, installed.stderr);
+      const receipt = installed.stdout.split(/\r?\n/).filter(line => line.startsWith("{")).map(line => JSON.parse(line))
+        .find(record => record.installed_native_host)?.installed_native_host;
+      assert.deepEqual(receipt, { version: 1, host: "agy", native_version: "1.5.3" });
       step = "start the original shared workspace owner";
       await startWorkspaceOwner({ scope, binary: graphcoder, workspace, state: join(root, "state"), root, env,
         capture: result => t.diagnostic(JSON.stringify({ role: "owner", ...result })) });
@@ -142,6 +148,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const coordinationPrompt = "Spawn the managed native AGY child, wait for its reply, then return the coordination marker.";
       const childPrompt = "Return the model-coordinated native AGY child marker.", childAnswer = "native-agy-coordinated-child";
       const coordinationAnswer = "native-agy-coordination-completed";
+      const delegationPrompt = "Try native delegation, then return the refusal marker.", delegationAnswer = "native-delegation-fenced";
       const childCommand = process.platform === "win32"
         ? "Set-Content -NoNewline -LiteralPath native-command.txt -Value native-agy-command-write"
         : "printf native-agy-command-write > native-command.txt";
@@ -170,6 +177,11 @@ test("native AGY fences capture, executes tools and settles managed children", a
         { when: { user: coordinationPrompt, tool_result: "native:spawn" },
           tools: [coordinate("native-wait", "wait", { reference: "model-child" })] },
         { when: { user: coordinationPrompt, tool_result: childAnswer }, text: [coordinationAnswer] },
+        // Arguments follow the original native invoke_subagent declaration
+        // captured by the first real model exchange in this conformance path.
+        { when: { user: delegationPrompt }, tools: [{ id: "native-delegation", name: "invoke_subagent",
+          arguments: { TypeName: "self", Role: "Refusal Control", Prompt: "Return the unintended delegation marker." } }] },
+        { when: { user: delegationPrompt, contains: "step=admit native delegation" }, text: [delegationAnswer] },
       ] } } }));
       const model = scope.start(mock, ["--script", script, "--record", recorded], { env });
       const modelEvents = new Spool(model.child.stdout, model.closed, {
@@ -197,7 +209,7 @@ test("native AGY fences capture, executes tools and settles managed children", a
       assert.equal(await readFile(written, "utf8"), contents, "native AGY wrote outside its admitted workspace");
 
       step = "settle two original native children through the shared process owner";
-      env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits",
+      env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits", "--print-timeout", "0",
         "--settings", JSON.stringify({ modelProvider: "gemini", permissions: {
           allow: ["write_file(.)", `command(${childCommand})`, `command(${deniedCommand})`],
           deny: ["write_file(native-tool.txt)"],
@@ -273,6 +285,17 @@ test("native AGY fences capture, executes tools and settles managed children", a
         "native deny rule did not return its original command refusal");
       assert.equal(await readFile(join(reopened.cwd, "native-tool.txt"), "utf8"), contents,
         "relative native deny rule was lost in the child view");
+      step = "refuse native delegation through the installed pre-tool hook";
+      const delegationArgs = [...toolArgs]; delegationArgs[0] = `--print=${delegationPrompt}`;
+      const delegation = await invoke(delegationArgs);
+      assert.equal(delegation.code, 0, delegation.stderr + delegation.stdout);
+      const delegationResult = delegation.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
+        .find(event => event.event === "result")?.result;
+      assert.equal(delegationResult?.response.trimEnd(), delegationAnswer);
+      const finalCalls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      assert.deepEqual(finalCalls.map(call => [call.status, call.step]).sort((a, b) => a[1] - b[1]),
+        Array.from({ length: 13 }, (_, step) => [200, step]), "native delegation must be refused before a native child model request");
+      t.diagnostic(JSON.stringify({ role: "native-delegation-refusal", requests: finalCalls.slice(-2) }));
       step = "inspect native profile session storage after physical settlement";
       const profileFiles = await readdir(join(profile, ".gemini"), { recursive: true });
       t.diagnostic(JSON.stringify({ role: "native-profile-paths", files: profileFiles }));

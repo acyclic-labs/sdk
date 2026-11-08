@@ -165,12 +165,47 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) {
             ),
             _ => (&["--mode", "json", "-p"], vec![]),
         };
+        let mut policy = Vec::new();
+        let mut values = inherited.iter();
+        let mut timeout = false;
+        let mut denied = false;
+        while let Some(option) = values.next() {
+            policy.push(OsString::from(option));
+            if option == "--sandbox" && host == "agy" || option == "--no-extensions" && host == "pi"
+            {
+                continue;
+            }
+            let value = values.next().expect("admitted option value");
+            timeout |= option == "--print-timeout" && host == "agy";
+            denied |= option == "--disallowedTools" && host == "claude-code";
+            policy.push(if option == "--disallowedTools" && host == "claude-code" {
+                OsString::from(format!("{value},Agent,Task"))
+            } else {
+                value.into()
+            });
+        }
+        match host {
+            "agy" if !timeout => policy.extend(["--print-timeout", "0"].map(OsString::from)),
+            "codex" => policy.extend(
+                [
+                    "--config",
+                    "features.multi_agent_v2=false",
+                    "--config",
+                    "agents.enabled=false",
+                ]
+                .map(OsString::from),
+            ),
+            "claude-code" if !denied => {
+                policy.extend(["--disallowedTools", "Agent,Task"].map(OsString::from))
+            }
+            _ => {}
+        }
         let mut expected = prefix
             .iter()
             .copied()
             .map(OsString::from)
             .chain((host == "opencode").then(|| OsString::from(cwd)))
-            .chain(inherited.iter().map(OsString::from))
+            .chain(policy)
             .chain(suffix)
             .collect::<Vec<_>>();
         if let Some(reference) = session {
@@ -350,6 +385,16 @@ libfuzzer_sys::fuzz_target!(|input: &[u8]| {
             "native launch changed non-path policy bytes"
         );
         policy(host, &flags, cwd, &reference);
+        if host == "agy" {
+            let mut deadline = flags.clone();
+            deadline.extend(["--print-timeout".into(), format!("{}s", input.len())]);
+            policy(host, &deadline, cwd, &reference);
+            deadline.extend(["--print-timeout".into(), "0".into()]);
+            assert!(
+                matches!(launch::validate(host, &deadline), Err(Error::Invalid(_))),
+                "native launch admitted ambiguous lifetimes"
+            );
+        }
         paths(host, &flags, cwd, &non_unicode, encoded);
         if matches!(host, "codex" | "claude-code" | "agy") {
             assert!(

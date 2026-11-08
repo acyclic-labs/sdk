@@ -20,6 +20,9 @@ try {
     reads++;
     return { data: info };
   } } } });
+  await assert.rejects(hooks["tool.execute.before"]({ tool: "task", sessionID: info.id }),
+    /step=admit native delegation: use acyclic-sessions_spawn/);
+  await hooks["tool.execute.before"]({ tool: "read", sessionID: info.id });
   // Withdraw the actual immutable owner announcement, retaining its original
   // bytes. A fresh shipping client now observes an owner that is not ready.
   announcement = join(directory, ".acyclic-sdk", "host-files", "owner.json");

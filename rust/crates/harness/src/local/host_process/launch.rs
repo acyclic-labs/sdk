@@ -75,6 +75,7 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
                 "--model",
                 "--agent",
                 "--effort",
+                "--print-timeout",
                 "--add-dir",
             ],
         ),
@@ -85,8 +86,14 @@ pub fn validate(host: &str, args: &[String]) -> Result<()> {
         }
     };
     let mut required = [(sandbox, 0), (approval, 0)];
+    let mut timeout = false;
     let mut arguments = args.iter();
     while let Some(name) = arguments.next() {
+        if host == "agy" && name == "--print-timeout" && std::mem::replace(&mut timeout, true) {
+            return Err(invalid(
+                "step=admit native lifetime: duplicate --print-timeout; recovery: acyclic host agy -- --sandbox --mode accept-edits --print-timeout VALUE",
+            ));
+        }
         if is_switch(host, name) {
             for (option, count) in &mut required {
                 *count += usize::from(name.as_str() == *option);
@@ -212,10 +219,10 @@ pub fn child_arguments(
         return Err(invalid("native resume reference cannot be an option"));
     }
     let native_arguments = match host {
-        "codex" => 5,
-        "claude-code" => 4,
+        "codex" => 9,
+        "claude-code" => 6,
         "opencode" => 5,
-        "agy" => 4,
+        "agy" => 6,
         _ => 3,
     };
     let mut arguments =
@@ -290,21 +297,46 @@ fn extend_policy(
     args: &[String],
     cwd: &Path,
 ) -> Result<()> {
-    if host != "agy" {
-        output.extend(args.iter().map(OsString::from));
-        return Ok(());
-    }
+    let mut timeout = false;
+    let mut denied = false;
     let mut arguments = args.iter();
     while let Some(name) = arguments.next() {
         output.push(name.into());
         if !is_switch(host, name) {
-            let value = arguments.next().ok_or_else(|| invalid("step=resolve native policy: option requires a value; recovery: acyclic host agy -- --sandbox --mode accept-edits"))?;
-            output.push(if name == "--settings" {
-                agy::settings(value, cwd)?
-            } else {
-                value.into()
+            let value = arguments.next().ok_or_else(|| invalid("step=resolve native policy: option requires a value; recovery: acyclic host HOST -- POLICY_ARGS"))?;
+            timeout |= host == "agy" && name == "--print-timeout";
+            output.push(match (host, name.as_str()) {
+                ("agy", "--settings") => agy::settings(value, cwd)?,
+                // Keep every user denial when adding the mandatory delegation fence.
+                ("claude-code", "--disallowedTools") => {
+                    denied = true;
+                    let mut denied = OsString::with_capacity(value.len() + ",Agent,Task".len());
+                    denied.push(value);
+                    denied.push(",Agent,Task");
+                    denied
+                }
+                _ => value.into(),
             });
         }
+    }
+    match host {
+        "agy" if !timeout => {
+            // Zero is the native unbounded lifetime: completion owns the wait.
+            output.extend(["--print-timeout", "0"].map(OsString::from));
+        }
+        "codex" => output.extend(
+            [
+                "--config",
+                "features.multi_agent_v2=false",
+                "--config",
+                "agents.enabled=false",
+            ]
+            .map(OsString::from),
+        ),
+        "claude-code" if !denied => {
+            output.extend(["--disallowedTools", "Agent,Task"].map(OsString::from))
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -312,7 +344,7 @@ fn extend_policy(
 /// Resolve native file permissions against this invocation's admitted workspace.
 /// The serialized parent policy retains relative targets for later child views.
 pub(super) fn policy_arguments(host: &str, args: &[String], cwd: &Path) -> Result<Vec<OsString>> {
-    let mut output = Vec::with_capacity(args.len());
+    let mut output = Vec::with_capacity(args.len() + if host == "codex" { 4 } else { 2 });
     extend_policy(&mut output, host, args, cwd)?;
     Ok(output)
 }

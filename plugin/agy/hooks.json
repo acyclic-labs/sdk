@@ -1,8 +1,44 @@
 {
   "acyclic-workspace": {
-    "SessionStart": [{"type": "command", "command": "__ACYCLIC_COMMAND__ __hook agy SessionStart"}],
-    "PreInvocation": [{"type": "command", "command": "__ACYCLIC_COMMAND__ __hook agy PreInvocation"}],
-    "PostToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "__ACYCLIC_COMMAND__ __hook agy PostToolUse"}]}],
-    "Stop": [{"type": "command", "command": "__ACYCLIC_COMMAND__ __hook agy Stop"}]
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "__ACYCLIC_COMMAND__ __hook agy SessionStart"
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "__ACYCLIC_COMMAND__ __hook agy PreInvocation"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ACYCLIC_COMMAND__ __hook agy PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "__ACYCLIC_COMMAND__ __hook agy Stop"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(invoke_subagent|define_subagent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "__ACYCLIC_COMMAND__ __hook agy PreToolUse"
+          }
+        ]
+      }
+    ]
   }
 }

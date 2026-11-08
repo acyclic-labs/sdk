@@ -232,3 +232,100 @@ fn native_child_arguments_allocate_only_the_returned_vector_and_strings() -> Res
     }
     Ok(())
 }
+
+#[test]
+fn native_lifetime_and_delegation_follow_the_admitted_root_policy() -> Result {
+    let cwd = Path::new("workspace");
+    for timeout in [None, Some("0"), Some("47m"), Some("12h30m")] {
+        let mut supplied = vec![
+            "--sandbox".into(),
+            "--mode".into(),
+            "accept-edits".into(),
+            "--model".into(),
+            "--print-timeout".into(),
+        ];
+        if let Some(value) = timeout {
+            supplied.extend(["--print-timeout".into(), value.into()]);
+        }
+        let inherited = parent_flags("agy", &supplied, cwd)?;
+        for session in [None, Some("original-session")] {
+            let args = child_arguments("agy", &inherited, cwd, session)?;
+            // --model's value resembles the lifetime switch. Parse option
+            // positions, so values never acquire policy authority.
+            let mut values = args.iter();
+            let mut lifetimes = Vec::new();
+            while let Some(option) = values.next() {
+                if option == "--sandbox" {
+                    continue;
+                }
+                let value = values.next().ok_or("missing native option value")?;
+                if option == "--print-timeout" {
+                    lifetimes.push(value.as_os_str());
+                }
+            }
+            assert_eq!(
+                lifetimes,
+                vec![std::ffi::OsStr::new(timeout.unwrap_or("0"))]
+            );
+        }
+    }
+    assert!(
+        validate(
+            "agy",
+            &[
+                "--sandbox",
+                "--mode",
+                "accept-edits",
+                "--print-timeout",
+                "0",
+                "--print-timeout",
+                "5m"
+            ]
+            .map(String::from)
+        )
+        .is_err()
+    );
+    for (host, supplied, option, expected) in [
+        (
+            "codex",
+            vec![
+                "--sandbox",
+                "workspace-write",
+                "--ask-for-approval",
+                "never",
+                "--config",
+                "agents.enabled=true",
+            ],
+            "--config",
+            "agents.enabled=false",
+        ),
+        (
+            "claude-code",
+            vec![
+                "--settings",
+                "{}",
+                "--permission-mode",
+                "default",
+                "--disallowedTools",
+                "Bash,Read(secret)",
+            ],
+            "--disallowedTools",
+            "Bash,Read(secret),Agent,Task",
+        ),
+    ] {
+        let supplied = supplied.into_iter().map(String::from).collect::<Vec<_>>();
+        let flags = parent_flags(host, &supplied, cwd)?;
+        for args in [
+            policy_arguments(host, &flags, cwd)?,
+            child_arguments(host, &flags, cwd, None)?,
+        ] {
+            assert_eq!(
+                args.windows(2)
+                    .rfind(|pair| pair[0] == option)
+                    .map(|pair| pair[1].as_os_str()),
+                Some(std::ffi::OsStr::new(expected))
+            );
+        }
+    }
+    Ok(())
+}
