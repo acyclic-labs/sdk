@@ -32,6 +32,9 @@ fn prefix(original: &str, retained: &str) {
 
 /// Original pipe bytes pass through the deployed framer and reducer. Vary read
 /// boundaries, never add an EOF delimiter: incomplete live frames stay pending.
+///
+/// # Panics
+/// Panics if event semantics, framing independence or loss invariants fail.
 pub fn check(bytes: &[u8]) -> usize {
     let (fragmented, accepted) = fold(
         bytes,
@@ -91,6 +94,9 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
 }
 
 /// Preserve the original unique cost control alongside the wider corpus property.
+///
+/// # Panics
+/// Panics if bounded truncation reads beyond the retained prefix.
 pub fn check_prefix_work() {
     let original = "a".repeat(ANSWER_LIMIT - 1);
     let mut visits = 0;

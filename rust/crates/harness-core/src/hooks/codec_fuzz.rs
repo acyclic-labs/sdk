@@ -59,10 +59,13 @@ fn check_input(bytes: &[u8]) -> CheckResult {
             };
             let encoded = input.encode(event, std::path::Path::new("workspace"), None)?;
             let decoded: Value = serde_json::from_slice(&encoded)?;
-            assert_eq!(&decoded["tool_input"], &fields);
+            assert_eq!(decoded.get("tool_input").unwrap_or(&Value::Null), &fields);
             assert_eq!(decoded.get("tool_response"), post.then_some(&fields));
-            assert_eq!(decoded["hook_event_name"], event.name());
-            assert_eq!(decoded["cwd"], "workspace");
+            assert_eq!(
+                *decoded.get("hook_event_name").unwrap_or(&Value::Null),
+                event.name()
+            );
+            assert_eq!(*decoded.get("cwd").unwrap_or(&Value::Null), "workspace");
         }
         let encoded = HookInput::Fields(&fields).encode(
             HookEvent::PreToolUse,
@@ -71,11 +74,14 @@ fn check_input(bytes: &[u8]) -> CheckResult {
         );
         if let Some(fields) = fields.as_object() {
             let decoded: Value = serde_json::from_slice(&encoded?)?;
-            assert_eq!(decoded["cwd"], "workspace");
-            assert_eq!(decoded["hook_event_name"], "PreToolUse");
+            assert_eq!(*decoded.get("cwd").unwrap_or(&Value::Null), "workspace");
+            assert_eq!(
+                *decoded.get("hook_event_name").unwrap_or(&Value::Null),
+                "PreToolUse"
+            );
             for (key, value) in fields {
                 if !matches!(key.as_str(), "cwd" | "hook_event_name") {
-                    assert_eq!(&decoded[key], value);
+                    assert_eq!(decoded.get(key).unwrap_or(&Value::Null), value);
                 }
             }
         } else {
