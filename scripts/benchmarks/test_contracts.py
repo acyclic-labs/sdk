@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from .contracts import Artifact, catalog, run_command
+from .contracts import Artifact, catalog, doctor_command, run_command
 from .bootstrap import verified_uv
 from .plan import STAGES, inventory, manifest, paired_plan
 
@@ -173,6 +173,18 @@ class BenchmarkContracts(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", observed["env"])
             self.assertEqual(observed["env"]["CODEX_HOME"], str(state / "fixture-codex"))
             self.assertEqual(observed["env"]["PATH"], env["PATH"])
+            self.assertEqual(observed["env"]["ACYCLIC_SIGNING_CUSTODY"], "private-file")
+            self.assertEqual(observed["env"]["ACYCLIC_SIGNING_CUSTODY_DIRECTORY"], str(state / "custody"))
+            if instruction == prompts[0]:
+                # The real shell and OS environment boundary is identical for
+                # readiness, despite a conflicting ambient host selection.
+                env["ACYCLIC_SIGNING_CUSTODY"] = "native"
+                env["ACYCLIC_SIGNING_CUSTODY_DIRECTORY"] = str(self.root / "wrong-store")
+                checked = subprocess.run(["bash", "-c", doctor_command(str(self.binary), str(state), "openai/fixture")],
+                                         env=env, cwd=self.root, check=True, capture_output=True, text=True)
+                readiness = json.loads(checked.stdout)
+                self.assertEqual(readiness["argv"][-1], "doctor")
+                self.assertEqual(readiness["env"], observed["env"])
             self.assertFalse((self.root / "ESCAPED").exists())
 
     def test_log_redirection_preserves_agent_failure_status(self):

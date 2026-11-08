@@ -207,10 +207,9 @@ pub enum Command {
     /// (`acyclic_harness::server::serve`), as a managed host does; prints its
     /// endpoint, credential and principal as one JSON line.
     Serve(Serve),
-    /// List every refusal a run with these same flags would meet at startup
-    /// (FUSE device and mount authority, state directory, signing custody,
-    /// catalog and provider policy), each with its recovery, from the checks
-    /// startup itself makes. Exits 0 only when a run would start.
+    /// Check local configuration, workspace, mount and signing policy without
+    /// writing state or creating authority. Does not open storage or start MCP
+    /// children; credential-service access is checked only when a run opens.
     Doctor,
 }
 
