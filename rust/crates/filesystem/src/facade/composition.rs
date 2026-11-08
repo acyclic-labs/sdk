@@ -209,8 +209,7 @@ where
         let (path_allocation, admitted) = accounting.record_actual_owned(path_bytes)?;
         let paths = Owned::new(fork.paths.clone(), path_allocation, path_bytes);
         admitted?;
-        let destination_id =
-            self.workspace_id_for_name(&fork.destination, accounting, cancellation)?;
+        let destination_id = self.workspace_id_for_name(&fork.destination, accounting)?;
         let (fork_root, source_root, pending, filtered) = self
             .materialize_forked_generation_root(
                 source,
@@ -297,7 +296,7 @@ where
         cancellation: &CancellationToken,
     ) -> Result<crate::WorkspaceId, WorkspaceError> {
         accounting.check()?;
-        let id = self.workspace_id_for_name(&spec.name, accounting, cancellation)?;
+        let id = self.workspace_id_for_name(&spec.name, accounting)?;
         let volume_id = id.volume_id();
         let initialization = spec.initialization;
         let config = initialization.config;

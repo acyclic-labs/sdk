@@ -344,6 +344,9 @@ fn install_selections(
 /// Publication failure with the original admitted cause.
 #[derive(Debug, Error)]
 pub enum NativeWorkspacePublicationError {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Authenticated workspace access failed.
     #[error(transparent)]
     Workspace(#[from] crate::WorkspaceError),

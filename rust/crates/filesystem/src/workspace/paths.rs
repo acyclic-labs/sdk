@@ -94,7 +94,7 @@ pub(super) fn copy_workspace_label(
     identity: &WorkspaceName,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<crate::kernel::Owned<String>, WorkspaceError> {
-    let copied = copy_work(identity.retained_bytes());
+    let copied = copy_work(identity.as_str().len() as u64);
     accounting.admit(copied)?;
     let mut label = crate::kernel::Owned::<Vec<u8>>::allocate(identity.as_str().len(), accounting)?;
     accounting.admit(copied)?;

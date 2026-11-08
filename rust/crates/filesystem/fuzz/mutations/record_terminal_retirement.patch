@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/record_store.rs
++++ b/rust/crates/filesystem/src/record_store.rs
+@@ -103,7 +103,7 @@
+             Entry::Occupied(mut entry) if entry.get().revision() == expected => {
+                 let retired = match replacement {
+                     Some(value) => entry.insert(value),
+-                    None => entry.remove(),
++                    None => return (true, None),
+                 };
+                 (true, Some(retired))
+             }
