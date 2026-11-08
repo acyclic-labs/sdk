@@ -157,6 +157,16 @@ unsafe impl Send for Hub {}
 unsafe impl Sync for Hub {}
 
 impl Hub {
+    /// Bootstrap process custody once, before finite original work starts.
+    pub(super) fn initialize_services() -> notify::Result<()> {
+        if HUB.get().is_some() {
+            return Ok(());
+        }
+        let cancellation = crate::CancellationToken::new();
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        Self::get(&mut work).map(|_| ()).map_err(notify_error)
+    }
+
     /// The hub, made with its queue on first use outside finite original work.
     pub(super) fn get<W: SourceDemandReadWork>(work: &mut W) -> Result<&'static Self, DemandError> {
         static LOADING: Mutex<()> = Mutex::new(());
