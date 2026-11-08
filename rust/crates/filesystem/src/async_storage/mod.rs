@@ -48,6 +48,13 @@ pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
 pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "conformance"),
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) use read_batch::read_many_stored_sequential;
 
 #[cfg(test)]
