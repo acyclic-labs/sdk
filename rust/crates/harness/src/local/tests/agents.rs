@@ -592,8 +592,8 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         matches!(harness.connect().await, Err(Error::Storage(_))),
         "late clients observe the already closed runtime"
     );
-    // The failed run's committed call outlives that runtime: its observation
-    // still exports exactly the one admitted call, never a completion.
+    // Both admitted calls outlive the runtime. Only the warm-up completed;
+    // losing the second producer must preserve its distinct unfinished call.
     let mut exported = Vec::new();
     client
         .observation()
@@ -604,8 +604,9 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         .into_iter::<crate::executor::ModelUsageProjection<'_>>()
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(agent)?;
-    assert_eq!(rows.len(), 1, "the failed run lost its committed call");
-    assert!(!rows[0].usage.completed);
+    assert_eq!(rows.len(), 2, "an admitted call was lost or duplicated");
+    assert_ne!(rows[0].usage.dispatch, rows[1].usage.dispatch);
+    assert_eq!(rows.iter().filter(|row| row.usage.completed).count(), 1);
     Ok(())
 }
 
