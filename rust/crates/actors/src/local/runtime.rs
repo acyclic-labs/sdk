@@ -104,10 +104,25 @@ struct Inner {
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
-    /// Last selected input; scheduling position only, never a consumed cursor.
+    /// Last committed input; scheduling position only, never a consumed cursor.
     last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
-    pending: Option<(Arc<Snapshot>, PreparedPublish)>,
+    pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
+    /// Conflicts of the last composed-guard refusal since a publication.
+    refused: Option<Vec<acyclic_stream::CommitConflict>>,
+}
+
+impl Inner {
+    /// Every attempt touches storage, so a guard refusal is retried only on
+    /// evidence of an external change: the identical refusal again means
+    /// nothing changed, and the retry loop would never append or wait.
+    fn refused(&mut self, conflicts: Vec<acyclic_stream::CommitConflict>) -> Result<(), Error> {
+        if self.refused.take().is_some_and(|last| last == conflicts) {
+            return Err(Error::PreconditionUnchanged);
+        }
+        self.refused = Some(conflicts);
+        Ok(())
+    }
 }
 
 type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
@@ -728,9 +743,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(false);
             }
             steps += 1;
-            if let Some((snapshot, publication)) = inner.pending.take() {
+            if let Some((snapshot, publication, subscription)) = inner.pending.take() {
                 match self.submit_delivery(&snapshot, publication).await {
                     Ok(observed) => {
+                        if subscription.is_some() {
+                            inner.last_input = subscription;
+                        }
+                        inner.refused = None;
                         inner.observed = Some(Arc::new(
                             observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                         ));
@@ -740,10 +759,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         publication,
                         source,
                     }) => {
-                        inner.pending = Some((snapshot, *publication));
+                        inner.pending = Some((snapshot, *publication, subscription));
                         return Err(Error::Stream(source));
                     }
-                    Err(Error::PreconditionChanged) => continue,
+                    Err(Error::PreconditionChanged(conflicts)) => {
+                        inner.refused(conflicts)?;
+                        continue;
+                    }
                     Err(error) => {
                         inner.observed = None;
                         return Err(error);
@@ -783,10 +805,20 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             {
                 return Ok(true);
             }
-            slot.registration.update_alarm(state.alarm())?;
             let now = self.clock.now_unix_ms();
+            let due = state
+                .alarm()
+                .pending()
+                .is_some_and(|deadline| deadline <= now);
+            // The alarm this attempt delivers is not also a due wake: on
+            // failure it would refire at once, redelivering forever.
+            if due {
+                slot.registration.deliver_alarm(state.alarm())?;
+            } else {
+                slot.registration.update_alarm(state.alarm())?;
+            }
             let (trigger, record) = match state.alarm().pending() {
-                Some(deadline) if deadline <= now => (
+                Some(_) if due => (
                     Trigger::Alarm {
                         generation: state.alarm().generation(),
                         now_unix_ms: now,
@@ -846,9 +878,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             if self.store.observe(&snapshot).await?.is_some() {
                 inner.observed = None;
                 return Err(Error::Conflict);
-            }
-            if let Trigger::Record { subscription, .. } = &trigger {
-                inner.last_input = Some(subscription.clone());
             }
             let epoch = inner.epoch;
             let limits = &self.handler.manifest().limits;
@@ -942,18 +971,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error) => return Err(error),
             };
             publication.require(self.handler.publication_conditions())?;
+            // Fairness advances only when the selected input commits. A guard
+            // refusal must recompute that input rather than alternate between
+            // subscriptions whose distinct stale guards never change.
+            let subscription = match trigger {
+                Trigger::Record { subscription, .. } => Some(subscription),
+                Trigger::Alarm { .. } => None,
+            };
             match self.submit_delivery(&snapshot, publication).await {
                 Ok(observed) => {
+                    if subscription.is_some() {
+                        inner.last_input = subscription;
+                    }
+                    inner.refused = None;
                     inner.observed = Some(Arc::new(
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                     ));
                 }
-                Err(Error::PreconditionChanged) => {}
+                Err(Error::PreconditionChanged(conflicts)) => inner.refused(conflicts)?,
                 Err(Error::Unknown {
                     publication,
                     source,
                 }) => {
-                    inner.pending = Some((snapshot, *publication));
+                    inner.pending = Some((snapshot, *publication, subscription));
                     return Err(Error::Stream(source));
                 }
                 Err(error) => {

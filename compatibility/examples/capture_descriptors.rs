@@ -12,6 +12,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
         let destination = output.join(baseline);
         acyclic_proto_build::descriptor(
             &root.join("rust/crates").join(family),
+            &root.join("compatibility/proto"),
             protos,
             &destination,
         )

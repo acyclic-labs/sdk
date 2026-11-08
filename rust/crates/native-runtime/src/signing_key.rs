@@ -29,7 +29,7 @@ pub use fixture::FixtureCustody;
 
 /// Host-selected credential custody. The explicit file selection never consults
 /// process settings or a native credential service and never falls back to one.
-/// This choice is not serialized into the public signing-key reference.
+/// References bind the effective store without retaining its path or secrets.
 #[derive(Clone, Copy)]
 pub enum SigningCustody<'a> {
     /// Use the application's configured native or explicit file policy.
@@ -40,8 +40,82 @@ pub enum SigningCustody<'a> {
 
 /// Non-secret, content-bound reference to OS-owned signing custody.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SigningKeyReference([u8; 32]);
+#[serde(deny_unknown_fields)]
+pub struct SigningKeyReference {
+    // Versioned public metadata: seed identity and effective store identity.
+    v1: ([u8; 32], [u8; 32]),
+}
+
+enum Store {
+    Native { session_bus: bool },
+    PrivateFile(std::path::PathBuf),
+}
+
+impl SigningCustody<'_> {
+    /// Validate the configured policy without opening or creating any store.
+    pub fn validate(self) -> io::Result<()> {
+        self.resolve().map(drop)
+    }
+
+    fn resolve(self) -> io::Result<Store> {
+        match self {
+            Self::PrivateFile(directory) if directory.is_absolute() => {
+                Ok(Store::PrivateFile(directory.to_owned()))
+            }
+            Self::PrivateFile(_) => Err(failure("select", CustodyCause::InvalidPolicy)),
+            Self::Configured => {
+                match std::env::var_os("ACYCLIC_SIGNING_CUSTODY").as_deref() {
+                    Some(value) if value == "private-file" => {
+                        return file::directory().map(Store::PrivateFile);
+                    }
+                    None => {}
+                    Some(value) if value == "native" => {}
+                    Some(_) => return Err(failure("select", CustodyCause::InvalidPolicy)),
+                }
+                if std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").is_some() {
+                    return Err(failure("select", CustodyCause::InvalidPolicy));
+                }
+                Ok(Store::Native {
+                    session_bus: cfg!(target_os = "linux")
+                        && std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some(),
+                })
+            }
+        }
+    }
+}
+
+impl Store {
+    fn identity(&self) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"acyclic.signing-custody/v1\0");
+        match self {
+            Self::Native { session_bus } => {
+                hash.update(b"native\0");
+                hash.update(std::env::consts::OS.as_bytes());
+                hash.update(&[u8::from(*session_bus)]);
+            }
+            Self::PrivateFile(directory) => {
+                hash.update(b"private-file\0");
+                // Lexical normalization requires no filesystem access, including
+                // before a newly selected directory exists. Parent components
+                // remain significant: resolving them could cross a symlink.
+                for component in directory.components() {
+                    let bytes = component.as_os_str().as_encoded_bytes();
+                    hash.update(&(bytes.len() as u64).to_le_bytes());
+                    hash.update(bytes);
+                }
+            }
+        }
+        *hash.finalize().as_bytes()
+    }
+
+    fn entry(self, name: &str) -> io::Result<keyring::Entry> {
+        match self {
+            Self::Native { session_bus } => native(name, session_bus),
+            Self::PrivateFile(directory) => file::entry_in(name, directory),
+        }
+    }
+}
 
 /// A newly created entry belongs to its unpublished owner. Abandonment removes
 /// that entry; an existing entry and a published owner's entry are never retired.
@@ -143,8 +217,11 @@ impl SigningKeyReference {
         transaction: Option<crate::FileLock>,
         custody: SigningCustody<'_>,
     ) -> io::Result<ProvisionalSigningKey> {
-        let reference = Self(*blake3::hash(seed).as_bytes());
-        let entry = match reference.select(custody)? {
+        let store = custody.resolve()?;
+        let reference = Self {
+            v1: (*blake3::hash(seed).as_bytes(), store.identity()),
+        };
+        let entry = match reference.read_store(store)? {
             Selection::Held(entry, existing) => {
                 if !bool::from(existing.0.as_slice().ct_eq(seed)) {
                     return Err(unavailable());
@@ -173,7 +250,7 @@ impl SigningKeyReference {
         // accepted the write, including explicit private-file custody.
         #[cfg(test)]
         fixture::check_fault(
-            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
+            blake3::Hash::from_bytes(reference.v1.0).to_hex().as_str(),
             fixture::Fault::WriteAcknowledgement,
         )
         .map_err(|error| error::backend("write", error))?;
@@ -184,7 +261,7 @@ impl SigningKeyReference {
         );
         #[cfg(test)]
         fixture::check_fault(
-            blake3::Hash::from_bytes(reference.0).to_hex().as_str(),
+            blake3::Hash::from_bytes(reference.v1.0).to_hex().as_str(),
             fixture::Fault::StoredRead,
         )
         .map_err(|error| error::backend("verify", error))?;
@@ -206,7 +283,7 @@ impl SigningKeyReference {
             return Err(failure("read", CustodyCause::MissingEntry));
         };
         let seed: &[u8; 32] = secret.0.as_slice().try_into().map_err(|_| unavailable())?;
-        if !bool::from(blake3::hash(seed).as_bytes().ct_eq(&self.0)) {
+        if !bool::from(blake3::hash(seed).as_bytes().ct_eq(&self.v1.0)) {
             return Err(unavailable());
         }
         Ok(consume(seed))
@@ -214,13 +291,30 @@ impl SigningKeyReference {
 
     /// Probe exactly the selected store. A refusal is never treated as absence.
     fn select(&self, custody: SigningCustody<'_>) -> io::Result<Selection> {
-        let name = blake3::Hash::from_bytes(self.0).to_hex();
-        let entry = match custody {
-            SigningCustody::Configured => store(name.as_str())?,
-            SigningCustody::PrivateFile(directory) => {
-                file::entry_in(name.as_str(), directory.to_owned())?
-            }
-        };
+        self.select_store(custody.resolve()?)
+    }
+
+    /// Check the bound policy without probing a credential service. A different
+    /// store is a mismatch even when it happens to contain the same seed.
+    pub fn validate_custody(&self, custody: SigningCustody<'_>) -> io::Result<()> {
+        self.validate_store(&custody.resolve()?)
+    }
+
+    fn validate_store(&self, store: &Store) -> io::Result<()> {
+        if self.v1.1 != store.identity() {
+            return Err(failure("select", CustodyCause::StoreMismatch));
+        }
+        Ok(())
+    }
+
+    fn select_store(&self, store: Store) -> io::Result<Selection> {
+        self.validate_store(&store)?;
+        self.read_store(store)
+    }
+
+    fn read_store(&self, store: Store) -> io::Result<Selection> {
+        let name = blake3::Hash::from_bytes(self.v1.0).to_hex();
+        let entry = store.entry(name.as_str())?;
         match entry.get_secret().map(SecretBytes) {
             Ok(held) => Ok(Selection::Held(entry, held)),
             Err(keyring::Error::NoEntry) => Ok(Selection::Vacant(entry)),
@@ -237,28 +331,12 @@ impl SigningKeyReference {
     }
 }
 
-/// One explicit process custody policy, shared by every native consumer and
-/// every build. Private files require an explicit owner choice; failures
-/// never change policy.
-fn store(name: &str) -> io::Result<keyring::Entry> {
-    match std::env::var_os("ACYCLIC_SIGNING_CUSTODY").as_deref() {
-        None => {}
-        Some(value) if value == "native" => {}
-        Some(value) if value == "private-file" => return file::entry(name),
-        Some(_) => return Err(failure("select", CustodyCause::InvalidPolicy)),
-    }
-    if std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").is_some() {
-        return Err(failure("select", CustodyCause::InvalidPolicy));
-    }
-    native(name)
-}
-
 /// Linux selects Secret Service with a session bus, otherwise the kernel store.
 #[cfg(not(any(test, feature = "test-support")))]
-fn native(name: &str) -> io::Result<keyring::Entry> {
+fn native(name: &str, _session_bus: bool) -> io::Result<keyring::Entry> {
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+        if _session_bus {
             let service =
                 keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
                     .map_err(|error| error::backend("open", error))?;
@@ -278,7 +356,7 @@ fn native(name: &str) -> io::Result<keyring::Entry> {
 /// Test and fixture builds stand the in-memory fixture store in for the OS
 /// store only; an explicit private-file selection reopens across processes.
 #[cfg(any(test, feature = "test-support"))]
-fn native(name: &str) -> io::Result<keyring::Entry> {
+fn native(name: &str, _session_bus: bool) -> io::Result<keyring::Entry> {
     Ok(fixture::entry(name))
 }
 
@@ -371,7 +449,7 @@ mod tests {
         let key = SigningKeyReference::create(SigningCustody::Configured)?;
         let suffix = format!(
             "-{}.lock",
-            blake3::Hash::from_bytes(key.reference().0).to_hex()
+            blake3::Hash::from_bytes(key.reference().v1.0).to_hex()
         );
         let locks = || -> io::Result<usize> {
             let mut count = 0;
@@ -590,8 +668,13 @@ mod tests {
                 fixture::Fault::WriteAcknowledgement,
             ] {
                 let seed = Zeroizing::new(new_key()?);
-                let reference = SigningKeyReference(*blake3::hash(&*seed).as_bytes());
-                let name = blake3::Hash::from_bytes(reference.0).to_hex();
+                let reference = SigningKeyReference {
+                    v1: (
+                        *blake3::hash(&*seed).as_bytes(),
+                        custody.resolve()?.identity(),
+                    ),
+                };
+                let name = blake3::Hash::from_bytes(reference.v1.0).to_hex();
                 fixture::fail_once(name.as_str(), fault);
                 assert!(SigningKeyReference::retain(&seed, custody).is_err());
                 references.push(reference);

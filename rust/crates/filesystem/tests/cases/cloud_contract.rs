@@ -530,84 +530,87 @@ async fn generated_clients_match_cloud_filesystem_roundtrip() -> TestResult {
     Ok(())
 }
 
-/// The same roundtrip against the real Filesystem service through its Edge, from
-/// `node scripts/local-cloud.mjs --topology full`, which names the Edge, its CA,
-/// and a locally minted Filesystem bearer in
-/// `ACYCLIC_LOCAL_CLOUD`.
-#[tokio::test]
-#[ignore = "needs a local cloud: node scripts/local-cloud.mjs --topology full"]
-async fn generated_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResult {
-    let file = std::env::var("ACYCLIC_LOCAL_CLOUD")
-        .map_err(|_| "ACYCLIC_LOCAL_CLOUD names the local cloud's endpoints file")?;
-    let endpoints: Value = serde_json::from_slice(&std::fs::read(file)?)?;
-    let fs = &endpoints["fs"];
-    let field = |name: &str| {
-        fs[name]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or(format!("endpoints file has no fs.{name}"))
-    };
-    let ca = std::fs::read(field("ca_file")?)?;
-    let endpoint = tonic::transport::Endpoint::from_shared(field("endpoint")?)?.tls_config(
-        tonic::transport::ClientTlsConfig::new()
-            .with_webpki_roots()
-            .ca_certificate(tonic::transport::Certificate::from_pem(ca)),
-    )?;
-    let client = FilesystemServiceClient::new(endpoint.connect().await?);
-    let bearer = field("bearer")?;
-    let cases = golden()?;
-    let golden = renamed(golden_roundtrip(&cases)?);
-    // The captured restricted credential cannot fetch a mutable head. The
-    // immutable written generation must still be readable with that credential.
-    let mut probe = Request::new(wire::CreateWorkspaceRequest {
-        name: "head-probe".into(),
-        profile: wire::FilesystemProfile::Portable as i32,
-        operation: Some(wire::OperationOptions {
-            idempotency_key: vec![5; 16],
-            ..Default::default()
-        }),
-    });
-    let mut authorization =
-        format!("Bearer {bearer}").parse::<tonic::metadata::MetadataValue<_>>()?;
-    authorization.set_sensitive(true);
-    probe
-        .metadata_mut()
-        .insert("authorization", authorization.clone());
-    let workspace = client
-        .clone()
-        .create_workspace(probe)
-        .await?
-        .into_inner()
-        .workspace
-        .and_then(|workspace| workspace.workspace)
-        .ok_or("missing probe workspace")?;
-    let mut head = Request::new(wire::GetHeadRequest {
-        workspace: Some(workspace.clone()),
-    });
-    head.metadata_mut()
-        .insert("authorization", authorization.clone());
-    match client.clone().get_head(head).await {
-        Err(status) if status.code() == tonic::Code::PermissionDenied => {}
-        other => return Err(format!("GetHead is no longer refused: {:?}", other.err()).into()),
+mod full_cloud {
+    use super::*;
+
+    /// The same roundtrip against the real Filesystem service through its Edge, from
+    /// `node scripts/local-cloud.mjs --topology full`, which names the Edge, its CA,
+    /// and a locally minted Filesystem bearer in
+    /// `ACYCLIC_LOCAL_CLOUD`.
+    #[tokio::test]
+    async fn generated_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResult {
+        let file = std::env::var("ACYCLIC_LOCAL_CLOUD")
+            .map_err(|_| "ACYCLIC_LOCAL_CLOUD names the local cloud's endpoints file")?;
+        let endpoints: Value = serde_json::from_slice(&std::fs::read(file)?)?;
+        let fs = &endpoints["fs"];
+        let field = |name: &str| {
+            fs[name]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(format!("endpoints file has no fs.{name}"))
+        };
+        let ca = std::fs::read(field("ca_file")?)?;
+        let endpoint = tonic::transport::Endpoint::from_shared(field("endpoint")?)?.tls_config(
+            tonic::transport::ClientTlsConfig::new()
+                .with_webpki_roots()
+                .ca_certificate(tonic::transport::Certificate::from_pem(ca)),
+        )?;
+        let client = FilesystemServiceClient::new(endpoint.connect().await?);
+        let bearer = field("bearer")?;
+        let cases = golden()?;
+        let golden = renamed(golden_roundtrip(&cases)?);
+        // The captured restricted credential cannot fetch a mutable head. The
+        // immutable written generation must still be readable with that credential.
+        let mut probe = Request::new(wire::CreateWorkspaceRequest {
+            name: "head-probe".into(),
+            profile: wire::FilesystemProfile::Portable as i32,
+            operation: Some(wire::OperationOptions {
+                idempotency_key: vec![5; 16],
+                ..Default::default()
+            }),
+        });
+        let mut authorization =
+            format!("Bearer {bearer}").parse::<tonic::metadata::MetadataValue<_>>()?;
+        authorization.set_sensitive(true);
+        probe
+            .metadata_mut()
+            .insert("authorization", authorization.clone());
+        let workspace = client
+            .clone()
+            .create_workspace(probe)
+            .await?
+            .into_inner()
+            .workspace
+            .and_then(|workspace| workspace.workspace)
+            .ok_or("missing probe workspace")?;
+        let mut head = Request::new(wire::GetHeadRequest {
+            workspace: Some(workspace.clone()),
+        });
+        head.metadata_mut()
+            .insert("authorization", authorization.clone());
+        match client.clone().get_head(head).await {
+            Err(status) if status.code() == tonic::Code::PermissionDenied => {}
+            other => return Err(format!("GetHead is no longer refused: {:?}", other.err()).into()),
+        }
+        let mut delete = Request::new(wire::DeleteWorkspaceRequest {
+            workspace: Some(workspace),
+            operation: Some(wire::OperationOptions {
+                idempotency_key: vec![6; 16],
+                ..Default::default()
+            }),
+        });
+        delete.metadata_mut().insert("authorization", authorization);
+        client.clone().delete_workspace(delete).await?;
+        assert_eq!(
+            renamed(generated_roundtrip(client, &bearer, Head::Written).await?),
+            golden
+        );
+        println!(
+            "local cloud: generated Filesystem roundtrip matched {} Cloud handler responses",
+            golden.len()
+        );
+        Ok(())
     }
-    let mut delete = Request::new(wire::DeleteWorkspaceRequest {
-        workspace: Some(workspace),
-        operation: Some(wire::OperationOptions {
-            idempotency_key: vec![6; 16],
-            ..Default::default()
-        }),
-    });
-    delete.metadata_mut().insert("authorization", authorization);
-    client.clone().delete_workspace(delete).await?;
-    assert_eq!(
-        renamed(generated_roundtrip(client, &bearer, Head::Written).await?),
-        golden
-    );
-    println!(
-        "local cloud: generated Filesystem roundtrip matched {} Cloud handler responses",
-        golden.len()
-    );
-    Ok(())
 }
 
 fn hosted_setup_cases(cases: &[Value]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {

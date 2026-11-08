@@ -1,4 +1,4 @@
-//! Internal vectors generate real Ed25519 JWTs with jsonwebtoken and fixed public
+//! Internal vectors generate real Ed25519 JWTs with the production signature primitive and fixed public
 //! test seeds. These are not claimed as captured Dex/provider responses.
 use super::*;
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -89,19 +89,18 @@ pub(super) fn expires(token: &str) -> Result<u64> {
 }
 
 pub(super) fn token(seed: u8, kid: &str, claims: &Value) -> Result<String> {
-    // RFC 8410 PKCS#8 encoding of a fixed disposable Ed25519 test seed.
-    let mut der = vec![
-        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
-        0x20,
-    ];
-    der.extend_from_slice(&[seed; 32]);
-    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
-    header.kid = Some(kid.into());
-    Ok(jsonwebtoken::encode(
-        &header,
-        claims,
-        &jsonwebtoken::EncodingKey::from_ed_der(&der),
-    )?)
+    use ed25519_dalek::Signer as _;
+    let header = json!({"alg":"EdDSA", "typ":"JWT", "kid":kid});
+    let message = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header)?),
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims)?)
+    );
+    let signature = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).sign(message.as_bytes());
+    Ok(format!(
+        "{message}.{}",
+        URL_SAFE_NO_PAD.encode(signature.to_bytes())
+    ))
 }
 
 pub(super) fn header_mutation(token: &str, field: &str, value: Value) -> Result<String> {

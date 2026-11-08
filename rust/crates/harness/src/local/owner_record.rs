@@ -61,7 +61,7 @@ mod tests {
             workspace in proptest::option::of(".{0,128}"),
         ) {
             let owner = Owner {
-                key: None, key_ref: Some(serde_json::from_value(serde_json::json!(key)).unwrap()), agent: AgentId::from_bytes(agent), task: TaskId::from_bytes(task),
+                key: None, key_ref: Some(serde_json::from_value(serde_json::json!({"v1":[key, key]})).unwrap()), agent: AgentId::from_bytes(agent), task: TaskId::from_bytes(task),
                 project: VolumeRef::new(
                     ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
                     "volume".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None,

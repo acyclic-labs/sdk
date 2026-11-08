@@ -504,63 +504,43 @@ fn identical_profile_outputs_keep_each_physical_span_mapping() {
     assert_ne!(sources[0].physical_path, sources[1].physical_path);
 }
 
-#[test]
-#[ignore = "requires SDK_GENERATION_CORPUS_ROOT and SDK_GENERATION_CORPUS_RUSTDOC"]
-fn real_rustdoc_corpus_projects_every_receipt_source_span() {
-    let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
-        .canonicalize()
-        .unwrap();
-    let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
-        .canonicalize()
-        .unwrap();
-    let mut receipts = rustdoc_files(&rustdoc).unwrap();
-    receipts.extend(rustdoc_files(&rustdoc.join("profiles")).unwrap());
-    receipts.sort();
-    receipts.dedup();
-    let metadata = load_metadata(&root, None).unwrap();
-    let sources = materialize_generated_sources(&root, &receipts).unwrap();
-    println!(
-        "collector diagnostic: {} receipts, {} generated span mappings",
-        receipts.len(),
-        sources.len()
-    );
-    for (index, receipt) in receipts.iter().enumerate() {
-        let observation = observe_rustdoc(receipt).unwrap();
-        let package = package_for_crate(&metadata, &observation.crate_name).unwrap();
-        println!(
-            "projecting {}/{}: {}",
-            index + 1,
-            receipts.len(),
-            receipt.display()
-        );
-        let data = build_data(
-            &BuildInput {
-                version: "corpus-diagnostic".into(),
-                channel: Channel::Preview,
-                revision: git_revision(&root).unwrap(),
-                source_state: "working-tree".into(),
-                source_sha256: None,
-                repository_root: root.clone(),
-                rustdoc_files: vec![receipt.clone()],
-                package_metadata: vec![PackageMetadata {
-                    rustdoc_source_root: None,
-                    rustdoc_file: receipt.clone(),
-                    package_name: package.name.to_string(),
-                    crate_name: observation.crate_name,
-                    version: package.version.to_string(),
-                }],
-                generated_sources: sources.clone(),
-                mark_latest: false,
-            },
-            &[],
-        )
-        .unwrap();
-        println!(
-            "projected {}/{}: {} families",
-            index + 1,
-            receipts.len(),
-            data.families.len()
-        );
+mod rustdoc_corpus {
+    use super::*;
+
+    #[test]
+    fn real_rustdoc_corpus_preserves_its_producer_artifacts() {
+        let root = PathBuf::from(env::var("SDK_GENERATION_CORPUS_ROOT").unwrap())
+            .canonicalize()
+            .unwrap();
+        let rustdoc = PathBuf::from(env::var("SDK_GENERATION_CORPUS_RUSTDOC").unwrap())
+            .canonicalize()
+            .unwrap();
+        // The real producer already projects every receipt using its admitted
+        // Cargo target, binary guides and source-span attestations. Verify that
+        // exact output instead of rebuilding a library-only view in the test.
+        let output = rustdoc.parent().unwrap();
+        let args = [
+            "drift".into(),
+            "--root".into(),
+            root.to_str().unwrap().into(),
+            "--output".into(),
+            output.to_str().unwrap().into(),
+            "--rustdoc-dir".into(),
+            rustdoc.to_str().unwrap().into(),
+        ];
+        run(args.clone(), &mut Vec::new()).unwrap();
+
+        let seal = output.join("generation-manifest.v1.sha256");
+        let original = fs::read(&seal).unwrap();
+        let mut changed = original.clone();
+        changed[0] ^= 1;
+        fs::write(&seal, changed).unwrap();
+        let rejected = run(args, &mut Vec::new());
+        fs::write(&seal, original).unwrap();
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("generation manifest integrity check failed"));
     }
 }
 

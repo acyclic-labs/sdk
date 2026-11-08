@@ -5,8 +5,8 @@ use crate::{
     highlighting::ThemeSet,
     parsing::{LazyContexts, SyntaxSet},
 };
-use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
-use serde::{Serialize, de::DeserializeOwned};
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use serde::{de::DeserializeOwned, Serialize};
 use std::io::{Read, Write};
 
 fn check_type<T: DeserializeOwned + Serialize>(data: &[u8], compressed: bool) -> Option<T> {

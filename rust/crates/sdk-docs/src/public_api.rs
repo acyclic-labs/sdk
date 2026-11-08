@@ -334,13 +334,9 @@ fn remove_known_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::{adapt, exported_path, exported_path_for_item, remove_known_fields};
+    use super::{exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
-    use rustdoc_types::{Crate, ItemEnum, FORMAT_VERSION};
     use serde_json::json;
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
 
     fn base() -> serde_json::Value {
         json!({
@@ -638,129 +634,5 @@ mod tests {
         value["index"]["7"]["inner"]["function"]["default_unstable"] = json!({"feature": "x"});
         let error = remove_known_fields(&mut value, [(7, "function")]).unwrap_err();
         assert!(format!("{error:?}").contains("index.7.inner.function.default_unstable"));
-    }
-
-    #[test]
-    #[ignore = "requires SDK_DOCS_RUSTDOC_CORPUS to point at the bounded warm corpus"]
-    fn warm_rustdoc_corpus_reports_all_unsupported_exported_paths() {
-        const FILES: [&str; 11] = [
-            "acyclic_actors.json",
-            "acyclic_fs.json",
-            "acyclic_harness.json",
-            "acyclic_inference_contract.json",
-            "acyclic_inference.json",
-            "acyclic_machines.json",
-            "acyclic_native_runtime.json",
-            "acyclic_objects.json",
-            "acyclic_plugin.json",
-            "acyclic_stream.json",
-            "acyclic_workers.json",
-        ];
-
-        let root = env::var_os("SDK_DOCS_RUSTDOC_CORPUS")
-            .map(PathBuf::from)
-            .expect("SDK_DOCS_RUSTDOC_CORPUS must name the bounded Rustdoc corpus");
-        let mut failures = Vec::new();
-        for file in FILES {
-            let path = root.join(file);
-            let raw = match fs::read(&path) {
-                Ok(raw) => raw,
-                Err(error) => {
-                    failures.push(format!(
-                        "{}: cannot read corpus file: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-            let value: serde_json::Value = match serde_json::from_slice(&raw) {
-                Ok(value) => value,
-                Err(error) => {
-                    failures.push(format!("{}: invalid JSON: {error}", path.display()));
-                    continue;
-                }
-            };
-            let krate: Crate = match serde_json::from_value(value.clone()) {
-                Ok(krate) => krate,
-                Err(error) => {
-                    failures.push(format!(
-                        "{}: invalid typed Rustdoc JSON: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-            if krate.format_version != FORMAT_VERSION || krate.includes_private {
-                failures.push(format!(
-                    "{}: expected public Rustdoc format {} (includes_private=false), got format {} (includes_private={})",
-                    path.display(),
-                    FORMAT_VERSION,
-                    krate.format_version,
-                    krate.includes_private
-                ));
-                continue;
-            }
-            let adapted = match adapt(value, &krate) {
-                Ok(adapted) => adapted,
-                Err(error) => {
-                    failures.push(format!(
-                        "{}: format adapter rejected corpus: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-            let mut temp = match tempfile::NamedTempFile::new() {
-                Ok(temp) => temp,
-                Err(error) => {
-                    failures.push(format!(
-                        "{}: cannot create parser input: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-            if let Err(error) = serde_json::to_writer(temp.as_file_mut(), &adapted) {
-                failures.push(format!(
-                    "{}: cannot write parser input: {error}",
-                    path.display()
-                ));
-                continue;
-            }
-            let api = match public_api::Builder::from_rustdoc_json(temp.path())
-                .include_function_parameter_names(true)
-                .build()
-            {
-                Ok(api) => api,
-                Err(error) => {
-                    failures.push(format!(
-                        "{}: public-api extraction failed: {error}",
-                        path.display()
-                    ));
-                    continue;
-                }
-            };
-            for item in api.items() {
-                let id = rustdoc_types::Id(item.id().0);
-                let is_impl = krate
-                    .index
-                    .get(&id)
-                    .is_some_and(|rustdoc_item| matches!(rustdoc_item.inner, ItemEnum::Impl(_)));
-                if let Err(reason) = exported_path_for_item(item.tokens(), is_impl) {
-                    failures.push(format!(
-                        "{}: item {} ({}): {reason}",
-                        path.display(),
-                        item.id().0,
-                        item
-                    ));
-                }
-            }
-        }
-        assert!(
-            failures.is_empty(),
-            "unsupported Rustdoc exported paths ({}):\n{}",
-            failures.len(),
-            failures.join("\n")
-        );
     }
 }

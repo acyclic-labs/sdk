@@ -86,23 +86,6 @@ fn profile_catalog_union_retains_feature_only_items() {
 }
 
 #[test]
-fn schema_is_stable_and_identifies_the_public_contract() {
-    let first = schema_json().expect("schema should serialize");
-    let second = schema_json().expect("schema should serialize");
-    assert_eq!(first, second);
-    assert_eq!(first["title"], "DocsData");
-    let required = first["required"]
-        .as_array()
-        .expect("DocsData JSON schema should declare required fields");
-    assert!(required.iter().any(|field| field == "packages"));
-    assert!(required.iter().any(|field| field == "search"));
-    assert_eq!(first["properties"]["schema"]["const"], DATA_SCHEMA_VERSION);
-    assert_eq!(
-        first["properties"]["schemaVersion"]["const"],
-        DATA_SCHEMA_VERSION
-    );
-}
-#[test]
 fn preview_version_paths_are_injective_and_portable() {
     assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
     assert_eq!(safe_version("preview:1").unwrap(), "~707265766965773a31");

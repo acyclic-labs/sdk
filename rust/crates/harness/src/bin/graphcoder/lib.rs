@@ -365,8 +365,8 @@ async fn host_workspace(
     Ok(())
 }
 
-/// Prints every startup refusal of this configuration, one per line with its
-/// recovery; nothing is reported that opening the harness would not refuse.
+/// Prints read-only prerequisite refusals, one per line with recovery.
+/// Persistent storage and signing authority are admitted only by execution.
 async fn doctor(
     config: Result<LocalHarnessConfig, Box<dyn std::error::Error>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -384,7 +384,10 @@ async fn doctor(
         writeln!(output, "refused: {refusal}")?;
     }
     if refusals.is_empty() {
-        writeln!(output, "ok: a run with these flags starts")?;
+        writeln!(
+            output,
+            "ok: local prerequisites checked; state and signing authority unopened"
+        )?;
     }
     output.flush()?;
     if refusals.is_empty() {

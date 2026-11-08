@@ -346,16 +346,43 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     model.close().await;
 }
 
-/// `doctor` reports what startup itself refuses, all at once, and passes a
-/// host that starts; it calls no model.
+/// The shipping readiness path checks prerequisites without changing any
+/// configured state, checkout metadata or signing custody, even on refusal.
 #[tokio::test]
 async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let fixture = fixture();
     let model = model(fixture._directory.path()).await;
+    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            result: &mut std::collections::BTreeMap<PathBuf, Option<Vec<u8>>>,
+        ) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                let directory = path.is_dir();
+                result.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    if directory {
+                        None
+                    } else {
+                        Some(std::fs::read(&path).unwrap())
+                    },
+                );
+                if directory {
+                    visit(root, &path, result);
+                }
+            }
+        }
+        let mut result = std::collections::BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+    let original = snapshot(fixture._directory.path());
     let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
     assert_eq!(
         succeeded(&ready),
-        "ok: a run with these flags starts
+        "ok: local prerequisites checked; state and signing authority unopened
 "
     );
     // A JSONL run's exact flags are accepted; output flags are inert here.
@@ -374,8 +401,24 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     .await;
     assert_eq!(
         succeeded(&flagged),
-        "ok: a run with these flags starts
+        "ok: local prerequisites checked; state and signing authority unopened
 "
+    );
+    assert_eq!(
+        snapshot(fixture._directory.path()),
+        original,
+        "doctor changed fresh state or signing authority"
+    );
+    // The same check must preserve existing real state byte-for-byte.
+    let ran = graphcoder(&fixture, &model.catalog, vec!["-p", "hello"], "").await;
+    succeeded(&ran);
+    let existing = snapshot(fixture._directory.path());
+    let reopened = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    succeeded(&reopened);
+    assert_eq!(
+        snapshot(fixture._directory.path()),
+        existing,
+        "doctor changed existing state or signing authority"
     );
     // Readiness cannot enter a serving or remote conversation mode.
     let mut host = graphcoder_command(&fixture);
@@ -398,6 +441,8 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         ..self::fixture()
     };
     std::fs::create_dir_all(nested.settings.join(".codex")).unwrap();
+    let nested_original = snapshot(nested._directory.path());
+    let checkout_original = snapshot(&fixture.workspace);
     let refused = graphcoder(&nested, &model.catalog, vec!["doctor"], "").await;
     let stdout = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(1), "{stdout}");
@@ -409,7 +454,17 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
             && stdout.contains("recovery:"),
         "{stdout}"
     );
-    assert_eq!(model.generated(), 0);
+    assert_eq!(
+        snapshot(nested._directory.path()),
+        nested_original,
+        "refused doctor changed state"
+    );
+    assert_eq!(
+        snapshot(&fixture.workspace),
+        checkout_original,
+        "refused doctor changed checkout"
+    );
+    assert_eq!(model.generated(), 1);
     model.close().await;
 }
 
@@ -873,7 +928,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     let fixture = fixture();
     std::fs::write(
         fixture.workspace.join("AGENTS.md"),
-        "Preserve Unicode π and retain the complete answer in this checkout.\n",
+        "Preserve Unicode Ï€ and retain the complete answer in this checkout.\n",
     )
     .unwrap();
     let model = model(fixture._directory.path()).await;
@@ -889,16 +944,20 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
         ),
         "fixture answer\n"
     );
-    let embedded_config = || {
+    let configured = |selected: &str, state: &str| {
         let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
         registry.load_catalog(&model.catalog).unwrap();
         registry
-            .graphcoder(&fixture.workspace, Some("graphcoder-qual/tiny".into()))
+            .graphcoder(
+                &fixture.workspace,
+                Some(format!("graphcoder-qual/{selected}")),
+            )
             .without_user_settings()
-            .state_directory(fixture._directory.path().join("embedded-state"))
+            .state_directory(fixture._directory.path().join(state))
             .working_directory(&fixture.workspace)
             .unwrap()
     };
+    let embedded_config = || configured("tiny", "embedded-state");
     assert_eq!(
         embedded::answer(embedded_config(), "parity", "hello")
             .await
@@ -923,7 +982,7 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     };
     assert_eq!(cli["model"], "tiny");
     assert!(!cli["tools"].as_array().unwrap().is_empty());
-    assert!(cli.to_string().contains("Preserve Unicode π"));
+    assert!(cli.to_string().contains("Preserve Unicode Ï€"));
     assert!(
         same_contract(cli, embedded),
         "CLI={cli}; embedding={embedded}"
@@ -931,18 +990,8 @@ async fn cli_and_embedding_share_the_selected_model_and_tool_contract() {
     // The alternate embedding still returns the same answer from this endpoint.
     // Its actual different model/capacity or missing tool must fail request parity.
     for changed_model in [true, false] {
-        let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
-        registry.load_catalog(&model.catalog).unwrap();
         let selected = if changed_model { "drifted" } else { "tiny" };
-        let mut config = registry
-            .graphcoder(
-                &fixture.workspace,
-                Some(format!("graphcoder-qual/{selected}")),
-            )
-            .without_user_settings()
-            .state_directory(fixture._directory.path().join(selected))
-            .working_directory(&fixture.workspace)
-            .unwrap();
+        let mut config = configured(selected, selected);
         if !changed_model {
             config = config.without_default_tools();
         }
