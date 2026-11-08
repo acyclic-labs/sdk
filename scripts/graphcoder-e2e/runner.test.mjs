@@ -190,7 +190,7 @@ test("observed producer frame asserts captured content with one screen projectio
             if (requestOnly) notifyRequest = listener;
             return () => { notifyRequest = undefined; };
           },
-        }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
+        }, { actions: [{ when: { contains: ["storage failure: diff command:"] },
           after_request: requestOnly ? { path: "search", step: 1 } : undefined,
           assert: assertion, send: "finish\n" }] },
         result => { capture = result; });

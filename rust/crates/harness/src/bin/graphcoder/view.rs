@@ -639,7 +639,7 @@ pub async fn run(
             } => {
                 match queries.finish(result, query_future.as_mut()) {
                     Ok(()) => overlay_top = 0,
-                    Err(error) => view.notice = refusal(error),
+                    Err(error) => view.notice = refusal(format_args!("Filesystem query ended: {error}")),
                 }
             }
             event = events.next() => {

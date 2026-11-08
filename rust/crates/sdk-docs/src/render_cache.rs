@@ -17,11 +17,13 @@ struct Cache {
         >,
     >,
     rendered: RefCell<Derived<Vec<PublicItemSignature>>>,
-    files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
+    files: RefCell<BTreeMap<PathBuf, FileSnapshot>>,
     parsed: RefCell<Derived<rustdoc_types::Crate>>,
     json: RefCell<Derived<serde_json::Value>>,
     normalized: RefCell<BTreeMap<PathBuf, Derived<[u8]>>>,
 }
+
+type FileSnapshot = (sdk_file_identity::Stamp, Rc<[u8]>);
 
 // Handle entries own their input Rc: an allocator cannot recycle the indexed
 // address while it remains in the map. Equal buffers share one derived value.
@@ -520,95 +522,29 @@ mod tests {
             std::fs::write(&path, encode(&first)).unwrap();
             let original = with_rustdoc_cache(|| read_rustdoc(&path).unwrap());
             let reads = READS.get();
-            with_rustdoc_cache(|| {
+            let original_json = with_rustdoc_cache(|| {
                 assert!(Rc::ptr_eq(&original, &read_rustdoc(&path).unwrap()));
-                assert_eq!(read_rustdoc_json(&path).unwrap()["value"], first);
-            });
-            prop_assert_eq!(READS.get(), reads);
-            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-            std::fs::write(&path, encode(&replacement)).unwrap();
-            std::fs::File::options().write(true).open(&path).unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
-            with_rustdoc_cache(|| {
+                let json = read_rustdoc_json(&path).unwrap();
+                assert_eq!(json["value"], first);
+                assert_eq!(READS.get(), reads);
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                std::fs::write(&path, encode(&replacement)).unwrap();
+                std::fs::File::options().write(true).open(&path).unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
                 assert_eq!(&*read_rustdoc(&path).unwrap(), encode(&replacement));
                 assert_eq!(read_rustdoc_json(&path).unwrap()["value"], replacement);
+                assert_eq!(READS.get(), reads+1);
+                std::fs::remove_file(&path).unwrap();
+                assert!(read_rustdoc(&path).is_err());
+                assert!(read_rustdoc_json(&path).is_err());
+                json
             });
-            prop_assert_eq!(READS.get(), reads+1);
-            std::fs::remove_file(&path).unwrap();
+            prop_assert_eq!(&*original, encode(&first));
+            prop_assert_eq!(&original_json["value"], &serde_json::json!(first));
             with_rustdoc_cache(|| assert!(read_rustdoc(&path).is_err()));
             prop_assert!(RECEIPTS.with_borrow(|cache| cache.as_ref().unwrap().files.borrow().is_empty()));
+            prop_assert!(CACHE.with_borrow(|cache| cache.is_none()));
         }
-    }
-
-    #[test]
-    fn receipt_reads_reuse_unchanged_bytes_and_recheck_native_identity() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("receipt");
-        std::fs::write(&path, br#"{"version":1}"#).unwrap();
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        with_rustdoc_cache(|| {
-            let before = READS.get();
-            let first = read_rustdoc(&path).unwrap();
-            let second = read_rustdoc(&path).unwrap();
-            assert!(Rc::ptr_eq(&first, &second));
-            let original_json = read_rustdoc_json(&path).unwrap();
-            assert_eq!(original_json["version"], 1);
-            assert_eq!(READS.get() - before, 1);
-            std::fs::write(&path, br#"{"version":2}"#).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(modified))
-                .unwrap();
-            assert_eq!(&*read_rustdoc(&path).unwrap(), br#"{"version":2}"#);
-            assert_eq!(read_rustdoc_json(&path).unwrap()["version"], 2);
-            assert_eq!(original_json["version"], 1);
-            std::fs::remove_file(&path).unwrap();
-            assert!(read_rustdoc(&path).is_err());
-            assert!(read_rustdoc_json(&path).is_err());
-            assert_eq!(&*first, br#"{"version":1}"#);
-        });
-        assert!(CACHE.with_borrow(|cache| cache.is_none()));
-    }
-
-    #[test]
-    fn paired_buffer_identity_lookup_measurement() {
-        use std::{hint::black_box, time::Instant};
-        let inputs = (0u32..1024)
-            .map(|id| {
-                let mut bytes = vec![b'x'; 1024];
-                bytes.extend_from_slice(&id.to_le_bytes());
-                Rc::<[u8]>::from(bytes)
-            })
-            .collect::<Vec<_>>();
-        let mut indexed = Derived::default();
-        let mut linear = BTreeMap::new();
-        for (id, bytes) in inputs.iter().enumerate() {
-            indexed.insert(Rc::clone(bytes), Rc::new(id));
-            linear.insert(Rc::clone(bytes), Rc::new(id));
-        }
-        let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
-            let value = linear
-                .iter()
-                .find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| Rc::clone(value)))
-                .or_else(|| linear.get(raw).cloned());
-            black_box(value.unwrap());
-        }
-        let linear_ns = started.elapsed().as_nanos();
-        let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
-            black_box(indexed.get(black_box(raw)).unwrap());
-        }
-        eprintln!(
-            "PAIRED buffer_lookup entries={} lookups={} linear_ns={} indexed_ns={}",
-            inputs.len(),
-            inputs.len() * 4,
-            linear_ns,
-            started.elapsed().as_nanos()
-        );
-        assert_eq!(indexed.handles.len(), inputs.len());
     }
 
     #[test]

@@ -184,6 +184,17 @@ fn record(value: &crate::wire::Record) -> bool {
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
     let value = crate::OwnedBytes::copy_from_slice(bytes);
+    if let Ok(text) = core::str::from_utf8(bytes) {
+        let expected = crate::TokenOperation::ALL
+            .iter()
+            .copied()
+            .find(|operation| operation.as_str() == text);
+        match text.parse::<crate::TokenOperation>() {
+            Ok(operation) if Some(operation) == expected => {}
+            Err(StreamError::InvalidArgument) if expected.is_none() => {}
+            _ => return false,
+        }
+    }
     #[cfg(feature = "local")]
     if !crate::memory::check_snapshot_codec(bytes) {
         return false;
@@ -527,6 +538,12 @@ async fn publications(
 /// Capture actual journal and framing encoder output without filesystem IO.
 pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
     let mut seeds = Vec::new();
+    for operation in crate::TokenOperation::ALL {
+        seeds.push((
+            format!("token-{}", operation.as_str()),
+            operation.as_str().as_bytes().to_vec(),
+        ));
+    }
     let (_memory, publications) = publications(None).await?;
     for Publication {
         name,
@@ -690,7 +707,18 @@ fn projection_seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn emitted_persistence_seeds_satisfy_shared_oracle() -> Result<(), StreamError> {
-    for (name, bytes) in futures::executor::block_on(seeds())? {
+    let seeds = futures::executor::block_on(seeds())?;
+    for operation in crate::TokenOperation::ALL {
+        assert!(
+            seeds.iter().any(|(name, bytes)| {
+                name == &format!("token-{}", operation.as_str())
+                    && bytes == operation.as_str().as_bytes()
+            }),
+            "token corpus omitted declared operation {}",
+            operation.as_str()
+        );
+    }
+    for (name, bytes) in seeds {
         for length in [bytes.len(), bytes.len().saturating_sub(1)] {
             assert!(
                 check(&bytes[..length]),

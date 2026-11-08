@@ -1,4 +1,20 @@
-experimental = ["setup-scripts"]
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+# These cases run through the full-cloud qualification entry, which owns a
+# fresh service topology per case. Portable runs do not offer that capability.
+[profile.default]
+default-filter = "not test(::full_cloud::)"
+
+[profile.full-cloud]
+default-filter = "test(::full_cloud::)"
+inherits = "ci"
+
+[scripts.wrapper.full-cloud]
+command = { command-line = "scripts/full-cloud-test.sh", relative-to = "workspace-root" }
+
+[[profile.full-cloud.scripts]]
+filter = "test(::full_cloud::)"
+run-wrapper = "full-cloud"
 
 # Live storage is selected only when its real service is available.
 # The capability profiles require their prerequisites rather than skipping tests.
@@ -37,3 +53,34 @@ leak-timeout = { period = "100ms", result = "fail" }
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# Real Rustdoc receipts share one source closure and memory budget.
+[test-groups.rustdoc-corpus]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "test(::rustdoc_corpus::)"
+test-group = "rustdoc-corpus"
+
+# Live service cases require a fresh full topology and its endpoints file.
+[test-groups.full-cloud]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "test(::full_cloud::)"
+test-group = "full-cloud"
+
+# Device counters and syscall traces require their native platform capability.
+[test-groups.native-terminal]
+max-threads = 1
+
+[test-groups.syscall-trace]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "package(=acyclic-harness-tui) & test(real_terminal_)"
+test-group = "native-terminal"
+
+[[profile.default.overrides]]
+filter = "package(=acyclic-observability) & test(disabled_operation_has_zero_syscalls_with_real_io_negative_control)"
+test-group = "syscall-trace"
