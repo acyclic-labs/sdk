@@ -733,7 +733,9 @@ mod tests {
     impl Unlisted {
         fn new(path: &Path) -> Self {
             #[cfg(windows)]
-            let path = path.canonicalize().unwrap();
+            let path = path
+                .canonicalize()
+                .expect("canonical listing-denial directory");
             #[cfg(not(windows))]
             let path = path.to_path_buf();
             #[cfg(unix)]
