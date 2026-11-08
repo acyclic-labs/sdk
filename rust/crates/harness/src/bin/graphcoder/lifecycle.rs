@@ -1,14 +1,13 @@
-use acyclic_harness::completion::Shutdown;
+use acyclic_harness::completion::{CliPhase, Shutdown};
 use acyclic_native_runtime::{InheritedOutput, obs::WaitReport};
 use acyclic_observability::{OutputFailure, TextOutput, TextReceiver};
 use futures::FutureExt as _;
 use std::{fmt, future::Future, io, sync::Arc};
+use tracing_subscriber::util::SubscriberInitExt as _;
 use tracing_subscriber::{EnvFilter, Layer, Registry, layer::SubscriberExt as _};
 
 #[cfg(test)]
-use acyclic_harness::completion::{
-    CliCompletion, CliPhase, FailureReport, observe, report_failure,
-};
+use acyclic_harness::completion::{CliCompletion, FailureReport, observe, report_failure};
 
 #[cfg(test)]
 type Failure = Box<dyn std::error::Error>;
@@ -27,6 +26,38 @@ pub enum DiagnosticConfigurationError {
     Filter(tracing_subscriber::filter::ParseError),
 }
 
+pub(super) fn setup(
+    report: &WaitReport,
+    supplied: Option<Vec<Box<[u8]>>>,
+    records: Option<usize>,
+    record_bytes: Option<usize>,
+) -> Result<Option<(TextReceiver, InheritedOutput)>, (CliPhase, Box<dyn std::error::Error>)> {
+    let (subscriber, receiver) = subscriber(report, std::env::var("GRAPHCODER_LOG").ok(), || {
+        storage(supplied, records, record_bytes)
+    })
+    .map_err(|error| {
+        (
+            CliPhase::Diagnostics,
+            Box::new(error) as Box<dyn std::error::Error>,
+        )
+    })?;
+    subscriber.try_init().map_err(|error| {
+        (
+            CliPhase::Subscriber,
+            Box::new(error) as Box<dyn std::error::Error>,
+        )
+    })?;
+    receiver
+        .map(|receiver| InheritedOutput::stderr().map(|writer| (receiver, writer)))
+        .transpose()
+        .map_err(|error| {
+            (
+                CliPhase::OutputAdmission,
+                Box::new(error) as Box<dyn std::error::Error>,
+            )
+        })
+}
+
 // Thin native adapter for the one shared delivery loop. No output is started
 // after the original terminal, including error or formatting-failure summaries.
 pub(super) async fn diagnostics<F: Future>(
@@ -39,9 +70,12 @@ pub(super) async fn diagnostics<F: Future>(
     let mut writer = Some(output);
     receiver
         .observe_with(original, async |record| {
-            let output = writer
-                .take()
-                .expect("one original diagnostic write at a time");
+            let output = writer.take().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "original diagnostic writer is absent",
+                )
+            })?;
             let (output, record) = record
                 .write_owned(output, InheritedOutput::write_owned)
                 .await?;

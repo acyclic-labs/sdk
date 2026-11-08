@@ -15,6 +15,14 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "cli-failure-output": [
+    "rust/crates/harness/src/completion.rs", "graphcoder",
+    "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",
+    "failure output retained a lost shutdown producer", [],
+    { mutations: [
+      { patch: "rust/proofs/cli-failure-output/shutdown.patch", label: "shutdown-omitted", diagnostic: "failure output retained a lost shutdown producer" },
+    ] },
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
