@@ -584,11 +584,12 @@ async fn selected_discovery_survives_a_serving_process_restart() {
             matches!(
                 &stopped,
                 Err(AgentExchangeError::Session(error))
-                    if error.code() == StreamError::Unavailable.code()
+                    if error.category() == StreamError::Unavailable
             ),
             "stopped serving process returned {:?}",
             stopped.as_ref().err()
         );
+
     }
     assert!(model.steps.lock().unwrap().is_empty());
 }
