@@ -1059,6 +1059,8 @@ async fn committed_handover(refused_close: bool) -> Result {
             .commit(dispatch(active, b"archive-active-command")?)
             .await?;
         let (mut held, _) = listener.accept().await?;
+        use tokio::io::AsyncReadExt as _;
+        assert!(futures::poll!(Box::pin(held.read_u8())).is_pending());
         if refused_close {
             let mut original = provider
                 .follow(FollowRequest::new(log(&run.agent, active_op)?, 0))
@@ -1115,11 +1117,12 @@ async fn committed_handover(refused_close: bool) -> Result {
                 "interrupted command settled as {lost}"
             );
         }
-        use tokio::io::AsyncReadExt as _;
-        assert_eq!(
-            held.read_u8().await.unwrap_err().kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
+        // Native custody forcibly retires this child, so its held socket may
+        // reset instead of completing the graceful close checked above.
+        assert!(matches!(
+            held.read_u8().await.map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)
+        ));
         assert_eq!(std::fs::read(&marker_path)?, b"xx");
         assert_eq!(
             owner
