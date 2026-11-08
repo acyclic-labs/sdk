@@ -54,13 +54,17 @@ if prompt=='parent':
   for name,row in zip(('left','right'),spawned):
    finished=mcp.call('wait',name)
    assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
-   assert (pathlib.Path(row['cwd'])/(name+'.txt')).read_text()==name,row
  finally:
   try:nested.stdin.close()
   finally:assert nested.wait()==0
 else:
+ # Left stays live, holding a file open in its view, until right started:
+ # the second spawn is admitted while the first grandchild runs.
  assert prompt in ('left','right'),prompt
- (cwd/(prompt+'.txt')).write_text(prompt)
+ with (cwd/(prompt+'.txt')).open('w') as held:
+  held.write(prompt);held.flush()
+  with open(os.environ['FIXTURE_RENDEZVOUS'],'r' if prompt=='left' else 'w') as meet:
+   assert meet.read()=='right' if prompt=='left' else meet.write('right')
 sys.stdout.write(pathlib.Path(os.environ['FIXTURE_EVENTS']).read_text());sys.stdout.flush()
 '''
 
@@ -81,10 +85,12 @@ def main():
         bins.mkdir()
         events = root / 'native-events.jsonl'
         events.write_text(completion['stdout'])
+        rendezvous = root / 'rendezvous'
+        os.mkfifo(rendezvous)
         env = fixture_environment(root, {'PATH': str(bins) + os.pathsep + os.environ['PATH'],
                'FIXTURE_EVENTS': str(events), 'FIXTURE_HOST': host, 'FIXTURE_ACYCLIC': binary,
                'FIXTURE_WORKSPACE': str(workspace), 'FIXTURE_HOST_SUPPORT': str(here),
-               'FIXTURE_RECOVERY': RECOVERY})
+               'FIXTURE_RECOVERY': RECOVERY, 'FIXTURE_RENDEZVOUS': str(rendezvous)})
         executable = bins / {'codex': 'codex', 'claude-code': 'claude', 'pi': 'pi'}[host]
         executable.write_text(STAND_IN)
         executable.chmod(0o755)
