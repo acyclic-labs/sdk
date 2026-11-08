@@ -1,0 +1,13 @@
+diff --git a/rust/crates/actors/src/conformance.rs b/rust/crates/actors/src/conformance.rs
+--- a/rust/crates/actors/src/conformance.rs
++++ b/rust/crates/actors/src/conformance.rs
+@@ -1325,8 +1325,8 @@
+     let mut alarm = Fixture::create(target, run, "alarm").await?;
+     alarm.send(&format!("set {ALARM_MS}")).await?;
+     let deadline = alarm.alarm_deadline().await?;
++    target.advance_to(deadline).await?;
+     alarm.expect(&[]).await?;
+-    target.advance_to(deadline).await?;
+     alarm.expect(&["a1"]).await?;
+ 
+     let mut cleared = Fixture::create(target, run, "cleared").await?;
