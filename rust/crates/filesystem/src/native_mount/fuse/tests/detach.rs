@@ -1,7 +1,10 @@
 use super::*;
 
 fn preserved(source: &MemorySource, path: &MountPath) -> Result<bool, MountSourceError> {
-    Ok(source.lookup(path)?.is_some() && source.read_range(path, 0, 8)?.as_ref() == b"original")
+    Ok(source
+        .lookup(path)?
+        .is_some_and(|entry| entry.node.logical_bytes == 8)
+        && source.read_range(path, 0, 8)?.as_ref() == b"original")
 }
 
 fn operation(
