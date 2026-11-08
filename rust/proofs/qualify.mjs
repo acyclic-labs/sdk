@@ -189,7 +189,7 @@ if (claim === "--help" && extra.length === 0) {
     : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
   const positive = options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E",
-      options.positive.map(name => `test(=${name})`).join(" | "), "--no-tests=fail"]
+      options.positive.map(name => `test(=${name})`).join(" | "), ...(options.nextest ?? ["--no-tests=fail"])]
     : command);
   const recovery = `git diff -- ${source}; inspect target/${claim}/*.log; correct source or command, then node rust/proofs/qualify.mjs ${claim}`;
   const directory = new URL(`target/${claim}/`, new URL("../../", import.meta.url));
@@ -235,7 +235,8 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
-      require(result.output.includes("Starting 1 test across 1 binary"));
+      const count = label === "restored" ? options.positive?.length ?? 1 : 1;
+      require(result.output.includes(`Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary`));
     }
     console.log(`step=${label}; command=${JSON.stringify(["cargo", ...selected])}; exit=${result.status}; signal=${result.signal}`);
     console.log(result.output.trimEnd().split(/\r?\n/).slice(-35).join("\n"));
