@@ -1,4 +1,5 @@
 use super::*;
+use crate::query_sync::SyncMutex;
 use acyclic_auth::authority::{PolicyDecision, Request, Target};
 use acyclic_auth::contract::{
     GrantKind, Limits as Usage, Principal, RecordAttributes, ResourcePattern,
@@ -11,7 +12,7 @@ use acyclic_auth::verify::VerifiedCapability;
 pub struct ResourceAuthorization {
     authority: Arc<Authority>,
     pub(super) resource: Arc<ResourcePattern>,
-    capability: Arc<std::sync::Mutex<Arc<VerifiedCapability>>>,
+    capability: Arc<SyncMutex<Arc<VerifiedCapability>>>,
     pub(super) action: &'static str,
     call: Option<(Arc<ResourcePattern>, &'static str)>,
 }
@@ -27,7 +28,7 @@ impl ResourceAuthorization {
                 name: resource,
                 prefix: true,
             }),
-            capability: Arc::new(std::sync::Mutex::new(capability)),
+            capability: Arc::new(SyncMutex::new(capability)),
             action: crate::authorization::RESOURCE_FOLLOW_ACTION.as_str(),
             call: None,
         }

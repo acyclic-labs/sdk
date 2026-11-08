@@ -1,9 +1,10 @@
 //! One ordered replica over a conditional command journal.
+use crate::query_sync::SyncMutex as Mutex;
 use crate::{
     journal::{decode_command, replay},
     *,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct ReplicaClock(Mutex<u64>);

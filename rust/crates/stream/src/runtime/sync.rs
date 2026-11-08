@@ -3,10 +3,7 @@ use loom::sync;
 #[cfg(not(loom))]
 use std::sync;
 
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-pub(crate) use acyclic_native_runtime::InlineMutex as Mutex;
-#[cfg(any(loom, target_arch = "wasm32"))]
-pub(crate) use sync::Mutex;
+pub(crate) use crate::query_sync::SyncMutex as Mutex;
 
 #[cfg(any(
     all(feature = "session", not(target_arch = "wasm32")),

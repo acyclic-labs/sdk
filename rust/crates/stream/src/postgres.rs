@@ -5,6 +5,7 @@
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
+    query_sync::SyncMutex,
     replicated::{ReplicaClock, Replicated},
     *,
 };
@@ -27,7 +28,7 @@ struct Inner {
     failure: watch::Sender<Failure>,
     // Dropping the owner closes both connections and their drivers. No task
     // retains the owner while idle, so this does not form a reference cycle.
-    tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    tasks: SyncMutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -232,7 +233,7 @@ impl PostgresStream {
             core,
             failed: AtomicBool::new(false),
             failure,
-            tasks: std::sync::Mutex::new(vec![driver, notification_driver]),
+            tasks: SyncMutex::new(vec![driver, notification_driver]),
         });
         let provider = Self { inner };
         let mut retired = false;
