@@ -1,0 +1,22 @@
+diff --git b/rust/crates/harness/src/local/host_owner.rs a/rust/crates/harness/src/local/host_owner.rs
+index ad41b18fcf8..da2ffbbfe47 100644
+--- b/rust/crates/harness/src/local/host_owner.rs
++++ a/rust/crates/harness/src/local/host_owner.rs
+@@ -336,9 +336,14 @@ impl HostWorkspaceOwner {
+         task: &AgentPath,
+         command: &str,
+     ) -> Result<Value> {
+-        let mut parsed = crate::tools::parse_fs_command(command)?;
+-        let child = crate::tools::resolve_child_branch(task, &mut parsed.arguments, agents::child)?;
+-        let merged = child.filter(|_| parsed.arguments[0] == "merge");
++        let parsed = crate::tools::parse_fs_command(command)?;
++        let merged = match parsed.arguments.as_slice() {
++            [name, reference] if name == "merge" => reference
++                .strip_prefix("agents/")
++                .map(|reference| agents::child(task, reference))
++                .transpose()?,
++            _ => None,
++        };
+         // A merge reads its child's settled project: it holds both locks.
+         let changed = [Some(task.clone()), merged.clone()];
+         let _locks = self

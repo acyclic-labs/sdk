@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-client/src/reply.rs b/rust/crates/harness-client/src/reply.rs
+--- a/rust/crates/harness-client/src/reply.rs
++++ b/rust/crates/harness-client/src/reply.rs
+@@ -391,7 +391,7 @@ fn validate_reply(
+     let page = match (reply, command) {
+         (AgentReply::Bound { observation, .. }, AgentCommand::Bind { .. }) => {
+             if let Some(credential) = observation {
+-                if base64_length(credential)? == 0 {
++                if credential.is_empty() {
+                     return Err(CommandError::Invalid);
+                 }
+             }

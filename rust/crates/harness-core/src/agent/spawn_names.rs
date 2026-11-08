@@ -5,6 +5,8 @@ use super::{AgentPath, Error, IntentId, TurnEffect, checkpoint_state, handler::A
 use std::sync::Arc;
 
 pub(crate) const SPAWN: &str = "spawn:";
+/// Largest generated spawn-name base, before its generation suffix.
+const MAX_SPAWN_INTENT_BYTES: usize = 128;
 const SEP: char = '\u{1f}';
 
 /// First available generation, or the first child that has not released its name.
@@ -29,7 +31,7 @@ impl SpawnResolution {
 /// Validates a model-supplied name before constructing any internal suffix.
 pub(crate) fn spawn_intent(name: &str, generation: u64) -> Result<IntentId, Error> {
     let base = format!("{SPAWN}{name}");
-    if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_graphic()) {
+    if name.is_empty() || base.len() > MAX_SPAWN_INTENT_BYTES || !name.bytes().all(|byte| byte.is_ascii_graphic()) {
         return Err(Error::Record(
             "spawn name must be printable ASCII without spaces",
         ));
@@ -58,7 +60,7 @@ pub(crate) fn generated_intent(value: &str) -> bool {
     };
     base.starts_with(SPAWN)
         && base.len() > SPAWN.len()
-        && base.len() <= super::MAX_INTENT_BYTES
+        && base.len() <= MAX_SPAWN_INTENT_BYTES
         && base.bytes().all(|byte| byte.is_ascii_graphic())
         && generation
             .parse::<u64>()
