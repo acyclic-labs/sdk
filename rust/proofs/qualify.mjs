@@ -221,6 +221,11 @@ const claims = {
       { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
     ] },
   ],
+  "allocation-first-event": [
+    "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
+    "tests::accounting_matches_complete_allocation_lifetimes",
+    "first allocation event differs from physical trace", [],
+  ],
   "cli-failure-output": [
     "rust/crates/harness/src/completion.rs", "graphcoder",
     "lifecycle::tests::failure_output_retains_cause_and_progress_with_native_backpressure",

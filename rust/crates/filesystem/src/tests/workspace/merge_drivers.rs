@@ -1,5 +1,85 @@
 use super::*;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(), Box<dyn Error>> {
+    use crate::test_support::{JSON_OUTPUT_CUT, JSON_OUTPUT_FIRST_ALLOCATION};
+
+    for pressure in [false, true] {
+        let fs = Fs::memory();
+        let target = unbounded!(fs, create_workspace("json-target"))?;
+        target.write_text("/file", "base").await?;
+        let source = fork_workspace(
+            &target,
+            "json-source",
+            ForkOptions::from_generation(unbounded!(target, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        source.write_text("/file", "changed").await?;
+        let staging = unbounded!(fs, create_workspace("json-output"))?;
+        let before = unbounded!(staging, head())?.id();
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let join = unbounded!(source.join_into(&target), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let mut preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+        assert_eq!(preview.conflict_count(), 0);
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        JSON_OUTPUT_FIRST_ALLOCATION.set(None);
+        JSON_OUTPUT_CUT.with_borrow_mut(|cut| *cut = Some((original.clone(), pressure)));
+        let result = directory
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                std::num::NonZeroU32::new(1).ok_or("zero JSON page")?,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await;
+        let missed = JSON_OUTPUT_CUT.with_borrow_mut(Option::take);
+        assert!(
+            missed.is_none(),
+            "public write never reached its JSON producer"
+        );
+        let first = JSON_OUTPUT_FIRST_ALLOCATION
+            .take()
+            .ok_or("missing JSON allocation event")?;
+        eprintln!(
+            "JSON producer: pressure={pressure} first_allocation={first:?} result={result:?}"
+        );
+        if pressure {
+            assert_eq!(
+                first, None,
+                "serializer allocated before original admission"
+            );
+            assert!(matches!(
+                result,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ));
+            assert_eq!(unbounded!(staging, head())?.id(), before);
+        } else {
+            result?;
+            assert!(
+                first.is_some(),
+                "positive control did not observe the real serializer"
+            );
+            assert_ne!(unbounded!(staging, head())?.id(), before);
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<(), Box<dyn Error>>
 {

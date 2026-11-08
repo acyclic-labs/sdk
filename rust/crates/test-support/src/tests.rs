@@ -157,9 +157,22 @@ fn scopes_restore_after_unwind_and_isolate_threads() {
     assert_eq!(allocation.bytes_total, 9);
     assert_eq!(allocation.count_total, 1);
     assert_eq!(other.join().unwrap().bytes_total, 17);
-    assert!(std::panic::catch_unwind(|| measure(|| panic!("scope unwind"))).is_err());
+    assert!(
+        std::panic::catch_unwind(|| first_allocation(|| {
+            measure(|| panic!("scope unwind"));
+        }))
+        .is_err()
+    );
     assert_eq!(measure(|| {}), AllocationInfo::default());
     assert_eq!(COUNTER.get(), None);
+    assert_eq!(FIRST_ALLOCATION.get(), None);
+    let other = std::thread::spawn(|| first_allocation(|| drop(black_box(Box::new([0u8; 17])))));
+    assert_eq!(
+        first_allocation(|| drop(black_box(Box::new([0u8; 9])))),
+        Some(9)
+    );
+    assert_eq!(other.join().unwrap(), Some(17));
+    assert_eq!(FIRST_ALLOCATION.get(), None);
 }
 
 #[test]
@@ -205,7 +218,9 @@ fn nested(depth: u8, run: &mut dyn FnMut()) {
     if depth == 0 {
         run();
     } else {
-        measure(|| nested(depth - 1, run));
+        first_allocation(|| {
+            measure(|| nested(depth - 1, run));
+        });
     }
 }
 
@@ -219,7 +234,9 @@ proptest! {
         let allocator = CountingAllocator(System);
         let mut slots = [(std::ptr::null_mut::<u8>(), 0usize); 8];
         let mut log = Vec::with_capacity(commands.len() * 2);
-        let measured = measure(|| {
+        let mut measured = AllocationInfo::default();
+        let first = first_allocation(|| {
+            measured = measure(|| {
             for &(kind, slot, size, depth) in &commands {
                 nested(depth, &mut || {
                     let (pointer, previous) = slots[slot];
@@ -252,6 +269,7 @@ proptest! {
                     }
                 });
             }
+            });
         });
         // Release survivors outside the measurement, including after a failing
         // assertion; the property itself owns every live allocation.
@@ -273,6 +291,8 @@ proptest! {
         prop_assert_eq!(measured.bytes_total, log.iter().filter(|(count, _)| *count > 0).map(|(_, bytes)| *bytes as u64).sum::<u64>());
         prop_assert_eq!((measured.count_current, measured.bytes_current), live);
         prop_assert_eq!((measured.count_max, measured.bytes_max), (peaks.0 as u64, peaks.1 as u64));
+        prop_assert_eq!(first, log.iter().find(|(count, _)| *count > 0).map(|(_, bytes)| *bytes as usize), "first allocation event differs from physical trace");
+        prop_assert_eq!(FIRST_ALLOCATION.get(), None);
     }
 }
 
