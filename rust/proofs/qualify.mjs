@@ -1119,14 +1119,15 @@ if (claim === "--help" && extra.length === 0) {
     if (result.error) throw result.error;
     return { ...result, output: log ? readFileSync(log, "utf8") : `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
-  function check(label, selected = command) {
+  function check(label, selected = command, checkedSource = source) {
     if (oracle) require(readFileSync(oraclePath).equals(oracle));
     mkdirSync(directory, { recursive: true });
     const invocation = options.runner ?? ["cargo", ...selected];
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
-      const phase = { phase: label, exit: result.status, source_sha256: sha256(readFileSync(sourcePath)), oracle_sha256: sha256(oracle) };
+      const checkedPath = new URL(checkedSource, new URL("../../", import.meta.url));
+      const phase = { phase: label, exit: result.status, source: checkedSource, source_sha256: sha256(readFileSync(checkedPath)), oracle_sha256: sha256(oracle) };
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
@@ -1157,7 +1158,7 @@ if (claim === "--help" && extra.length === 0) {
         const applied = run("git", ["apply", mutation.patch]);
         if (applied.status !== 0) throw new Error(applied.output);
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
-        const mutated = check(mutation.label, mutation.command ?? command);
+        const mutated = check(mutation.label, mutation.command ?? command, mutation.source ?? source);
         require(instrumented
           ? mutated.status !== 0 && !mutated.signal && mutated.output.includes("assertion failed: acyclic_stream::codec_fuzz::check(bytes)") && mutated.output.includes("ERROR: libFuzzer:")
           : options.fuzz ? mutated.status !== 0 && !mutated.signal && mutated.output.includes(mutation.diagnostic) && mutated.output.includes("ERROR: libFuzzer:")
