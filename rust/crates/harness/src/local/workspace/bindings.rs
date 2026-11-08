@@ -12,8 +12,29 @@ pub(super) struct Bindings {
 pub(super) struct Binding {
     index: RetainedArc<Bindings>,
     pub(super) key: [u8; 32],
+    publication: crate::sync::SyncMutex<Publication>,
+}
+
+struct Publication {
+    preparing: RetainedWeak<Preparation>,
+    mounts: std::sync::Weak<Mounts>,
+}
+
+// The preparation result has a different lifetime from physical custody.
+// Selections retain it; the physical binding refers back only weakly.
+struct Preparation {
     completed: acyclic_stream::OperationObservation,
-    mounts: crate::sync::SyncMutex<Option<std::sync::Weak<Mounts>>>,
+    mounts: crate::sync::SyncMutex<Option<Arc<Mounts>>>,
+}
+
+pub(super) struct Selection {
+    pub(super) binding: RetainedArc<Binding>,
+    result: SelectedResult,
+}
+
+enum SelectedResult {
+    Preparing(RetainedArc<Preparation>),
+    Ready(Arc<Mounts>),
 }
 
 impl Bindings {
@@ -42,7 +63,9 @@ impl Bindings {
         key: [u8; 32],
         work: &NativeMaterializationWork,
         cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<(RetainedArc<Binding>, Option<OperationClaim<'a>>)> {
+    ) -> Result<(Selection, Option<OperationClaim<'a>>)> {
+        // A partially inserted selection must retire after releasing the index.
+        let mut selected = None;
         let mut entries = index
             .entries
             .lock()
@@ -53,7 +76,23 @@ impl Bindings {
             .map_err(storage)?
             .and_then(RetainedWeak::upgrade)
         {
-            return Ok((binding, None));
+            let result = {
+                let publication = binding
+                    .publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                publication
+                    .preparing
+                    .upgrade()
+                    .map(SelectedResult::Preparing)
+                    .or_else(|| publication.mounts.upgrade().map(SelectedResult::Ready))
+            };
+            // The last physical owner may depart after its weak upgrade. Its
+            // Drop needs this same index, including on an absent-result refusal.
+            drop(entries);
+            let result =
+                result.ok_or_else(|| Error::Conflict("original binding result retired".into()))?;
+            return Ok((Selection { binding, result }, None));
         }
         // The old value may already be in Drop, waiting for this same index.
         // Remove only this dead key; its late Drop checks exact pointer identity.
@@ -81,45 +120,69 @@ impl Bindings {
                 ));
             }
         };
-        let mut selected = None;
         entries
             .get_or_try_insert_with(key, &mut accounting, |accounting| {
-                let binding = RetainedArc::new_with(accounting, || Binding {
-                    index: index.clone(),
-                    key,
+                let preparing = RetainedArc::new_with(accounting, || Preparation {
                     completed: owner.observe(),
                     mounts: crate::sync::SyncMutex::new(None),
                 })?;
+                let binding = RetainedArc::new_with(accounting, || Binding {
+                    index: index.clone(),
+                    key,
+                    publication: crate::sync::SyncMutex::new(Publication {
+                        preparing: preparing.downgrade(),
+                        mounts: std::sync::Weak::new(),
+                    }),
+                })?;
                 let weak = binding.downgrade();
-                selected = Some(binding);
+                selected = Some(Selection {
+                    binding,
+                    result: SelectedResult::Preparing(preparing),
+                });
                 Ok(weak)
             })
             .map_err(storage)?;
-        let binding = selected
+        let selection = selected
             .ok_or_else(|| Error::Conflict("binding insertion lost its original owner".into()))?;
-        Ok((binding, Some(owner)))
+        Ok((selection, Some(owner)))
     }
 }
 
-impl Binding {
-    pub(super) fn publish(&self, mounts: &Arc<Mounts>) {
-        *self
+impl Selection {
+    pub(super) fn publish(&self, mounts: &Arc<Mounts>) -> Result<()> {
+        let SelectedResult::Preparing(preparing) = &self.result else {
+            return Err(Error::Conflict(
+                "binding result has no original producer".into(),
+            ));
+        };
+        *preparing
             .mounts
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(mounts));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(mounts));
+        self.binding
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mounts = Arc::downgrade(mounts);
+        Ok(())
     }
 
     pub(super) async fn mounts(&self) -> Result<Arc<Mounts>> {
-        if self.completed.terminated().await != OperationTermination::Released {
+        let preparing = match &self.result {
+            SelectedResult::Ready(mounts) => return Ok(Arc::clone(mounts)),
+            SelectedResult::Preparing(preparing) => preparing,
+        };
+        if preparing.completed.terminated().await != OperationTermination::Released {
             return Err(Error::Conflict(
                 "original binding producer dropped before publication".into(),
             ));
         }
-        self.mounts
+        preparing
+            .mounts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .and_then(std::sync::Weak::upgrade)
+            .map(Arc::clone)
             .ok_or_else(|| Error::Conflict("original binding result retired".into()))
     }
 }
@@ -146,7 +209,7 @@ mod tests {
         let (original, producer) = Bindings::select(&index, key, &work, &cancellation)?;
         let producer =
             producer.ok_or_else(|| Error::Conflict("original producer missing".into()))?;
-        let old = original.downgrade();
+        let old = original.binding.downgrade();
         let mut peers = Vec::new();
         for number in 0_u32..1024 {
             let peer = *blake3::hash(&number.to_le_bytes()).as_bytes();
@@ -158,7 +221,7 @@ mod tests {
             duplicate.is_none(),
             "same-key observer created another producer"
         );
-        assert!(std::ptr::eq(old.as_ptr(), &*observer));
+        assert!(std::ptr::eq(old.as_ptr(), &*observer.binding));
         assert!(
             work.receipt().items_examined - before <= 9 * 32 + 1,
             "binding lookup grew beyond the fixed-width path"
@@ -188,7 +251,7 @@ mod tests {
             duplicate.is_none(),
             "late retirement removed the replacement owner"
         );
-        assert!(std::ptr::eq(&*selected, &*replacement));
+        assert!(std::ptr::eq(&*selected.binding, &*replacement.binding));
         drop(duplicate);
         drop(selected);
         drop(successor);
