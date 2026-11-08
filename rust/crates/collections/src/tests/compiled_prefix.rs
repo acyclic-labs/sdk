@@ -108,21 +108,19 @@ fn compiled_prefix_matches_original_keys_and_refuses_original_read_credit() {
                             let used = work.items - before;
                             work.maximum_items = Some(work.items);
                             if used != 0 {
-                                prop_assert_eq!(
-                                    index
-                                        .matches(query, |entry| accept(&entry.key), &mut work)
-                                        .err(),
-                                    Some("items refused")
-                                );
+                                prop_assert!(matches!(
+                                    index.matches(query, |entry| accept(&entry.key), &mut work),
+                                    Err(CompiledPrefixError::Work("items refused"))
+                                ));
                             }
                             work.maximum_items = None;
                         }
                     }
                     work.cancelled = true;
-                    prop_assert_eq!(
-                        index.matches(&[], |_| true, &mut work).err(),
-                        Some("cancelled")
-                    );
+                    prop_assert!(matches!(
+                        index.matches(&[], |_| true, &mut work),
+                        Err(CompiledPrefixError::Work("cancelled"))
+                    ));
                     drop(index);
                     prop_assert_eq!(work.live.get(), 0);
                     for maximum_claims in [Some(0), Some(1)] {
