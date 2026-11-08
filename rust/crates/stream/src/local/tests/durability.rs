@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 use futures::TryFutureExt as _;
 
 #[tokio::test]
@@ -18,7 +19,7 @@ async fn dispatch_publication_admits_durability_before_accepting_a_start()
             let result = deferring_durability(requiring_durability(async {
                 if guarded {
                     provider
-                        .native_commit_guarded::<NativeGuardFailure, _, _>(
+                        .native_commit_with_guard::<NativeGuardFailure, _, _>(
                             CommitRequest {
                                 deadline_unix_millis: None,
                                 conditions: vec![crate::CommitCondition::Tail {
@@ -142,7 +143,7 @@ async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_co
             idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-phase-commit"))?,
         };
         let output = provider
-            .native_commit_guarded::<NativeGuardFailure, _, _>(
+            .native_commit_with_guard::<NativeGuardFailure, _, _>(
                 request,
                 None,
                 meter.original(),

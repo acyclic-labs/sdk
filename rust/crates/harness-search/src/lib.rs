@@ -146,6 +146,13 @@ pub trait SearchProvider: acyclic_stream::ProviderPlatform {
     }
 }
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(
+        feature = "search-http",
+        all(feature = "filesystem", any(test, feature = "test-support"))
+    )
+))]
 pub(crate) fn error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {

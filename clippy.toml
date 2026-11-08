@@ -1,6 +1,12 @@
 # Thresholds for the lints enabled in [workspace.lints.clippy] (Cargo.toml).
 too-many-lines-threshold = 100
 cognitive-complexity-threshold = 30
+# large_futures ceiling, in bytes. The largest concrete future awaited by value
+# was 95,312 bytes when this was set (a harness integration test); 128 KiB
+# leaves headroom for ordinary growth, while a layer that stops erasing its
+# boundary future adds a whole subtree to its callers and crosses it. Lower it
+# as boundaries shrink. Generic futures are measured where they are concrete.
+future-size-threshold = 131072
 # Product and vendor names doc_markdown would otherwise want in backticks.
 # `..` keeps clippy's built-in list (GitHub, macOS, JavaScript, ...).
 doc-valid-idents = ["OpenAI", "ChatGPT", "MoonshotAI", ".."]

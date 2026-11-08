@@ -18,143 +18,19 @@ use crate::{
 };
 use acyclic_actors::domain::ActorLimits;
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityWork, EmbeddedCapabilities, Fs, LogicalObjectStore, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectStoreError, PublicationHold, PublicationScope,
-    StreamAuthorityStore,
-    async_storage::{DecodedCacheKey, DecodedCacheLookup},
+    EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore,
     browser::IndexedDbObjectStore,
-    storage::ObjectWrite,
 };
 use acyclic_objects::{Blobs, MemoryObjects};
 use acyclic_stream::{
-    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
-    StreamProvider,
+    BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, StreamError, StreamProvider,
 };
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
-/// The object store injected by one host.
-pub(super) enum Objects {
-    /// The browser profile's IndexedDB objects.
-    IndexedDb(IndexedDbObjectStore),
-    /// Any Objects v1 provider, Rust or a host's account port.
-    Provider(LogicalObjectStore<dyn Blobs>),
-}
-
-macro_rules! each {
-    ($objects:expr, $store:ident => $body:expr) => {
-        match $objects {
-            Objects::IndexedDb($store) => $body,
-            Objects::Provider($store) => $body,
-        }
-    };
-}
-
-impl AsyncObjectStore for Objects {
-    fn supports_decoded_cache(&self) -> bool {
-        each!(self, store => store.supports_decoded_cache())
-    }
-
-    fn decoded_cache_lookup(
-        &self,
-        key: DecodedCacheKey,
-    ) -> Result<DecodedCacheLookup<'_>, ObjectStoreError> {
-        each!(self, store => store.decoded_cache_lookup(key))
-    }
-
-    async fn put(
-        &self,
-        object_id: ObjectId,
-        bytes: OwnedBytes,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        each!(self, store => store.put(object_id, bytes, context).await)
-    }
-
-    async fn put_hashed(
-        &self,
-        object: acyclic_fs::HashedObject,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        each!(self, store => store.put_hashed(object, context).await)
-    }
-
-    async fn put_many(
-        &self,
-        writes: &[ObjectWrite],
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        each!(self, store => store.put_many(writes, context).await)
-    }
-
-    async fn put_many_hashed(
-        &self,
-        objects: &[acyclic_fs::HashedObject],
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<(), ObjectStoreError> {
-        each!(self, store => store.put_many_hashed(objects, context).await)
-    }
-
-    async fn flush_before_publish(
-        &self,
-        scope: PublicationScope<'_>,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<PublicationHold, ObjectStoreError> {
-        each!(self, store => store.flush_before_publish(scope, context).await)
-    }
-
-    async fn historical_generation_evidence(
-        &self,
-        authority_id: acyclic_fs::AuthorityId,
-        record: &acyclic_fs::DurableCommit,
-        maximum_bytes: u64,
-        maximum_objects: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<Option<acyclic_fs::kernel::HistoricalGenerationEvidence>, ObjectStoreError> {
-        each!(self, store => store
-            .historical_generation_evidence(
-                authority_id,
-                record,
-                maximum_bytes,
-                maximum_objects,
-                context,
-            )
-            .await)
-    }
-
-    async fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<ObjectRead, ObjectStoreError> {
-        each!(self, store => store.read(object_id, maximum_bytes, context).await)
-    }
-
-    async fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
-        each!(self, store => store.read_many(requests, context).await)
-    }
-
-    async fn contains(
-        &self,
-        object_id: ObjectId,
-        context: &mut AuthorityWork<'_>,
-    ) -> Result<bool, ObjectStoreError> {
-        each!(self, store => store.contains(object_id, context).await)
-    }
-
-    fn collection(&self) -> Option<&Arc<acyclic_fs::Collection>> {
-        each!(self, store => store.collection())
-    }
-
-    fn collection_sweeps(&self) -> u64 {
-        each!(self, store => store.collection_sweeps())
-    }
-}
+/// The object store injected by one host: `IndexedDB`, or any Objects v1
+/// provider, behind the one erased object contract.
+pub(super) type Objects = acyclic_fs::SharedObjectStore;
 
 /// One host's agent storage: what every agent handler, turn and control
 /// reads and writes.
@@ -219,7 +95,7 @@ impl Providers {
         Self::new(
             stream.clone(),
             StreamAuthorityStore::new(stream),
-            Objects::IndexedDb(objects),
+            Arc::new(objects),
             true,
             options,
         )
@@ -255,7 +131,7 @@ impl Providers {
         Self::new(
             Arc::clone(&stream),
             StreamAuthorityStore::new(stream),
-            Objects::Provider(objects),
+            Arc::new(objects),
             durable,
             options,
         )

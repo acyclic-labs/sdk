@@ -47,7 +47,7 @@ pub struct StreamEvent<'a> {
     pub after: Option<EventCursor>,
     /// Decoded application JSON, when the application record is JSON.
     pub value: Option<serde_json::Value>,
-    /// Base64 of the exact canonical SessionFrame protobuf. Binary changes,
+    /// Base64 of the exact canonical `SessionFrame` protobuf. Binary changes,
     /// immutable output references, keys, commit IDs and unknown fields in
     /// application payloads remain available without lossy text conversion.
     pub frame: String,

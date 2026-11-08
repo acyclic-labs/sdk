@@ -75,7 +75,7 @@ pub fn variable(name: &str) -> Option<OsString> {
 ///
 /// An admitted shell may locate the owner's installed tools without receiving
 /// its home, configuration, loader hooks or credentials. Call once when binding
-/// the executor, then pass this explicit map through preparation and env_clear.
+/// the executor, then pass this explicit map through preparation and `env_clear`.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, String>> {
     [

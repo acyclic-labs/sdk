@@ -449,7 +449,7 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
         Failure::Denied => reader.denied(stream),
         Failure::Refused | Failure::Changed => reader.refuse_follow(stream, error.clone()),
         failure @ (Failure::Unavailable | Failure::Overloaded) => {
-            reader.follow_failed(failure, now)
+            reader.follow_failed(failure, now);
         }
     }
 }
@@ -1191,6 +1191,7 @@ mod tests {
         struct Counted {
             records: acyclic_stream::BoxProviderStream<'static, Result<Record, StreamError>>,
             polls: Arc<AtomicUsize>,
+            initialized: Arc<AtomicUsize>,
             dropped: Arc<AtomicUsize>,
         }
         impl Stream for Counted {
@@ -1199,7 +1200,9 @@ mod tests {
                 mut self: Pin<&mut Self>,
                 cx: &mut Context<'_>,
             ) -> Poll<Option<Self::Item>> {
-                self.polls.fetch_add(1, Ordering::SeqCst);
+                if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.initialized.fetch_add(1, Ordering::SeqCst);
+                }
                 self.records.poll_next_unpin(cx)
             }
         }
@@ -1219,6 +1222,7 @@ mod tests {
             .unwrap();
             driver.attach(&mut reader, 0);
             let dropped = Arc::new(AtomicUsize::new(0));
+            let initialized = Arc::new(AtomicUsize::new(0));
             let mut counters = Vec::new();
             for index in 0..513 {
                 let path = StreamPath::new(format!("quiet/{index:04}")).unwrap();
@@ -1253,15 +1257,27 @@ mod tests {
                             Box::pin(Counted {
                                 records,
                                 polls,
+                                initialized: initialized.clone(),
                                 dropped: dropped.clone(),
                             })
                         }),
                     )
                     .unwrap();
             }
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
-            driver.drain(&mut reader, 0, &mut cx);
+            // Each cooperative turn polls one source; its wake schedules the
+            // next turn until every provider has registered its observation.
+            futures::future::poll_fn(|cx| {
+                driver.drain(&mut reader, 0, cx);
+                if initialized.load(Ordering::SeqCst) == 513 || dropped.load(Ordering::SeqCst) != 0
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+            assert_eq!(initialized.load(Ordering::SeqCst), 513);
+            assert_eq!(dropped.load(Ordering::SeqCst), 0);
             assert!(
                 counters
                     .iter()
@@ -1277,7 +1293,17 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            driver.step(&mut reader, 0, &mut cx);
+            futures::future::poll_fn(|cx| {
+                driver.step(&mut reader, 0, cx);
+                if reader.follows.get(&path).map(|intent| intent.from) == Some(2)
+                    || dropped.load(Ordering::SeqCst) != 0
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
             assert_eq!(reader.follows.get(&path).map(|intent| intent.from), Some(2));
             assert_eq!(driver.reconciled, 0);
             assert_eq!(counters[512].load(Ordering::SeqCst), 1);
@@ -1292,6 +1318,8 @@ mod tests {
             );
             assert!(!reader.accepting());
             reader.set_follows([]);
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(dropped.load(Ordering::SeqCst), 513);
             assert_eq!(driver.open_follows(), 0);

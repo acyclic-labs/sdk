@@ -1,3 +1,4 @@
+//! Check settings parsing against the shared configuration invariants.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 #[path = "../../tests/support/config_sequences.rs"]

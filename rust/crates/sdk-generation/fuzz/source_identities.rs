@@ -6,6 +6,10 @@ fn identity(source: &GeneratedSource) -> (&Path, &Path, &str) {
     (&source.physical_path, &source.logical_path, &source.sha256)
 }
 
+/// Check that deduplication preserves every complete source identity.
+///
+/// # Panics
+/// Panics if the admitted result violates the independent contract checks.
 pub fn check(sources: &[GeneratedSource]) {
     let expected = sources.iter().map(identity).collect::<BTreeSet<_>>();
     let mut actual = sources.to_vec();
@@ -17,6 +21,10 @@ pub fn check(sources: &[GeneratedSource]) {
     );
 }
 
+/// Check basename aliases and conservative selection of uncertain spellings.
+///
+/// # Panics
+/// Panics if the admitted result violates the independent contract checks.
 pub fn check_selection(leaf: &str, other: &str, windows: bool) {
     let source = |physical: String, logical: u8| GeneratedSource {
         physical_path: physical.into(),
@@ -29,22 +37,24 @@ pub fn check_selection(leaf: &str, other: &str, windows: bool) {
         source(format!("third/{other}.json"), 2),
     ];
     let filenames = BTreeSet::from([format!("src/{leaf}.rs")]);
-    assert_eq!(
-        source_selection::referenced(&sources, &filenames, windows),
-        sources[..2],
+    assert!(
+        source_selection::referenced(&sources, &filenames, windows)
+            .iter()
+            .eq(sources.iter().take(2)),
         "selection must keep every matching alias and exclude unrelated sources"
     );
     let posix = vec![
         source(format!(r"/checkout/{leaf}\{other}.rs"), 0),
         source(format!("/checkout/{leaf}/{other}.rs"), 1),
     ];
-    assert_eq!(
+    assert!(
         source_selection::referenced(
             &posix,
             &BTreeSet::from([format!(r"src/{leaf}\{other}.rs")]),
             false
-        ),
-        posix[..1],
+        )
+        .iter()
+        .eq(posix.iter().take(1)),
         "selection must preserve literal POSIX backslashes"
     );
     if windows {
@@ -52,9 +62,10 @@ pub fn check_selection(leaf: &str, other: &str, windows: bool) {
             format!(r"C:\SRC\{}.RS", leaf.to_ascii_uppercase()),
             format!(r"\\?\C:\src\{leaf}.rs"),
         ] {
-            assert_eq!(
-                source_selection::referenced(&sources, &BTreeSet::from([spelling]), true),
-                sources[..2],
+            assert!(
+                source_selection::referenced(&sources, &BTreeSet::from([spelling]), true)
+                    .iter()
+                    .eq(sources.iter().take(2)),
                 "selection must preserve Windows case and verbatim aliases"
             );
         }

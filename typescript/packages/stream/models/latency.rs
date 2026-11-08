@@ -1,20 +1,18 @@
+use super::{driver, field};
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::{
-    path::Path,
-    sync::{Mutex, OnceLock},
-};
-#[path = "../fuzz/driver.rs"]
-mod driver;
+use std::path::Path;
 
-fn verify(state: &Value, warm: u8, samples: u8) {
+fn verify(state: &Value, warm: u8, samples: u8) -> std::io::Result<()> {
     let records = u64::from(1 + warm + samples);
     assert_eq!(
-        state["isolated"], true,
+        *field(state, "isolated")?,
+        true,
         "runtime latency workloads collided: {state}"
     );
-    assert_eq!(state["accepted"], 2 * records);
-    assert_eq!(state["tails"], json!([records, records]));
+    assert_eq!(*field(state, "accepted")?, 2 * records);
+    assert_eq!(*field(state, "tails")?, json!([records, records]));
+    Ok(())
 }
 
 proptest! {
@@ -30,31 +28,38 @@ proptest! {
     ) {
         // One test-harness lock, never nested: serialize commands to the JS
         // process. Production provider synchronization executes inside Bun.
-        static DRIVER: OnceLock<Mutex<driver::Driver>> = OnceLock::new();
-        let shared = DRIVER.get_or_init(|| Mutex::new(driver::Driver::configured(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
-        let state = shared.lock().unwrap().run().call(json!({ "action":"latency", "path":name,
-            "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }));
-        verify(&state, warm, samples);
+        static DRIVER: driver::Shared = driver::Shared::new();
+        let state = driver::Driver::shared(&DRIVER, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")?
+            .run()?.call(&json!({ "action":"latency", "path":name,
+            "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }))?;
+        verify(&state, warm, samples)?;
     }
+}
+
+fn shared_namespace() -> std::io::Result<()> {
+    let mut real = driver::Driver::configured(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+        "decode",
+        "",
+    )?;
+    let state = real.call(&json!({ "action":"latency", "path":"before",
+        "work": { "warm":1, "samples":2, "reverse":false, "shared":true } }))?;
+    assert!(
+        field(&state, "rejection")?
+            .as_str()
+            .ok_or_else(|| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("latency rejection is not a string: {state}"),
+            ))?
+            .contains("initial latency append failed")
+    );
+    assert_eq!(*field(&state, "accepted")?, 4);
+    verify(&state, 1, 2)?;
+    Ok(())
 }
 
 #[test]
 #[should_panic(expected = "runtime latency workloads collided")]
 fn negative_control_reuses_one_runtime_namespace() {
-    let mut real = driver::Driver::configured(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
-        "decode",
-        "",
-    );
-    let state = real.call(json!({ "action":"latency", "path":"before",
-        "work": { "warm":1, "samples":2, "reverse":false, "shared":true } }));
-    assert!(
-        state["rejection"]
-            .as_str()
-            .unwrap()
-            .contains("initial latency append failed")
-    );
-    assert_eq!(state["accepted"], 4);
-    verify(&state, 1, 2);
+    super::completed(&shared_namespace());
 }

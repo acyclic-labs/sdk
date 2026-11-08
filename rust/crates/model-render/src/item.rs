@@ -90,7 +90,13 @@ pub enum ItemKind {
 /// conversation, agent count or number of models in an alloy.
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
-pub struct WireItem(Record, #[serde(skip)] [Option<GeminiTurn>; 2]);
+pub struct WireItem(Record, #[serde(skip)] GeminiTurns);
+
+#[derive(Clone, Debug)]
+struct GeminiTurns {
+    native: Option<GeminiTurn>,
+    projected: Option<GeminiTurn>,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GeminiTurn {
@@ -204,7 +210,7 @@ impl WireItem {
         let native =
             role((record.provenance.family == Family::Gemini).then_some(record.wire.as_ref()));
         let projected = role(record.projections.get(&Family::Gemini).map(AsRef::as_ref));
-        Ok(Self(record, [native, projected]))
+        Ok(Self(record, GeminiTurns { native, projected }))
     }
 
     /// Original nonsecret wire origin.
@@ -230,7 +236,11 @@ impl WireItem {
     }
 
     pub(crate) fn gemini_turn(&self, selected: &RawValue) -> Option<GeminiTurn> {
-        self.1[usize::from(!std::ptr::eq(selected, self.wire()))]
+        if std::ptr::eq(selected, self.wire()) {
+            self.1.native
+        } else {
+            self.1.projected
+        }
     }
 
     pub(crate) fn projection(&self, family: Family) -> Option<&RawValue> {

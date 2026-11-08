@@ -2,7 +2,7 @@
 #![cfg(feature = "agents")]
 
 use acyclic_harness_client::explorer::{Explorer, Row};
-use acyclic_harness_client::reader::{Driver, Priority, Reader, ReaderPolicy, Want};
+use acyclic_harness_client::reader::{Driver, Op, Outcome, Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AgentId, AgentPath, AgentRecord, Phase, StatusRecord};
 use acyclic_stream::{
     AppendRequest, ForkRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProviderExt as _,
@@ -55,6 +55,65 @@ fn render(explorer: &mut Explorer, driver: &mut Driver<MemoryStream>, ready: &Ar
             ready.wake_by_ref();
         }
     }
+}
+
+#[test]
+fn clock_jumps_and_extreme_scroll_preserve_original_provider_progress() {
+    futures::executor::block_on(async {
+        let provider = Arc::new(MemoryStream::default());
+        let mut explorer = Explorer::new(ReaderPolicy::default()).unwrap();
+        let mut driver = Driver::new(provider.clone());
+        driver.attach(explorer.reader(), 0);
+        let mut expected = 0u128;
+        for (id, elapsed) in [(1u128, u64::MAX), (2, 0)] {
+            let agent = AgentPath::root(&AgentId::from_bytes(id.to_be_bytes()));
+            let stream = agent.status().unwrap();
+            provider
+                .append(AppendRequest {
+                    idempotency_key: IdempotencyKey::new(stream.to_string()).unwrap(),
+                    path: stream.clone(),
+                    records: vec![
+                        StatusRecord {
+                            phase: Phase::Idle,
+                            cursor: 0,
+                            conversation: 0,
+                        }
+                        .encode()
+                        .unwrap()
+                        .into(),
+                    ],
+                    if_tail: Some(0),
+                })
+                .await
+                .unwrap();
+            explorer.reader().plan([(
+                Want::Last {
+                    stream: stream.clone(),
+                    count: 1,
+                },
+                Priority::Visible,
+            )]);
+            let [op]: [Op; 1] = explorer.reader().poll(0).try_into().unwrap();
+            assert!(matches!(&op, Op::Head { stream: path, .. } if path == &stream));
+            let original = provider.head(stream.clone()).await.unwrap();
+            explorer
+                .reader()
+                .complete(op.id(), Outcome::Head(original), elapsed);
+            expected = if expected == 0 {
+                u128::from(elapsed)
+            } else {
+                (expected * 7 + u128::from(elapsed)) / 8
+            };
+            assert_eq!(u128::from(explorer.reader_ref().rtt_ms()), expected);
+            assert_eq!(explorer.reader_ref().cache().tail(&stream), Some(1));
+            assert!(explorer.reader_ref().cache().record(&stream, 0).is_some());
+        }
+        explorer.set_viewport(1, 1, 1);
+        for velocity in [i64::MIN, i64::MAX] {
+            explorer.scroll(velocity);
+            explorer.frame(0);
+        }
+    });
 }
 
 #[test]

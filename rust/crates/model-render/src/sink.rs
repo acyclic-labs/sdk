@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
-/// One sink for raw segments and JSON serialization. Unlike Write's default
-/// write_all, an Interrupted error is returned to the request owner immediately.
+/// One sink for raw segments and JSON serialization. Unlike [`Write`]'s default
+/// `write_all`, an Interrupted error is returned to the request owner immediately.
 /// A successful partial write strictly decreases the remaining byte count.
 pub(crate) struct Sink<'a, W>(pub(crate) &'a mut W);
 

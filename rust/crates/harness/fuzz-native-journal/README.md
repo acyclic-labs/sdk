@@ -1,3 +1,15 @@
+All six targets inherit the workspace lint policy. Setup and conversion failures
+retain their stage, error and original values; invariant assertions retain their
+expected and actual observations. Native launch checks remain in-process and
+never start a host.
+
+`bounded_json` independently parses and serializes the supplied document to set
+its byte and item capacity, retaining the reference decoder's nesting bound.
+It checks exact value conversion, measured physical allocations and the original
+typed refusal identity at the selected allocation prefix. The input length is
+not capped. `native_staging_selection` likewise sends every generated string to
+the existing production selector oracle without a length cutoff.
+
 `native_receipt` calls the public `host_process::Receipt::{accepted,confirm}`
 used by native process admission. Its oracle shares `AgentPath`'s parser and
 checks only the receipt contract: confirmation retains the admitted task,

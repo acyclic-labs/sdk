@@ -1,4 +1,5 @@
 use super::*;
+use crate::NativeStreamProviderExt as _;
 
 mod headers;
 mod heads;
@@ -846,7 +847,7 @@ async fn native_guard_denial_reads_same_provider_without_lock_and_preserves_type
     let callback_meter = Arc::clone(&meter);
     let callback_path = StreamPath::new("guard-readable")?;
     let result = provider
-        .native_commit_guarded(request, None, meter.original(), move || {
+        .native_commit_with_guard(request, None, meter.original(), move || {
             let provider = callback_provider.clone();
             let meter = Arc::clone(&callback_meter);
             let path = callback_path.clone();
@@ -905,7 +906,7 @@ async fn native_guard_returns_canonical_drift_before_an_explicit_new_request()
             }
         };
         let result = provider
-            .native_commit_guarded(request.clone(), None, meter.original(), before.clone())
+            .native_commit_with_guard(request.clone(), None, meter.original(), before.clone())
             .await?;
         assert!(matches!(
             result,
@@ -922,7 +923,7 @@ async fn native_guard_returns_canonical_drift_before_an_explicit_new_request()
             1
         );
         let result = provider
-            .native_commit_guarded(request.clone(), None, meter.original(), before)
+            .native_commit_with_guard(request.clone(), None, meter.original(), before)
             .await?;
         assert!(matches!(result, Err(NativeGuardFailure::Owner(0x52))));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -932,7 +933,7 @@ async fn native_guard_returns_canonical_drift_before_an_explicit_new_request()
             .await??;
         assert!(matches!(accepted.value(), CommitOutcome::Committed(_)));
         let replay = provider
-            .native_commit_guarded(request, None, meter.original(), || {
+            .native_commit_with_guard(request, None, meter.original(), || {
                 std::future::ready(Err(NativeGuardFailure::Owner(0x53)))
             })
             .await??;

@@ -1,5 +1,6 @@
 //! A durable receipt, unlike a commit acknowledgement, survives a power cut.
 use super::*;
+use crate::NativeStreamProviderExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -185,7 +186,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
         };
         let outcome = if entry == 1 {
             provider
-                .native_commit_guarded(request, None, meter.original(), || {
+                .native_commit_with_guard(request, None, meter.original(), || {
                     std::future::ready(Ok::<_, StreamError>(()))
                 })
                 .await??
