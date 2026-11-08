@@ -205,12 +205,18 @@ pub fn merge_text(
                 content,
             }
         }
-        Err(conflicted) => TextMerge {
-            clean: false,
-            content: conflicted
-                .replace("<<<<<<< ours", &format!("<<<<<<< {ours_label}"))
-                .replace(">>>>>>> theirs", &format!(">>>>>>> {theirs_label}")),
-        },
+        Err(mut content) => {
+            if ours_label != "ours" {
+                content = content.replace("<<<<<<< ours", &format!("<<<<<<< {ours_label}"));
+            }
+            if theirs_label != "theirs" {
+                content = content.replace(">>>>>>> theirs", &format!(">>>>>>> {theirs_label}"));
+            }
+            TextMerge {
+                clean: false,
+                content,
+            }
+        }
     }
 }
 
