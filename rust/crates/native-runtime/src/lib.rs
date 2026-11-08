@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 mod delivery;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
