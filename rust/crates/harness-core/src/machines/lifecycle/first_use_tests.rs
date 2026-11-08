@@ -1,8 +1,27 @@
-use super::*;
-use acyclic_machines::*;
-use acyclic_stream::MemoryStream;
-use acyclic_stream::StreamProvider as _;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use super::{AgentMachines, MachineExecutors, OnFirstUse, ProvisionedTarget, codec_fuzz};
+use crate::{
+    Error, Result,
+    agent::AgentPath,
+    machines::MachinesHost,
+    resources::{ArtifactRef, ProviderRef, SandboxRef},
+    tool::{ToolExecutor, ToolInvocation, ToolResult},
+};
+use acyclic_machines::{
+    CheckpointId, CheckpointObservation, CreateMachine, EventPage, EventStream, ExecCommand,
+    ExecStream, FileAccess, FileRead, FileWrite, IdempotencyKey as MachinesKey, Image,
+    ImageQualification, MachineId, MachineObservation, MachineOutput, MachinePage,
+    MachinesProvider, MutationOutcome, OperationId as MachinesOperationId, OperationObservation,
+    OperationStream, ProviderAssurance, ProviderError, SimulatedMachines, SuspensionPolicy,
+    UsageReceipt, wire,
+};
+use acyclic_stream::{
+    BoxProviderFuture, MemoryStream, ReadRequest, StreamError, StreamProvider as _,
+    StreamProviderExt as _,
+};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::watch;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
