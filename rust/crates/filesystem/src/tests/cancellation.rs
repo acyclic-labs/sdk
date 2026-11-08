@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::Mutex;
+use std::sync::PoisonError;
 use std::sync::atomic::AtomicUsize;
 use std::task::Wake;
 
@@ -20,34 +20,17 @@ impl Wake for PanicWake {
 }
 
 fn waiter_count(token: &CancellationToken) -> usize {
-    let mut waiter = token
-        .state
-        .waiters
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .upgrade();
+    let mut waiter = token.state.waiters.lock().upgrade();
     let mut count = 0;
     while let Some(current) = waiter {
         count += 1;
         waiter = current
             .links
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .and_then(|(_, next)| next.upgrade());
     }
     count
-}
-
-fn poison<T>(mutex: &Mutex<T>) {
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let _guard = match mutex.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        std::panic::panic_any("poison cancellation lock");
-    }));
-    assert!(result.is_err());
 }
 
 #[test]
@@ -106,53 +89,6 @@ fn cancellation_contains_panicking_wakers_and_completes_every_waiter() {
         Poll::Ready(())
     );
     assert_eq!(waiter_count(&token), 0);
-}
-
-#[test]
-fn poisoned_waiter_registries_and_wakers_remain_cancellable_and_drop_safe() {
-    let registry_poisoned = CancellationToken::new();
-    poison(&registry_poisoned.state.waiters);
-    registry_poisoned.cancel();
-    assert!(registry_poisoned.is_cancelled());
-
-    let waker_poisoned = CancellationToken::new();
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let mut future = Box::pin(waker_poisoned.cancelled());
-    let waker = Waker::from(Arc::clone(&counter));
-    assert!(
-        future
-            .as_mut()
-            .poll(&mut Context::from_waker(&waker))
-            .is_pending()
-    );
-    poison(&future.waiter.as_ref().expect("registered waiter").waker);
-    waker_poisoned.cancel();
-    assert_eq!(counter.0.load(Ordering::Relaxed), 1);
-
-    let poll_registry_poisoned = CancellationToken::new();
-    let mut future = Box::pin(poll_registry_poisoned.cancelled());
-    poison(&poll_registry_poisoned.state.waiters);
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let waker = Waker::from(counter);
-    let mut context = Context::from_waker(&waker);
-    assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
-    drop(future);
-    assert_eq!(waiter_count(&poll_registry_poisoned), 0);
-
-    let poll_waker_poisoned = CancellationToken::new();
-    let mut future = Box::pin(poll_waker_poisoned.cancelled());
-    let waker = Waker::noop();
-    assert_eq!(
-        future.as_mut().poll(&mut Context::from_waker(waker)),
-        Poll::Pending
-    );
-    poison(&future.waiter.as_ref().expect("registered waiter").waker);
-    let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
-    let waker = Waker::from(counter);
-    let mut context = Context::from_waker(&waker);
-    assert_eq!(future.as_mut().poll(&mut context), Poll::Pending);
-    drop(future);
-    assert_eq!(waiter_count(&poll_waker_poisoned), 0);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

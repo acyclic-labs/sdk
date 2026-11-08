@@ -127,12 +127,7 @@ struct DropWaiterOnWake {
 impl std::task::Wake for DropWaiterOnWake {
     fn wake(self: Arc<Self>) {
         let before = self.work.live_allocation_bytes();
-        drop(
-            self.waiter
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
-        );
+        drop(self.waiter.lock().take());
         self.retired.store(
             self.work.live_allocation_bytes() < before,
             Ordering::Release,

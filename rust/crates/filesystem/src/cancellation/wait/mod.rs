@@ -55,12 +55,7 @@ impl Cancelled<'_> {
         if self.waiter.is_some() || self.token.is_cancelled() {
             return Ok(());
         }
-        let mut head = self
-            .token
-            .state
-            .waiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut head = self.token.state.waiters.lock();
         if self.token.is_cancelled() {
             return Ok(());
         }
@@ -129,17 +124,12 @@ impl Cancelled<'_> {
         let waiter = Arc::new(CancellationWaiter {
             links: Mutex::new(Some((Weak::new(), head.clone()))),
             #[cfg(not(target_arch = "wasm32"))]
-            cleanup: parking_lot::Mutex::new(cleanup),
+            cleanup: Mutex::new(cleanup),
             _allocation: allocation,
             ..CancellationWaiter::default()
         });
         if let Some(next) = &next {
-            next.links
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .as_mut()
-                .expect("active head")
-                .0 = Arc::downgrade(&waiter);
+            next.links.lock().as_mut().expect("active head").0 = Arc::downgrade(&waiter);
         }
         *head = Arc::downgrade(&waiter);
         self.waiter = Some(waiter);
@@ -166,13 +156,10 @@ impl Cancelled<'static> {
 
     #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn retire_waker(&mut self) {
-        let waker = self.waiter.as_ref().and_then(|waiter| {
-            waiter
-                .waker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-        });
+        let waker = self
+            .waiter
+            .as_ref()
+            .and_then(|waiter| waiter.waker.lock().take());
         drop(waker);
     }
 
@@ -219,17 +206,12 @@ impl Future for Cancelled<'_> {
         let replace = !waiter
             .waker
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .is_some_and(|waker| waker.will_wake(context.waker()));
         if replace {
             // Waker clone/drop can reenter cancellation; no locks span them.
             let replacement = context.waker().clone();
-            let previous = waiter
-                .waker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .replace(replacement);
+            let previous = waiter.waker.lock().replace(replacement);
             drop(previous);
         }
         if this.token.is_cancelled() {
@@ -246,23 +228,12 @@ impl Drop for Cancelled<'_> {
             return;
         };
         {
-            let mut head = self
-                .token
-                .state
-                .waiters
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if let Some((previous, next)) = waiter
-                .links
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-            {
+            let mut head = self.token.state.waiters.lock();
+            if let Some((previous, next)) = waiter.links.lock().take() {
                 if let Some(previous) = previous.upgrade() {
                     previous
                         .links
                         .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
                         .as_mut()
                         .expect("active predecessor")
                         .1 = next.clone();
@@ -270,12 +241,7 @@ impl Drop for Cancelled<'_> {
                     *head = next.clone();
                 }
                 if let Some(next) = next.upgrade() {
-                    next.links
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .as_mut()
-                        .expect("active successor")
-                        .0 = previous;
+                    next.links.lock().as_mut().expect("active successor").0 = previous;
                 }
             }
         }
@@ -286,11 +252,7 @@ impl Drop for Cancelled<'_> {
                 ..crate::WorkCounters::UNCHARGED
             });
         }
-        let waker = waiter
-            .waker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let waker = waiter.waker.lock().take();
         if let Some(meter) = &mut self.meter {
             meter
                 .work

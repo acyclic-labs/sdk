@@ -1,19 +1,21 @@
 //! Runtime-independent cooperative cancellation for native and browser work.
 
 use crate::sync::{
-    Mutex,
+    InlineMutex as Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
-use std::sync::{Arc, PoisonError, Weak};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 use thiserror::Error;
 
 #[derive(Default)]
 struct CancellationState {
     cancelled: AtomicBool,
+    // Lock backing belongs to this Arc's original allocation, including first
+    // registration. Cancellation always recovers after user waker unwinding.
     // List head precedes every waiter-links lock. Linked-token commit gates
     // acquire distinct ancestor heads in ascending address order.
     waiters: Mutex<Weak<CancellationWaiter>>,
@@ -33,7 +35,7 @@ struct CancellationWaiter {
     links: Mutex<Option<(Weak<Self>, Weak<Self>)>>,
     #[cfg(not(target_arch = "wasm32"))]
     // Head may precede cleanup; links and waker guards never span cleanup.
-    cleanup: parking_lot::Mutex<Option<crate::materializer::NativeWorkReservation>>,
+    cleanup: Mutex<Option<crate::materializer::NativeWorkReservation>>,
     // Last: the node and waker retire before their original allocation.
     _allocation: Option<crate::kernel::allocation::retained::RetainedAllocation>,
 }
@@ -59,32 +61,22 @@ impl Drop for PreparedCancellation {
     fn drop(&mut self) {
         while let Some(state) = &self.state {
             let waiter = {
-                let mut head = state.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut head = state.waiters.lock();
                 let Some(waiter) = head.upgrade() else {
                     break;
                 };
                 let (_, next) = waiter
                     .links
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
                     .take()
                     .expect("active cancellation head");
                 if let Some(next) = next.upgrade() {
-                    next.links
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .as_mut()
-                        .expect("active successor")
-                        .0 = Weak::new();
+                    next.links.lock().as_mut().expect("active successor").0 = Weak::new();
                 }
                 *head = next;
                 waiter
             };
-            let waker = waiter
-                .waker
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
+            let waker = waiter.waker.lock().take();
             if let Some(waker) = waker {
                 let _ = catch_unwind(AssertUnwindSafe(|| waker.wake()));
             }
@@ -204,11 +196,7 @@ impl CancellationToken {
         {
             child.cancel();
         } else {
-            *child
-                .state
-                .parent_waiter
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Some(registered);
+            *child.state.parent_waiter.lock() = Some(registered);
         }
         original.admit(crate::WorkCounters::UNCHARGED)?;
         Ok(child)
@@ -222,11 +210,7 @@ impl CancellationToken {
     /// Marks the token cancelled and wakes every registered waiter.
     pub fn cancel(&self) {
         let prepared = {
-            let _head = self
-                .state
-                .waiters
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let _head = self.state.waiters.lock();
             self.detach()
         };
         prepared.finish();
@@ -236,12 +220,7 @@ impl CancellationToken {
         let first = !self.state.cancelled.swap(true, Ordering::AcqRel);
         PreparedCancellation {
             state: first.then(|| self.state.clone()),
-            parent_registration: self
-                .state
-                .parent_waiter
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take(),
+            parent_registration: self.state.parent_waiter.lock().take(),
         }
     }
 
@@ -255,11 +234,7 @@ impl CancellationToken {
             wait.check()
                 .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
         }
-        let head = self
-            .state
-            .waiters
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let head = self.state.waiters.lock();
         if let Some(wait) = wait {
             wait.check()
                 .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
@@ -282,7 +257,6 @@ impl CancellationToken {
             current = waiter
                 .links
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
                 .as_ref()
                 .and_then(|(_, next)| next.upgrade());
         }
@@ -333,7 +307,7 @@ impl CancellationToken {
         let Some(state) = next else {
             return Ok(commit());
         };
-        let _serial = state.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+        let _serial = state.waiters.lock();
         if state.cancelled.load(Ordering::Acquire) {
             return Err(CancellationError);
         }

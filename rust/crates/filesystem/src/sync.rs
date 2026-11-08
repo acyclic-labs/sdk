@@ -3,6 +3,29 @@ pub(crate) use loom::sync::*;
 #[cfg(not(loom))]
 pub(crate) use std::sync::*;
 
+// The lock itself is inline: first use cannot attach an unaccounted allocation
+// to an already funded owner. Use where callers recover after unwinding;
+// poisoning does not protect an invariant in these protocols.
+#[cfg(not(loom))]
+pub(crate) use parking_lot::Mutex as InlineMutex;
+
+#[cfg(loom)]
+#[derive(Default)]
+pub(crate) struct InlineMutex<T>(loom::sync::Mutex<T>);
+
+#[cfg(loom)]
+impl<T> InlineMutex<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self(loom::sync::Mutex::new(value))
+    }
+
+    pub(crate) fn lock(&self) -> loom::sync::MutexGuard<'_, T> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 // Native namespace and helper coordination has a dedicated model domain.
 // The unchanged ledger uses the separate filesystem accounting proofs.
 #[cfg(feature = "native-mount")]
