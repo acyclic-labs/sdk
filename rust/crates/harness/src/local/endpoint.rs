@@ -66,7 +66,7 @@ impl Connection {
     }
 
     fn command_failure(&self, command: &AgentCommand, error: AgentExchangeError) -> Error {
-        if error.code() == "unavailable" {
+        if matches!(&error, AgentExchangeError::Session(source) if source.category() == acyclic_stream::StreamError::Unavailable) {
             self.stream_failure(error)
         } else {
             exchange(format_args!("{} command: {error}", command.kind()))

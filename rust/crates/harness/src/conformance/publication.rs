@@ -55,12 +55,12 @@ impl Composition for ParticipantCounts {
         outcome: std::result::Result<&'a CommitOutcome, &'a StreamError>,
     ) -> GuestFuture<'a, ()> {
         Box::pin(async move {
-            if matches!(
-                outcome,
-                Err(StreamError::Unavailable
-                    | StreamError::Refused(_)
-                    | StreamError::InvalidResponse)
-            ) {
+            if outcome.err().is_some_and(|error| {
+                matches!(
+                    error.category(),
+                    StreamError::Unavailable | StreamError::InvalidResponse
+                )
+            }) {
                 return Err(GuestError::Handler("settled an unknown outcome".into()));
             }
             if matches!(outcome, Ok(CommitOutcome::Conflict(_))) {
