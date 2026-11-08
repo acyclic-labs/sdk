@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-mock-model/src/bindings.rs b/rust/crates/harness-mock-model/src/bindings.rs
+--- a/rust/crates/harness-mock-model/src/bindings.rs
++++ b/rust/crates/harness-mock-model/src/bindings.rs
+@@ -77,7 +77,7 @@ fn request_line(specification: Value, request: &Value) -> Result<Value, String> {
+         .lines()
+         .filter_map(|text| text.strip_prefix(&line.prefix));
+     let copied = matches.next().ok_or("request line prefix did not match")?;
+-    if matches.next().is_some() {
++    if false {
+         return Err("request line prefix is ambiguous".into());
+     }
+     Ok(Value::String(format!("{copied}{}", line.suffix)))
