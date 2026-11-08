@@ -190,6 +190,7 @@ fn rebase_message<A: 'static, O: 'static>(value: WorkspaceRebase<A, O>) -> wire:
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
+            allocation: _allocation,
         } => wire::RebaseResponse {
             status: wire::RebaseStatus::Conflicted as i32,
             generation: None,

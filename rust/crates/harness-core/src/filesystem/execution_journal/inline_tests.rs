@@ -174,9 +174,6 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
     let setup_bytes = work.live_allocation_bytes();
     let bytes = read.await?;
     assert_eq!(bytes.as_ref(), b"xxxxxxxxxxxxxxxx");
-    // Residency includes a bounded authenticated chunk and policy metadata.
-    // A whole-payload load then slice would exceed this measured bound.
-    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     {
         // Fund the actual ledger and read frame, then leave less credit than
         // the output requires, independently of provider chunks or caching.
@@ -216,6 +213,13 @@ async fn private_payload_ranges_preserve_original_authority_and_bounded_residenc
         );
     }
     let length = file.descriptor().byte_length();
+    let receipt = work.receipt();
+    // Authenticate the whole intersecting chunk even when storage lends its
+    // backing. Reading the whole payload then slicing must also fail this
+    // work bound when shared aliases do not allocate new chunk backing.
+    assert!(receipt.bytes_hashed >= 1024 * 1024);
+    assert!(receipt.object_bytes_read < length);
+    assert!(receipt.peak_allocation_bytes < length);
     assert!(
         journal
             .load_range(

@@ -16,6 +16,8 @@ pub enum WorkspaceRebase<A: 'static, O: 'static> {
         conflicts: Vec<MergeConflict>,
         /// Additional conflicts exceeded the retained bound.
         truncated: bool,
+        /// Original native allocation owner for the retained conflict backing.
+        allocation: crate::AuthorityAllocation,
     },
     /// Writer ownership changed before publication.
     Fenced,
