@@ -1,0 +1,22 @@
+diff --git b/rust/crates/harness/src/local/host_process/children/answer.rs a/rust/crates/harness/src/local/host_process/children/answer.rs
+index 9cab8486ec1..ac01e1e37c5 100644
+--- b/rust/crates/harness/src/local/host_process/children/answer.rs
++++ a/rust/crates/harness/src/local/host_process/children/answer.rs
+@@ -75,7 +75,6 @@ impl NativeAnswer {
+                     .and_then(Value::as_u64)
+                     .is_some_and(|end| end > 0)
+                     && self.outcome.is_none()
+-                    && !self.omitted
+                     && !self.truncated =>
+             {
+                 if let (Some(id), Some(text)) = (
+@@ -95,8 +94,7 @@ impl NativeAnswer {
+             }
+             Some("step_finish")
+                 if event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
+-                    && self.outcome.is_none()
+-                    && !self.omitted =>
++                    && self.outcome.is_none() =>
+             {
+                 self.outcome = self.pending.take().map(Outcome::Succeeded);
+             }
