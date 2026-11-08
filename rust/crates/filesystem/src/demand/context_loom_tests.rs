@@ -16,7 +16,7 @@ fn read_and_invalidate(legacy_inspection: bool) {
         resource
             .with_original_leaf(|work| custody.claim(37, work))
             .unwrap();
-        // A real retirement notification admits the reconciliation scan.
+        // Partial retirement publishes directly to the original aggregate.
         custody.retire(1).unwrap();
         let expected_items = original.receipt().items_examined + 1;
         let weak = Arc::downgrade(&custody);
