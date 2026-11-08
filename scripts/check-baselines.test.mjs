@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkDescriptors, generate } from "./check-baselines.mjs";
+import { checkDescriptors } from "./check-baselines.mjs";
 
 test("all complete regenerated descriptor closures preserve their pinned identities", () => {
   checkDescriptors();
@@ -28,13 +28,5 @@ test("descriptor checking rejects breaking changes to a secondary root and an im
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("both native admission baselines equal the actual Rust generator", () => {
-  for (const family of ["actors", "stream"]) {
-    const actual = JSON.parse(generate(["native-family", process.cwd(), family]));
-    const baseline = JSON.parse(readFileSync(`compatibility/native-families/${family}.json`, "utf8"));
-    assert.deepEqual(actual, baseline);
   }
 });

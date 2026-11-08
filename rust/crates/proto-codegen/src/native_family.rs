@@ -227,6 +227,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "buf.gen.yaml",
         "rust/crates/proto-codegen",
         "scripts/generate-proto.mjs",
+        "scripts/proto-codegen.mjs",
         "scripts/native-family.mjs",
         "scripts/build-native-family.mjs",
         "scripts/assemble-native-family.mjs",
