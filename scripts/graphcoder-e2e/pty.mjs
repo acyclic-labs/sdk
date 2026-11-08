@@ -86,7 +86,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         if (action.kill) running.killExecutable();
       } catch (error) { failure = error; running.killExecutable(); }
     }
-    unsubscribe = fixture.onRequest(frame);
+    unsubscribe = fixture.onRequest(() => frame());
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
       frames.write(bytes);

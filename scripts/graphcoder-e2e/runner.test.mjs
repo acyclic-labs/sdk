@@ -135,12 +135,17 @@ const queryCapturePath = fileURLToPath(new URL("./fixtures/live-terminal-query-r
 const queryCapture = JSON.parse(readFileSync(queryCapturePath, "utf8"));
 test("observed producer frame asserts captured content with one screen projection", async () => {
   class TerminalProcess extends Processes {
-    startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }
+    startTerminal(binary, args, { cwd, env }) {
+      const running = this.start(binary, args, { cwd, env });
+      terminalChild = running.child;
+      return running;
+    }
   }
   const root = mkdtempSync(join(tmpdir(), "observed-frame-"));
   const buffer = Object.getOwnPropertyDescriptor(Terminal.prototype, "buffer");
   const write = TerminalFrames.prototype.write;
   let reads = 0;
+  let terminalChild, notifyRequest, requestSeen;
   const projections = [];
   Object.defineProperty(Terminal.prototype, "buffer", { ...buffer, get() { reads++; return buffer.get.call(this); } });
   const observed = new WeakSet();
@@ -153,24 +158,40 @@ test("observed producer frame asserts captured content with one screen projectio
         try { return frame(); } finally { projections.push(reads - before); }
       };
     }
-    return write.call(this, bytes);
+    return write.call(this, bytes).then(() => {
+      if (notifyRequest && !requestSeen) {
+        requestSeen = true;
+        // The original request event is the only event after the last redraw.
+        notifyRequest({ case: "observed-frame", path: "search", step: 1 });
+        // Close the input producer on this same path. A missing action then
+        // fails at original completion instead of hanging the negative control.
+        terminalChild.stdin.end();
+      }
+    });
   };
   try {
     const raw = queryCapture.stdout.slice(-32);
-    for (const [rejects, assertion] of [
+    for (const [rejects, assertion, requestOnly] of [
       [false, { contains: ["workspace diff query is u"] }],
       [true, { contains: ["INTENTIONALLY_ABSENT_DIFF_CONTENT"] }],
       [false, { raw: [raw] }],
       [true, { raw: [raw + "\0"] }],
+      [false, { contains: ["workspace diff query is u"] }, true],
     ]) {
+      requestSeen = false;
       const processes = new TerminalProcess();
       let capture;
       try {
         const running = pty(processes, process.execPath, {
           id: "observed-frame", workspace: root,
           args: ["-e", "process.stdin.once('data',()=>process.stdin.destroy());process.stdout.write(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).stdout)", queryCapturePath],
-          onRequest() { return () => {}; },
+          requested() { return requestSeen; },
+          onRequest(listener) {
+            if (requestOnly) notifyRequest = listener;
+            return () => { notifyRequest = undefined; };
+          },
         }, { actions: [{ when: { query_failure: "storage failure: diff command:" },
+          after_request: requestOnly ? { path: "search", step: 1 } : undefined,
           assert: assertion, send: "finish\n" }] },
         result => { capture = result; });
         if (rejects) await assert.rejects(running, /step=assert observed terminal frame/);
