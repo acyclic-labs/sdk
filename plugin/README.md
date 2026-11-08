@@ -262,6 +262,10 @@ executed. Assembly uses a fresh npm cache and prefix, installs offline, and runs
 The resulting npm archive is `release/acyclic-plugin-npm.tgz`; the marketplace
 archive is `release/acyclic-plugin.tar.gz`.
 
+With `ACYCLIC_TEST_BINARY` set to the absolute path of that executable, run
+`node --test scripts/assemble-plugin-release.test.mjs` to check publication and
+temporary installation cleanup with both valid and truncated native bytes.
+
 Universal releases additionally use `--require-universal --certification DIR`,
 where `DIR` contains the original `linux-fuse.json`, `macos-nfs.json` and
 `windows-projfs.json` qualification receipts. The existing validator checks each
