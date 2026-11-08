@@ -1,6 +1,62 @@
 use super::*;
 
 #[test]
+fn original_driver_keeps_publication_when_unused_observer_retirement_unwinds() -> io::Result<()> {
+    for terminal in 0..3 {
+        let budget = Arc::new(ReadBudgetMeter::new(0, 0));
+        let meter: Arc<dyn NativeReadMeter> = budget.clone();
+        let (mut observation, producer) = NativeCompletion::<usize>::from_driver(&meter)?;
+        let producer = Arc::new(Mutex::new(Some(producer)));
+        let armed = Arc::new(AtomicBool::new(false));
+        let waker = acyclic_test_support::waker::callbacks(
+            {
+                let producer = Arc::clone(&producer);
+                let armed = Arc::clone(&armed);
+                move || {
+                    let producer = producer.lock().unwrap().take().unwrap();
+                    match terminal {
+                        0 => producer.complete(Ok(37)),
+                        1 => producer.complete(Err(io::ErrorKind::PermissionDenied.into())),
+                        _ => drop(producer),
+                    }
+                    armed.store(true, Ordering::Release);
+                }
+            },
+            {
+                let armed = Arc::clone(&armed);
+                move || {
+                    if armed.swap(false, Ordering::AcqRel) {
+                        std::panic::panic_any("original unused observer retirement");
+                    }
+                }
+            },
+        );
+        let retired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Pin::new(&mut observation).poll(&mut Context::from_waker(&waker))
+        }));
+        assert_eq!(
+            retired.unwrap_err().downcast_ref::<&str>(),
+            Some(&"original unused observer retirement")
+        );
+        let Poll::Ready(result) =
+            Pin::new(&mut observation).poll(&mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("unused observer retirement discarded the original publication");
+        };
+        match terminal {
+            0 => assert_eq!(result?, 37),
+            1 => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied),
+            _ => assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe),
+        }
+        drop(observation);
+        drop(waker);
+        drop(producer);
+        assert_eq!(budget.memory.load(Ordering::Acquire), 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn original_driver_replacement_preserves_reentrant_publication_and_unwind() -> io::Result<()> {
     struct Retired {
         original: std::sync::Weak<CompletionMutex<CompletionState<usize>>>,
