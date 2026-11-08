@@ -109,7 +109,7 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
             ));
             for all in [false, true] {
                 let selection = acyclic_harness_client::AgentSelection::new(child.clone(), 0, 0);
-                let observer = if all {
+                let mut observer = if all {
                     selected.controls.observe_all(selection)
                 } else {
                     selected.controls.observe(selection)
@@ -127,6 +127,21 @@ async fn remote_tree_observation_pages_descendants_and_refuses_unrelated_roots()
                     controls.execute(&request).await.map_err(exchange)?,
                     AgentReply::Root { .. }
                 ));
+                let mut status_seen = false;
+                let mut turn_seen = false;
+                while !status_seen || !turn_seen {
+                    match observer.next().await.map_err(exchange)? {
+                        acyclic_harness_client::AgentEvent::Status { agent, .. } => {
+                            assert_eq!(agent, child);
+                            status_seen = true;
+                        }
+                        acyclic_harness_client::AgentEvent::Conversation { agent, .. } => {
+                            assert_eq!(agent, child);
+                            turn_seen = true;
+                        }
+                        _ => {}
+                    }
+                }
             }
             // A selected frontend follows the child's private tool-output
             // resource as well as its conversation and status streams.
