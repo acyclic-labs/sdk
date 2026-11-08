@@ -12,19 +12,9 @@ pub(super) struct ReadOwner {
     pub(super) readers: AtomicUsize,
 }
 
-impl ViewReaderId {
-    pub(super) fn key(self) -> [u8; 16] {
-        let mut key = [0; 16];
-        let id = match self {
-            Self::Callback(CallbackOwner(id)) => id,
-            #[cfg(test)]
-            Self::Independent(id) => {
-                key[0] = 1;
-                id
-            }
-        };
-        key[8..].copy_from_slice(&id.to_be_bytes());
-        key
+impl CallbackOwner {
+    pub(super) fn key(self) -> [u8; 8] {
+        self.0.to_be_bytes()
     }
 }
 
@@ -61,7 +51,7 @@ impl ViewState {
     fn accept_reader(
         &mut self,
         gate: &Arc<ViewGate>,
-        key: [u8; 16],
+        key: [u8; 8],
         generation: u64,
         owner: Owner,
         completion: &mut Option<crate::demand::ViewReadCompletion>,
@@ -100,7 +90,7 @@ enum ReadProbe {
 impl ViewGate {
     pub(super) fn try_read_as(
         self: &Arc<Self>,
-        reader: ViewReaderId,
+        reader: CallbackOwner,
         expected: Option<u64>,
         carrier: &mut super::super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<Option<leases::ViewReadLease>, MountSourceError> {
@@ -111,7 +101,7 @@ impl ViewGate {
         );
         let key = reader.key();
         let existing = carrier.with_accounting(|accounting| {
-            PreparedIndexWork::read::<16, _>(
+            PreparedIndexWork::read::<8, _>(
                 accounting,
                 |work, _| -> Result<ReadProbe, MountSourceError> {
                     let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -137,7 +127,7 @@ impl ViewGate {
             ReadProbe::Accepted(lease) => Ok(Some(lease)),
             ReadProbe::Missing => carrier.with_accounting(|accounting| {
                 let mut admission = Some(RetainedArc::<ReadOwner>::admit(accounting)?);
-                PreparedIndexWork::insert::<Owner, 16, _>(
+                PreparedIndexWork::insert::<Owner, 8, _>(
                     accounting,
                     |work, _| -> Result<Option<leases::ViewReadLease>, MountSourceError> {
                         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);

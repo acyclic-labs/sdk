@@ -8,7 +8,7 @@ fn measured_read(
     work: &mut DemandWork,
 ) -> Result<ViewReadLease, MountSourceError> {
     let mut carrier = super::super::adapter::NativeDemandCarrier::Borrowed(work);
-    gate.try_read_as(ViewReaderId::Callback(owner), None, &mut carrier)?
+    gate.try_read_as(owner, None, &mut carrier)?
         .ok_or(MountSourceError::Stale)
 }
 

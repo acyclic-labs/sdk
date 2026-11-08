@@ -3,7 +3,7 @@ use super::*;
 pub(in crate::native_mount) struct ViewReadLease {
     pub(in crate::native_mount) generation: u64,
     pub(super) gate: Arc<ViewGate>,
-    pub(super) key: [u8; 16],
+    pub(super) key: [u8; 8],
     pub(super) owner: crate::kernel::allocation::retained::RetainedArc<ReadOwner>,
     pub(super) payload: Option<crate::kernel::allocation::retained::RetainedAllocation>,
     // Settles after the owner and payload have physically left this lease.
