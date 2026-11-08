@@ -46,7 +46,7 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
     futures::pin_mut!(request, backoff);
     match future::select(request, backoff).await {
         future::Either::Left((result, _)) => {
-            assert_eq!(result.err(), Some(StreamError::Unavailable))
+            assert_eq!(result.unwrap_err().code(), StreamError::Unavailable.code())
         }
         future::Either::Right((event, _)) => panic!(
             "a definite refused endpoint must finish without backoff: {:?}",
