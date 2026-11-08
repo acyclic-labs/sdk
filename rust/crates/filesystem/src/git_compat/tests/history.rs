@@ -493,9 +493,12 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         .authenticated_proof(
             transition.operation_id(),
             &crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new()),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
         .await
-        .expect("verified proof");
+        .expect("verified proof")
+        .value;
     let result = GitFilesystemResult::Captured {
         tree: GitTreeRef::exact(
             captured.generation.workspace().id(),

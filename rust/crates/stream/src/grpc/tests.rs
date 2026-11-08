@@ -1,5 +1,5 @@
 use super::*;
-use crate::{MemoryStream, OwnedBytes, wire_codec};
+use crate::{AppendRequest, MemoryStream, OwnedBytes, wire_codec};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};

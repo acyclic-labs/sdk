@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/native.rs
++++ b/rust/crates/objects/src/native.rs
+@@ -260,7 +260,7 @@
+     value: Result<T, crate::Error>,
+ ) -> Result<T, NativeObjectsError> {
+     medium.meter.check()?;
+-    value.map_err(|error| medium.cause(error))
++    value.map_err(|error| NativeObjectsError::from(NativeObjectsCause::Service(error)))
+ }
+ 
+ pub(crate) fn retain<'a, M: Medium, P: Deref<Target = M> + ProviderPlatform>(

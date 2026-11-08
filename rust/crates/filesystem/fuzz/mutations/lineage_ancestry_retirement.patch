@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/retained.rs b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -490,7 +490,7 @@ impl<T> Retained<Vec<T>> {
+         let mut owned = crate::kernel::Owned::new(std::mem::take(&mut self.value), allocation, 0);
+         let result = owned.ensure_for_push(maximum, accounting);
+         let mut grown = Self::from_owned(owned, accounting)?;
+-        self.allocation.absorb(&mut grown.allocation)?;
++        drop(grown.allocation.split_off(std::mem::size_of::<T>() as u64)?);
+         self.value = grown.value;
+         result
+     }

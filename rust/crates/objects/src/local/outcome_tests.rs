@@ -107,6 +107,50 @@ async fn owned_close_reports_physical_completion_and_failure()
     use crate::Blobs as _;
 
     acyclic_native_runtime::initialize_native_io_services()?;
+    // A committed root needs no hidden durability on final Drop. Its original
+    // recovery marker remains, and reopening verifies the retained real blob.
+    let root = tempfile::tempdir()?;
+    let anchor = acyclic_native_runtime::OwnershipAnchor::new(());
+    let released = anchor.release_barrier();
+    let account =
+        LocalObjects::open(root.path(), LocalObjectsLimits::default(), Some(anchor)).await?;
+    let digest = account
+        .put(bytes(b"committed"), Vec::new())
+        .await?
+        .verified()
+        .ok_or("committed put outcome unknown")?
+        .digest;
+    account
+        .retain(&crate::RootId::new(b"root".to_vec())?, vec![digest])
+        .await?;
+    drop(account);
+    assert!(
+        released.is_released(),
+        "Drop retained the original root lock"
+    );
+    assert!(
+        root.path().join(OPEN).exists(),
+        "implicit Drop performed unobserved durability"
+    );
+    let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    assert!(medium.recovered(), "Drop bypassed original recovery");
+    // Even explicit close cannot certify a root before its repair settles.
+    assert_eq!(medium.close().await?, LocalClose::Released);
+    assert!(root.path().join(OPEN).exists());
+    let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+    assert!(medium.recovered());
+    let reopened = Store::new(medium).account(b"local")?;
+    assert_eq!(
+        reopened
+            .get(digest, crate::ByteRange::FULL, 9)
+            .await?
+            .body()
+            .as_ref(),
+        b"committed"
+    );
+    assert_eq!(reopened.close().await?, LocalClose::Released);
+    assert!(!root.path().join(OPEN).exists());
+
     let root = tempfile::tempdir()?;
     let account = LocalObjects::open(root.path(), LocalObjectsLimits::default(), None).await?;
     let digest = account

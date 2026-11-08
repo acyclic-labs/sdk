@@ -262,6 +262,9 @@ pub enum MaterializationRecovery {
 /// Materialization failure.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum MaterializationError<S: std::error::Error + 'static, B: std::error::Error + 'static> {
+    /// The record exhausted its unique write revisions; no replacement was published.
+    #[error("record revision is exhausted")]
+    RevisionExhausted,
     /// Durable journal access failed.
     #[error("materialization journal failed: {0}")]
     Store(S),

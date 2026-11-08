@@ -1,0 +1,14 @@
+--- a/rust/crates/filesystem/src/lineage/mod.rs
++++ b/rust/crates/filesystem/src/lineage/mod.rs
+@@ -51,6 +51,11 @@
+             Err(error) => Err(error),
+         }
+     }
++    let mut isolated = crate::kernel::KernelAccounting::standalone(
++        crate::WorkBudget::UNBOUNDED,
++        accounting.cancellation(),
++    );
++    let accounting = &mut isolated;
+     accounting.check()?;
+     let parent_shape = match (
+         record.parent_workspace_id,

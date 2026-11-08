@@ -14,8 +14,8 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_stdin_binary": (
         "plugin/src/input.rs",
-        b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
-        b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
+        b"input.read_to_end(&mut bytes)?;",
+        b"let _ = input.read_to_end(&mut bytes);",
         "null",
         b"native stdin read error must retain its original cause",
     ),
@@ -84,6 +84,15 @@ controls = {
     ),
 }
 additional_controls = {
+    "native_stdin_binary": [
+        (
+            "plugin/src/main.rs",
+            b"let action = read_json(io::stdin().lock(), None)?;",
+            b"let action = read_json(io::stdin().lock(), Some(65_536))?;",
+            "null",
+            b"workspace envelope must reach the original workspace client",
+        ),
+    ],
     "native_marketplace": [
         (
             "plugin/src/marketplace.rs",
@@ -175,15 +184,15 @@ additional_controls = {
         ),
         (
             "plugin/src/input.rs",
-            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
+            b"input.read_to_end(&mut bytes)?;",
             b"input.take(1).read_to_end(&mut bytes)?;",
             "null",
             b"native input admission changed its original JSON",
         ),
         (
             "plugin/src/input.rs",
-            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
-            b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
+            b"input.read_to_end(&mut bytes)?;",
+            b"let _ = input.read_to_end(&mut bytes);",
             "null",
             b"native input read failure must retain its OS error",
         ),

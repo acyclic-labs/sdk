@@ -1,0 +1,69 @@
+--- a/rust/crates/objects/src/native.rs
++++ b/rust/crates/objects/src/native.rs
+@@ -303,14 +303,15 @@
+     meter: Meter,
+ ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<Object>>, NativeObjectsError> {
+     native_input_meter(&meter, &requests)?;
+-    let batch_meter = Arc::clone(&meter);
+-    native_future(&meter, async move {
++    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
++    native_future(&meter, async move {
++        let account = account.over(&medium);
+         // An unpolled frame keeps the whole request. Once started, declare
+         // funding first so the iterator also retires before it on withdrawal.
+         let _custody;
+         let (requests, custody) = requests.split();
+         _custody = custody;
+-        let meter = &batch_meter;
++        let meter = &medium.meter;
+         // Keep the physical vector before its credit on every exit, including
+         // withdrawal while the driver still holds incomplete members.
+         let mut results = results(requests.len(), meter)?;
+@@ -318,12 +319,8 @@
+             requests.into_iter(),
+             crate::BATCH_WINDOW,
+             |bytes| ReadAllocation::new(meter, bytes),
+-            |(digest, range, maximum)| async move {
+-                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+-                let account = account.over(&medium);
+-                checked(&medium, account.get_inner(digest, range, maximum).await)
+-            },
+-            |got| results.0.push(got),
++            |(digest, range, maximum)| account.get_inner(digest, range, maximum),
++            |got| results.0.push(checked(&medium, got)),
+         )
+         .await?;
+         ObjectsBatch::new(results.0, results.1)
+@@ -365,26 +362,22 @@
+     window: usize,
+ ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+     native_input_meter(&meter, &requests)?;
+-    let batch_meter = Arc::clone(&meter);
+-    native_future(&meter, async move {
++    let medium = Metered::new(account.borrowed_medium(), Arc::clone(&meter));
++    native_future(&meter, async move {
++        let account = account.over(&medium);
+         // An unpolled frame keeps the whole request. Once started, declare
+         // funding first so the iterator also retires before it on withdrawal.
+         let _custody;
+         let (requests, custody) = requests.split();
+         _custody = custody;
+-        let meter = &batch_meter;
++        let meter = &medium.meter;
+         let mut results = results(requests.len(), meter)?;
+         crate::batch::drive(
+             requests.into_iter(),
+             window,
+             |bytes| ReadAllocation::new(meter, bytes),
+-            |(body, references)| async move {
+-                let medium = Metered::new(account.borrowed_medium(), Arc::clone(meter));
+-                let account = account.over(&medium);
+-                checked(&medium, account.put_inner(body, references).await)
+-                    .map(|put| ObjectsPutReceipt::new(put, None))
+-            },
+-            |put| results.0.push(put),
++            |(body, references)| account.put_inner(body, references),
++            |put| results.0.push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None))),
+         )
+         .await?;
+         ObjectsBatch::new(results.0, results.1)

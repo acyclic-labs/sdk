@@ -303,11 +303,42 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --no-default-features --features browser,memory,conformance \
-  --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
+  --target wasm32-unknown-unknown --test browser_commit conformance::browser_public_conformance_benchmark
 ```
+
+The existing `storage::indexed_db_object_batches_commit_all_or_nothing`
+property also compares raw and authenticated submissions, including duplicate
+members, an idempotent retry and a zero-hash budget. The retained
+`fuzz/mutations/indexed_db_sealed_rehash.patch` must fail that property by
+reintroducing input hashing. Run it through the same browser command above,
+selecting that exact property.
 
 The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
 `CHROMEDRIVER` when selecting another installed distribution.
+
+The shared Blob materializer has a separate Node/WASM property over real
+`Blob.arrayBuffer()` results. It holds delivery after materialization to check
+original funding through cancellation, caller withdrawal and final byte aliases.
+The same completion owner also runs two successive physical reads after delivery
+is withdrawn during the first Promise, keeping their buffers funded until both
+steps settle:
+
+```sh
+bindgen=$(bash scripts/ensure-wasm-bindgen.sh)
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="$(dirname "$(command -v "$bindgen")")/wasm-bindgen-test-runner"
+unset WASM_BINDGEN_USE_BROWSER
+cargo test --locked -p acyclic-fs --no-default-features --features browser \
+  --target wasm32-unknown-unknown --test browser_blob_custody
+```
+
+This checks the shared byte materialization path; the browser provider suite
+above checks IndexedDB persistence. The kept
+`fuzz/mutations/browser_blob_payload_custody.patch` removes physical payload
+funding and must fail the withdrawal property's live-byte assertion.
+`fuzz/mutations/browser_operation_producer_retirement.patch` retires a pending
+producer in Stream's shared completion primitive and must fail with
+`physical producer retired before settlement`.
+Both mutations run against the same property and shipping completion path.
 
 `Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
 visits preserve the original owner; async storage calls retain the original

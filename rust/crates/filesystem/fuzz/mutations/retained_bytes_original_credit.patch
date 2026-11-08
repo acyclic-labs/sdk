@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -443,6 +443,8 @@
+             (custody, self.allocation),
+             |(_, original), control| {
+                 let mut allocation = RetainedAllocation::claim(control as u64, 1, accounting)?;
+-                original.absorb(&mut allocation)
++                std::mem::swap(original, &mut allocation);
++                drop(allocation);
++                Ok(())
+             },
+         )

@@ -4,6 +4,7 @@
 use crate::{ProviderPlatform, ProviderTask, Record, StreamError};
 use std::{
     future::Future,
+    num::NonZeroU32,
     ops::Range,
     pin::Pin,
     task::{Context, Poll},
@@ -87,23 +88,20 @@ pub struct PinnedCursor<S: PageSource> {
     source: S,
     page: Option<std::iter::Peekable<S::Page>>,
     next: u64,
-    budget: u32,
+    budget: NonZeroU32,
     exhausted: bool,
 }
 
 impl<S: PageSource> PinnedCursor<S> {
-    /// Pins a source without reading it. A zero page budget is invalid.
-    pub fn new(source: S, after: u64, budget: u32) -> Result<Self, StreamError> {
-        if budget == 0 {
-            return Err(StreamError::InvalidArgument);
-        }
-        Ok(Self {
+    /// Pins a source without reading it, retaining its nonzero page budget.
+    pub fn new(source: S, after: u64, budget: NonZeroU32) -> Self {
+        Self {
             source,
             page: None,
             next: after,
             budget,
             exhausted: false,
-        })
+        }
     }
 
     /// The immutable source currently owned by this cursor.
@@ -138,7 +136,7 @@ impl<S: PageSource> PinnedCursor<S> {
         if self.page.is_none() && !self.exhausted {
             self.page = self
                 .source
-                .next_page(self.next, self.budget)
+                .next_page(self.next, self.budget.get())
                 .await?
                 .map(Iterator::peekable);
             self.exhausted = self.page.is_none();

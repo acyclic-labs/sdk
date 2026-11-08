@@ -87,12 +87,15 @@ async fn same_phase_settlement_advances_the_actor_without_appending_status() -> 
         };
         let (ready, cut) = host.input_progress(&root, inbox).await?;
         assert!(!ready);
-        assert_eq!(settled(&provider, &within, &root).await?, None);
+        assert!(!settled(&provider, &within, &root).await?.1);
         let mut changes = acyclic_stream::records_only(provider.follow(cut).await?);
         assert!(host.runtime().drain().await.is_empty());
         assert!(changes.try_next().await?.is_some());
         assert!(host.input_progress(&root, inbox).await?.0);
-        assert_eq!(settled(&provider, &within, &root).await?, Some(Phase::Idle));
+        assert_eq!(
+            settled(&provider, &within, &root).await?,
+            (Phase::Idle, true)
+        );
         let statuses = values(provider.as_ref(), root.status()?).await?;
         assert_eq!(statuses.len(), 1);
         let stale = StatusRecord::decode(&statuses[0])?;

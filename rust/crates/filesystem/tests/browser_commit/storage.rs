@@ -215,10 +215,17 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let initial = [first.clone(), second.clone(), first.clone()]
+        .map(|write| acyclic_fs::HashedObject::new(write.object_id.kind, write.bytes));
     store
-        .put_many(&[first.clone(), second.clone()], &mut work)
+        .put_many_hashed(&initial, &mut work)
         .await
         .map_err(js_error)?;
+    assert_eq!(work.spent().bytes_hashed, 0);
+    assert_eq!(work.spent().object_probes, 2);
+    assert_eq!(work.spent().backend_read_operations, 2);
+    assert_eq!(work.spent().backend_write_operations, 2);
+    assert_eq!(work.spent().durability_operations, 1);
     assert_eq!(
         work.spent().object_bytes_written,
         (first.bytes.len() + second.bytes.len()) as u64
@@ -231,6 +238,50 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .map_err(js_error)?;
     assert_eq!(work.spent().object_bytes_written, third.bytes.len() as u64);
     assert_eq!(work.spent().object_bytes_read, first.bytes.len() as u64);
+    // Raw and authenticated submissions share the transaction and byte checks;
+    // authenticated bytes only discard their redundant input hash.
+    let originals = [first.clone(), second.clone(), third.clone(), first.clone()];
+    let authenticated = originals
+        .clone()
+        .map(|write| acyclic_fs::HashedObject::new(write.object_id.kind, write.bytes));
+    let mut raw_work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put_many(&originals, &mut raw_work)
+        .await
+        .map_err(js_error)?;
+    let mut authenticated_work = acyclic_fs::AuthorityWork::new(
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    store
+        .put_many_hashed(&authenticated, &mut authenticated_work)
+        .await
+        .map_err(js_error)?;
+    let mut expected = raw_work.spent();
+    assert_eq!(
+        expected.bytes_hashed,
+        originals
+            .iter()
+            .map(|write| write.bytes.len() as u64)
+            .sum::<u64>()
+    );
+    expected.bytes_hashed = 0;
+    assert_eq!(authenticated_work.spent(), expected);
+    let mut scalar_work = acyclic_fs::AuthorityWork::new(
+        WorkBudget {
+            bytes_hashed: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    store
+        .put_hashed(authenticated[0].clone(), &mut scalar_work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(scalar_work.spent().bytes_hashed, 0);
     let requests =
         [first.clone(), second.clone(), third.clone()].map(|write| acyclic_fs::ObjectReadRequest {
             object_id: write.object_id,
@@ -273,6 +324,33 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         .await
         .map_err(js_error)?;
     assert_eq!(persisted, batch);
+    // The same original ledger funds output metadata and physical buffers.
+    // The returned guard keeps the vector funded independently of its values.
+    let repeated = vec![requests[0].clone(); 128];
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (values, allocation) = store
+        .read_many(&repeated, &mut work)
+        .await
+        .map_err(js_error)?;
+    let output_bytes = (values.capacity() * size_of::<acyclic_fs::ObjectRead>()) as u64;
+    let metadata_bytes =
+        output_bytes + (repeated.len() * size_of::<(ObjectId, web_sys::Blob, u64)>()) as u64;
+    assert!(
+        work.spent().peak_allocation_bytes
+            >= metadata_bytes + first.bytes.len() as u64 * repeated.len() as u64,
+        "batch metadata and payloads were not admitted together"
+    );
+    drop(values);
+    let with_vector = work.accounting().standalone_parts().unwrap().0.live_bytes();
+    assert!(
+        with_vector >= output_bytes,
+        "output vector lost its original credit"
+    );
+    drop(allocation);
+    assert_eq!(
+        with_vector - work.accounting().standalone_parts().unwrap().0.live_bytes(),
+        output_bytes
+    );
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
@@ -282,6 +360,36 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     ));
     assert_eq!(work.spent(), WorkCounters::default());
     let fourth = blob_write(b"fourth batch object");
+    // Every required existing-member check precedes any durable new member.
+    for originals in [
+        vec![first.clone(), fourth.clone()],
+        vec![fourth.clone(), first.clone()],
+    ] {
+        let mut work = acyclic_fs::AuthorityWork::new(
+            WorkBudget {
+                object_bytes_read: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        assert!(matches!(
+            store.put_many(&originals, &mut work).await,
+            Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
+                counter: "object_bytes_read",
+                ..
+            }))
+        ));
+        assert_eq!(work.spent().backend_write_operations, 0);
+        assert_eq!(work.spent().durability_operations, 0);
+        let mut read = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        assert!(
+            matches!(
+                store.read(fourth.object_id, 1_024, &mut read).await,
+                Err(ObjectStoreError::Missing)
+            ),
+            "refused batch committed a new member"
+        );
+    }
     let mut forged = blob_write(b"forged batch object");
     forged.object_id.digest = Digest::from_bytes([9; 32]);
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);

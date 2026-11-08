@@ -1,0 +1,9 @@
+--- a/rust/crates/stream/src/owned_bytes/owner.rs
++++ b/rust/crates/stream/src/owned_bytes/owner.rs
+@@ -38,5 +38,5 @@
+             data: Data::Plain(Bytes::from_owner(storage)),
+             range: 0..length,
+-            retained_capacity: Some(capacity),
++            retained_capacity: None,
+         })
+     }

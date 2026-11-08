@@ -254,9 +254,7 @@ impl ProofGuard {
             Self::Standalone { allocation, .. } => allocation,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(allocation) => {
-                crate::kernel::allocation::retained::RetainedAllocation::Native {
-                    _allocation: allocation,
-                }
+                crate::kernel::allocation::retained::RetainedAllocation::native(allocation)
             }
         }
     }

@@ -10,19 +10,19 @@ impl MemoryStream {
         >,
         StreamError,
     > {
-        let digest = fork_digest(&request)?;
-        if let Some(result) = self.replay_fork(&state, &request.idempotency_key, digest)? {
+        let digest = fork_digest(request)?;
+        if let Some(result) = self.replay_fork(state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned(result));
         }
-        admit_replay(&state, self.limits)?;
+        admit_replay(state, self.limits)?;
         let mut probes = self.replay_insertion_probes(request.idempotency_key.as_bytes())?;
         let forked_at = crate::preparation::fork_cut(
-            &request,
+            request,
             state.tail(&request.source),
             state.tail(&request.destination),
         )?;
-        reserve_fork(&state, &request, self.limits)?;
-        reserve_commit(&state, self.limits)?;
+        reserve_fork(state, request, self.limits)?;
+        reserve_commit(state, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         let commit_id = commit_identity(decision, digest);
@@ -46,8 +46,8 @@ impl MemoryStream {
                 records: Vec::new(),
             })],
         };
-        let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
+        let (histories, _histories) = self.histories(state, &envelope.mutations)?;
+        let (paths, _paths) = self.paths(state, std::iter::once(&receipt.destination))?;
         let retained = self.reserve_retained(state)?;
         let time = crate::preparation::committed_time(
             state.last_committed_at_micros,

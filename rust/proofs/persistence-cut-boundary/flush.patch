@@ -1,0 +1,19 @@
+diff --git a/rust/crates/stream/src/local/persistence_cut.rs b/rust/crates/stream/src/local/persistence_cut.rs
+index 35ead858393..622ed068a50 100644
+--- a/rust/crates/stream/src/local/persistence_cut.rs
++++ b/rust/crates/stream/src/local/persistence_cut.rs
+@@ -73,7 +73,13 @@ impl LocalStream {
+             if self.inner.persistence_cut.get().is_some() {
+                 return Err(StreamError::AlreadyExists);
+             }
+-            self.seal_accepted().await?;
++            {
++                let journal = self.inner.journal.lock().unwrap();
++                assert!(
++                    journal.flushed_sequence.is_some_and(|cut| cut >= journal.appended),
++                    "a frame written before the cut is not flushed"
++                );
++            }
+             {
+                 let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
+                 journal.flushed = journal.bytes;

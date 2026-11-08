@@ -1,0 +1,10 @@
+diff --git a/rust/crates/filesystem/src/browser/indexed_db/objects.rs b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+--- a/rust/crates/filesystem/src/browser/indexed_db/objects.rs
++++ b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+@@ -223,6 +223,3 @@
+                 .map_err(crate::async_storage::object_error)?;
+-            if !inserted {
+-                continue;
+-            }
+             work::charge(
+                 io,

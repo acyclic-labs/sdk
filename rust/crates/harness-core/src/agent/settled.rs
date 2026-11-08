@@ -8,8 +8,8 @@ use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProviderExt as 
 use futures::TryStreamExt as _;
 use std::sync::Arc;
 
-/// `agent`'s phase if it has settled every inbox record committed before this
-/// call (idle, waiting for a user, or done), else `None`: one read of its
+/// `agent`'s phase, and whether it has settled every inbox record committed
+/// before this call (idle, waiting for a user, or done): one read of its
 /// inbox tail and its original actor state, never a wait. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
 ///
@@ -20,19 +20,18 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &Arc<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
-) -> Result<Option<Phase>, Error> {
+) -> Result<(Phase, bool), Error> {
     let inbox = inbox_tail(&**provider, agent).await?;
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
     let (state, cursor) = super::handler::Agents::new(super::actor_store(provider)?)
         .state(&actor, agent)
         .await?;
-    Ok(match &state.phase {
-        Phase::Done { .. } => Some(state.phase),
-        Phase::Idle | Phase::WaitingUser { .. } if state.settled_before(cursor) >= inbox => {
-            Some(state.phase)
-        }
-        _ => None,
-    })
+    let settled = match &state.phase {
+        Phase::Done { .. } => true,
+        Phase::Idle | Phase::WaitingUser { .. } => state.settled_before(cursor) >= inbox,
+        _ => false,
+    };
+    Ok((state.phase, settled))
 }
 
 /// `agent`'s last own settled turn, if it has run one; inherited history is
@@ -99,11 +98,11 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         references: &'a [String],
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<(String, AgentPath)>>>;
 
-    /// `child`'s phase once it settled (see [`settled`]), else `None`.
+    /// `child`'s phase and whether it settled (see [`settled`]).
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<Phase>>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<(Phase, bool)>>;
 
     /// The text `child`'s last own turn answered (see [`answer`]), read under
     /// the turn's authority.

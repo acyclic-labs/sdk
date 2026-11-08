@@ -1,0 +1,12 @@
+diff --git a/rust/crates/objects/src/tests.rs b/rust/crates/objects/src/tests.rs
+--- a/rust/crates/objects/src/tests.rs
++++ b/rust/crates/objects/src/tests.rs
+@@ -1852,7 +1852,7 @@ impl Medium for Counting {
+         self.inner.remove(key).await
+     }
+     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
+-        self.count("observe");
++        self.count("read");
+         let result = self.inner.observe(key).await?;
+         if let Some(observed) = &result {
+             self.record("observed_bytes", observed.bytes.len());

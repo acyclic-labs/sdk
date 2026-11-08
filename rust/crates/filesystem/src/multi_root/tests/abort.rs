@@ -154,7 +154,7 @@ async fn conflicted_publication_abort_restores_premerge_generation()
             .as_ref(),
         b"preserved\n"
     );
-    assert!(aborting.pending_operations().await?.is_empty());
+    assert!(aborting.store.load(abort_operation).await?.is_none());
     Ok(())
 }
 
@@ -294,6 +294,6 @@ async fn aborting_a_conflict_that_changed_no_target_path_succeeds()
             .as_ref(),
         b"base\n"
     );
-    assert!(coordinator.pending_operations().await?.is_empty());
+    assert!(coordinator.store.load(operation).await?.is_none());
     Ok(())
 }

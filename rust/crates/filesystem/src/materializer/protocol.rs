@@ -360,7 +360,8 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         if let Some(work) = self.observed_work()? {
             journal.work = work;
         }
-        let expected = next_revision(&mut journal.revision);
+        let expected =
+            next_revision(&mut journal.revision).ok_or(MaterializationError::RevisionExhausted)?;
         let (stored, replacement) = self
             .store
             .compare_and_swap(journal.plan.operation_id, expected, journal)

@@ -1,0 +1,16 @@
+--- a/rust/crates/harness-core/src/config/evaluate/composition.rs
++++ b/rust/crates/harness-core/src/config/evaluate/composition.rs
+@@ -137,11 +137,11 @@
+         identity.update(VERSION.as_bytes());
+         identity.update(&(path.len() as u64).to_be_bytes());
+         identity.update(path.as_bytes());
+-        identity.update(&crate::layers::stack_digest(
++        let _ = crate::layers::stack_digest(
+             layers
+                 .iter()
+                 .map(|layer| (layer.name, layer.generation.as_bytes())),
+-        ));
++        );
+         let inputs = layers
+             .iter()
+             .map(|layer| {

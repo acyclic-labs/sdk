@@ -541,7 +541,8 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         accounting: &mut W,
     ) -> Result<Option<Entry<V, A, N>>, W::Error> {
         accounting.validate()?;
-        self.remove_with(key, |_| true, |items| accounting.examine(items))
+        self.extract_with(key, |_| true, |items| accounting.examine(items))
+            .map(|extracted| extracted.map(Self::into_entry))
     }
 
     /// Extracts an exact matching owner and its original node funding.
@@ -553,18 +554,40 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
     ) -> Option<Entry<V, A, N>> {
-        match self.remove_with(key, matches, |_| Ok::<(), std::convert::Infallible>(())) {
-            Ok(entry) => entry,
+        self.extract_if(key, matches).map(Self::into_entry)
+    }
+
+    /// Detaches one matching leaf and its redundant parent without destroying
+    /// any payload, backing or funding. Destroy or consume the returned owner
+    /// after leaving any lock its original funding may re-enter.
+    /// This allocation-free cleanup cannot refuse after cancellation. Two
+    /// traversals visit at most 16N branches, independent of population.
+    pub fn extract_if(
+        &mut self,
+        key: [u8; N],
+        matches: impl FnOnce(&V) -> bool,
+    ) -> Option<ExtractedPrefix<V, A, N>> {
+        match self.extract_with(key, matches, |_| Ok::<(), std::convert::Infallible>(())) {
+            Ok(extracted) => extracted,
             Err(impossible) => match impossible {},
         }
     }
 
-    fn remove_with<E>(
+    fn into_entry(extracted: ExtractedPrefix<V, A, N>) -> Entry<V, A, N> {
+        let mut extracted = extracted.into_index();
+        let retired = extracted
+            .root
+            .take()
+            .unwrap_or_else(|| unreachable!("verified registration"));
+        Entry::from_leaf(retired)
+    }
+
+    fn extract_with<E>(
         &mut self,
         key: [u8; N],
         matches: impl FnOnce(&V) -> bool,
         mut charge: impl FnMut(u64) -> Result<(), E>,
-    ) -> Result<Option<Entry<V, A, N>>, E> {
+    ) -> Result<Option<ExtractedPrefix<V, A, N>>, E> {
         let mut cursor = self.root.as_ref();
         let mut parent = None;
         let mut ancestors = 0;
@@ -600,14 +623,7 @@ impl<V, A, const N: usize> FixedIndex<V, A, N> {
         if ancestors != 0 {
             charge(ancestors)?;
         }
-        let mut extracted = self
-            .extract_at(parent, |bit| high(&key, bit), |_| {})
-            .into_index();
-        let retired = extracted
-            .root
-            .take()
-            .unwrap_or_else(|| unreachable!("verified registration"));
-        Ok(Some(Entry::from_leaf(retired)))
+        Ok(Some(self.extract_at(parent, |bit| high(&key, bit), |_| {})))
     }
 
     /// Retires one exact owner, destroying its value before its original token.

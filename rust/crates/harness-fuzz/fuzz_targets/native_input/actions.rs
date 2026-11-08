@@ -78,6 +78,27 @@ pub(super) fn check(bytes: &[u8]) {
     WRITERS.call_once(|| {
         let task = AgentPath::root(&AgentId::from_bytes([13; 16]));
         let operation = OperationId::from_bytes([19; 16]);
+        let completion = HostAction::Session {
+            parent: task.clone(),
+            reference: "near-bound-completion".into(),
+            next: false,
+            action: SessionAction::Complete {
+                claim: TurnClaim {
+                    agent: task.clone(),
+                    operation,
+                    turn: 1,
+                },
+                outcome: Outcome::Succeeded(TurnOutput::new("x".repeat(65_336), Value::Null, 1)),
+            },
+        };
+        let encoded = serde_json::to_vec(&completion).unwrap();
+        assert!(
+            encoded.len() > 65_536,
+            "workspace envelope crosses the hook frame bound"
+        );
+        let admitted = super::read_pipe(&encoded, None)
+            .expect("workspace envelope must retain its complete JSON");
+        assert_eq!(admitted, serde_json::to_value(&completion).unwrap());
         let mut sessions = vec![
             SessionAction::Spawn {
                 prompt: "caller input".into(),
@@ -159,6 +180,7 @@ pub(super) fn check(bytes: &[u8]) {
                 });
             }
         }
+        actions.push(completion);
         let capture = std::env::var_os("ACYCLIC_FUZZ_CORPUS").map(std::path::PathBuf::from);
         for (index, original) in actions.into_iter().enumerate() {
             action(&original);

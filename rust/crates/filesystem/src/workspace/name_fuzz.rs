@@ -19,6 +19,28 @@ pub fn check_workspace_name(data: &[u8]) {
     let mut actual = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut old = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let decoded = WorkspaceName::with_accounting(text, &mut actual);
+    let mut validation = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        WorkspaceName::validate_with_accounting(text, &mut validation)
+            .map_err(|error| format!("{error:?}")),
+        decoded
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}")),
+        "borrowed validation changed canonical syntax"
+    );
+    if text.is_ascii() {
+        assert_eq!(
+            validation.spent().bytes_copied,
+            0,
+            "borrowed validation copied a name"
+        );
+        assert_eq!(
+            validation.spent().allocation_operations,
+            0,
+            "borrowed validation allocated a name"
+        );
+    }
     let expected = reference::decode(text, &mut old, false, &mut |_, _, _| {});
     assert_eq!(
         outcome(decoded),
@@ -36,11 +58,25 @@ pub fn check_workspace_name(data: &[u8]) {
         );
     }
 
-    let effects = check_effects(data, text, &cancellation);
-    assert!(effects.is_ok(), "{effects:?}");
+    for validate in [false, true] {
+        let effects = check_effects(data, text, &cancellation, validate);
+        assert!(effects.is_ok(), "{effects:?}");
+    }
+    cancellation.cancel();
+    let mut cancelled = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        WorkspaceName::validate_with_accounting(text, &mut cancelled),
+        Err(WorkspaceError::Cancelled(_))
+    ));
+    assert_eq!(cancelled.spent(), crate::WorkCounters::UNCHARGED);
 }
 
-fn check_effects(data: &[u8], text: &str, cancellation: &CancellationToken) -> Result<(), FsError> {
+fn check_effects(
+    data: &[u8],
+    text: &str,
+    cancellation: &CancellationToken,
+    validate: bool,
+) -> Result<(), FsError> {
     let selector = data.first().copied().unwrap_or(0);
     let limit = WorkBudget {
         items_examined: if selector & 1 == 0 {
@@ -70,17 +106,23 @@ fn check_effects(data: &[u8], text: &str, cancellation: &CancellationToken) -> R
     let mut accounting = KernelAccounting::standalone(limit, cancellation);
     let before = accounting.spent();
     let (mut examined, mut copied) = (0, 0);
-    let _ = WorkspaceName::with_probe(
-        text,
-        &mut accounting,
-        char::is_ascii,
-        &mut |tag, value, bytes| match tag {
-            0 | 1 => examined += 1,
-            2 => copied += bytes,
-            4 => copied += value,
-            _ => (),
-        },
-    );
+    let mut probe = |tag, value, bytes| match tag {
+        0 | 1 => examined += 1,
+        2 => copied += bytes,
+        4 => copied += value,
+        _ => (),
+    };
+    if validate {
+        let _ = WorkspaceName::parse_with(
+            text,
+            &mut accounting,
+            char::is_ascii,
+            &mut probe,
+            |_, _, _| Ok(()),
+        );
+    } else {
+        let _ = WorkspaceName::with_probe(text, &mut accounting, char::is_ascii, &mut probe);
+    }
     let after = accounting.spent();
     assert_eq!(
         after.items_examined - before.items_examined,

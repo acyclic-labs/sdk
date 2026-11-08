@@ -1,13 +1,16 @@
 //! Real retained local bytes through an applied read-only medium.
 use super::*;
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::{
+    mem::size_of,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
-struct Applied {
-    inner: Arc<crate::LocalMedium>,
+struct Applied<'a> {
+    inner: &'a crate::LocalMedium,
     writes: AtomicUsize,
 }
 
-impl Applied {
+impl Applied<'_> {
     fn refuse<T>(&self) -> Result<T, MediumError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         Err(MediumError::Failed(
@@ -18,7 +21,7 @@ impl Applied {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl Medium for Applied {
+impl Medium for Applied<'_> {
     async fn create(&self, _: &str, _: OwnedBytes) -> Result<bool, MediumError> {
         self.refuse()
     }
@@ -78,6 +81,578 @@ impl Medium for Applied {
 }
 
 #[tokio::test]
+async fn native_local_inputs_retire_before_their_credit() -> Result<(), Box<dyn std::error::Error>>
+{
+    use acyclic_native_runtime::ReadAllocation;
+    use std::{future::Future, pin::Pin};
+
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"input-frame-custody")?;
+    let child = blobs
+        .put(b"original child".as_slice().into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original child publication is known")?
+        .digest;
+    // Unpolled withdrawal, completion, cancellation, parked withdrawal, and
+    // loss of the original release producer use the same public entry points.
+    for batch in [false, true] {
+        for state in 0..5 {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let payload = vec![u8::from(batch) * 5 + state; 1931];
+            let payload_credit = ReadAllocation::new(&meter, payload.capacity())?;
+            let body = crate::Sealed::new(
+                OwnedBytes::from_vec_with_guard(payload, payload_credit, Arc::clone(&meter))
+                    .map_err(|failure| match failure.into_error() {
+                        acyclic_stream::PreparedOwnedBytesError::Admission(error) => error,
+                        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                            std::io::Error::from(std::io::ErrorKind::InvalidData)
+                        }
+                    })?,
+            );
+            let digest = Digest::from_bytes(*body.digest());
+            let references = vec![child; 11];
+            let mut input_bytes = references.capacity() * size_of::<Digest>();
+            let mut operation: Pin<
+                Box<dyn Future<Output = Result<Put, crate::NativeObjectsError>> + '_>,
+            > = if batch {
+                let requests = vec![(body, references)];
+                input_bytes += requests.capacity() * size_of::<(crate::Sealed, Vec<Digest>)>();
+                let custody = ReadAllocation::new(&meter, input_bytes)?;
+                let future = blobs.put_batch_native(
+                    crate::ObjectsNativeRequest::new(requests, custody, &meter)?,
+                    Arc::clone(&meter),
+                )?;
+                Box::pin(async move {
+                    let mut results = future.await?;
+                    assert_eq!(results.len(), 1);
+                    results
+                        .next()
+                        .expect("original member")
+                        .map(|receipt| receipt.put().clone())
+                })
+            } else {
+                let custody = ReadAllocation::new(&meter, input_bytes)?;
+                let future = blobs.put_native(
+                    crate::ObjectsNativeRequest::new((body, references), custody, &meter)?,
+                    Arc::clone(&meter),
+                )?;
+                Box::pin(async move { future.await.map(|receipt| receipt.put().clone()) })
+            };
+            // The original payload was already admitted before arming the
+            // fixed-size trace. Watch its one owner and the actual input claim.
+            *budget.retirement.lock().unwrap() = Some(super::budget::Retirement {
+                results: input_bytes as u64,
+                payload: 1931,
+                live_payloads: 1,
+                result_released: false,
+                early_result: false,
+            });
+            let mut release = None;
+            if state >= 3 {
+                let (mut reached, producer) = medium.park("create", "/p/");
+                super::drive_to_park(operation.as_mut(), &mut reached).await;
+                release = Some(producer);
+            }
+            if state == 2 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state != 0 && state != 3 {
+                // Producer loss must finish with the original indeterminate outcome.
+                drop(release.take());
+                let result = operation.as_mut().await;
+                if state == 1 {
+                    assert!(result?.verified().is_some());
+                    assert_eq!(
+                        blobs.get(digest, ByteRange::FULL, 1931).await?.body().len(),
+                        1931
+                    );
+                } else if state == 4 {
+                    assert_eq!(
+                        result?,
+                        Put::Unknown,
+                        "lost original write reply was acknowledged"
+                    );
+                } else {
+                    let cause = result
+                        .expect_err("original operation must refuse")
+                        .into_cause();
+                    assert!(matches!(
+                        &cause,
+                        crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::Interrupted
+                    ));
+                }
+            }
+            drop(operation);
+            drop(release);
+            let trace = budget.retirement.lock().unwrap();
+            let trace = trace.as_ref().unwrap();
+            assert!(trace.result_released, "original input credit never retired");
+            assert!(
+                !trace.early_result,
+                "input credit retired before its payload owner: batch={batch} state={state}"
+            );
+            assert_eq!(trace.live_payloads, 0);
+            assert_eq!(budget.held.lock().unwrap().0, 0);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_local_batch_retires_results_before_their_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let account_name = b"batch-result-custody";
+    let store = Store::new(medium.clone());
+    let blobs = store.account(account_name)?;
+    let length = 1931;
+    let mut digests = Vec::new();
+    for byte in [1, 2] {
+        digests.push(
+            blobs
+                .put(vec![byte; length].into(), Vec::new())
+                .await?
+                .verified()
+                .ok_or("original publication is known")?
+                .digest,
+        );
+    }
+    // Capture the last member's actual payload key from the original store.
+    let last = medium
+        .inner
+        .list(&format!("{}/p/", Digest::of(account_name)), None, 2)
+        .await?
+        .into_iter()
+        .find(|(key, _)| key.contains(&digests[1].to_hex()))
+        .ok_or("original last payload")?
+        .0;
+    let count = crate::BATCH_WINDOW + 1;
+    let result_bytes =
+        (count * size_of::<Result<crate::Object, crate::NativeObjectsError>>()) as u64;
+    assert_ne!(result_bytes, length as u64);
+    for (withdrawn, lost) in [(false, false), (false, true), (true, false)] {
+        let budget = Arc::new(Budget::new(u64::MAX));
+        *budget.retirement.lock().unwrap() = Some(super::budget::Retirement {
+            results: result_bytes,
+            payload: length as u64,
+            live_payloads: 0,
+            result_released: false,
+            early_result: false,
+        });
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let requests = (0..count)
+            .map(|index| {
+                (
+                    digests[usize::from(index == count - 1)],
+                    ByteRange::FULL,
+                    length as u64,
+                )
+            })
+            .collect();
+        let (mut reached, release) = medium.park("read", last.clone());
+        let mut read = Box::pin(blobs.get_batch_native(
+            crate::ObjectsNativeRequest::new(requests, (), &meter)?,
+            meter,
+        )?);
+        super::drive_to_park(read.as_mut(), &mut reached).await;
+        // The last request starts only after an earlier result was delivered
+        // into the original vector. Its physical read now owns the one wait.
+        assert!(
+            budget
+                .retirement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .live_payloads
+                > 0,
+            "original batch retained no completed payload"
+        );
+        if withdrawn {
+            drop(read);
+            drop(release);
+        } else {
+            if lost {
+                drop(release);
+            } else {
+                release
+                    .send(())
+                    .expect("original read producer remains alive");
+            }
+            let batch = read.await?;
+            assert_eq!(batch.len(), count);
+            assert!(batch.results()[..count - 1].iter().all(Result::is_ok));
+            match &batch.results()[count - 1] {
+                Ok(_) => assert!(!lost, "lost original producer returned success"),
+                Err(error) => {
+                    assert!(lost);
+                    assert!(
+                        matches!(&error.cause, crate::NativeObjectsCause::Service(error) if error.code == ErrorCode::Unavailable)
+                    );
+                }
+            }
+            drop(batch);
+        }
+        let trace = budget.retirement.lock().unwrap();
+        let trace = trace.as_ref().unwrap();
+        assert!(
+            trace.result_released,
+            "original result credit never retired"
+        );
+        assert!(
+            !trace.early_result,
+            "batch result credit retired before its payload owners: withdrawn={withdrawn}"
+        );
+        assert_eq!(trace.live_payloads, 0);
+        assert_eq!(budget.held.lock().unwrap().0, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_local_batch_refusals_belong_to_their_original_members()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store =
+        Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+    let blobs = store.account(b"original-members")?;
+    let bytes = OwnedBytes::from(b"real local batch".to_vec());
+    let digest = blobs
+        .put(bytes.clone(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original publication is known")?
+        .digest;
+    for read in [false, true] {
+        for refused in [true, false] {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            if refused {
+                // The first member submits real I/O. Later members refuse
+                // while its completion still fences ordered batch delivery.
+                *(if read { &budget.reads } else { &budget.writes })
+                    .lock()
+                    .unwrap() = Some(1);
+            }
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let causes = if read {
+                blobs
+                    .get_batch_native(
+                        crate::ObjectsNativeRequest::new(
+                            vec![(digest, ByteRange::FULL, bytes.len() as u64); 4],
+                            (),
+                            &meter,
+                        )?,
+                        Arc::clone(&meter),
+                    )?
+                    .await?
+                    .map(|result| result.map(|object| assert_eq!(object.body(), &bytes)))
+                    .collect::<Vec<_>>()
+            } else {
+                blobs
+                    .put_batch_native(
+                        crate::ObjectsNativeRequest::new(
+                            super::sealed(
+                                (0..4)
+                                    .map(|member| {
+                                        (vec![u8::from(refused), member].into(), Vec::new())
+                                    })
+                                    .collect(),
+                            ),
+                            (),
+                            &meter,
+                        )?,
+                        Arc::clone(&meter),
+                    )?
+                    .await?
+                    .map(|result| result.map(|receipt| assert!(receipt.put().verified().is_some())))
+                    .collect::<Vec<_>>()
+            };
+            for (member, result) in causes.into_iter().enumerate() {
+                if refused {
+                    let cause = result.err().map(|error| error.into_cause());
+                    assert!(
+                        matches!(&cause, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::QuotaExceeded),
+                        "original member refusal: read={read} member={member} {cause:?}"
+                    );
+                } else {
+                    result?;
+                }
+            }
+            assert_eq!(budget.held.lock().unwrap().0, 0, "member custody retained");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_local_presence_finishes_on_original_read_outcomes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"original-presence")?;
+    let child = blobs
+        .put(b"presence reference".as_slice().into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("original child is known")?
+        .digest;
+    let digest = blobs
+        .put(b"present".as_slice().into(), vec![child])
+        .await?
+        .verified()
+        .ok_or("original publication is known")?
+        .digest;
+    for fragment in ["/e/", "/p/"] {
+        for state in 0..4 {
+            let budget = Arc::new(Budget::new(u64::MAX));
+            *budget.writes.lock().unwrap() = Some(0);
+            let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+            let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+            let mut operation = Box::pin(blobs.contains_native(request, Arc::clone(&meter))?);
+            let (mut reached, release) = medium.park("read", fragment);
+            super::drive_to_park(operation.as_mut(), &mut reached).await;
+            if state == 1 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state == 2 {
+                drop(operation);
+                drop(release);
+            } else {
+                if state == 3 {
+                    drop(release);
+                } else {
+                    release.send(()).map_err(|()| "original read withdrew")?;
+                }
+                let result = operation.as_mut().await;
+                match state {
+                    0 => assert!(result?),
+                    1 => assert!(matches!(
+                        result.expect_err("cancelled presence succeeded").into_cause(),
+                        crate::NativeObjectsCause::Admission(error)
+                            if error.kind() == std::io::ErrorKind::Interrupted
+                    )),
+                    _ => assert!(matches!(
+                        result.expect_err("presence hid original read failure").into_cause(),
+                        crate::NativeObjectsCause::Service(error)
+                            if error.code == ErrorCode::Unavailable
+                    )),
+                }
+                drop(operation);
+            }
+            assert_eq!(
+                budget.held.lock().unwrap().0,
+                0,
+                "presence custody retained"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_local_decoded_metadata_keeps_its_original_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store =
+        Store::new(crate::LocalMedium::open(directory.path(), Default::default(), None).await?);
+    let blobs = store.account(b"decoded-metadata")?;
+    let mut references = Vec::new();
+    for byte in 0..3 {
+        references.push(
+            blobs
+                .put(vec![byte; 17].into(), Vec::new())
+                .await?
+                .verified()
+                .ok_or("original reference is known")?
+                .digest,
+        );
+    }
+    references.sort_unstable();
+    let digest = blobs
+        .put(vec![7; 19].into(), references.clone())
+        .await?
+        .verified()
+        .ok_or("original object is known")?
+        .digest;
+    for batch in [false, true] {
+        let budget = Arc::new(Budget::new(u64::MAX));
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request = (digest, ByteRange::FULL, 19);
+        let object = if batch {
+            let request = crate::ObjectsNativeRequest::new(vec![request], (), &meter)?;
+            let mut results = blobs.get_batch_native(request, meter)?.await?;
+            results.next().ok_or("original batch member")??
+        } else {
+            let request = crate::ObjectsNativeRequest::new(request, (), &meter)?;
+            blobs.get_native(request, meter)?.await?
+        };
+        assert_eq!(object.head().references, references);
+        let metadata = (object.head().references.capacity() * size_of::<Digest>()) as u64;
+        let before = budget.held.lock().unwrap().0;
+        let body = object.into_body();
+        let after = budget.held.lock().unwrap().0;
+        assert_eq!(
+            before - after,
+            metadata,
+            "decoded metadata escaped its original credit: batch={batch}"
+        );
+        assert!(after >= body.len() as u64);
+        let alias = body.clone();
+        drop(body);
+        assert_eq!(budget.held.lock().unwrap().0, after);
+        drop(alias);
+        assert_eq!(budget.held.lock().unwrap().0, 0);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_manifest_reads_release_copied_fragments_before_the_next_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let medium = super::Shared::over(
+        crate::LocalMedium::open(directory.path(), Default::default(), None).await?,
+        false,
+    );
+    let store = Store::new(medium.clone());
+    let blobs = store.account(b"manifest-fragment-custody")?;
+    let mut leaves = Vec::new();
+    let mut expected = Vec::new();
+    for byte in 0..16 {
+        let bytes = vec![byte; 1931];
+        expected.extend_from_slice(&bytes);
+        let digest = blobs
+            .put(bytes.into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("original fragment publication is known")?
+            .digest;
+        leaves.push(crate::Part {
+            digest,
+            length: 1931,
+        });
+    }
+    let mut branches = Vec::new();
+    for parts in leaves.chunks(8) {
+        let verified = blobs
+            .put_manifest(crate::Manifest {
+                parts: parts.to_vec(),
+                edges: Vec::new(),
+            })
+            .await?
+            .verified()
+            .ok_or("original branch publication is known")?
+            .clone();
+        branches.push(crate::Part {
+            digest: verified.digest,
+            length: verified.length,
+        });
+    }
+    let digest = blobs
+        .put_manifest(crate::Manifest {
+            parts: branches,
+            edges: Vec::new(),
+        })
+        .await?
+        .verified()
+        .ok_or("original manifest publication is known")?
+        .digest;
+    let length = expected.len() as u64;
+    // One output plus transient fragments fits; retaining every fragment
+    // alongside that output exceeds this original allocation budget.
+    let budget = Arc::new(Budget::new(2 * length));
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+    let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+    let object = blobs
+        .get_native(request, Arc::clone(&meter))?
+        .await
+        .unwrap_or_else(|error| {
+            panic!("manifest retained copied fragments through final assembly: {error}")
+        });
+    assert_eq!(object.body().as_ref(), expected);
+    assert!(object.body().matches_meter(&meter));
+    assert!(budget.peak() <= 2 * length);
+    let body = object.into_body();
+    let alias = body.clone();
+    drop(body);
+    assert!(budget.held.lock().unwrap().0 >= length);
+    drop(alias);
+    assert_eq!(budget.held.lock().unwrap().0, 0);
+
+    let budget = Arc::new(Budget::new(length));
+    let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+    let request = crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+    assert!(matches!(
+        blobs.get_native(request, meter)?.await
+            .expect_err("manifest assembly bypassed original allocation admission").into_cause(),
+        crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::OutOfMemory
+    ));
+    assert_eq!(budget.held.lock().unwrap().0, 0);
+
+    // The third fragment is reached only after the join buffer exists.
+    // Its real physical completion is the sole producer of this wait.
+    for state in 0..4 {
+        let budget = Arc::new(Budget::new(2 * length));
+        let meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request =
+            crate::ObjectsNativeRequest::new((digest, ByteRange::FULL, length), (), &meter)?;
+        let mut operation = Box::pin(blobs.get_native(request, meter)?);
+        let (mut reached, release) =
+            medium.park("read", format!("/{}.", leaves[2].digest.to_hex()));
+        super::drive_to_park(operation.as_mut(), &mut reached).await;
+        if state == 2 {
+            drop(operation);
+            drop(release);
+        } else {
+            if state == 1 {
+                budget.cancelled.store(true, Ordering::SeqCst);
+            }
+            if state == 3 {
+                drop(release);
+            } else {
+                release
+                    .send(())
+                    .map_err(|()| "original manifest read withdrew")?;
+            }
+            let result = operation.as_mut().await;
+            match state {
+                0 => assert_eq!(result?.body().as_ref(), expected),
+                1 => assert!(matches!(
+                    result.expect_err("cancelled manifest read succeeded").into_cause(),
+                    crate::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::Interrupted
+                )),
+                _ => assert!(matches!(
+                    result.expect_err("manifest read hid physical producer loss").into_cause(),
+                    crate::NativeObjectsCause::Service(error) if error.code == ErrorCode::Unavailable
+                )),
+            }
+            drop(operation);
+        }
+        assert_eq!(
+            budget.held.lock().unwrap().0,
+            0,
+            "manifest read custody retained"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn std::error::Error>>
 {
     use acyclic_stream::RevisionCut;
@@ -94,7 +669,7 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     let retained = writer.retain(&root, vec![digest]).await?;
     let minimum = RevisionCut::of(retained.revision.ok_or("retain commits a revision")?);
     let selected = Store::new(Applied {
-        inner: Arc::clone(store.medium()),
+        inner: store.medium(),
         writes: AtomicUsize::new(0),
     });
     let reader = selected.account(b"original-account")?;
@@ -126,6 +701,8 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
     let native = reader.get_native(request, Arc::clone(&meter))?.await?;
     assert_eq!(native.body(), &bytes);
     assert!(native.head().revision.is_none());
+    let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+    assert!(reader.contains_native(request, Arc::clone(&meter))?.await?);
 
     // Original account selection still fences equal digests in another account.
     assert_eq!(
@@ -136,6 +713,9 @@ async fn retained_local_reads_do_not_claim_a_writer_run() -> Result<(), Box<dyn 
             .map_err(|e| e.code),
         Err(ErrorCode::NotFound),
     );
+    let other = selected.account(b"other-account")?;
+    let request = crate::ObjectsNativeRequest::new(digest, (), &meter)?;
+    assert!(!other.contains_native(request, Arc::clone(&meter))?.await?);
     assert_eq!(selected.medium().writes.load(Ordering::SeqCst), 0);
     // The same projection refuses a real writer; reads did not borrow authority.
     assert_eq!(

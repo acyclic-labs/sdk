@@ -1,9 +1,10 @@
 //! One ordered replica over a conditional command journal.
+use crate::query_sync::SyncMutex as Mutex;
 use crate::{
     journal::{decode_command, replay},
     *,
 };
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct ReplicaClock(Mutex<u64>);
@@ -233,7 +234,7 @@ impl<J: CommandJournal> Replicated<J> {
         self
     }
 
-    #[cfg(any(feature = "local", feature = "postgres"))]
+    #[cfg(any(feature = "local", all(test, feature = "postgres")))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }

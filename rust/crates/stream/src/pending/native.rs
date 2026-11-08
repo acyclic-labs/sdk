@@ -1,6 +1,6 @@
 use super::*;
 use crate::{NativeProviderFuture, NativeStreamOutput, NativeStreamResult};
-use acyclic_native_runtime::{NativeReadMeter, ReadAllocation, arc_allocation_bytes};
+use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 
 /// The same pending completion, retaining the original native result and ledger.
 pub type NativePending<H = ReadAllocation> =
@@ -26,9 +26,7 @@ impl<H: Send + Sync + 'static> NativePending<H> {
         let copied = request.try_clone_native(&meter)?;
         let completion = ReadAllocation::new(
             &meter,
-            arc_allocation_bytes::<
-                Completion<NativeStreamResult<CommitOutcome>, (H, ReadAllocation)>,
-            >(),
+            Completion::<NativeStreamResult<CommitOutcome>, (H, ReadAllocation), CommitRequest>::allocation_bytes(),
         )?;
         let (pending, producer) = Self::prepare(request, (storage, completion));
         let future = NativeProviderFuture::try_build(&meter, || {

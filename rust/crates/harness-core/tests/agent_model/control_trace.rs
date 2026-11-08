@@ -7,7 +7,7 @@ use acyclic_harness_core::agent::kernel as production;
 use acyclic_harness_core::agent::{
     AgentId, AgentPath,
     control_trace::{Decision, Event},
-    kernel::{CONTINUE_NOW, Pick},
+    kernel::{CONTINUE_NOW, Pick, Wait},
 };
 use acyclic_test_support::{differential::observe_async, trace};
 use std::collections::BTreeSet;
@@ -97,6 +97,13 @@ fn check(events: &[Event], agents: &[AgentPath], required: &[&str]) -> Result {
                 };
             }
             Decision::Satisfy(_, result) => result.closed = !result.closed,
+            Decision::Until(_, _, _, _, result) => {
+                *result = if *result == Wait::Continue {
+                    Wait::Await(None)
+                } else {
+                    Wait::Continue
+                };
+            }
         }
         assert_eq!(
             trace::validate(&inventory, &mapping, &changed, &mut model()),
@@ -144,7 +151,7 @@ pub(super) async fn quorum(future: impl std::future::Future<Output = Result>) ->
     check(
         &events,
         &[AgentPath::root(&id(1))],
-        &["admit", "pick", "settle", "satisfy", "alarm"],
+        &["admit", "pick", "until", "settle", "satisfy", "alarm"],
     )
 }
 

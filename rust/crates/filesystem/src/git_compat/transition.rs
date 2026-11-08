@@ -21,7 +21,7 @@ pub(super) fn register_branch_workspace_state<E: std::error::Error + 'static>(
     workspace_id: WorkspaceId,
     head: Option<GitCommitId>,
     switch: bool,
-) -> Result<GitCommandOutput, GitCompatError<E>> {
+) -> Result<(), GitCompatError<E>> {
     if let Some(existing) = state.branches.get(&branch) {
         if existing.workspace_id != workspace_id || existing.head != head {
             return Err(GitCompatError::BranchExists(branch));
@@ -29,7 +29,7 @@ pub(super) fn register_branch_workspace_state<E: std::error::Error + 'static>(
         if switch {
             state.current_branch = branch;
         }
-        return Ok(GitCommandOutput::NoOp);
+        return Ok(());
     }
     let tracked_paths = head
         .and_then(|head| state.commits.get(&head))
@@ -47,7 +47,7 @@ pub(super) fn register_branch_workspace_state<E: std::error::Error + 'static>(
     if switch {
         state.current_branch = branch;
     }
-    Ok(GitCommandOutput::NoOp)
+    Ok(())
 }
 
 pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
@@ -124,6 +124,7 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
                 return Err(GitCompatError::InvalidState);
             };
             register_branch_workspace_state(state, branch, *workspace_id, head, switch)
+                .map(|()| GitCommandOutput::NoOp)
         }
         GitPendingMutation::Switch { branch } => {
             if !state.branches.contains_key(&branch) {

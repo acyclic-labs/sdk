@@ -7,8 +7,9 @@
 //! compare-and-remove are atomic; create never replaces an existing key.
 //!
 //! A write is visible at once, and [`Medium::flush`] makes every write so far
-//! durable with one data flush of the log. The owner flushes on close, once
-//! its last accepted write is done; a root opened after an unclean close cuts
+//! durable with one data flush of the log. Explicit close flushes once
+//! its last accepted write is done; dropping an owner leaves the recovery
+//! marker intact and performs no durability work. An unclean open cuts
 //! a torn tail, flushes what survived and reports [`Medium::recovered`] until
 //! settled, so the store repairs a closure the crash left partial.
 //!
@@ -120,7 +121,8 @@ const REMOVE: u8 = 2;
 /// Operation and key length, before the key.
 const BODY_HEADER: u64 = 1 + 4;
 
-/// The durable local medium.
+/// The durable local medium. Dropping the final owner releases its lock and
+/// leaves recovery enabled; use [`Self::close`] to observe a clean physical close.
 pub struct LocalMedium {
     shared: Arc<Shared>,
 }
@@ -214,8 +216,8 @@ struct Log {
     written: u64,
 }
 
-/// What every accepted write holds: the root closes, everything flushed, the
-/// marker removed and the lock released, only once the last lets go.
+/// Every accepted operation retains the root lock through physical completion.
+/// Only explicit close flushes and clears its recovery marker.
 struct Shared {
     source: ObservationSource,
     root: PathBuf,
@@ -230,8 +232,6 @@ struct Shared {
     /// root refuses every later write and flush and never closes clean: the
     /// next open recovers it.
     stopped: AtomicBool,
-    /// An explicit close reports its own failure; Drop must not retry it.
-    close_started: bool,
     #[cfg(test)]
     counts: Counts,
     /// The root's exclusive lock. It unlocks before its file closes, so a
@@ -249,21 +249,8 @@ pub(crate) struct Counts {
     pub(crate) flushed: std::sync::atomic::AtomicUsize,
 }
 
-impl Drop for Shared {
-    /// A clean close of a settled root leaves nothing unflushed, so the next
-    /// open trusts it; an unsettled or stopped one stays marked unclean.
-    fn drop(&mut self) {
-        // A failed data flush leaves the marker, and the next open recovers.
-        drop(self.close());
-    }
-}
-
 impl Shared {
     fn close(&mut self) -> std::io::Result<()> {
-        if self.close_started {
-            return Ok(());
-        }
-        self.close_started = true;
         self.sync()?;
         if !*self.recovered.get_mut() {
             std::fs::remove_file(self.root.join(OPEN))?;
@@ -707,7 +694,6 @@ fn open_root(
         synced: AtomicU64::new(0),
         recovered: AtomicBool::new(recovered),
         stopped: AtomicBool::new(false),
-        close_started: false,
         #[cfg(test)]
         counts: Counts::default(),
         _root_lock: lock,
@@ -1138,7 +1124,7 @@ mod isolation_tests {
         assert!(medium.create("a/x", bytes(b"first")).await.unwrap());
         let first = std::fs::metadata(root.path().join(LOG)).unwrap().len() as usize;
         assert!(medium.create("a/y", bytes(b"second")).await.unwrap());
-        drop(medium);
+        assert_eq!(medium.close().await.unwrap(), LocalClose::Released);
         let written = std::fs::read(root.path().join(LOG)).unwrap();
         let damaged = |at: usize| {
             let mut damaged = written.clone();

@@ -1,0 +1,9 @@
+--- a/rust/crates/filesystem/src/kernel/allocation/retained.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained.rs
+@@ -425,5 +425,5 @@
+ /// borrowed so moving the value cannot silently discard its credit.
+ pub struct Retained<T> {
++    pub(crate) allocation: RetainedAllocation,
+     pub(crate) value: T,
+-    pub(crate) allocation: RetainedAllocation,
+ }

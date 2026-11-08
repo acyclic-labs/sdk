@@ -9,6 +9,7 @@
 //! - no turn runs or is retained after completion or archive;
 //! - no lost wake-up: whenever work is runnable without new input, an alarm is set;
 //! - every alarm is a real deadline (at least `CONTINUE_NOW`).
+//! - a condition wait parks only when its open children can meet it;
 //! - a condition wait starts no step for its arrivals; only its condition
 //!   (`satisfy`) or its deadline resumes it, and `satisfy` touches no other
 //!   control.
@@ -58,6 +59,11 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
         );
     }
     assert!(release::released(true, tail, base, actions));
+}
+
+#[kani::proof]
+fn a_condition_wait_parks_only_when_its_open_children_can_meet_it() {
+    parks_only_on_a_reachable_condition(PRODUCTION);
 }
 
 fn main() {}

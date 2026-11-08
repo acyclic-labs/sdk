@@ -11,72 +11,68 @@ pub struct GitCapturedGeneration<A: 'static, O: 'static> {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> GitCapturedGeneration<A, O> {
     /// Authenticates the capture's SDK fork and registers its durable lineage.
-    pub async fn authenticated_proof<S: crate::WorkspaceLineageStore>(
+    pub async fn authenticated_proof<S: crate::WorkspaceLineageStore, W: crate::facade::FsWork>(
         &self,
         operation_id: OperationId,
         graph: &crate::WorkspaceGraph<S>,
-    ) -> Result<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> {
-        let Some((parent, initial_generation)) = &self.origin else {
-            return Ok(None);
-        };
-        let child = self.generation.workspace();
-        let suffix = format!("-{}", hex::encode(operation_id.into_bytes()));
-        if !child.name().as_str().starts_with("git-capture-")
-            || !child.name().as_str().ends_with(&suffix)
-        {
-            return Err(GitCaptureError::Conflict.into());
-        }
-        let expected = parent
-            .workspace()
-            .volume
-            .fs
-            .workspace_id(child.name().as_str())
-            .map_err(WorkspaceError::from)
-            .map_err(GitCaptureError::from)?;
-        if child.id() != expected {
-            return Err(GitCaptureError::Conflict.into());
-        }
-        let initial = child
-            .generation(
-                *initial_generation,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| GitCaptureError::from(failure.error))?
-            .value;
-        let (parents, _allocation) = initial
-            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| GitCaptureError::from(failure.error))?
-            .value;
-        if parents.as_slice() != [parent.id()] {
-            return Err(GitCaptureError::Conflict.into());
-        }
-        let (parents, _allocation) = self
-            .generation
-            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| GitCaptureError::from(failure.error))?
-            .value;
-        if self.generation.id() != *initial_generation
-            && parents.as_slice() != [*initial_generation]
-        {
-            return Err(GitCaptureError::Conflict.into());
-        }
-        graph
-            .register_existing_child_at_generation(
-                &parent.workspace(),
-                &child,
-                parent.id(),
-                *initial_generation,
-            )
-            .await?;
-        Ok(Some(GitCaptureProof {
-            fork_parent: GitTreeRef::exact(parent.workspace_id(), parent.id()),
-            initial_generation: *initial_generation,
-            operation_id,
-        }))
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> {
+        let mut accounting = work.accounting(cancellation);
+        let result: Result<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> =
+            async {
+                accounting
+                    .check()
+                    .map_err(WorkspaceError::from)
+                    .map_err(GitCaptureError::from)?;
+                let Some((parent, initial_generation)) = &self.origin else {
+                    return Ok(None);
+                };
+                let child = self.generation.workspace();
+                let mut suffix = [b'-'; 33];
+                accounting
+                    .perform(
+                        crate::WorkCounters {
+                            bytes_encoded: 32,
+                            ..crate::WorkCounters::UNCHARGED
+                        },
+                        || hex::encode_to_slice(operation_id.into_bytes(), &mut suffix[1..]),
+                    )
+                    .map_err(WorkspaceError::from)
+                    .map_err(GitCaptureError::from)?
+                    .map_err(|_| GitCaptureError::Conflict)?;
+                if !child.name().as_str().starts_with("git-capture-")
+                    || !child.name().as_str().as_bytes().ends_with(&suffix)
+                {
+                    return Err(GitCaptureError::Conflict.into());
+                }
+                if self.generation.id() != *initial_generation {
+                    let parents = self
+                        .generation
+                        .parents_accounted(&mut accounting)
+                        .await
+                        .map_err(GitCaptureError::from)?;
+                    if parents.0.as_slice() != [*initial_generation] {
+                        return Err(GitCaptureError::Conflict.into());
+                    }
+                }
+                graph
+                    .register_child_accounted(
+                        &parent.workspace(),
+                        &child,
+                        parent.id(),
+                        crate::model::GenerationSelector::Exact(*initial_generation),
+                        &mut accounting,
+                    )
+                    .await?;
+                Ok(Some(GitCaptureProof {
+                    fork_parent: GitTreeRef::exact(parent.workspace_id(), parent.id()),
+                    initial_generation: *initial_generation,
+                    operation_id,
+                }))
+            }
+            .await;
+        work.finish(result, &accounting)
     }
 }
 

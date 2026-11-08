@@ -14,11 +14,7 @@ impl<
         permit: crate::PublicationPermit,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(Self, LazySnapshotRef), LazyWorkspaceError> {
-        let (name, id) =
-            self.workspace
-                .volume
-                .fs
-                .workspace_name(destination, ctx, cancellation(ctx))?;
+        let (name, id) = self.workspace.volume.fs.workspace_name(destination, ctx)?;
         drop(name);
         let cut = match self.store.load_lazy_workspace(id, ctx).await? {
             Some(state) => self.fork_origin(&state, id, key.operation_id())?.snapshot,
@@ -158,11 +154,7 @@ impl<
         operation: crate::OperationId,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
-        let (name, id) =
-            self.workspace
-                .volume
-                .fs
-                .workspace_name(destination, ctx, cancellation(ctx))?;
+        let (name, id) = self.workspace.volume.fs.workspace_name(destination, ctx)?;
         drop(name);
         if id == self.workspace.id() {
             return Err(LazyWorkspaceError::Concurrent);

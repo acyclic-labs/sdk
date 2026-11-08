@@ -78,8 +78,15 @@ where
         }
         let graph = WorkspaceGraph::new(self.store.clone());
         graph
-            .authorize_descendant(workspace_id, self.repository)
+            .authorize_descendant(
+                workspace_id,
+                self.repository,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(|error| match error {
                 acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => {
                     Error::Unauthorized("Git workspace is outside its repository lineage".into())

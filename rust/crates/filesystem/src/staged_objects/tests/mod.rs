@@ -134,6 +134,7 @@ mod native_batch;
 mod native_read;
 mod native_write;
 mod ordinary;
+mod read_plan;
 #[cfg(windows)]
 mod sparse_gap;
 

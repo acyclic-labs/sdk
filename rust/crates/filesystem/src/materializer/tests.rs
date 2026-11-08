@@ -431,7 +431,7 @@ async fn obsolete_journals_and_forward_rollback_are_rejected() {
         journal = materializer.persist(journal).await.unwrap();
         journal.version = version;
         let operation = journal.plan.operation_id;
-        let expected = next_revision(&mut journal.revision);
+        let expected = next_revision(&mut journal.revision).expect("available revision");
         store
             .compare_and_swap(operation, expected, journal)
             .await

@@ -211,7 +211,7 @@ async fn fork_proof_work(
     }
     let name = crate::WorkspaceName::new("fork-proof-child", &B, &cancel)?.value;
     let mut accounting = KernelAccounting::standalone(B, &cancel);
-    let destination = fs.workspace_id_for_name(&name, &mut accounting, &cancel)?;
+    let destination = fs.workspace_id_for_name(&name, &mut accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
     let start = accounting.spent();

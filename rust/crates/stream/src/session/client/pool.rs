@@ -787,7 +787,7 @@ impl Pool {
                 data,
             )?,
             (Kind::ActorSocket(_), Some(Item::ActorSocket(_))) => {
-                wire_codec::session::actor_socket_sequence(route.received, &data)?
+                wire_codec::session::actor_socket_sequence(route.received, data)?
             }
             _ => return Err(StreamError::Unavailable),
         };

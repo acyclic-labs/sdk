@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/access/policy_fence.rs b/rust/crates/filesystem/src/access/policy_fence.rs
+--- a/rust/crates/filesystem/src/access/policy_fence.rs
++++ b/rust/crates/filesystem/src/access/policy_fence.rs
+@@ -34,7 +34,7 @@
+     /// Whether the captured decision is still within its original time interval.
+     #[must_use]
+     pub fn valid_at(self, now: u64) -> bool {
+-        now >= self.valid_from && self.valid_until.is_none_or(|expiry| now < expiry)
++        self.valid_until.is_none_or(|expiry| now < expiry)
+     }
+ 
+     pub(crate) fn matches(

@@ -152,10 +152,7 @@ async fn persisted_commit_hashes_are_validated_before_use() {
     state.revision = 1;
     state.commits.insert(commit.id, commit.clone());
     state.branches.get_mut("main").expect("main branch").head = Some(commit.id);
-    {
-        let mut states = store.states.0.lock().expect("state lock");
-        states.insert(workspace(), state);
-    }
+    assert!(store.compare_and_swap(workspace(), 0, state).await.unwrap());
     let repository = GitCompatRepository::new(workspace(), store);
     assert!(matches!(
         repository.execute(GitCommand::Status, tree(1)).await,

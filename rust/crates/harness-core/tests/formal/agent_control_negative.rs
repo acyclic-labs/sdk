@@ -21,6 +21,16 @@ fn alarm_from_history(
     }
 }
 
+/// The former mapping: a condition no open child can meet parked the turn
+/// on its deadline alone, asking no one.
+fn until_on_deadline(need: u32, open: usize, _sleep: bool, deadline: Option<u64>) -> Wait {
+    if need == 0 || (need as usize > open && deadline.is_none()) {
+        Wait::Continue
+    } else {
+        Wait::Await(deadline)
+    }
+}
+
 /// Archive reports even when the agent already reported its completion.
 fn cascade_unguarded(control: Control, pending: usize) -> Cascade {
     let mut cascade = production::cascade(control, pending);
@@ -136,6 +146,14 @@ fn archive_retaining_turn_is_caught() {
 fn early_archive_report_is_caught() {
     archive_drains_and_reports_exactly_once(Kernel {
         cascade: cascade_reports_early,
+        ..PRODUCTION
+    });
+}
+
+#[kani::proof]
+fn an_unreachable_wait_parked_on_its_deadline_is_found() {
+    parks_only_on_a_reachable_condition(Kernel {
+        until: until_on_deadline,
         ..PRODUCTION
     });
 }

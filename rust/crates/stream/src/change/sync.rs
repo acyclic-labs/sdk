@@ -1,7 +1,7 @@
+#[cfg(not(loom))]
+pub(crate) use crate::query_sync::{Arc, SyncMutex as Mutex};
 #[cfg(loom)]
 pub(crate) use loom::sync::Arc;
-#[cfg(not(loom))]
-pub(crate) use std::sync::{Arc, Mutex};
 
 #[cfg(loom)]
 mod checked {

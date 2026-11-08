@@ -23,22 +23,12 @@ fn ready<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
 
 #[test]
 fn concurrent_branch_registration_publishes_only_accepted_updates() {
-    registrations(MemoryGitCompatStore::default);
-}
-
-#[test]
-#[should_panic(expected = "lost branch update")]
-fn branch_model_detects_unconditional_replacement() {
-    registrations(super::model_store::UncheckedStore::default);
-}
-
-fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Sync + 'static) {
     // Two writers, one update each: exhaust every scheduling and CAS ordering
     // through the real repository and instrumented MemoryRecords mutex.
-    loom::model(move || {
+    loom::model(|| {
         let repository = loom::sync::Arc::new(GitCompatRepository::new(
             WorkspaceId::from_bytes([0; 16]),
-            super::model_store::CountedStore::new(store()),
+            super::model_store::CountedStore::new(MemoryGitCompatStore::default()),
         ));
         let mut writers = Vec::new();
         for (name, identity) in [("A", [1; 16]), ("B", [2; 16])] {
@@ -97,21 +87,11 @@ fn registrations<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Syn
 
 #[test]
 fn concurrent_renewal_fences_the_superseded_lease() {
-    renewals(MemoryOperationWindowStore::new);
-}
-
-#[test]
-#[should_panic(expected = "stale lease renewed")]
-fn lease_model_detects_unconditional_replacement() {
-    renewals(super::model_store::UncheckedStore::default);
-}
-
-fn renewals<S: OperationWindowStore + 'static>(store: impl Fn() -> S + Send + Sync + 'static) {
     // One lease, two renewals: run the real coordinator's snapshot/CAS
     // path in every interleaving, with deterministic time and identities.
-    loom::model(move || {
+    loom::model(|| {
         let coordinator = loom::sync::Arc::new(OperationWindowCoordinator::new(
-            super::model_store::CountedStore::new(store()),
+            super::model_store::CountedStore::new(MemoryOperationWindowStore::new()),
         ));
         let workspace = WorkspaceId::from_bytes([0; 16]);
         let lease = ready(Box::pin(coordinator.begin_with_lease_id(

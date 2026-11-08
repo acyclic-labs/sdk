@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/publication/combiner/registry.rs b/rust/crates/filesystem/src/kernel/publication/combiner/registry.rs
+--- a/rust/crates/filesystem/src/kernel/publication/combiner/registry.rs
++++ b/rust/crates/filesystem/src/kernel/publication/combiner/registry.rs
+@@ -25,7 +25,7 @@
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                 .live
+-                .extract_if(self.key, |current| std::ptr::eq(current.as_ptr(), volume));
++                .extract_if(self.key, |current| { let _ = (current, volume); true });
+             drop(retired);
+         }
+     }

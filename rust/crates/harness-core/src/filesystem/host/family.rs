@@ -169,8 +169,15 @@ async fn authorize<S: WorkspaceLineageStore>(
     owner: WorkspaceId,
 ) -> Result<()> {
     graph
-        .authorize_descendant(owner, root)
+        .authorize_descendant(
+            owner,
+            root,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
         .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .map_err(|error| match error {
             acyclic_fs::WorkspaceLineageError::Store(error) => Error::Storage(error.to_string()),
             _ => Error::Unauthorized("generation has no valid project ancestry".into()),
@@ -274,11 +281,32 @@ mod tests {
             filesystem.stream_provider(),
         ));
         let graph = WorkspaceGraph::new(store.clone());
-        graph.register_root(&root).await?;
-        graph.register_root(&unrelated).await?;
+        graph
+            .register_root(
+                &root,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        graph
+            .register_root(
+                &unrelated,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(|failure| failure.error)?;
         let child = graph
-            .fork(&root, "topic", acyclic_fs::IdempotencyKey::new())
-            .await?;
+            .fork(
+                &root,
+                "topic",
+                acyclic_fs::IdempotencyKey::new(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
         let pinned = child
             .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await?

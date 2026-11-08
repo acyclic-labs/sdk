@@ -671,7 +671,17 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
         received.await?;
     }
     notification.await?;
-    let receipt = peer.append(request.clone()).await?;
+    // NOTIFY proves durability, not that another replica has applied the cut.
+    // Reconcile the original identity before requesting its retained replay.
+    let recovered = peer
+        .inspect_idempotency(request.idempotency_key.clone())
+        .await?
+        .ok_or(StreamError::NotFound)?;
+    let IdempotencyOutcome::Append(receipt @ AppendOutcome::Committed(_)) = recovered.outcome
+    else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    assert_eq!(peer.append(request.clone()).await?, receipt);
     assert_eq!(provider.append(request).await?, receipt);
     let rows = peer
         .inner

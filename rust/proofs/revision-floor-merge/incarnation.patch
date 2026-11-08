@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/lib/revision.rs b/rust/crates/stream/src/lib/revision.rs
+--- a/rust/crates/stream/src/lib/revision.rs
++++ b/rust/crates/stream/src/lib/revision.rs
+@@ -331,7 +331,7 @@
+                     cut.push(next.clone());
+                 }
+                 if let Some(next) = explicit.next_if(|next| next.scope == revision.scope) {
+-                    if !revision.same_authority(next) {
++                    if false {
+                         return Err(StreamError::RevisionForeign);
+                     }
+                     if revision.index < next.index {

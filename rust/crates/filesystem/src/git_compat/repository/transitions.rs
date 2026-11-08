@@ -110,7 +110,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_id: WorkspaceId,
         head: Option<GitCommitId>,
         switch: bool,
-    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
+    ) -> Result<(), GitCompatError<S::Error>> {
         let branch = branch.into();
         self.update(|state| {
             register_branch_workspace_state(state, branch, workspace_id, head, switch)

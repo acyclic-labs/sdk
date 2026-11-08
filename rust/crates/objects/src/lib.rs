@@ -1,4 +1,7 @@
 #![doc = include_str!("../README.md")]
+#[cfg(all(test, not(target_arch = "wasm32")))]
+acyclic_test_support::counting_allocator!();
+
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
@@ -10,7 +13,7 @@ pub mod authorization {
 pub use authorization::{AUTHORIZATION, ObjectsMethod};
 
 mod availability;
-mod batch;
+pub mod batch;
 #[cfg(feature = "binary")]
 pub mod binary;
 mod blob;

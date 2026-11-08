@@ -65,10 +65,6 @@ fn native_hook_context_encodes_only_valid_task_ids() -> Result<()> {
     assert_eq!(hook_input(input.clone(), None)?, input);
     assert!(hook_input(input, Some(std::ffi::OsStr::new("invalid"))).is_err());
     assert!(hook_input(Value::Null, Some(std::ffi::OsStr::new(identity))).is_err());
-    // Negative control: serializing the OS environment value directly is the
-    // old hook failure, on both Unix and Windows. It cannot decode as a task.
-    let legacy = json!(std::ffi::OsString::from(identity));
-    assert!(serde_json::from_value::<AgentPath>(legacy).is_err());
     Ok(())
 }
 

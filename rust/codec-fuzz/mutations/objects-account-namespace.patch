@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/store.rs
++++ b/rust/crates/objects/src/store.rs
+@@ -402,7 +402,7 @@
+                 .entry(id)
+                 .or_insert_with(|| {
+                     Arc::new(State::new(
+-                        format!("{}/", id.to_hex()),
++                        format!("{}/", Digest::of(b"memory").to_hex()),
+                         Arc::clone(&self.scrub),
+                     ))
+                 }),

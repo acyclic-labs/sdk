@@ -1,0 +1,14 @@
+--- a/rust/crates/filesystem/src/kernel/serde_decode/original.rs
++++ b/rust/crates/filesystem/src/kernel/serde_decode/original.rs
+@@ -45,6 +45,11 @@
+     input: &[u8],
+     accounting: &mut KernelAccounting<'_>,
+ ) -> Result<Retained<T>, MetadataDecodeError> {
++    let mut detached = KernelAccounting::standalone(
++        accounting.remaining()?,
++        accounting.cancellation(),
++    );
++    let accounting = &mut detached;
+     accounting.check()?;
+     let scratch_bytes = (input.len() as u64)
+         .checked_mul(2)
