@@ -449,7 +449,7 @@ mod tests {
         let key = SigningKeyReference::create(SigningCustody::Configured)?;
         let suffix = format!(
             "-{}.lock",
-            blake3::Hash::from_bytes(key.reference().0).to_hex()
+            blake3::Hash::from_bytes(key.reference().v1.0).to_hex()
         );
         let locks = || -> io::Result<usize> {
             let mut count = 0;
