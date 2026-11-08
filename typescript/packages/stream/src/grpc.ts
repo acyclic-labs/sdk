@@ -93,7 +93,7 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     const failed = (error: unknown): never => {
       if (error instanceof ConnectError) {
         Object.assign(error, {
-          [peerRefusal]: refusalFromGrpcHeaders(error, [peer.header ?? [], peer.trailer ?? []]),
+          [peerRefusal]: refusalFromGrpcHeaders(error, [peer.header, peer.trailer]),
           [peerInterrupted]: !peer.statusReceived
             && peer.connection !== undefined && (peer.connection.closed || peer.connection.destroyed),
         });
@@ -103,12 +103,15 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     return current.run(peer, async () => {
       try {
         const response = await next(request);
-        if (!response.stream) return response;
+        if (!response.stream) { releasePeer(peer); return response; }
         const messages = response.message;
         return { ...response, message: (async function* () {
           try { yield* messages; } catch (error) { failed(error); }
+          finally { releasePeer(peer); }
         })() };
-      } catch (error) { return failed(error); }
+      } catch (error) {
+        try { return failed(error); } finally { releasePeer(peer); }
+      }
     });
   };
   transportOptions.interceptors = [observe, ...(transportOptions.interceptors ?? [])];
@@ -319,10 +322,16 @@ type PeerError = ConnectError & {
   [peerInterrupted]?: boolean;
 };
 interface PeerResponse {
-  connection?: Http2Session;
+  connection?: Http2Session | undefined;
   statusReceived: boolean;
   header?: readonly string[];
   trailer?: readonly string[];
+}
+
+function releasePeer(peer: PeerResponse): void {
+  delete peer.header;
+  delete peer.trailer;
+  delete peer.connection;
 }
 
 function grpcRefusal(error: PeerError): StreamRefusal {

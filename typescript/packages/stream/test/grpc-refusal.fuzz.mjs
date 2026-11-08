@@ -43,9 +43,12 @@ async function capture() {
 export async function fuzz(input) {
   original ??= capture();
   const { raw: seed, diagnostic } = await original;
+  const octets = new Uint8Array(input.length + 1);
+  octets.set(input);
+  octets[input.length] = 0x80 | diagnostic.details[0];
   const raw = seed.slice();
   for (let i = 0; i < raw.length; i += 2) {
-    if (raw[i] === "acyclic-original") raw[i + 1] = Buffer.from(input).toString("latin1");
+    if (raw[i] === "acyclic-original") raw[i + 1] = Buffer.from(octets).toString("latin1");
     if (raw[i] === "grpc-status-details-bin") raw[i + 1] = Buffer.from(input).toString("base64");
   }
   const pairs = [];
@@ -55,12 +58,12 @@ export async function fuzz(input) {
   catch (error) { projected = ConnectError.from(error); }
   assert.ok(projected, "the original peer status must refuse");
   const at = ((input[0] ?? 0) % (raw.length / 2 + 1)) * 2;
-  const actual = refusalFromGrpcHeaders(projected, [raw.slice(0, at), raw.slice(at)]);
+  const actual = refusalFromGrpcHeaders(projected, [undefined, raw.slice(0, at), raw.slice(at), undefined]);
   assert.equal(actual.status, Code.Unknown);
   assert.equal(actual.message, diagnostic.message);
   assert.deepEqual(Array.from(actual.details), Array.from(input));
   assert.deepEqual(actual.metadata.map(([name, bytes]) => [name, Array.from(bytes)]),
-    Array.from({ length: 2 }, () => ["acyclic-original", Array.from(input)]));
+    Array.from({ length: 2 }, () => ["acyclic-original", Array.from(octets)]));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
