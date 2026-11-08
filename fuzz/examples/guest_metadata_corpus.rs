@@ -21,7 +21,7 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
     *empty
         .get_mut("accountId")
         .ok_or("original caller lacks accountId")? = Vec::<u8>::new().into();
-    let mut expiry = original.clone();
+    let mut expiry = original;
     *expiry
         .get_mut("expiresAtMs")
         .ok_or("original caller lacks expiresAtMs")? = "01".into();
