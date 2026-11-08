@@ -1,0 +1,32 @@
+diff --git b/plugin/opencode/index.mjs a/plugin/opencode/index.mjs
+index 8bbd210a674..b591c5ea9f2 100644
+--- b/plugin/opencode/index.mjs
++++ a/plugin/opencode/index.mjs
+@@ -7,24 +7,18 @@ export default async function acyclic({client, directory}) {
+   let selected;
+   let session;
+   function select(id) {
+-    if (id !== session || !selected) {
++    if (id !== session) {
+       session = id;
+       // Cache the admission itself. Concurrent hooks retain their own identity
+       // even when another native session becomes the most recently selected.
+-      const admission = (async () => {
++      selected = (async () => {
+         const original = await client.session.get({path: {id}});
+         if (original.error || !original.data)
+           throw new Error("step=admit OpenCode session: native session absent; recovery=opencode");
+         // Native children keep their host's original cwd and lifecycle.
+         if (original.data.parentID) return;
+         return nativeSession(executable, "opencode", directory, id);
+-      })().catch(error => {
+-        // A failed attempt owns no admission. Its completion must not evict
+-        // another session selected while this attempt was still in flight.
+-        if (selected === admission) selected = undefined;
+-        throw error;
+-      });
+-      selected = admission;
++      })();
+     }
+     return selected;
+   }
