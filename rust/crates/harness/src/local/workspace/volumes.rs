@@ -384,7 +384,13 @@ mod binding_paths {
 // FUSE's elevated helper cannot traverse an owner-only mount, and ProjFS cannot
 // start a virtualization root at a placeholder in another projection. Retain
 // the already bound volume instead of mounting again below the task view.
-pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>) -> Result<()> {
+//
+// A task view's aliases are authored, so a fork inherits whichever alias its
+// source view last published: that of any ancestor, at any depth. Every task
+// binding of this checkout lives in the one `bindings` namespace, so an alias
+// naming any binding there is SDK custody and is replaced; anything else is
+// refused as authored content.
+pub(super) fn link(root: &Path, mounts: &mut Mounts, bindings: &Path) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -395,24 +401,34 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts, inherited: Option<&Mounts>)
             .as_ref()
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
         let target = source.destination.as_path();
-        let previous = inherited
-            .into_iter()
-            .flat_map(Mounts::mounts)
-            .find(|(previous, _)| previous == &relative)
-            .and_then(|(_, mount)| mount.view.source.as_ref());
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
             create_mount_directory(root, parent)?;
         }
         let path = root.join(relative);
-        bind_alias(
-            &path,
-            target,
-            previous.map(|source| source.destination.as_path()),
-        )?;
+        let previous =
+            alias_target(&path)?.filter(|linked| names_binding(bindings, linked, relative));
+        bind_alias(&path, target, previous.as_deref())?;
         mount.native_root = Some(target.to_path_buf());
     }
     Ok(())
+}
+
+/// Whether `linked` is the `relative` alias destination of a binding in
+/// `bindings`: exactly `<bindings>/<binding>/<relative>`, as written or as the
+/// filesystem resolves its parent.
+fn names_binding(bindings: &Path, linked: &Path, relative: &Path) -> bool {
+    let within = |bindings: &Path, linked: &Path| {
+        linked.strip_prefix(bindings).is_ok_and(|rest| {
+            let mut components = rest.components();
+            matches!(components.next(), Some(std::path::Component::Normal(_)))
+                && components.as_path() == relative
+        })
+    };
+    within(bindings, linked)
+        || std::fs::canonicalize(bindings).is_ok_and(|bindings| {
+            canonical_destination(linked).is_ok_and(|linked| within(&bindings, &linked))
+        })
 }
 
 /// Rebinds only an empty SDK directory or the exact preceding alias.
