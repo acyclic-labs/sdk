@@ -1,0 +1,12 @@
+diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
+--- a/typescript/packages/stream/src/grpc.ts
++++ b/typescript/packages/stream/src/grpc.ts
+@@ -312,7 +312,7 @@
+       break;
+   }
+   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+-  return new StreamError(code, reason, undefined, refusal);
++  return new StreamError(code, reason, undefined, code === "unavailable" ? refusal : undefined);
+ }
+ 
+ const peerRefusal = Symbol("original peer refusal");

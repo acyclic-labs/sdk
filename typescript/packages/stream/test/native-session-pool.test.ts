@@ -47,7 +47,7 @@ test.each(["native", "gRPC"] as const)("%s Session rejection preserves original 
   } finally { await host.close(); }
 });
 
-test("gRPC Session and unary refusals retain repeated original metadata bytes", async () => {
+test.each([Code.Unknown, Code.PermissionDenied])("gRPC Session and unary refusals retain repeated original metadata bytes for status %s", async status => {
   const original = (await originalRefusal()).refusal;
   const encoded = Buffer.from(original.details).toString("base64");
   const repeated = [encoded, encoded];
@@ -56,11 +56,11 @@ test("gRPC Session and unary refusals retain repeated original metadata bytes", 
   const host = await credentialTlsFixture(router => {
     router.service(wire.StreamSessionService, { async *session() {
       sessions++;
-      throw new ConnectError(original.message, Code.Unknown);
+      throw new ConnectError(original.message, status);
     } });
     router.service(StreamService, { tail() {
       unary++;
-      throw new ConnectError(original.message, Code.Unknown);
+      throw new ConnectError(original.message, status);
     } });
   }, { "grpc-status-details-bin": encoded, "acyclic-original": repeated,
     "acyclic-byte": String.fromCharCode(byte) });
@@ -72,7 +72,8 @@ test("gRPC Session and unary refusals retain repeated original metadata bytes", 
       try { await call(); } catch (error) { actual = error; }
       expect(actual).toBeInstanceOf(StreamError);
       if (!(actual instanceof StreamError)) throw new Error("missing original refusal");
-      expect(actual.refusal?.status).toBe(Code.Unknown);
+      expect(actual.code).toBe(status === Code.Unknown ? "unavailable" : "access_denied");
+      expect(actual.refusal?.status).toBe(status);
       expect(actual.refusal?.message).toBe(original.message);
       expect(Array.from(actual.refusal?.details ?? [])).toEqual(Array.from(original.details));
       expect(actual.refusal?.metadata.filter(([name]) => name === "acyclic-original")

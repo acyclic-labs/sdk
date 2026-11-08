@@ -312,7 +312,7 @@ function providerError(error: unknown, operation: string): Error {
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, reason, undefined, code === "unavailable" ? refusal : undefined);
+  return new StreamError(code, reason, undefined, refusal);
 }
 
 const peerRefusal = Symbol("original peer refusal");
