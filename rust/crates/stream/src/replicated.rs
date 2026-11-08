@@ -233,7 +233,7 @@ impl<J: CommandJournal> Replicated<J> {
         self
     }
 
-    #[cfg(any(feature = "local", feature = "postgres"))]
+    #[cfg(any(feature = "local", all(test, feature = "postgres")))]
     pub(crate) fn is_failed(&self) -> bool {
         self.failed
     }
