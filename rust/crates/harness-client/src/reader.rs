@@ -1073,10 +1073,9 @@ impl Reader {
         let rtt = now.saturating_sub(flight.issued);
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
-        } else if rtt >= self.rtt_ms {
-            self.rtt_ms + (rtt - self.rtt_ms) / 8
         } else {
-            self.rtt_ms - (self.rtt_ms - rtt).div_ceil(8)
+            // The weighted mean fits u64 even when its numerator does not.
+            ((u128::from(self.rtt_ms) * 7 + u128::from(rtt)) / 8) as u64
         };
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
