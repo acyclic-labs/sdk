@@ -1006,12 +1006,11 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     )
     .await;
     assert!(
-        missing_skill_authority.is_err(),
+        matches!(
+            missing_skill_authority,
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::NotFound
+        ),
         "missing source authority must not omit the optional skill directory"
-    );
-    assert_eq!(
-        missing_skill_authority.unwrap_err().code(),
-        ErrorCode::NotFound
     );
     let missing_authority = unavailable_instructions
         .instruction(
@@ -1021,10 +1020,12 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
         )
         .await;
     assert!(
-        missing_authority.is_err(),
+        matches!(
+            missing_authority,
+            Err(error) if error.code() == acyclic_harness::wire::ErrorCode::NotFound
+        ),
         "missing source authority must not omit the selected instruction"
     );
-    assert_eq!(missing_authority.unwrap_err().code(), ErrorCode::NotFound);
     assert!(source.read(fixture.reader.as_ref(), 32_768).await.is_err());
     assert!(
         fixture
