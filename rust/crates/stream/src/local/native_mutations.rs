@@ -41,6 +41,7 @@ impl LocalStream {
                     );
                 }
             };
+            let observed_work = Arc::clone(&work);
             let worker = worker_context.scope(completion.observe_output(
                 publication_scope(async move {
                     let _input = input;
@@ -109,7 +110,7 @@ impl LocalStream {
                 let _allocation = allocation;
                 worker.await
             }));
-            match LocalInner::observe(&mut failed, task).await {
+            match LocalInner::observe(&mut failed, task, Some(&observed_work)).await {
                 Ok(result) => result.map_err(std::io::Error::other)?,
                 Err(error) => Ok(Err(E::from(error))),
             }

@@ -83,11 +83,20 @@ impl LocalInner {
     async fn observe<T>(
         failed: &mut watch::Receiver<Option<LocalStreamFailure>>,
         pending: impl Future<Output = T>,
+        work: Option<&crate::native::Work>,
     ) -> Result<T, StreamError> {
         let pending = std::pin::pin!(pending);
         let unavailable = std::pin::pin!(Self::unavailable(failed));
         match futures::future::select(pending, unavailable).await {
             futures::future::Either::Left((result, _)) => Ok(result),
+            futures::future::Either::Right((_, pending))
+                if work.is_some_and(crate::native::Work::has_failed) =>
+            {
+                // This worker already recorded its own physical failure. Its
+                // terminal owns that error, even while task acknowledgement is
+                // pending. A different worker's failure still ends observers.
+                Ok(pending.await)
+            }
             futures::future::Either::Right((error, _)) => Err(error),
         }
     }

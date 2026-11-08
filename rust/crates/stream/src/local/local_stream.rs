@@ -720,7 +720,7 @@ impl LocalStream {
                 let result = operation.scope(task).await;
                 operation.in_scope(|| finish(result))
             }));
-            LocalInner::observe(&mut failed, pending)
+            LocalInner::observe(&mut failed, pending, self.work.as_deref())
                 .await?
                 .map_err(|_| StreamError::Unavailable)
         }

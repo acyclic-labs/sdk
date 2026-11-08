@@ -257,5 +257,98 @@ async fn failed_physical_write_keeps_its_cause_and_ends_followers()
             "failed physical write fabricated a commit"
         );
     }
+    for mode in 0..3 {
+        originating_native_failure(mode).await?;
+    }
+    Ok(())
+}
+
+// Hold the real task's acknowledgement after its output owns the OS error.
+// The failure watch must not replace that output, or steal another writer's.
+async fn originating_native_failure(mode: u8) -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let stream = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    let request = super::prepared_fixture(&stream).await?;
+    let meter = Arc::new(crate::test_meter::Meter::local());
+    let failing = AtomicBool::new(false);
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+    {
+        let operation = schedule.scope(async {
+            let prepared = if mode == 2 {
+                Some(
+                    stream
+                        .native_prepare_commit(request.clone(), 64, meter.original())
+                        .await??,
+                )
+            } else {
+                None
+            };
+            let file_path = root.path().join(JOURNAL_FILE);
+            let read_only = acyclic_native_runtime::CachedFile::new(
+                std::fs::File::open(&file_path)?,
+                &file_path,
+                true,
+                false,
+            )?;
+            let held = read_only.lease()?;
+            stream
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| "journal poisoned")?
+                .file = read_only;
+            failing.store(true, Ordering::Release);
+            let result = match prepared {
+                Some(prepared) => {
+                    let (packet, allocation) = prepared.into_parts();
+                    let result = packet
+                        .finish(crate::OwnedBytes::from_static(b"physical").into())
+                        .await;
+                    drop(allocation);
+                    result.map(|result| result.map(|_| ()))
+                }
+                None if mode == 1 => stream
+                    .native_commit_guarded::<StreamError, _, _>(
+                        request,
+                        None,
+                        meter.original(),
+                        || async { Ok(()) },
+                    )
+                    .await
+                    .map(|result| result.map(|_| ())),
+                None => stream
+                    .native_append(super::keyed_append("prepared/target", 1)?, meter.original())
+                    .await
+                    .map(|result| result.map(|_| ())),
+            };
+            let error = result.expect_err("failure watch replaced the original native I/O error");
+            let cause = stream.failure().ok_or("missing original write failure")?;
+            assert_eq!(cause.io_kind, Some(error.kind()));
+            assert_eq!(cause.raw_os_error, error.raw_os_error());
+            assert!(error.raw_os_error().is_some());
+            drop(held);
+            Ok::<_, Box<dyn std::error::Error>>(())
+        });
+        tokio::pin!(operation);
+        loop {
+            tokio::select! {
+                result = &mut operation => { result?; break; }
+                boundary = boundaries.recv() => {
+                    let boundary = boundary.ok_or("native failure boundary producer ended")?;
+                    if failing.load(Ordering::Acquire) && boundary.name == "task:completed" {
+                        let pending = futures::poll!(operation.as_mut()).is_pending();
+                        boundary.release();
+                        assert!(pending, "failure watch replaced the original native I/O error");
+                    } else {
+                        boundary.release();
+                    }
+                }
+            }
+        }
+    }
+    super::journal_lifecycle(&schedule, &mut boundaries, async { drop(stream) }).await?;
+    meter.assert_refunded();
+    let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    assert_eq!(reopened.tail(StreamPath::new("prepared/target")?).await?, 1);
     Ok(())
 }
