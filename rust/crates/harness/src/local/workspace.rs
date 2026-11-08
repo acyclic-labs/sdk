@@ -185,7 +185,7 @@ impl LocalWorkspace {
     }
     /// The mounts of a view of `project` with `scratch` bound beside it, under
     /// the original admitted workload that grants both.
-    pub(super) async fn bound_mounts(
+    async fn bound_mounts(
         &self,
         project: &VolumeRef,
         scratch: VolumeRef,
