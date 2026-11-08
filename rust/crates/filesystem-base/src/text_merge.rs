@@ -119,9 +119,6 @@ pub fn merge_bytes(
     let ours = optional_text(ours, limits)?;
     let theirs = optional_text(theirs, limits)?;
     match (ours, theirs) {
-        (Some(ours), Some(theirs)) if ours == theirs => {
-            Ok(ByteMerge::Merged(ours.as_bytes().to_vec()))
-        }
         (Some(ours), Some(theirs)) => {
             let result = merge_text(base.unwrap_or(""), ours, theirs, ours_label, theirs_label);
             if result.clean {
@@ -188,6 +185,19 @@ pub fn merge_text(
 ) -> TextMerge {
     use diffy::{ConflictStyle, MergeOptions};
 
+    let unchanged = if ours == theirs || theirs == base {
+        Some(ours)
+    } else if ours == base {
+        Some(theirs)
+    } else {
+        None
+    };
+    if let Some(content) = unchanged {
+        return TextMerge {
+            clean: true,
+            content: content.to_owned(),
+        };
+    }
     let mut options = MergeOptions::new();
     options
         .set_conflict_style(ConflictStyle::Diff3)
