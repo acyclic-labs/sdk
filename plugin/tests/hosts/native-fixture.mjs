@@ -7,8 +7,9 @@ import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import {McpClient} from '../../shared/mcp-client.mjs';
 import {environment,nativeEnvironment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
-import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
+export {Spool};
 
 export function fixtureEnvironment(root,variables={}) {
  const inherited=nativeEnvironment();
