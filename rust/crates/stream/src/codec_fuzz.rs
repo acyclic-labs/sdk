@@ -3,6 +3,67 @@ use crate::{StreamError, persistence};
 use futures::FutureExt as _;
 use prost::Message as _;
 
+/// Indexed filesystem selection must retain every path admitted by the original
+/// signed credential. Lossless byte inputs use the owning resource encoder.
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
+pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
+    use acyclic_auth::{authority::PolicyDecision, contract::*};
+    if path.contains(&0)
+        || path.split(|byte| *byte == b'/').any(|part| part.is_empty()) && !path.is_empty()
+    {
+        return Ok(());
+    }
+    static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
+    let credential = CREDENTIAL.get_or_init(|| {
+        crate::session::testing::credential_with_grants(vec![ResourceGrant {
+            resource: ResourcePattern {
+                name: "fs:/volume".into(),
+                prefix: true,
+            },
+            actions: vec!["fs/list".into()],
+        }])
+    });
+    let mut resource = "fs:/volume".to_owned();
+    if !path.is_empty() {
+        for component in path.split(|byte| *byte == b'/') {
+            resource.push('/');
+            acyclic_auth::append_component(component, &mut resource);
+        }
+    }
+    let attributes = RecordAttributes::try_new(vec![]).map_err(|_| StreamError::InvalidArgument)?;
+    for suffix in ["", "/"] {
+        let authorization = crate::session::testing::resource_authorization(
+            credential,
+            &format!("{resource}{suffix}"),
+        )?;
+        let filter = authorization.filter_paths("fs:/volume", &crate::FollowFilter::default())?;
+        let mut child = path.to_vec();
+        if !child.is_empty() {
+            child.push(b'/');
+        }
+        child.extend_from_slice(b"child");
+        let child_resource = format!("{resource}/child");
+        for (key, resource) in [
+            (path, resource.as_str()),
+            (child.as_slice(), &child_resource),
+        ] {
+            assert!(
+                authorization
+                    .authorize(resource, &[], &attributes, PolicyDecision::Allow)
+                    .is_ok()
+            );
+            assert!(
+                filter.matches(&crate::RecordHeaders::new(
+                    vec![key.to_vec().into()],
+                    vec![]
+                )?),
+                "resource index differs from its original authorized scope"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 fn session_admission() -> crate::wire::SessionFrame {
     static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();

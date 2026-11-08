@@ -32,12 +32,13 @@ const claims = {
   "call-dependent-resource": [
     "rust/crates/stream/src/session/resources.rs", "acyclic-stream",
     "session::tests::calls::dependent_resources_keep_original_call_grants_and_live_trust",
-    "dependent scope escaped its original declared boundary", [],
+    "dependent scope escaped its original declared boundary", ["--features", "test-support"],
     {
       mutations: [
         { patch: "rust/proofs/call-dependent-resource/scope.patch", label: "discarded-dependent-resource-boundary", diagnostic: "dependent scope escaped its original declared boundary" },
         { patch: "rust/proofs/call-dependent-resource/credential.patch", label: "detached-original-current-credential", diagnostic: "dependent resource detached from the original credential renewal" },
         { patch: "rust/proofs/call-dependent-resource/policy.patch", label: "discarded-dependent-owner-policy", diagnostic: "dependent disclosure ignored the owner's current policy" },
+        { patch: "rust/proofs/call-dependent-resource/index.patch", label: "discarded-dependent-index-normalization", diagnostic: "resource index differs from its original authorized scope" },
       ],
     },
   ],
