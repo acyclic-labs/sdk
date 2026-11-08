@@ -388,109 +388,166 @@ impl<W: Present> Present for Calls<W> {
 }
 
 #[cfg(unix)]
-async fn drain_terminal(
-    controller: &mut std::fs::File,
-    stopped: futures::channel::oneshot::Receiver<()>,
-) -> io::Result<()> {
-    use acyclic_native_runtime::{DescriptorInterest, descriptor_readiness};
-    use futures::future::{Either, select};
+fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
     use std::io::Read;
-    use std::os::fd::AsFd;
-
-    let flags = rustix::fs::fcntl_getfl(&*controller)?;
-    rustix::fs::fcntl_setfl(&*controller, flags | rustix::fs::OFlags::NONBLOCK)?;
-    let mut stopped = std::pin::pin!(stopped);
-    let mut bytes = [0; 65536];
-    loop {
-        match controller.read(&mut bytes) {
-            Ok(0) => return Ok(()),
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => {
-                // A PTY master may report EIO when its last slave closes.
-                return Ok(());
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                let ready = descriptor_readiness(controller.as_fd(), DescriptorInterest::Readable)?;
-                match select(stopped.as_mut(), ready).await {
-                    // Dropping the fixture's sender is the stop event, including
-                    // when restoration retains the slave after a failure.
-                    Either::Left(_) => return Ok(()),
-                    Either::Right((outcome, _)) => outcome.into_result()?,
-                }
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn terminal_drain_cancellation_does_not_require_slave_closure() -> io::Result<()> {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-
-    for stop_before_wait in [false, true] {
-        let pty = rustix_openpty::openpty(None, None)?;
-        let slave = std::fs::File::from(pty.user);
-        let mut controller = std::fs::File::from(pty.controller);
-        let (stop, stopped) = futures::channel::oneshot::channel();
-        let mut drain = std::pin::pin!(drain_terminal(&mut controller, stopped));
-        let mut context = Context::from_waker(Waker::noop());
-        if !stop_before_wait {
-            assert!(drain.as_mut().poll(&mut context).is_pending());
-        }
-        drop(stop);
-        assert!(
-            matches!(drain.as_mut().poll(&mut context), Poll::Ready(Ok(()))),
-            "a retained PTY slave must not keep a cancelled drainer waiting"
-        );
-        assert!(rustix::termios::tcgetattr(&slave).is_ok());
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn with_real_terminal(
-    run: impl FnOnce(&mut acyclic_harness_tui::term::Output) -> io::Result<()>,
-) -> io::Result<()> {
     let pty = rustix_openpty::openpty(None, None)?;
     let mut controller = std::fs::File::from(pty.controller);
-    let (stop, stopped) = futures::channel::oneshot::channel();
-    std::thread::scope(|scope| {
-        let drain = scope.spawn(move || {
-            let result = futures::executor::block_on(drain_terminal(&mut controller, stopped));
-            // Keep the master alive until the original terminal has restored.
-            (controller, result)
-        });
-        let result = {
-            let _stop = stop;
-            (|| {
-                let mut tty =
-                    acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
-                tty.negotiate(&acyclic_harness_tui::term::Environment(
-                    [("TERM".into(), "alacritty".into())].into(),
-                ))?;
-                let (_tty, mut output) = tty.split();
-                run(&mut output)
-            })()
-        };
-        let (_controller, drained) = drain
-            .join()
-            .map_err(|_| io::Error::other("terminal drainer panicked"))?;
-        result.and(drained)
-    })
+    // The kernel PTY is drained as fast as an emulator would read it.
+    let drain = std::thread::spawn(move || {
+        let mut bytes = [0; 65536];
+        while matches!(controller.read(&mut bytes), Ok(count) if count > 0) {}
+        // A completed drainer retains the master in its JoinHandle result.
+        // The guard tuple drops/restores Tty before releasing that result.
+        controller
+    });
+    let mut tty = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
+    tty.negotiate(&acyclic_harness_tui::term::Environment(
+        [("TERM".into(), "alacritty".into())].into(),
+    ))?;
+    let (tty, output) = tty.split();
+    Ok((output, Box::new((tty, drain))))
 }
 
 #[cfg(windows)]
-fn with_real_terminal(
-    run: impl FnOnce(&mut acyclic_harness_tui::term::Output) -> io::Result<()>,
-) -> io::Result<()> {
+fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
     // The attached console (conhost or ConPTY) with VT processing enabled.
     let mut tty = acyclic_harness_tui::term::Tty::open()?;
     tty.negotiate(&acyclic_harness_tui::term::Environment::default())?;
-    let (_tty, mut output) = tty.split();
-    run(&mut output)
+    let (tty, output) = tty.split();
+    Ok((output, Box::new(tty)))
+}
+
+const PROSE: &str = "prose with `inline code`, wrapped words and tool output lines that differ on every transcript row of the page";
+
+fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
+    use acyclic_harness_tui::ratatui::{
+        style::{Color, Style, Stylize},
+        text::Span,
+    };
+    move |frame| {
+        let height = usize::from(frame.area().height);
+        let lines: Vec<Line<'_>> = (offset..offset + height)
+            .map(|row| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{row:>6} "),
+                        Style::default().fg(Color::Rgb(120, 120, 140)),
+                    ),
+                    Span::raw("Streaming ").bold(),
+                    Span::styled("markdown", Style::default().fg(Color::Rgb(200, 120, 60))),
+                    // Distinct text per row, as when paging through a transcript.
+                    Span::raw(format!(
+                        " {}",
+                        PROSE.get(row % 25..row % 25 + 80).unwrap_or_default()
+                    )),
+                ])
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines), frame.area());
+        frame.set_cursor_position((2, frame.area().height - 1));
+    }
+}
+
+/// Full-page repaint and region scrolling share one native terminal owner.
+/// The old per-command path must fail the same submission oracle.
+#[test]
+fn real_terminal_frame_cost() -> io::Result<()> {
+    use std::fmt::Write as _;
+
+    #[cfg(windows)]
+    if std::env::var_os("ACYCLIC_TERMINAL_REGION_REPORT").is_none() {
+        // Ordinary test processes have no console. The existing host owns the
+        // ConPTY and re-enters this exact test with its original report path.
+        let hosted = || -> io::Result<()> {
+            let owner = tempfile::tempdir()?;
+            let scripts = owner.path().join("scripts");
+            std::fs::create_dir(&scripts)?;
+            let script = scripts.join("test-terminal-signals.ps1");
+            std::fs::write(
+                &script,
+                include_str!("../../../../scripts/test-terminal-signals.ps1"),
+            )?;
+            let status = std::process::Command::new("pwsh")
+                .args(["-NoProfile", "-File"])
+                .arg(script)
+                .arg("-Binary")
+                .arg(std::env::current_exe()?)
+                .arg("-FrameRegions")
+                .status()?;
+            if !status.success() {
+                return Err(io::Error::other(format!("ConPTY host exited: {status}")));
+            }
+            Ok(())
+        };
+        return hosted().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "native frame console ownership failed: {error}; recovery: cargo nextest run -p acyclic-harness-tui --features tui --test terminal_frames -E 'test(=real_terminal_frame_cost)'"
+                ),
+            )
+        });
+    }
+
+    const FRAMES: usize = 2;
+    let mut report = String::new();
+    let (mut output, _guard) = real_terminal()?;
+    for size in [Size::new(120, 40), Size::new(240, 70)] {
+        let viewport = TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, size.width, size.height)),
+        };
+        for per_command in [true, false] {
+            let calls = Rc::default();
+            let bytes = Rc::default();
+            let device = Calls(&mut output, Rc::clone(&calls), Rc::clone(&bytes));
+            let mut old = None;
+            let mut new = None;
+            if per_command {
+                let mut terminal =
+                    Terminal::with_options(CrosstermBackend::new(device), viewport.clone())?;
+                terminal.draw(scrolled(0))?;
+                old = Some(terminal);
+            } else {
+                let mut terminal = FrameTerminal::new(device, size)?;
+                terminal.draw(size, scrolled(0))?;
+                new = Some(terminal);
+            }
+            calls.set(0);
+            let before = device_io();
+            for offset in 1..=FRAMES {
+                if let Some(terminal) = old.as_mut() {
+                    terminal.draw(scrolled(offset * usize::from(size.height)))?;
+                }
+                if let Some(terminal) = new.as_mut() {
+                    terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
+                }
+            }
+            let writes = device_io().writes - before.writes;
+            if per_command {
+                let calls = calls.get();
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        regions::one_native_submission(calls, writes, FRAMES, false);
+                    })
+                    .is_err(),
+                    "the old per-command path must fail the native submission oracle"
+                );
+            } else {
+                regions::one_native_submission(calls.get(), writes, FRAMES, false);
+            }
+            writeln!(
+                report,
+                "{} {}x{} per_command={per_command} frames={FRAMES} submissions={} writes={writes}",
+                std::env::consts::OS,
+                size.width,
+                size.height,
+                calls.get()
+            )
+            .unwrap();
+        }
+    }
+    regions::native_region_cost(&mut output, &mut report)?;
+    regions::publish_report(&report)
 }
 
 /// A frame far beyond any realistic screen (16 MiB) reaches the real console:
@@ -500,32 +557,31 @@ fn with_real_terminal(
 #[test]
 #[ignore = "needs an attached console: run with --ignored"]
 fn very_large_frames_reach_the_real_console() -> io::Result<()> {
-    with_real_terminal(|output| {
-        for mib in [1usize, 4, 16] {
-            let mut frame = Vec::new();
-            let mut row = 0u32;
-            while frame.len() < mib * 1024 * 1024 {
-                frame.extend_from_slice(format!("\x1b[{};1H", row % 40 + 1).as_bytes());
-                for cell in 0..100u32 {
-                    let glyph = char::from(b'a' + (cell % 26) as u8);
-                    frame.extend_from_slice(
-                        format!("\x1b[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
-                    );
-                }
-                row += 1;
+    let (mut output, _guard) = real_terminal()?;
+    for mib in [1usize, 4, 16] {
+        let mut frame = Vec::new();
+        let mut row = 0u32;
+        while frame.len() < mib * 1024 * 1024 {
+            frame.extend_from_slice(format!("\x1b[{};1H", row % 40 + 1).as_bytes());
+            for cell in 0..100u32 {
+                let glyph = char::from(b'a' + (cell % 26) as u8);
+                frame.extend_from_slice(
+                    format!("\x1b[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
+                );
             }
-            let before = device_io();
-            let start = std::time::Instant::now();
-            output.present(&mut frame, FrameEffects::default())?;
-            let elapsed = start.elapsed();
-            eprintln!(
-                "windows {mib} MiB frame: {:.1} ms, {} console writes",
-                elapsed.as_secs_f64() * 1e3,
-                device_io().writes - before.writes
-            );
+            row += 1;
         }
-        output.write_all(b"\x1b[0m\x1b[2J")
-    })
+        let before = device_io();
+        let start = std::time::Instant::now();
+        output.present(&mut frame, FrameEffects::default())?;
+        let elapsed = start.elapsed();
+        eprintln!(
+            "windows {mib} MiB frame: {:.1} ms, {} console writes",
+            elapsed.as_secs_f64() * 1e3,
+            device_io().writes - before.writes
+        );
+    }
+    output.write_all(b"\x1b[0m\x1b[2J")
 }
 
 /// A guard shared with the test, so the session's lifecycle (suspend, resume,

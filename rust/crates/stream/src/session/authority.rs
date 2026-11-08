@@ -455,12 +455,7 @@ impl Authority {
         let resource = stream_resource(parent);
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
-        authorization.action = StreamMethod::ChildrenPage
-            .authorization()
-            .admitted
-            .first()
-            .ok_or(Rejection::Unavailable)?
-            .as_str();
+        authorization.action = crate::authorization::CHILDREN_ACTION.as_str();
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
@@ -513,12 +508,7 @@ impl Authority {
                 resource.clone(),
                 Arc::clone(capability),
             );
-            authorization.action = StreamMethod::Head
-                .authorization()
-                .admitted
-                .first()
-                .ok_or(Rejection::Unavailable)?
-                .as_str();
+            authorization.action = crate::authorization::HEAD_ACTION.as_str();
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
@@ -531,12 +521,7 @@ impl Authority {
             };
             (binding, authorization, None)
         };
-        let read_action = StreamMethod::Head
-            .authorization()
-            .admitted
-            .first()
-            .ok_or(Rejection::Unavailable)?
-            .as_str();
+        let read_action = crate::authorization::HEAD_ACTION.as_str();
         binding.additional = request
             .paths
             .iter()

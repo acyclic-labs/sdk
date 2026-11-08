@@ -42,9 +42,12 @@ export async function runScriptedScenario({scenario,processes,directory,env,
  const run=await processes.runOwned('python3',scenario.args,{cwd,env,scopeMountRoot:env.HOME});
  const seconds=(performance.now()-started)/1000;
  await writeFile(join(directory,scenario.name+'.log'),run.stdout+run.stderr,{flag:'wx'});
+ const refusals=[expired()&&'case scope expired',
+   run.code!==0&&`exit ${run.code} (signal ${run.signal??null})`,run.code===0&&!scenario.accepts(run)&&'output lacks its acceptance marker'].filter(Boolean);
+ const tail=text=>text.trim().slice(-1500)||'(empty)';
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,
-   name:scenario.name,seconds,exit:run.code,expired:expired(),
-   accepted:!expired()&&run.code===0&&scenario.accepts(run)};
+   name:scenario.name,seconds,exit:run.code,expired:expired(),accepted:refusals.length===0,
+   ...(refusals.length?{error:`${refusals.join('; ')}; stderr: ${tail(run.stderr)}\nstdout: ${tail(run.stdout)}`}:{})};
  return receipt;
 }
 

@@ -66,3 +66,11 @@ unchanged assertions. Exact-restored Linux source replayed 389 retained inputs
 All 388 prior input hashes remain unchanged; `action-36` is the original
 65,698-byte completion emitted by the existing production serializer oracle.
 The corpus manifest retains the precise source and component qualification.
+
+Typed workspace and package requests decode directly from the original bytes.
+The pipe oracle compares that same reader with the owning `HostAction` decoder,
+including duplicate members in actions and nested claims. Retained serializer
+captures `duplicate-field` and `duplicate-claim` exercise this distinction.
+Control 8 restores intermediate `Value` normalization and must fail that byte
+admission oracle. The reader consumes each byte once; EOF or the original OS
+read error ends the wait, and no intermediate JSON tree is built by the caller.

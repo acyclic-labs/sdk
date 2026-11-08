@@ -78,6 +78,8 @@ syntax = "proto3";
 
 package acyclic.auth.v1;
 
+import "validation/v1/options.proto";
+
 option go_package = "github.com/acyclic-labs/sdk/go/gen/auth/v1;authv1";
 
 enum AuditDecision {
@@ -541,3 +543,6 @@ message WebsocketConnectGrant {
   repeated SocketHostRule rules = 1;
 }
 
+option (acyclic.validation.v1.http_routes) = { method: "POST" path: "/v1/identity/secrets/put" auth: { action: "secrets/put" resource: "secrets:/{scope}/{name}" } };
+option (acyclic.validation.v1.http_routes) = { method: "POST" path: "/v1/identity/secrets/list" auth: { action: "secrets/list" resource: "secrets:/{scope}" } };
+option (acyclic.validation.v1.http_routes) = { method: "POST" path: "/v1/identity/secrets/delete" auth: { action: "secrets/delete" resource: "secrets:/{scope}/{name}" } };

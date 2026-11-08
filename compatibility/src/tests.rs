@@ -51,9 +51,9 @@ fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
         let destination = output.path().join(baseline);
         descriptor(
             &root.join("rust/crates").join(family),
+            &root.join("compatibility/proto"),
             protos,
             &destination,
-            &acyclic_test_support::crate_path!("proto"),
         )?;
         let actual = std::fs::read(&destination)?;
         let expected = std::fs::read(root.join("compatibility/descriptors").join(baseline))?;

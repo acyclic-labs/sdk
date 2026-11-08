@@ -1,4 +1,4 @@
-use crate::{public_api::PublicItemSignature, Error};
+use crate::{Error, public_api::PublicItemSignature};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
@@ -17,11 +17,13 @@ struct Cache {
         >,
     >,
     rendered: RefCell<Derived<Vec<PublicItemSignature>>>,
-    files: RefCell<BTreeMap<PathBuf, (sdk_file_identity::Stamp, Rc<[u8]>)>>,
+    files: RefCell<BTreeMap<PathBuf, FileSnapshot>>,
     parsed: RefCell<Derived<rustdoc_types::Crate>>,
     json: RefCell<Derived<serde_json::Value>>,
     normalized: RefCell<BTreeMap<PathBuf, Derived<[u8]>>>,
 }
+
+type FileSnapshot = (sdk_file_identity::Stamp, Rc<[u8]>);
 
 // Handle entries own their input Rc: an allocator cannot recycle the indexed
 // address while it remains in the map. Equal buffers share one derived value.
@@ -615,11 +617,13 @@ mod tests {
     fn nested_and_unwinding_operations_restore_the_outer_cache() {
         with_rustdoc_cache(|| {
             extract(&Rc::from(&b"outer"[..]), || Ok(item(b"outer"))).unwrap();
-            assert!(std::panic::catch_unwind(|| with_rustdoc_cache(|| {
-                extract(&Rc::from(&b"inner"[..]), || Ok(item(b"inner"))).unwrap();
-                panic!("negative control");
-            }))
-            .is_err());
+            assert!(
+                std::panic::catch_unwind(|| with_rustdoc_cache(|| {
+                    extract(&Rc::from(&b"inner"[..]), || Ok(item(b"inner"))).unwrap();
+                    panic!("negative control");
+                }))
+                .is_err()
+            );
             assert_eq!(
                 extract(&Rc::from(&b"outer"[..]), || panic!("outer result was lost")).unwrap(),
                 item(b"outer")

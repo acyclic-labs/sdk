@@ -113,7 +113,12 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("unknown protocol family")?;
         let manifest = root.join("../crates").join(family);
         let descriptor = out.join(format!("{family}.bin"));
-        acyclic_proto_build::descriptor(&manifest, protos, &descriptor, &shared)?;
+        acyclic_proto_build::descriptor(
+            &manifest,
+            &shared,
+            protos,
+            &descriptor,
+        )?;
         writeln!(
             descriptors,
             "include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{family}.bin\")),"

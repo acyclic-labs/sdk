@@ -564,6 +564,16 @@ pub fn render(root: &std::path::Path) -> std::io::Result<()> {
     AuthFile::render(root)?;
     let path = root.join("auth/v1/auth.proto");
     let schema = std::fs::read_to_string(&path)?;
+    let mut schema = schema.replacen(
+        "\n\noption go_package",
+        "\n\nimport \"validation/v1/options.proto\";\n\noption go_package",
+        1,
+    );
+    for (path, action, resource) in crate::secrets::HTTP_ROUTES {
+        schema.push_str(&format!(
+            "option (acyclic.validation.v1.http_routes) = {{ method: \"POST\" path: \"{path}\" auth: {{ action: \"{action}\" resource: \"{resource}\" }} }};\n"
+        ));
+    }
     std::fs::write(
         path,
         format!("{}{}", include_str!("wire-rules.proto.inc"), schema),

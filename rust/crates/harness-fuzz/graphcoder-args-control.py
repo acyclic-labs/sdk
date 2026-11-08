@@ -210,6 +210,13 @@ additional_controls = {
             "null",
             b"native session action unknown fields must be refused",
         ),
+        (
+            "plugin/src/input.rs",
+            b"Ok(serde_json::from_slice(&bytes)?)",
+            b"Ok(serde_json::from_value(serde_json::from_slice::<serde_json::Value>(&bytes)?)?)",
+            "duplicate-field",
+            b"typed native input must preserve original byte admission",
+        ),
     ],
     "command_result": [
         (

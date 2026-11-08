@@ -61,7 +61,11 @@ pub(crate) fn claims_message(
     claims.encode(message).map_err(|_| VerifyError::Malformed)
 }
 
-pub(crate) fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
+/// Admit a compressed Ed25519 public key for strict signature verification.
+///
+/// # Errors
+/// Rejects malformed encodings and weak keys before they enter trusted state.
+pub fn public_key(bytes: &[u8]) -> Result<VerifyingKey, VerifyError> {
     let bytes = bytes.try_into().map_err(|_| VerifyError::Malformed)?;
     let key = VerifyingKey::from_bytes(bytes).map_err(|_| VerifyError::Signature)?;
     if key.is_weak() {

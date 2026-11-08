@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_native_runtime::{FileLock, FileLockMode};
 
 /// Write data, its Schemars-generated schema, and the guarded version index.
 ///
@@ -144,7 +145,7 @@ pub(super) fn load_version_index(
     Ok(index)
 }
 
-pub(super) fn lock_publication(output_dir: &Path) -> Result<File, Error> {
+pub(super) fn lock_publication(output_dir: &Path) -> Result<FileLock, Error> {
     let lock_path = output_dir.join(".sdk-docs-versions.v1.lock");
     reject_reparse_ancestors(&lock_path)?;
     let lock = OpenOptions::new()
@@ -160,6 +161,5 @@ pub(super) fn lock_publication(output_dir: &Path) -> Result<File, Error> {
             lock_path.display()
         )));
     }
-    lock.lock()?;
-    Ok(lock)
+    Ok(FileLock::acquire(lock, FileLockMode::Exclusive)?)
 }

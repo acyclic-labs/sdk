@@ -54,17 +54,34 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Configure the pinned compiler and the public Objects metadata map shape.
+/// Locate the compiler, honoring `PROTOC` before the pinned bundled compiler.
+///
+/// Relocated generators supply the executable available on their runtime host.
+/// The bundled path is resolved only when no explicit compiler is supplied.
+///
+/// # Errors
+/// Returns bundled compiler discovery errors.
+pub fn protoc() -> Result<PathBuf, protoc_bin_vendored::Error> {
+    std::env::var_os("PROTOC")
+        .map_or_else(protoc_bin_vendored::protoc_bin_path, |path| Ok(path.into()))
+}
+
+/// Locate compiler imports, honoring `PROTOC_INCLUDE` before bundled imports.
+///
+/// # Errors
+/// Returns bundled import discovery errors.
+pub fn protoc_include() -> Result<PathBuf, protoc_bin_vendored::Error> {
+    std::env::var_os("PROTOC_INCLUDE")
+        .map_or_else(protoc_bin_vendored::include_path, |path| Ok(path.into()))
+}
+
+/// Configure the compiler and the public Objects metadata map shape.
 ///
 /// # Errors
 /// Returns compiler discovery and Cargo output directory errors.
 pub fn config() -> Result<Config, Box<dyn std::error::Error>> {
     let mut config = Config::new();
-    config.protoc_executable(
-        std::env::var_os("PROTOC").map_or_else(protoc_bin_vendored::protoc_bin_path, |path| {
-            Ok(PathBuf::from(path))
-        })?,
-    );
+    config.protoc_executable(protoc()?);
     config.btree_map([".acyclic.objects.v1.ObjectMetadata.user"]);
     config.protoc_arg("--retain_options");
     Ok(config)
@@ -129,15 +146,20 @@ pub fn compile(
     std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
     println!("cargo:rerun-if-changed=proto");
     println!("cargo:rerun-if-changed={}", shared_protocols().display());
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
     Ok(())
 }
 
 /// Regenerate a complete descriptor closure without building any SDK crate.
+/// `shared` is the import root containing the shared validation protocol.
+/// Both source roots are explicit so generators can run after relocation.
 ///
 /// # Errors
 /// Returns compiler, descriptor and filesystem errors.
 pub fn descriptor(
     manifest: &std::path::Path,
+    shared: &std::path::Path,
     protos: &[&str],
     output: &std::path::Path,
     shared: &std::path::Path,

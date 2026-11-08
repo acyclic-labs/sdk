@@ -29,7 +29,7 @@ use std::{
 };
 
 /// The child's configuration, passed in its environment.
-const CHILD: &str = "ACYCLIC_RESUME_CHILD";
+pub(super) const CHILD: &str = "ACYCLIC_RESUME_CHILD";
 /// The line the child prints once its journal holds the streamed prefix.
 const JOURNALED: &str = "acyclic-resume: journaled";
 const INSTRUCTION: &str = "Resume after a kill.";
@@ -281,9 +281,7 @@ impl ModelProvider for PausedPrefix {
 }
 
 /// The child process: run the turn until the parent kills it.
-#[tokio::test]
-#[ignore = "the child of resume::killed_turn_resumes_from_a_loopback_journal"]
-async fn child() -> TestResult {
+pub(super) async fn child() -> TestResult {
     let Some(config) = acyclic_harness::test_support::environment(CHILD) else {
         return Ok(());
     };
@@ -326,7 +324,11 @@ pub(super) async fn kill_and_resume<P: acyclic_harness::store::JournalProvider +
         seed,
     })?;
     let mut child = tokio::process::Command::new(std::env::current_exe()?)
-        .args(["--exact", "resume::child", "--ignored", "--nocapture"])
+        .args([
+            "--exact",
+            "local_cloud::killed_turn_resumes_from_a_loopback_journal",
+            "--nocapture",
+        ])
         .env(CHILD, config)
         .env("RUST_TEST_THREADS", "1")
         .stdout(std::process::Stdio::piped())

@@ -808,7 +808,6 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
 
 #[cfg(target_os = "linux")]
 #[test]
-#[ignore = "requires strace; run explicitly to count actual kernel crossings"]
 fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
 -> Result<(), Box<dyn std::error::Error>> {
     for negative in [false, true] {
@@ -825,7 +824,7 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
         if negative {
             command.env("ACYCLIC_OBSERVATION_NEGATIVE", "1");
         }
-        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun cargo test -p acyclic-observability --test operations disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --ignored --exact")))?;
+        let result = command.output().map_err(|error| std::io::Error::new(error.kind(), format!("syscall trace failed to start: {error}; install strace and rerun cargo test -p acyclic-observability --test operations disabled_operation_has_zero_syscalls_with_real_io_negative_control -- --exact")))?;
         assert!(
             result.status.success(),
             "syscall probe failed: {}",

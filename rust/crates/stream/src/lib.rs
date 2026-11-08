@@ -206,10 +206,9 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("tokens/create", "token"),
 ];
 
-/// Canonical operation vocabulary accepted by Stream access-token grants.
-pub const TOKEN_OPERATIONS: &[&str] = &[
-    "list", "read", "follow", "append", "fork", "create", "commit",
-];
+#[path = "lib/token.rs"]
+mod token;
+pub use token::TokenOperation;
 
 #[path = "lib/path.rs"]
 mod path;
