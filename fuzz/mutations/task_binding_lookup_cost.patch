@@ -1,0 +1,12 @@
+--- a/rust/crates/harness/src/local/workspace/bindings.rs
++++ b/rust/crates/harness/src/local/workspace/bindings.rs
+@@ -55,6 +55,9 @@
+             .map_err(storage)?
+             .and_then(RetainedWeak::upgrade)
+         {
++            for _ in 0..1024 {
++                let _ = entries.get(key, &mut accounting).map_err(storage)?;
++            }
+             return Ok((binding, None));
+         }
+         // The old value may already be in Drop, waiting for this same index.
