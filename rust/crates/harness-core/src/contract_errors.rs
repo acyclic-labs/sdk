@@ -1277,9 +1277,12 @@ impl From<acyclic_fs::FsError> for Error {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            Self::NativeFilesystem {
-                source: Box::new(source),
-                custody: None,
+            match source {
+                acyclic_fs::FsError::NativeKernel(cause) => cause.into(),
+                source => Self::NativeFilesystem {
+                    source: Box::new(source),
+                    custody: None,
+                },
             }
         }
         #[cfg(target_arch = "wasm32")]

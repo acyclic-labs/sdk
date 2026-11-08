@@ -51,12 +51,12 @@ proptest! {
         // borrowed key requires neither copied bytes nor another allocation.
         let scanned = if explicit.is_none() { query.len() as u64 } else { 0 };
         if scanned > allowance {
-            prop_assert!(matches!(actual, Err(Error::NativeFilesystem { source, .. })
-                if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
-                    acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::BudgetExceeded {
-                            counter: "items_examined", ..
-                        })))), "unfunded query scan must refuse");
+            prop_assert!(matches!(actual, Err(Error::NativeWork {
+                cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                    acyclic_fs::WorkError::BudgetExceeded {
+                        counter: "items_examined", ..
+                    }), ..
+            })), "unfunded query scan must refuse");
         } else {
             prop_assert_eq!(actual?.is_some(), expected);
             let after = checked(actual_work.remaining())?;
@@ -71,9 +71,9 @@ proptest! {
                     cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
                 })), "cancelled pinned lookup must refuse");
             } else {
-                prop_assert!(matches!(cancelled, Err(Error::NativeFilesystem { source, .. })
-                    if matches!(source.as_ref(), acyclic_fs::FsError::NativeKernel(
-                        acyclic_fs::NativeTreeMaterializationError::Cancelled))),
+                prop_assert!(matches!(cancelled, Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
+                })),
                     "cancelled query scan must refuse");
             }
         }
