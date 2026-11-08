@@ -454,12 +454,14 @@ fn native_access_pending_nested_mutations_cannot_publish_across_revocation()
             Action::Append => source
                 .open_file(&native_test_path("nested/from"))?
                 .append_range(8, Bytes::from_static(b"!"))?,
-            Action::Rename => source.rename(
-                &native_test_path("nested/from"),
-                &native_test_path("nested/to"),
-                false,
-                &work,
-            )?,
+            Action::Rename => {
+                source.rename(
+                    &native_test_path("nested/from"),
+                    &native_test_path("nested/to"),
+                    false,
+                    &work,
+                )?;
+            }
             Action::Delete => source.remove(&native_test_path("nested/from"), None, &work)?,
             Action::Admin => {
                 source.hard_link(

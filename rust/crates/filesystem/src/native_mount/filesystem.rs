@@ -157,14 +157,15 @@ pub trait MountFilesystem: Send + Sync + 'static {
         expected: Option<FileId>,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
-    /// Renames the exact binding with original source grants.
+    /// Renames the exact binding with original source grants and returns the
+    /// installed candidate's invalidation stamp; no metadata is disclosed.
     fn rename(
         &self,
         source: &MountPath,
         destination: &MountPath,
         replace: bool,
         work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
+    ) -> Result<MountMutationResult, MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
     fn set_attributes(
         &self,

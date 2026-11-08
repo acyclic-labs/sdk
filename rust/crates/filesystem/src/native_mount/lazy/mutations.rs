@@ -240,7 +240,7 @@ macro_rules! mutation_callbacks {
             destination: &MountPath,
             replace: bool,
             work: &crate::NativeMaterializationWork,
-        ) -> Result<(), MountSourceError> {
+        ) -> Result<MountMutationResult, MountSourceError> {
             self.require_path(source, crate::access::Action::Rename, work)?;
             self.require_path(destination, crate::access::Action::Rename, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
@@ -250,8 +250,13 @@ macro_rules! mutation_callbacks {
                 return Err(MountSourceError::NotFound);
             }
             if source_text == destination_text {
+                let stamp = self
+                    .authored
+                    .view_stamp_with_meter(work)?
+                    .ok_or(MountSourceError::Stale)?;
+                let completed = MountMutationResult { stamp, facts: None };
                 if self.authored.lookup(source)?.is_some() {
-                    return Ok(());
+                    return Ok(completed);
                 }
                 return self.runtime.wait(|| async {
                     self.lazy
@@ -261,7 +266,7 @@ macro_rules! mutation_callbacks {
                         )
                         .await
                         .map_err(lazy_error)?;
-                    Ok(())
+                    Ok(completed)
                 });
             }
             if self.authored.lookup(source)?.is_none() {
@@ -334,12 +339,13 @@ macro_rules! mutation_callbacks {
             } else {
                 None
             };
-            self.authored.rename(source, destination, replace, work)?;
+            let completed = self.authored.rename(source, destination, replace, work)?;
             if let Some((record, metadata, file)) = replaced_open {
                 self.record_removed_identity(record, metadata, file, work)?;
             }
             self.record_removed(source, source_id, work)?;
-            self.record_rebound(&destination_text)
+            self.record_rebound(&destination_text)?;
+            Ok(completed)
         }
 
         fn hard_link(
