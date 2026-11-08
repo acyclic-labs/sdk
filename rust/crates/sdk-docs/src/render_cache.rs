@@ -522,56 +522,28 @@ mod tests {
             std::fs::write(&path, encode(&first)).unwrap();
             let original = with_rustdoc_cache(|| read_rustdoc(&path).unwrap());
             let reads = READS.get();
-            with_rustdoc_cache(|| {
+            let original_json = with_rustdoc_cache(|| {
                 assert!(Rc::ptr_eq(&original, &read_rustdoc(&path).unwrap()));
-                assert_eq!(read_rustdoc_json(&path).unwrap()["value"], first);
-            });
-            prop_assert_eq!(READS.get(), reads);
-            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-            std::fs::write(&path, encode(&replacement)).unwrap();
-            std::fs::File::options().write(true).open(&path).unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
-            with_rustdoc_cache(|| {
+                let json = read_rustdoc_json(&path).unwrap();
+                assert_eq!(json["value"], first);
+                assert_eq!(READS.get(), reads);
+                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+                std::fs::write(&path, encode(&replacement)).unwrap();
+                std::fs::File::options().write(true).open(&path).unwrap()
+                    .set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
                 assert_eq!(&*read_rustdoc(&path).unwrap(), encode(&replacement));
                 assert_eq!(read_rustdoc_json(&path).unwrap()["value"], replacement);
+                assert_eq!(READS.get(), reads+1);
+                std::fs::remove_file(&path).unwrap();
+                assert!(read_rustdoc(&path).is_err());
+                assert!(read_rustdoc_json(&path).is_err());
+                json
             });
-            prop_assert_eq!(READS.get(), reads+1);
-            std::fs::remove_file(&path).unwrap();
-            with_rustdoc_cache(|| assert!(read_rustdoc(&path).is_err()));
+            prop_assert_eq!(&*original, encode(&first));
+            prop_assert_eq!(&original_json["value"], &serde_json::json!(first));
             prop_assert!(RECEIPTS.with_borrow(|cache| cache.as_ref().unwrap().files.borrow().is_empty()));
+            prop_assert!(CACHE.with_borrow(|cache| cache.is_none()));
         }
-    }
-
-    #[test]
-    fn receipt_reads_reuse_unchanged_bytes_and_recheck_native_identity() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("receipt");
-        std::fs::write(&path, br#"{"version":1}"#).unwrap();
-        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        with_rustdoc_cache(|| {
-            let before = READS.get();
-            let first = read_rustdoc(&path).unwrap();
-            let second = read_rustdoc(&path).unwrap();
-            assert!(Rc::ptr_eq(&first, &second));
-            let original_json = read_rustdoc_json(&path).unwrap();
-            assert_eq!(original_json["version"], 1);
-            assert_eq!(READS.get() - before, 1);
-            std::fs::write(&path, br#"{"version":2}"#).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_times(std::fs::FileTimes::new().set_modified(modified))
-                .unwrap();
-            assert_eq!(&*read_rustdoc(&path).unwrap(), br#"{"version":2}"#);
-            assert_eq!(read_rustdoc_json(&path).unwrap()["version"], 2);
-            assert_eq!(original_json["version"], 1);
-            std::fs::remove_file(&path).unwrap();
-            assert!(read_rustdoc(&path).is_err());
-            assert!(read_rustdoc_json(&path).is_err());
-            assert_eq!(&*first, br#"{"version":1}"#);
-        });
-        assert!(CACHE.with_borrow(|cache| cache.is_none()));
     }
 
     #[test]
