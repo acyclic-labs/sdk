@@ -26,8 +26,8 @@ table describes their assertions, rather than claiming an executed proof result.
 | Production operation | Checked cases | Missing cases |
 | --- | --- | --- |
 | `State::restore` | Arbitrary full-width cursor/head/generation, absent or arbitrary pending value; exact range/stale refusal and preserved admitted fields | Storage provenance |
-| `State::prepare` | New valid preparation | Duplicate intent, competing intent and invalid range |
-| `State::complete` | Ready/Failed and contradictory terminal result | Absent or foreign pending identity, identical terminal replay |
+| `State::prepare` | Arbitrary new, duplicate and competing identity/cut requests; range validation precedes replay; every refusal and exact replay preserves the complete pending state | Storage conditional commit |
+| `State::complete` | Arbitrary Ready/Failed observation, absent/foreign producer, both terminal contradictions and identical terminal replay; preserved identity/cut/generation and exact state on refusal | Producer observation provenance |
 | `State::demand` | Unprepared, Await, Swap and Failed from every admitted restored state; Unprepared after swap | Producer observation |
 | `State::swap` | Arbitrary restored state and request: absent/foreign identity, incomplete/failed terminal, stale/exhausted generation, regressed head and successful exact cut; every refusal leaves the complete state unchanged | Storage conditional commit |
 | `State::fork` | Pending, settled inherited prefix and prefix exclusion | Failed pending and empty state |
@@ -54,6 +54,27 @@ positive run:
 ```sh
 git apply rust/proofs/model-epochs/mutations/admit-unfinished-summary.patch
 git apply -R rust/proofs/model-epochs/mutations/admit-unfinished-summary.patch
+```
+
+The `preparation_and_completion_preserve_the_current_intent` harness replaces
+only the narrower failed-summary terminal harness. It constructs absent,
+unfinished, ready and failed preparations through the actual reducer, then checks
+an arbitrary prepare request followed by an arbitrary completion observation.
+All scalar values and summary identities retain their full width. Fourteen cover
+goals require each refusal, new preparation, exact-intent replay, initial terminal
+outcome and identical terminal replay to be reachable. The restore/swap harness
+separately retains failed-summary swap refusal.
+
+```sh
+cargo kani --manifest-path rust/proofs/model-epochs/Cargo.toml --harness preparation_and_completion_preserve_the_current_intent
+```
+
+The retained foreign-completion mutation removes the production summary-identity
+filter. Apply it for the negative control, then restore it before verification:
+
+```sh
+git apply rust/proofs/model-epochs/mutations/admit-foreign-completion.patch
+git apply -R rust/proofs/model-epochs/mutations/admit-foreign-completion.patch
 ```
 
 These commands describe the qualification procedure, not an executed result.

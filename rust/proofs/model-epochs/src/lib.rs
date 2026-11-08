@@ -74,22 +74,140 @@ mod proofs {
     }
 
     #[kani::proof]
-    fn failed_summary_never_swaps_or_changes_its_outcome() {
-        let cursor: u64 = kani::any();
-        let end: u64 = kani::any();
+    fn preparation_and_completion_preserve_the_current_intent() {
         let generation: u64 = kani::any();
-        kani::assume(end > cursor);
-        let id = [0; 32];
-        let mut state = protocol::State::restore(generation, cursor, None, end).unwrap();
-        assert!(state.prepare(id, end, end).is_ok());
-        assert!(state.complete(id, protocol::Completion::Failed).is_ok());
-        let failed = state;
-        assert!(state.swap(id, generation, end).is_err());
-        assert_eq!(state, failed);
-        assert_eq!(state.demand(), protocol::Demand::Failed(id));
-        assert!(state.complete(id, protocol::Completion::Ready).is_err());
-        assert_eq!(state, failed);
-        kani::cover!(generation == u64::MAX);
+        let cursor: u64 = kani::any();
+        let head: u64 = kani::any();
+        let Ok(mut state) = protocol::State::restore(generation, cursor, None, head) else {
+            return;
+        };
+        if kani::any() {
+            let summary: protocol::SummaryId = kani::any();
+            let through: u64 = kani::any();
+            kani::assume(cursor < through && through <= head);
+            assert_eq!(state.prepare(summary, through, head), Ok(()));
+            if kani::any() {
+                let completion = if kani::any() {
+                    protocol::Completion::Ready
+                } else {
+                    protocol::Completion::Failed
+                };
+                assert_eq!(state.complete(summary, completion), Ok(()));
+            }
+        }
+
+        let summary: protocol::SummaryId = kani::any();
+        let through: u64 = kani::any();
+        let head: u64 = kani::any();
+        let before = state;
+        let pending = before.pending();
+        let refusal = if through <= cursor || through > head {
+            Some(protocol::Refusal::Range)
+        } else if pending.is_some_and(|value| value.summary != summary || value.through != through)
+        {
+            Some(protocol::Refusal::Busy)
+        } else {
+            None
+        };
+        assert_eq!(state.prepare(summary, through, head).err(), refusal);
+        assert_eq!(state.generation(), generation);
+        assert_eq!(state.cursor(), cursor);
+        if refusal.is_some() || pending.is_some() {
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(
+                state.pending(),
+                Some(protocol::Pending {
+                    summary,
+                    generation,
+                    through,
+                    completion: None,
+                })
+            );
+        }
+        kani::cover!(refusal == Some(protocol::Refusal::Range));
+        kani::cover!(refusal == Some(protocol::Refusal::Busy));
+        kani::cover!(refusal.is_none() && pending.is_none());
+        kani::cover!(refusal.is_none() && pending.is_some_and(|value| value.completion.is_none()));
+        kani::cover!(
+            refusal.is_none()
+                && pending
+                    .is_some_and(|value| value.completion == Some(protocol::Completion::Ready))
+        );
+        kani::cover!(
+            refusal.is_none()
+                && pending
+                    .is_some_and(|value| value.completion == Some(protocol::Completion::Failed))
+        );
+
+        let summary: protocol::SummaryId = kani::any();
+        let completion = if kani::any() {
+            protocol::Completion::Ready
+        } else {
+            protocol::Completion::Failed
+        };
+        let before = state;
+        let pending = before.pending();
+        let refusal = match pending {
+            None => Some(protocol::Refusal::Stale),
+            Some(value) if value.summary != summary => Some(protocol::Refusal::Stale),
+            Some(value) if value.completion.is_some_and(|prior| prior != completion) => {
+                Some(protocol::Refusal::Contradiction)
+            }
+            Some(_) => None,
+        };
+        assert_eq!(state.complete(summary, completion).err(), refusal);
+        if refusal.is_some() {
+            assert_eq!(state, before);
+        } else {
+            assert_eq!(state.generation(), before.generation());
+            assert_eq!(state.cursor(), before.cursor());
+            assert_eq!(
+                state.pending(),
+                pending.map(|value| protocol::Pending {
+                    completion: Some(completion),
+                    ..value
+                })
+            );
+            let demand = match completion {
+                protocol::Completion::Ready => protocol::Demand::Swap(summary),
+                protocol::Completion::Failed => protocol::Demand::Failed(summary),
+            };
+            assert_eq!(state.demand(), demand);
+        }
+        kani::cover!(refusal == Some(protocol::Refusal::Stale) && pending.is_none());
+        kani::cover!(
+            refusal == Some(protocol::Refusal::Stale)
+                && pending.is_some_and(|value| value.summary != summary)
+        );
+        kani::cover!(
+            refusal == Some(protocol::Refusal::Contradiction)
+                && completion == protocol::Completion::Ready
+        );
+        kani::cover!(
+            refusal == Some(protocol::Refusal::Contradiction)
+                && completion == protocol::Completion::Failed
+        );
+        kani::cover!(
+            refusal.is_none()
+                && pending.is_some_and(|value| value.completion.is_none())
+                && completion == protocol::Completion::Ready
+        );
+        kani::cover!(
+            refusal.is_none()
+                && pending.is_some_and(|value| value.completion.is_none())
+                && completion == protocol::Completion::Failed
+        );
+        kani::cover!(
+            refusal.is_none()
+                && pending.is_some_and(|value| value.completion == Some(completion))
+                && completion == protocol::Completion::Ready
+        );
+        kani::cover!(
+            refusal.is_none()
+                && pending.is_some_and(|value| value.completion == Some(completion))
+                && completion == protocol::Completion::Failed
+        );
     }
 
     #[kani::proof]
