@@ -1,0 +1,12 @@
+diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
+index 345f4f8b85a..658378e8191 100644
+--- a/typescript/packages/stream/src/grpc.ts
++++ b/typescript/packages/stream/src/grpc.ts
+@@ -303,6 +303,6 @@ function grpcRefusal(error: ConnectError): StreamRefusal {
+ function sessionTransportError(error: unknown, transient: boolean): unknown {
+   if (!(error instanceof ConnectError)) return error;
+   return Object.assign(new Error(error.rawMessage), {
+-    code: grpcErrorCode(error.code, error.rawMessage), transient, refusal: grpcRefusal(error),
++    code: grpcErrorCode(error.code, error.rawMessage), transient,
+   });
+ }
