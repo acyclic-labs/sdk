@@ -174,7 +174,7 @@ installed_graphcoder() {
 # The native hosts own tools and providers. Qualify their thin adapters and the
 # shared lifecycle here; agent-host-qualification also runs scripted sessions.
 native_host_contracts() {
-  npm ci --prefix plugin/tests/hosts --ignore-scripts --no-audit --no-fund
+  npm ci --prefix plugin/tests/hosts --no-audit --no-fund
   bun run --cwd plugin/tests/hosts test:shim
   cargo test --locked -p acyclic-plugin --all-features --bin acyclic -- --test-threads=4
   cargo test --locked -p acyclic-harness --all-features --lib local::host_owner:: -- --test-threads=4
