@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/conversation/epochs/protocol.rs b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+--- a/rust/crates/harness-core/src/conversation/epochs/protocol.rs
++++ b/rust/crates/harness-core/src/conversation/epochs/protocol.rs
+@@ -167,7 +167,6 @@ impl State {
+         let pending = self
+             .pending
+             .as_mut()
+-            .filter(|pending| pending.summary == summary)
+             .ok_or(Refusal::Stale)?;
+         if pending.completion.is_some_and(|prior| prior != completion) {
+             return Err(Refusal::Contradiction);
