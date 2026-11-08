@@ -697,7 +697,8 @@ async fn committed_handover(refused_close: bool) -> Result {
         let (mut release, _) = listener.accept().await?;
         let result = terminal(&provider, log(&run.agent, op)?, async || {
             use tokio::io::AsyncWriteExt as _;
-            release.write_all(b"continue\n").await?;
+            // Both native shells consume one LF permit before closing the socket.
+            release.write_all(b"\n").await?;
             Ok(())
         })
         .await?;
@@ -956,7 +957,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 .await?;
             use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
             assert!(futures::poll!(Box::pin(still_running.read_u8())).is_pending());
-            still_running.write_all(b"continue\n").await?;
+            still_running.write_all(b"\n").await?;
             assert_eq!(
                 still_running.read_u8().await.unwrap_err().kind(),
                 std::io::ErrorKind::UnexpectedEof
