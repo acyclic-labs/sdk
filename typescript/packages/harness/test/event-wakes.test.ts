@@ -27,7 +27,7 @@ test("durable wakes retain exact generations and visit only selected membership"
     async setAlarm() {}, async deleteAlarm() {},
   };
   const storage = new SqliteEventStorage(backend, "wakes");
-  const open = () => new WakeIndex(storage, 1024);
+  const open = () => new WakeIndex(storage);
   const change = (index: WakeIndex, source: string, changes: Parameters<WakeIndex["changed"]>[1]) =>
     storage.transaction(() => index.changed(source, changes));
   try {
@@ -102,6 +102,7 @@ test("durable wakes retain exact generations and visit only selected membership"
     assert.deepEqual(await index.register("foreign", ["tree/child/inbox", "foreign/control"]), { refused: "conflict" });
     assert.deepEqual(await new WakeIndex(storage, 1).register("over-capacity", ["new/inbox", "new/control"]), { refused: "capacity" });
     assert.equal(writes, unchanged);
+    assert.deepEqual(await index.register("over-capacity", ["new/inbox", "new/control"]), { admitted: true });
     // Path segments remain exact, including prefixes ending at an empty segment.
     await index.register("slash", ["/inbox", "/control"]);
     change(index, "root", [["", true], ["tree/childish", true]]);
