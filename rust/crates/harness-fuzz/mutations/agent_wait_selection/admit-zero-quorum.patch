@@ -1,0 +1,11 @@
+--- a/rust/crates/harness-core/src/tools/agents.rs
++++ b/rust/crates/harness-core/src/tools/agents.rs
+@@ -446,7 +446,7 @@
+     }
+     let named = u32::try_from(children.len()).unwrap_or(u32::MAX);
+     let need = input.need.unwrap_or(named);
+-    if need == 0 || need > named {
++    if need > named {
+         return Err(rejected(format!(
+             "need must be between 1 and the {named} distinct children named"
+         )));

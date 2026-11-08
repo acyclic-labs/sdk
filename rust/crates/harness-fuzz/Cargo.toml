@@ -24,6 +24,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_wait_selection"
+path = "fuzz_targets/agent_wait_selection.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_host_admission"
 path = "fuzz_targets/native_host_admission.rs"
 required-features = ["core"]

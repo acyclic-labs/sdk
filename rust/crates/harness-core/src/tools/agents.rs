@@ -36,7 +36,10 @@ use acyclic_stream::BoxProviderFuture;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+};
 
 /// Revision of the agent tools, selected for the model over other revisions.
 pub const REVISION: &str = "agent-2";
@@ -123,8 +126,10 @@ fn rejected(reason: impl Into<String>) -> ToolResult {
     super::rejected_input(Error::Invalid(reason.into()))
 }
 
-fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> std::result::Result<T, ToolResult> {
-    serde_json::from_value(arguments).map_err(|error| rejected(error.to_string()))
+fn decode<'de, T: Deserialize<'de>>(
+    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
+) -> std::result::Result<T, ToolResult> {
+    T::deserialize(arguments).map_err(|error| rejected(error.to_string()))
 }
 
 /// Path-safe key of one call, ordered by model step: effects of later steps
@@ -417,19 +422,22 @@ fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
-fn waited(
+fn waited<'de>(
     agent: &AgentPath,
-    arguments: Value,
+    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
 ) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
     let input: WaitAgentInput = decode(arguments)?;
     let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
+    let mut seen = HashSet::with_capacity(input.agents.len());
     for reference in input.agents {
         let Some(child) = named_child(agent, &reference) else {
             return Err(rejected(format!(
                 "{reference} names no child of this agent"
             )));
         };
-        if !children.iter().any(|(_, known)| *known == child) {
+        // Resolution already checked the complete parent. Within that one
+        // parent the fixed-size child identity suffices; retain its first name.
+        if seen.insert(wait_identity(&child)) {
             children.push((reference, child));
         }
     }
@@ -445,6 +453,18 @@ fn waited(
     }
     Ok((children, need, input.timeout_ms))
 }
+
+#[inline]
+fn wait_identity(child: &AgentPath) -> [u8; 16] {
+    #[cfg(any(test, feature = "test-support"))]
+    selection_checks::IDENTITIES.with(|count| count.set(count.get() + 1));
+    child.id_bytes()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+mod selection_checks;
+#[cfg(feature = "test-support")]
+pub use selection_checks::check as check_agent_wait_selection;
 
 /// What a call of `tool` with `arguments` waits for before it dispatches: for
 /// a `wait` fewer of whose children settled than it needs, the
@@ -469,7 +489,7 @@ pub(crate) async fn awaited(
         return Ok(None);
     }
     // A malformed wait dispatches to receive its error.
-    let Ok((named, mut need, timeout_ms)) = waited(children.agent(), arguments.clone()) else {
+    let Ok((named, mut need, timeout_ms)) = waited(children.agent(), arguments) else {
         return Ok(None);
     };
     let mut unsettled = BTreeSet::new();
