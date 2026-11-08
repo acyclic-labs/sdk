@@ -33,7 +33,7 @@ headless selections load only their own runtime dependencies.
 ```sh
 node scripts/graphcoder-e2e/helpers.mjs
 # Linux/Linux: real FUSE mount custody, including the process-only negative control.
-python3 scripts/graphcoder-e2e/mount.test.py
+python3 -B scripts/graphcoder-e2e/mount.test.py
 node scripts/graphcoder-e2e/coverage.mjs
 node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mock-model
 ```
