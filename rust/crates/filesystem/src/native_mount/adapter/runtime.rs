@@ -81,6 +81,19 @@ pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
 }
 
 impl CallbackRuntime {
+    /// Physical controls run outside the caller's executor, even when Tokio's
+    /// blocking worker inherits that executor's current-thread handle. Use the
+    /// shared callback context so pending callbacks can wait for their producer.
+    /// Bootstrap has no callback runtime yet and initializes it in `operation`.
+    pub(in crate::native_mount) fn control<T>(operation: impl FnOnce() -> T) -> T {
+        let _runtime = match CALLBACK_RUNTIME.get() {
+            Some(Ok(runtime)) => Some(runtime.enter()),
+            _ => None,
+        };
+        let _inline = acyclic_native_runtime::InlineBlocking::enter();
+        operation()
+    }
+
     pub(in crate::native_mount) fn create() -> Result<Self, NativeMountError> {
         CALLBACK_RUNTIME.get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()

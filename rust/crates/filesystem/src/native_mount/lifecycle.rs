@@ -4,12 +4,9 @@ use super::*;
 pub(super) async fn run_native_control<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, NativeMountError> {
-    acyclic_native_runtime::spawn_blocking(move || {
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        operation()
-    })
-    .await
-    .map_err(Into::into)
+    acyclic_native_runtime::spawn_blocking(move || adapter::CallbackRuntime::control(operation))
+        .await
+        .map_err(Into::into)
 }
 
 /// Initializes the same native services without blocking callback producers.
