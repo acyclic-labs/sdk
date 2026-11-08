@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 /** @type {RunCommand} */
 const runCommand = spawnSync;
 
-// The gate and its offline preflight consume this same ordered step list.
+// Required model qualifications execute through one ordered step list.
 export const gateQualifications = [
   { args: ["--all-features"] },
   { args: ["--hook-lifecycle", "--all-features"] },
@@ -37,10 +37,6 @@ const planOnly = Symbol("qualification plan");
 
 export function qualificationPlan(args) {
   return dispatch(args, planOnly);
-}
-
-export function qualificationGatePlans() {
-  return qualifyGate(planOnly);
 }
 
 function qualifyGate(run) {
