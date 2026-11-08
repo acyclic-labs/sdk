@@ -86,7 +86,6 @@ where
                 authored,
                 root: inputs.root,
                 runtime,
-                cursors: CursorTable::new(),
                 source_view,
                 removals: Mutex::new(MountedRemovals::default()),
                 detached,
@@ -229,18 +228,11 @@ where
 
     /// Cancels the authored callback adapter.
     pub fn cancel(&self) {
-        self.cursors.clear();
         self.authored.cancel();
     }
 
     pub(crate) fn physically_retired(&self) -> Result<bool, MountSourceError> {
         Ok(self.authored.capture_retired()
-            && self
-                .cursors
-                .entries
-                .lock()
-                .map_err(|_| MountSourceError::Stale)?
-                .is_empty()
             && self
                 .source_watch
                 .as_ref()
@@ -291,9 +283,6 @@ where
                 ));
             }
         }
-        if !completed {
-            self.cursors.clear();
-        }
         let failure = match &self.source_watch {
             Some(watch) => match watch.stop_with_cleanup(wait) {
                 Ok(_) => retired.failure.map(MountSourceError::NativeWork),
@@ -334,7 +323,6 @@ where
             .is_ok_and(|state| state.source == self.lazy.source_reference())
         {
             let result = self.authored.advance_to_head_async().await;
-            self.cursors.clear();
             return result;
         }
         self.source_view.begin_transition();
@@ -350,7 +338,6 @@ where
                 )),
                 || Ok(()),
             )?;
-            self.cursors.clear();
             Ok(())
         }
         .await;

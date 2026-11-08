@@ -263,6 +263,8 @@ where
 
 mod source;
 pub use source::*;
+mod directory_cursor;
+pub use directory_cursor::MountDirectoryCursor;
 mod path;
 pub use path::MountPath;
 mod callbacks;
