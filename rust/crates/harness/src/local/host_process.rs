@@ -131,25 +131,27 @@ impl HostProcessLease {
     /// refused; the claim stays exact for the next fenced handoff.
     pub fn admit(cwd: &Path, receipt: &Receipt, turn: &serde_json::Value) -> Result<Self> {
         let view = receipt.confirm(turn)?;
+        // This process serves no view, so it may resolve paths through one.
         Self::acquire(
-            &super::host_files::workspace_root(cwd)?,
+            &std::fs::canonicalize(super::host_files::workspace_root(cwd)?).map_err(storage)?,
             &receipt.task,
-            &view,
+            &std::fs::canonicalize(view).map_err(storage)?,
         )
     }
 
     /// Acquires the task's workspace-local custody before claiming an input.
     /// A live owner refuses acquisition; a dead owner's trees are fenced using
     /// the runtime's existing cross-platform process containment implementation.
+    /// Both paths are canonical: the owner that serves `view` passes the path
+    /// it mounted and never resolves it, since resolving a served view waits
+    /// on the owner's own callbacks.
     pub(super) fn acquire(workspace: &Path, task: &AgentPath, view: &Path) -> Result<Self> {
-        let workspace = std::fs::canonicalize(workspace).map_err(storage)?;
-        let view = std::fs::canonicalize(view).map_err(storage)?;
-        if !view.starts_with(&workspace) {
+        if !view.starts_with(workspace) {
             return Err(Error::Unauthorized(
                 "step=admit native process view: outside workspace; recovery: reopen the task through acyclic host".into(),
             ));
         }
-        let root = acyclic_fs::hold_root(&workspace)
+        let root = acyclic_fs::hold_root(workspace)
             .map_err(storage)?
             .create_directories(
                 &PathBuf::from(".acyclic-sdk/host-processes").join(task.id().as_str()),
@@ -168,7 +170,7 @@ impl HostProcessLease {
         let custody = ProcessCustody::acquire(root.path()).map_err(storage)?;
         Ok(Self {
             task: task.clone(),
-            view,
+            view: view.to_path_buf(),
             custody,
             _ownership: ownership,
             root,

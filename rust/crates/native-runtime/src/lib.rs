@@ -12,13 +12,14 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 mod delivery;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 mod host_index;
 mod sync;
 use sync::Mutex as CompletionMutex;
+pub use sync::{Condvar as InlineCondvar, Mutex as InlineMutex, MutexGuard as InlineMutexGuard};
 
 #[cfg(target_vendor = "apple")]
 mod apple;

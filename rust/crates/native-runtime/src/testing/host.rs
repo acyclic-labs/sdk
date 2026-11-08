@@ -1,9 +1,6 @@
 //! A real host worker yields only at an original blocking future's Pending.
 use super::*;
-#[cfg(loom)]
-use loom::sync::Condvar;
-#[cfg(not(loom))]
-use std::sync::Condvar;
+use crate::sync::Condvar;
 use std::task::{Context as PollContext, Wake};
 mod pool;
 pub(crate) use pool::Pool;

@@ -109,6 +109,16 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
     let mut b = view(second, &root.join("b"))?;
     assert_eq!(mounts_at(&root)?, 1, "both views share one mount");
     assert_eq!(listing(&root)?, ["a", "b"]);
+    // Each view's witness is the kernel's own report for its root, although
+    // its owner never asks the kernel for it.
+    for (session, name) in [(&a, "a"), (&b, "b")] {
+        let opened = std::fs::File::open(root.join(name))?;
+        assert_eq!(
+            session.native_root_identity(),
+            Some(crate::NativeRootIdentity::from_file(&opened)?)
+        );
+    }
+    assert_ne!(a.native_root_identity(), b.native_root_identity());
 
     std::fs::write(root.join("a/file"), b"only in a")?;
     assert_eq!(std::fs::read(root.join("a/file"))?, b"only in a");
@@ -150,7 +160,7 @@ pub(super) fn linux_shared_views_are_independent_namespaces_of_one_mount()
             .state
             .lock()
             .map_err(|_| "shared state poisoned")?;
-        let instance = &state.shared.as_ref().ok_or("shared view")?._instance;
+        let instance = &state.shared.as_ref().ok_or("shared view")?.instance;
         let (worker, physical) = instance.physical_owner();
         (worker, physical, Arc::clone(&instance.views))
     };
