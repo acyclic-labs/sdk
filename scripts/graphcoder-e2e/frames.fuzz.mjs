@@ -59,19 +59,13 @@ function admission(visible, text, kind, reason, schedule, assertion) {
 async function recovery(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory(), raw = OutputWatch.of("", []);
-  let admitted = false, refusal;
+  let admitted, refusal;
   const frames = new TerminalFrames(screen, () => {
     const { visible, diagnostic } = screenSnapshot(screen, { completeLines: true });
     refusal ??= history.unexpected(diagnostic, admitted ? undefined : interrupted.condition);
     if (!admitted && matches(screen, raw, interrupted.condition, visible, diagnostic)) {
-      assert.equal(visible, interrupted.accepted, "admit the original captured status transaction");
       history.accept(diagnostic, interrupted.condition);
-      admitted = true;
-      assert.ok(!matches(screen, raw, interrupted.condition, visible.replace("RECOVERED_E2E", ""), diagnostic),
-        "a diagnostic without the retained partial transcript cannot settle recovery");
-      assert.ok(!matches(screen, raw, interrupted.condition, visible,
-        diagnostic.replace(interrupted.condition.task_failure, "another failure")),
-      "another reason cannot settle recovery");
+      admitted = { visible, diagnostic };
     }
   });
   try {
@@ -86,6 +80,12 @@ async function recovery(schedule) {
       offset += width;
     }
     assert.ok(admitted, "the native recovery transaction was observed before teardown");
+    assert.equal(admitted.visible, interrupted.accepted, "admit the original captured status transaction");
+    assert.ok(!matches(screen, raw, interrupted.condition, admitted.visible.replace("RECOVERED_E2E", ""), admitted.diagnostic),
+      "a diagnostic without the retained partial transcript cannot settle recovery");
+    assert.ok(!matches(screen, raw, interrupted.condition, admitted.visible,
+      admitted.diagnostic.replace(interrupted.condition.task_failure, "another failure")),
+    "another reason cannot settle recovery");
     assert.equal(refusal, undefined, "the admitted task survives raw diagnostic fragmentation and reflow");
     const final = screenSnapshot(screen).diagnostic;
     assert.match(final, /model provider unavailable \(connection interrupted\)/);
