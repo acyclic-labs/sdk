@@ -1,6 +1,6 @@
 # Native host workspace coordination
 
-Claude Code, Codex, Pi, OpenCode and Antigravity run their own sessions, providers, tools, permissions
+Claude Code, Codex and Pi run their own sessions, providers, tools, permissions
 and agent loops. Acyclic coordinates isolated workspaces, capture and merges
 through an already-running GraphCoder harness.
 
@@ -16,16 +16,6 @@ Codex requires **0.164.0 or later**; install and doctor reject older or unknown
 versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
 `--settings PATH` for a Claude settings file or Pi extension file.
 
-OpenCode installs one extension in `OPENCODE_CONFIG_DIR/plugins/acyclic.js`
-(otherwise the native XDG configuration directory). `--settings PATH` selects
-that extension file explicitly. Antigravity (`agy`) installs a complete package
-through its native plugin manager into the launching HOME profile.
-`acyclic install agy` does not accept `--settings`; native session launch still
-accepts AGY's `--settings` file or inline JSON.
-Both adapters share the workspace owner and native process supervision; the
-host continues to own its tools, model loop and permissions. The retained native
-controls target OpenCode 1.19.5 and Antigravity 1.5.3.
-
 Without `--settings`, installation follows `CLAUDE_CONFIG_DIR` or
 `PI_CODING_AGENT_DIR`, falling back to the native default when the selector is
 unset or empty. Use an absolute configuration directory. Selecting a profile
@@ -35,11 +25,7 @@ lifecycle. Pi uses its own native OAuth login; `CODEX_HOME` does not select it.
 The plugin's `spawn` tool starts a separate native host process in the admitted
 lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
 `pi --mode json -p`. Native instruction/config discovery and tools run there.
-OpenCode children use `opencode run --format json --dir VIEW`; AGY children use
-stream-JSON input and output in that view. Both inherit the launching environment,
-including provider credentials and endpoint selectors, without an environment
-allowlist. Native configuration and session storage remain owned by the host.
-The plugin disables native built-in delegation so children use harness forks.
+Native built-in subagents keep their host behavior and **are not harness forks**.
 
 Codex and Claude permission hooks consult the harness approval chain only for
 the plugin's exact `spawn` tool. Other tools retain the host's permission
@@ -60,66 +46,6 @@ acyclic host claude-code -- --model claude-haiku-5-5 \
   --settings /path/to/policy.json --permission-mode default --plugin-dir /path/to/plugin/claude
 acyclic host pi --
 ```
-
-For writing AGY swarms, select the native `accept-edits` mode explicitly:
-
-```sh
-acyclic install agy --host-version 1.5.3
-acyclic host agy -- --sandbox --mode accept-edits
-acyclic install opencode
-acyclic host opencode -- --model provider/model
-```
-
-Use a versioned native archive instead of a latest-only installation script.
-The qualified Linux x86_64 release is [Antigravity 1.5.3](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.3-6604829099950080/linux-x64/cli_linux_x64.tar.gz),
-with SHA-512 `e363e1b17daaac2589f18e6973429c039fd5a5e5c15e9c0852fa349836f3992b10fe84732bc8d8c8208e149f0304f15aba9dec696d12efeed03917492c0580eb`.
-The publisher's [release manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json)
-names the versioned URL and SHA-512 digest. Verify the downloaded archive before
-execution. Plugin installation checks the requested `--host-version`, records
-`host-version.json` in the installed plugin, and verifies the native version
-again after installation. This installs the plugin; it does not replace the
-native executable.
-
-AGY `--print-timeout DURATION` is inherited unchanged. When no deadline is
-selected, both root and managed children receive native `--print-timeout 0`,
-which waits for completion without a deadline. The plugin blocks AGY
-`invoke_subagent` and `define_subagent`, OpenCode Task, and Claude Agent/Task;
-Codex installation and the shared launcher select `agents.enabled=false` and disable the overriding multi-agent v2 feature.
-Delegation uses the installed coordination tools. Each managed child's harness
-transcript starts with versioned `acyclic.host_context` metadata containing its
-AgentPath and admitted cwd, before the first native event.
-
-For AGY terminal writes, select a native session policy containing
-`"permissions":{"allow":["write_file(.)"]}` using `--settings` (a JSON file
-or inline JSON). The shared launcher resolves relative `read_file` and
-`write_file` targets in all three native permission lists (`allow`, `ask`,
-`deny`) against the current admitted view before each invocation. Absolute
-targets, wildcard and home references, execution mode and unrelated settings
-retain their native meanings. It adds no permission grants. The parent policy
-keeps its relative targets so each child uses its own view.
-
-AGY's `plan` mode is for investigation and planning; `accept-edits` permits file
-edits in the workspace while retaining native terminal permissions. Headless MCP
-coordination also needs the native policy to allow `mcp(acyclic_sessions/spawn)`
-and `mcp(acyclic_sessions/wait)`. The launcher forwards the selected mode and
-settings to every managed child. MCP rules name individual tools literally;
-use separate `mcp(acyclic_sessions/TOOL)` rules for spawn, send, wait, cancel,
-archive and resume, rather than a regular expression or pipe-separated name.
-
-Use the same absolute per-trial HOME for AGY installation and launch; on Windows
-select the same USERPROFILE too. Its native profile is
-`$HOME/.gemini/antigravity-cli`. Keep provider environment variables when selecting
-a fresh profile. For ADC, a credential file selected by
-`GOOGLE_APPLICATION_CREDENTIALS` must remain reachable outside agent volumes;
-a fresh HOME does not copy a login or default credential file.
-
-For OpenCode, select an absolute `OPENCODE_CONFIG_DIR` before installation and
-launch. Put the native `opencode.json` provider configuration there, including
-`provider.options.baseURL`; managed children inherit that directory while their
-cwd changes to the admitted view. Select per-trial XDG data, state and cache
-directories too: the configuration selector alone does not isolate native session
-storage. The shared owner retains each native session ID and passes it back to
-that host on resume, independently of the view directory's lifetime.
 
 Direct native sessions continue to work normally. Managed spawn requires the
 launcher context; host metadata does not provide the effective security policy,
@@ -190,7 +116,7 @@ denial for Pi must be verified under the user's external sandbox.
 The no-model command contract uses fixture profiles and the real native tool:
 
 ```sh
-node plugin/tests/hosts/sandbox-commands.mjs --host codex \
+python3 plugin/tests/hosts/sandbox-commands.py --host codex \
   --binary /path/to/package/plugin/bin/acyclic --graphcoder /path/to/graphcoder \
   --native /path/to/codex --package /path/to/package/plugin --scratch /path/to/scratch
 ```
@@ -212,7 +138,7 @@ The probe-only resource check exercises each production host adapter with
 stand-in native sessions held alive at the N/2N samples:
 
 ```sh
-node plugin/tests/hosts/shared-mount-scale.mjs ACYCLIC GRAPHCODER codex
+python3 plugin/tests/hosts/shared-mount-scale.py ACYCLIC GRAPHCODER codex
 ```
 
 Select `claude-code` or `pi` for the other adapters. GraphCoder must be built
@@ -293,7 +219,7 @@ The no-model MCP framing probe runs all three host entry points without opening
 workspace state or native login files:
 
 ```sh
-node plugin/tests/hosts/mcp-framing.mjs ACYCLIC
+python3 plugin/tests/hosts/mcp-framing.py ACYCLIC
 ```
 
 It checks CRLF, buffered requests and an oversized peer that keeps its input

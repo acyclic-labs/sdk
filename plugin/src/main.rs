@@ -101,7 +101,7 @@ fn internal(args: &[String]) -> Result<bool> {
             };
             let answer = match read_json(io::stdin().lock()) {
                 Ok(input) => hook(host, event, input),
-                Err(error) => native_hook_failure(host, event, &error.to_string()),
+                Err(error) => hook_failure(event, &error.to_string()),
             };
             println!("{answer}");
         }
@@ -235,66 +235,31 @@ fn action(task: AgentPath, args: &[String]) -> Result<HostAction> {
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH] [--host-version VERSION (agy)]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())
 }
 
 fn hook(host: &str, event: &str, input: Value) -> Value {
-    if host == "claude-code" && event == "PreToolUse" {
-        return json!({"hookSpecificOutput":{"hookEventName":"PreToolUse", "permissionDecision":"deny", "permissionDecisionReason":"step=admit native delegation: use the installed Acyclic spawn tool; recovery=call mcp__plugin_acyclic_acyclic-sessions__spawn"}});
-    }
-    if host == "agy" && event == "PreToolUse" {
-        return json!({"decision":"deny","reason":"step=admit native delegation: use the installed acyclic_sessions spawn tool; recovery=call acyclic_sessions/spawn"});
-    }
     let result = (|| -> Result<Value> {
-        let mut input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
-        let event = if host == "agy" {
-            let workspace = env::var("ACYCLIC_WORKSPACE").ok();
-            let Some(event) = input::agy_hook(event, &mut input, workspace.as_deref())? else {
-                return Ok(json!({}));
-            };
-            event
-        } else {
-            event
-        };
+        let input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
         let cwd = PathBuf::from(
             input
                 .get("cwd")
                 .and_then(Value::as_str)
                 .ok_or("native hook lacks cwd")?,
         );
-        let response = host_files::request(
+        Ok(host_files::request(
             &cwd,
             HostAction::Hook {
                 host: host.into(),
                 event: event.into(),
                 input,
             },
-        )?;
-        Ok(if host == "agy" { json!({}) } else { response })
+        )?)
     })();
-    result.unwrap_or_else(|error| native_hook_failure(host, event, &error.to_string()))
-}
-
-fn native_hook_failure(host: &str, event: &str, error: &str) -> Value {
-    if host != "agy" {
-        return hook_failure(event, error);
-    }
-    // The native host ignores hook exit status. Its own invocation disposition
-    // carries refusal. Stop must not re-enter a failed PreInvocation; the root
-    // launcher retains the final capture error after the native process exits.
-    let reason = format!(
-        "step=coordinate Antigravity workspace: {error}; recovery=start the matching graphcoder --host-workspace owner, then acyclic host agy -- --sandbox --mode accept-edits"
-    );
-    match event {
-        "PreInvocation" => {
-            json!({"terminationBehavior":"terminate","injectSteps":[{"errorMessage":{"userMessage":reason}}]})
-        }
-        "Stop" => json!({"decision":"stop","reason":reason}),
-        _ => json!({"reason":reason}),
-    }
+    result.unwrap_or_else(|error| hook_failure(event, &error.to_string()))
 }
 
 fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {

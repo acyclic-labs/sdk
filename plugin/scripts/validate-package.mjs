@@ -53,8 +53,7 @@ if (changelogText.split(/\r?\n/, 1)[0].trim() !== `# ${packageManifest.name} cha
   fail(`missing or invalid package changelog: ${changelog}`);
 }
 const assets = {};
-for (const relativePath of ["pi/index.ts", "pi/README.md", "shared/mcp-client.mjs",
-  "shared/workspace.mjs", "opencode/index.mjs", "agy/hooks.json", "agy/mcp_config.json"]) {
+for (const relativePath of ["pi/index.ts", "pi/README.md", "shared/mcp-client.mjs"]) {
   const path = join(plugin, relativePath);
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
 }
@@ -64,13 +63,12 @@ for (const path of [
   join(plugin, ".mcp.json"),
   join(plugin, "hooks", "hooks.json"),
   join(plugin, "claude", ".claude-plugin", "plugin.json"),
-  join(plugin, "agy", "plugin.json"),
 ]) {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing package asset: ${path}`);
   assets[path] = JSON.parse(readFileSync(path, "utf8"));
 }
 for (const path of [join(plugin, "plugin.json"), join(plugin, ".codex-plugin", "plugin.json"),
-  join(plugin, "claude", ".claude-plugin", "plugin.json"), join(plugin, "agy", "plugin.json")]) {
+  join(plugin, "claude", ".claude-plugin", "plugin.json")]) {
   if (assets[path].version !== packageManifest.version) {
     fail(`host plugin manifest version mismatch: ${path}`);
   }
@@ -98,19 +96,18 @@ if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.
   fail("the Codex plugin manifest must declare ./.mcp.json");
 }
 // Both hosts enter harness approval only for the exact registered spawn tool.
-// Claude also refuses its native delegation tools at the pre-effect boundary.
-for (const [path, matcher, delegation] of [
-  [join(plugin, "hooks", "hooks.json"), "^mcp__acyclic[-_]sessions__spawn$", false],
-  [join(plugin, "claude", ".claude-plugin", "plugin.json"), "^mcp__plugin_acyclic_acyclic-sessions__spawn$", true],
+// Other tools retain the host's permission handling without launching a hook.
+for (const [path, matcher] of [
+  [join(plugin, "hooks", "hooks.json"), "^mcp__acyclic[-_]sessions__spawn$"],
+  [join(plugin, "claude", ".claude-plugin", "plugin.json"), "^mcp__plugin_acyclic_acyclic-sessions__spawn$"],
 ]) {
   const hooks = assets[path].hooks ?? {};
   const handlers = Object.values(hooks).flat().flatMap(group => group.hooks ?? []);
-  const events = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest", ...(delegation ? ["PreToolUse"] : [])];
-  if (handlers.length !== events.length || handlers.some(hook => hook.type !== "command")
-    || JSON.stringify(Object.keys(hooks)) !== JSON.stringify(events)
+  if (handlers.length !== 4 || handlers.some(hook => hook.type !== "command")
+    || JSON.stringify(Object.keys(hooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd", "PermissionRequest"])
     || Object.entries(hooks).some(([event, groups]) => groups.some(group =>
-      group.matcher !== (event === "PermissionRequest" ? matcher : event === "PreToolUse" ? "^(Agent|Task)$" : undefined)))) {
-    fail(`step=validate host hooks: ${path} must capture native session boundaries, exact spawn permissions and the host delegation fence; recovery=restore the packaged hook manifests, then run node plugin/scripts/validate-package.mjs "${root}"`);
+      group.matcher !== (event === "PermissionRequest" ? matcher : undefined)))) {
+    fail(`step=validate host hooks: ${path} must capture only native session boundaries and exact spawn permission prompts; recovery=restore the packaged hook manifests, then run node plugin/scripts/validate-package.mjs "${root}"`);
   }
 }
 

@@ -25,12 +25,12 @@ acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default
 acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
 blake3.workspace = true
 serde_json.workspace = true
-tempfile = "3"
 tokio = { workspace = true, features = ["io-std"] }
 
 [dev-dependencies]
 acyclic-test-support = { path = "../rust/crates/test-support" }
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"
 
 [lints]
 workspace = true

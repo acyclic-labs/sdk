@@ -11,7 +11,7 @@ import { stagePiExtension } from "./package.mjs";
 test("Anthropic qualification commands explicitly select the approved model", () => {
   // Inspect the launch array without executing a host or accessing a login.
   const approved = /'--model',\s*'claude-haiku-5-5'/;
-  for (const name of ["shared-mount-scale.mjs"]) {
+  for (const name of ["shared-mount-scale.py"]) {
     const source = readFileSync(new URL(name, import.meta.url), "utf8");
     assert.match(source, approved, name);
     assert.doesNotMatch(source.replace("'--model',", ""), approved,
@@ -19,8 +19,8 @@ test("Anthropic qualification commands explicitly select the approved model", ()
     assert.doesNotMatch(source.replaceAll("claude-haiku-5-5", "other-model"), approved,
       "negative control: a different model must be rejected");
   }
-  assert.doesNotMatch(readFileSync(new URL("sandbox-commands.mjs", import.meta.url), "utf8"),
-    /scripted_model|ANTHROPIC_API_KEY/);
+  assert.doesNotMatch(readFileSync(new URL("sandbox-commands.py", import.meta.url), "utf8"),
+    /def scripted_model|http\.server|ANTHROPIC_API_KEY/);
 });
 
 test("Pi registration delegates execution and exposes only native coordination", async () => {

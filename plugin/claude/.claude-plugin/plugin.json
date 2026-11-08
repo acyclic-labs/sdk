@@ -55,19 +55,6 @@
           }
         ]
       }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "^(Agent|Task)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PreToolUse",
-            "timeout": 120,
-            "statusMessage": "Acyclic is routing delegation"
-          }
-        ]
-      }
     ]
   },
   "mcpServers": {

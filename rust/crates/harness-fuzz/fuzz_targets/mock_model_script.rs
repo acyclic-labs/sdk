@@ -12,21 +12,6 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
             .unwrap_or_else(|| body.to_string());
         assert_eq!(bound.text, [expected.clone()]);
         assert_eq!(bound.custom_tools[0].input, expected);
-        let line: Step = serde_json::from_value(serde_json::json!({"json":{"$request_line":{"pointer":"", "prefix":"Path: ", "suffix":"/file"}}})).unwrap();
-        let selected = bind_result(&line, &body);
-        let expected: Vec<_> = body
-            .as_str()
-            .into_iter()
-            .flat_map(str::lines)
-            .filter_map(|text| text.strip_prefix("Path: "))
-            .collect();
-        assert_eq!(selected.is_ok(), expected.len() == 1);
-        if expected.len() == 1 {
-            assert_eq!(
-                selected.unwrap().json,
-                Some(serde_json::json!(format!("{}/file", expected[0])))
-            );
-        }
         let _ = last_content(&body, false);
         let result = last_content(&body, true);
         let step: Step = serde_json::from_value(serde_json::json!({"tools":[{"id":"one","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();

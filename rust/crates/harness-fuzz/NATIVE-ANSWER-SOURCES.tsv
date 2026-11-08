@@ -5,4 +5,3 @@ derived-transitions.jsonl	6bc9fdedf582fbf478417bb843a05b6713210ae1f0e89078562e35
 malformed-derived.jsonl	925be82f91ef0e67e52cd1e27f14b49561363c2a41d9add7a86d35be89fae3d5	derived mutation; NATIVE-ANSWER.md
 oversize-derived.jsonl	4c68ca5e0be55b96b6e4ab2728b8d84559044eabc2ceb82068c5b39dab1af384	derived mutation; NATIVE-ANSWER.md
 pi-assistant-error.jsonl	02b1bdc90f4ace0499a89dbcc3c8dc407eb805f9d16f4c51e71b64b90aba1fd7	../harness/src/local/host_process/fixtures/README.md
-opencode-loss-derived.jsonl	53ae83f78723d317035e84babff65976742d58ee8b37b1f03721d5c4208809d2	derived mutation of captured opencode-completed.jsonl; NATIVE-ANSWER.md

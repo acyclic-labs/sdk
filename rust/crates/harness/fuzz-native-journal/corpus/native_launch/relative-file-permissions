@@ -1,1 +1,0 @@
-["--sandbox","--mode","accept-edits","--settings","{\"permissions\":{\"allow\":[\"write_file(.)\"],\"ask\":[\"read_file(ask)\"],\"deny\":[\"write_file(denied)\"]}}"]

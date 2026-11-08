@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "sessions": {
-      "command": "__ACYCLIC_EXECUTABLE__",
-      "args": ["__mcp", "agy"]
-    }
-  }
-}

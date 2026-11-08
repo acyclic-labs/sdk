@@ -1,5 +1,4 @@
-//! Workspace capture at native session and tool boundaries. Native hosts own
-//! their subagents and tools; only a managed process owner can retire its view.
+//! Session boundaries only. Native subagents and native tools are unmanaged.
 use super::agents::Event;
 use super::*;
 
@@ -16,7 +15,7 @@ impl HostWorkspaceOwner {
         }
         if !matches!(
             event,
-            "SessionStart" | "Stop" | "SessionEnd" | "NativeSession" | "ToolBoundary"
+            "SessionStart" | "Stop" | "SessionEnd" | "NativeSession"
         ) {
             return Ok(json!({}));
         }
@@ -34,7 +33,7 @@ impl HostWorkspaceOwner {
         let _lock = self.locks.hold(vec![agent.clone()]).await;
         // A managed boundary is an acknowledgement, not view admission or
         // capture. Only its physical process owner can retire and capture it.
-        if agent.depth() != 0 && matches!(event, "Stop" | "SessionEnd" | "ToolBoundary") {
+        if agent.depth() != 0 && matches!(event, "Stop" | "SessionEnd") {
             return Ok(json!({}));
         }
         if event == "NativeSession" {
@@ -81,7 +80,7 @@ impl HostWorkspaceOwner {
                 .ok_or_else(|| Error::NotFound("native session reference absent".into()));
         }
         self.attach(&agent).await?;
-        if matches!(event, "Stop" | "SessionEnd" | "ToolBoundary") {
+        if matches!(event, "Stop" | "SessionEnd") {
             self.view(&agent)?.capture(operation).await?;
             return Ok(json!({}));
         }

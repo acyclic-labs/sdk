@@ -22,16 +22,16 @@ export function scriptedScenario(artifacts,codex,selection){
  const [kind,name]=selection.split(':');
  const binary=artifacts.artifacts.acyclic.path;
  if(name==='bounded-framing')return {name,selection,
-  args:[join(here,'mcp-framing.mjs'),binary],
+  args:[join(here,'mcp-framing.py'),binary],
   accepts:run=>JSON.parse(run.stdout).cases.length===21};
  const graphcoder=artifacts.artifacts.graphcoder.path;
  if(kind==='scale')return {name,selection,
-  args:[join(here,'shared-mount-scale.mjs'),binary,graphcoder,name],
-  accepts:run=>run.stdout.trim().split('\n').some(line=>{try{return JSON.parse(line).sessions_alive_at_both_samples===true;}catch{return false;}})};
+  args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],
+  accepts:run=>run.stdout.includes('"sessions_alive_at_both_samples": true')};
  assert.ok(codex,'step=admit managed sandbox executable; recovery: supply Codex 0.164 or later for '+selection);
  return {name,selection,
-  args:[join(here,'managed-session.mjs'),binary,graphcoder,resolve(codex),name],
-  accepts:run=>run.stdout.trim().split('\n').some(line=>{try{return JSON.parse(line).suite==='managed-native-session-'+name;}catch{return false;}})};
+  args:[join(here,'managed-session.py'),binary,graphcoder,resolve(codex),name],
+  accepts:run=>run.stdout.includes('"suite": "managed-native-session-'+name+'"')};
 }
 
 // E2E callers provide their existing process scope, environment and cancellation
@@ -39,7 +39,7 @@ export function scriptedScenario(artifacts,codex,selection){
 export async function runScriptedScenario({scenario,processes,directory,env,
   cwd=process.cwd(),expired=()=>false}){
  const started=performance.now();
- const run=await processes.runOwned(process.execPath,scenario.args,{cwd,env,scopeMountRoot:env.HOME});
+ const run=await processes.runOwned('python3',scenario.args,{cwd,env,scopeMountRoot:env.HOME});
  const seconds=(performance.now()-started)/1000;
  await writeFile(join(directory,scenario.name+'.log'),run.stdout+run.stderr,{flag:'wx'});
  const receipt={schema:'acyclic.plugin.scripted-scenario/v1',selection:scenario.selection,

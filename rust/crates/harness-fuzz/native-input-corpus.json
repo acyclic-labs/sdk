@@ -421,11 +421,7 @@
     "object": "93de8bc3e711c7d5d8c5c95149099bfaefdb3829590807ea86f87083bd1fda6e",
     "partial": "b0099d11d07ec318328beb00f4e5019ed830cff0c7f18960b05101745b769223",
     "task-invalid": "d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824",
-    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c",
-    "agy-SessionStart.json": "16ef50f848c96aebb75c279060687dcbb3216cd1cc579a675223d7dd8904b0dd",
-    "agy-PreInvocation.json": "f8551b653eed440265edfafb78515c69ab63c912cd33f80b85247919ead8fcce",
-    "agy-Stop.json": "89f50b57ae10f44010d802ddfb9e9c681f841edc839f1e13d7e66f93e2193f80",
-    "agy-running-derived.json": "0bb980c9d8ce02633346b83d6d3e0ca764933ab4b584618474e09228fed1f049"
+    "trailing": "13553f5f64043c6232aa3ae1ffdc41a8e8f9e0cd59d4acbf19b1541011cc923c"
   },
   "prior_qualifications": [
     {
@@ -570,19 +566,5 @@
   "test_seconds": 0.007,
   "selected_binary_wall_seconds": 0.008,
   "scope": "Real acyclic binary in the original Cargo source snapshot, three native stdin entry points, original OS cause, process retirement and absence of workspace/settings effects. Unix directory read error avoids standard input EBADF-to-EOF conversion. The earlier write-only Unix fixture failed restoration and is unqualified. No relocated selector, installed host loop, lifecycle or Windows/macOS qualification."
-},
-  "derived_and_recorded_agy": {
-    "version": "1.5.2",
-    "platform": "Windows",
-    "date": "2026-11-07",
-    "executable_sha256": "3f6f64a331fcd75c4ea3a25f89fdb0a9192feaa6e49bb828510b65dc0030b61e",
-    "provenance": "Three unchanged native hook stdin captures from an installed plugin: SessionStart, PreInvocation and fully idle Stop. The hook executable is Node recording stdin; PreInvocation returns a native terminate disposition and no provider request is sent. The running seed changes only fullyIdle to false. No shipping adapter, model completion or workspace qualification.",
-    "qualification": "unrun: production normalization and original corpus coverage require the scoped native-input campaign and producer/admission negative controls",
-    "files": {
-      "agy-SessionStart.json": "16ef50f848c96aebb75c279060687dcbb3216cd1cc579a675223d7dd8904b0dd",
-      "agy-PreInvocation.json": "f8551b653eed440265edfafb78515c69ab63c912cd33f80b85247919ead8fcce",
-      "agy-Stop.json": "89f50b57ae10f44010d802ddfb9e9c681f841edc839f1e13d7e66f93e2193f80",
-      "agy-running-derived.json": "0bb980c9d8ce02633346b83d6d3e0ca764933ab4b584618474e09228fed1f049"
-    }
-  }
+}
 }

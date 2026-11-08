@@ -22,23 +22,6 @@ const refusalPrefix = refusalFormat.slice(0, -"{reason}".length)
 const usageFormat = /refusal\(format_args!\("([^"]*)"/.exec(nativeView)?.[1];
 assert.equal(usageFormat, "Usage query ended: {error}", "retain the native usage failure source join");
 
-// xterm invokes parser observers asynchronously. Return an observer assertion
-// through the original write completion so mutation workers can classify it.
-function checkedFrames(screen, observe) {
-  let failure;
-  const frames = new TerminalFrames(screen, () => {
-    try { observe(); } catch (error) { failure ??= error; }
-  });
-  return {
-    ready: () => frames.ready(),
-    dispose: () => frames.dispose(),
-    async write(bytes) {
-      await frames.write(bytes);
-      if (failure) throw failure;
-    },
-  };
-}
-
 function admission(visible, text, kind, reason, schedule) {
   const history = new FailureHistory();
   const wrongKind = kind === "task_failure" ? "query_failure" : "task_failure";
@@ -77,7 +60,7 @@ async function recovery(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory(), raw = OutputWatch.of("", []);
   let admitted = false, refusal;
-  const frames = checkedFrames(screen, () => {
+  const frames = new TerminalFrames(screen, () => {
     const { visible, diagnostic } = screenSnapshot(screen, { completeLines: true });
     refusal ??= history.unexpected(diagnostic, admitted ? undefined : interrupted.condition);
     if (!admitted && matches(screen, raw, interrupted.condition, visible, diagnostic)) {
@@ -117,7 +100,7 @@ export async function fuzz(schedule) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const history = new FailureHistory();
   let refusal, refusedScreen, observations = 0;
-  const frames = checkedFrames(screen, () => {
+  const frames = new TerminalFrames(screen, () => {
     assert.ok(frames.ready());
     observations++;
     const visible = screenText(screen), failure = history.unexpected(visible);

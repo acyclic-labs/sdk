@@ -4822,6 +4822,25 @@ The identity cancellation test deletes its 2 s shutdown watchdog and the file's 
 | `plugin/tests/identity-agent.test.mjs:160` | Implicit MCP process timer | Original MCP responses, stdin EOF and child close. | Actioned; source only |
 | `plugin/tests/identity-agent.test.mjs:207` | Implicit cancellation process timer | Original cancelled response, stdin EOF and child close. | Actioned; source only |
 | `plugin/tests/identity-agent.test.mjs:231` | Shutdown watchdog | Original child close; challenge readiness additionally observes original early child exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:99` | Owner readiness sleep/recheck | Existing shared workspace owner watched-descriptor ready record or bridge EOF/error. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:119` | Owner exit recheck/timed join | Close original bridge stdin and join its original process/tree retirement; nonzero status is typed. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:96` | Owner readiness sleep/recheck | Same existing workspace owner bridge ready record or EOF/error; retain actual mount sampler and population assertions. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:189` | Owner timed exit join | Same original bridge stdin EOF and exit result. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:203` | Owner timed cleanup join | Same original bridge stdin EOF and exit result; the independent MCP bridge now joins its original cancellation/exit without a timed fallback. | Actioned for owner; source only |
+| `plugin/tests/hosts/managed-session.py:53` | Fixed blocked-input child hold | Child publishes readiness once over its original fixture channel and blocks on that channel without consuming remaining stdin; original cancellation settles the real process. Parent loss closes the channel and fails the child explicitly. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:81` | Fixed descendant hold | Real descendant blocks in the OS signal wait; only original process-tree cancellation may end the hold. Existing actual descendant PID retirement assertion remains. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:84` | Fixed native session hold | Same fixture channel holds the original native session until cancellation, retaining actual native capture and merge assertions. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:145` | Child file readiness recheck | Pre-armed fixture listener consumes the child readiness record or original outstanding MCP wait/EOF/error. Remove the redundant ready-file write and all marker probes. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:158` | Blocked-input file readiness recheck | Same first-byte readiness record and real child terminal; remaining stdin stays unread. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:79` | Nested MCP timed exit | Original nested stdin EOF, MCP reply and physical child exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:101` | Implicit workspace command timeout | Original workspace command reply and process error/exit; no user-selected deadline established. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:115` | MCP exit recheck/timed join | Original MCP stdin EOF and physical process exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:130` | Implicit native help command timeout | Original real executable output and exit; preserve native flag/version oracle. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:133` | Implicit host launch timeout | Original host launch result and physical command exit. | Actioned; source only |
+| `plugin/tests/hosts/managed-session.py:193` | Timed MCP cleanup/fallback kill | Original MCP cancellation/EOF and physical retirement terminal. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:101` | Implicit host launch timeout | Original host launch result and command exit. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:110` | Implicit workspace command timeout | Original workspace reply/error and command exit. | Actioned; source only |
+| `plugin/tests/hosts/shared-mount-scale.py:187` | Timed MCP exit join | Original stdin EOF and physical bridge exit. | Actioned; source only |
 | `plugin/identity/src/lib.rs:660` | Product device readiness retry | Product owner must expose original approval completion or an honest caller-observed pending result; interval/token reattempt is not transient transport backoff. | Pending; product owner |
 | `plugin/identity/src/tests/poll_clock.rs:52` | Periodic wall clock sampling | Original registered Sleep advances on its own task; real I/O keeps unpaused time. | Source complete; unqualified |
 | `plugin/identity/src/tests/poll_clock.rs:72` | Yield/recheck clock pump | Pump and queue deleted; original timer path owns its serialized advancement and cancellation resume. | Source complete; unqualified |
@@ -4838,6 +4857,7 @@ The subsequent Python consumer deletion removes the remaining hardcoded two-seco
 |---|---|---|---|
 | `plugin/tests/hosts/native_mcp.py:59` | Implicit three-second request window | Original blocking stdout read; actual bytes advance framing, EOF produces the existing typed producer-closed failure, and read errors retain the original typed I/O failure. Existing initialized/invalid-frame/closed-producer real-binary vectors remain. | Actioned; source only |
 | `plugin/tests/hosts/native_mcp.py:64` | Timed single-descriptor selector | Delete the selector entirely: os.read already blocks on the same original pipe producer. Delete selector registration, deadline-only state and close API, adapting every Python consumer without a no-op shim. | Actioned; source only |
+| `plugin/tests/hosts/mcp-framing.py:100` | Implicit process exit window | Original physical process exit after the real framing/rejection/EOF transition; retain all original exit-code and actual stderr checks. | Actioned; source only |
 
 Required work per client: selector construction and pipe registration 1 -> 0; per input chunk, readiness syscall 1 -> 0 and the original pipe read remains 1. Deadline wall-clock reads are deleted. No additional process, thread, task, channel, timer, provider request, payload copy or barrier is introduced. Original response-ID accounting, buffered-byte parsing, negotiated protocol and error checks are unchanged. Framing work remains proportional to actual bytes/messages; the existing pending-buffer and response-map implementation is not claimed to be worst-case constant time. The actual producer-closure, malformed-frame and initialized controls have not been rerun for this source. There is no runtime or performance result implied by this deletion.
 
@@ -4847,6 +4867,14 @@ The next command-fixture census identifies these additional exact sites before c
 
 | Site at preceding source | Kind | Replacement event | State |
 |---|---|---|---|
+| `plugin/tests/hosts/sandbox-commands.py:24` | Implicit eight-second command window | Original command output/error and physical exit. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:70` | Implicit two-second refusal window | Original refused command result and physical exit; keep the real external-data admission negatives. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:100` | Implicit eight-second Pi response window | Original stdout bytes or EOF/error, decoded through the existing actual Pi response ID/type/command/result checks. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:105` | Timed single-pipe selector | Delete selector; direct original pipe read already waits on the same producer. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:121` | Implicit Pi exit window | Original stdin EOF and physical process exit. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:123` | Cleanup exit snapshot | Original Popen kill/exit ownership; no readiness or repeated process probe is required. | Actioned; source only |
+| `plugin/tests/hosts/sandbox-commands.py:233` | Implicit owner exit window | Original shared bridge stdin EOF and process/tree exit. | Actioned; source only |
+| `plugin/tests/hosts/mcp-framing.py:108` | Cleanup exit snapshot | Same original Popen kill/exit ownership; remove the redundant pre-signal probe. | Actioned; source only |
 
 The managed native fixture replaces its two ready-file rechecks with a listener armed before the original launch. Each held child sends one working-directory readiness record and then blocks on that same connection, preserving unread stdin in the blocked-input case. Original child cancellation remains the only successful release. Parent channel loss fails the child explicitly. The descendant uses an OS signal wait instead of a thirty-second shell sleep, and the existing actual descendant PID, cancellation, capture, merge and sandbox assertions remain. A child that settles early is observed through its original MCP wait or pipe EOF/error; malformed or mismatched readiness records fail with the exact fixture recovery command. Cleanup closes held connections before joining the MCP and workspace owner.
 

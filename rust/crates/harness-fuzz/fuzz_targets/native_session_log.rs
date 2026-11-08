@@ -14,28 +14,7 @@ fuzz_target!(|bytes: &[u8]| {
         logged_session_id(original).as_deref(),
         Some("a14f2590-4397-48a1-a076-1f2dac2d5349")
     );
-    let opencode = include_bytes!("../corpus/native_answer/opencode-incomplete.jsonl");
-    assert_eq!(
-        logged_session_id(opencode).as_deref(),
-        Some("ses_e4b5a1b9fffeksLehNjEEeDfZ2")
-    );
-    let agy = include_bytes!("../corpus/native_answer/agy-authentication-error.jsonl");
-    assert!(
-        logged_session_id(agy).is_none(),
-        "empty native conversation id admitted"
-    );
-    let agy_refusal = include_bytes!("../corpus/native_answer/agy-hook-refusal.jsonl");
-    assert_eq!(
-        logged_session_id(agy_refusal).as_deref(),
-        Some("b12c0707-3dcb-46c3-a39c-b1fee257dca0")
-    );
-    for log in [
-        original.as_slice(),
-        opencode.as_slice(),
-        agy.as_slice(),
-        agy_refusal.as_slice(),
-        bytes,
-    ] {
+    for log in [original.as_slice(), bytes] {
         // Ignore malformed lines exactly as the closed-log boundary does.
         // Canonicalisation and equivalent escaped members/types must select
         // the same original id; this does not reimplement its selection rules.
@@ -48,8 +27,6 @@ fuzz_target!(|bytes: &[u8]| {
         let escaped = canonical
             .replace("thread_id", r"thread\u005fid")
             .replace("session_id", r"sess\u0069on\u005fid")
-            .replace("sessionID", r"sess\u0069onID")
-            .replace("conversation_id", r"conversat\u0069on_id")
             .replace(r#""session""#, r#""sess\u0069on""#);
         let decoded = |text: &str| {
             text.lines()

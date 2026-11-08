@@ -32,7 +32,6 @@ pub fn run_root_session(
     arguments: &[String],
 ) -> Result<std::process::ExitStatus> {
     use super::host_owner::HostAction;
-    let native_arguments = launch::policy_arguments(host, arguments, cwd)?;
     let location = super::host_files::request(
         cwd,
         HostAction::Open {
@@ -49,7 +48,7 @@ pub fn run_root_session(
     .map_err(storage)?;
     let status = acyclic_native_runtime::host_command(program)
         .map_err(storage)?
-        .args(native_arguments)
+        .args(arguments)
         .current_dir(cwd)
         .env(
             "ACYCLIC_HOST_ARGS",
@@ -264,25 +263,6 @@ struct EventLog {
     omitted: bool,
 }
 
-impl EventLog {
-    fn record(&mut self, line: &[u8]) -> Result<()> {
-        if self.omitted {
-            return Ok(());
-        }
-        let mut bytes = Vec::with_capacity(line.len() + 1);
-        if self.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
-            bytes.extend_from_slice(line);
-            bytes.push(b'\n');
-        } else {
-            self.omitted = true;
-            bytes.extend_from_slice(EVENTS_OMITTED);
-        }
-        std::io::Write::write_all(&mut self.file, &bytes).map_err(storage)?;
-        self.written += bytes.len() as u64;
-        Ok(())
-    }
-}
-
 /// Removes `leaf` from `root`; an absent file is already removed.
 fn remove_absent(root: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
     match root.remove_file(leaf, acyclic_fs::NativeDurability::Durable) {
@@ -319,35 +299,15 @@ impl HostSessionProcess {
         command
             .env("ACYCLIC_WORKSPACE", &lease.view)
             .env("ACYCLIC_TASK", lease.task.to_string());
-        #[derive(serde::Serialize)]
-        struct Context<'a> {
-            #[serde(rename = "type")]
-            kind: &'static str,
-            version: u8,
-            task: &'a AgentPath,
-            cwd: &'a Path,
-        }
-        let context = serde_json::to_vec(&Context {
-            kind: "acyclic.host_context",
-            version: 1,
-            task: &lease.task,
-            cwd: &lease.view,
-        })
-        .map_err(storage)?;
         // A relaunch of the same claim restarts its log.
         let log = event_log(claim);
         remove_absent(&lease.root, &log)?;
         let file = lease.root.open_file(&log, true).map_err(storage)?;
-        let mut events = EventLog {
+        self.events = Some(EventLog {
             file,
             written: 0,
             omitted: false,
-        };
-        events.record(&context)?;
-        if events.omitted {
-            return Err(Error::Invalid("step=record native context: metadata exceeds the native event frame bound; recovery: shorten the selected task path before launching the native host".into()));
-        }
-        self.events = Some(events);
+        });
         self.tree
             .spawn(command, Some(&lease.custody))
             .map_err(storage)
@@ -361,7 +321,20 @@ impl HostSessionProcess {
             .events
             .as_mut()
             .ok_or_else(|| Error::Conflict("native event log absent before spawn".into()))?;
-        log.record(line)
+        if log.omitted {
+            return Ok(());
+        }
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        if log.written + line.len() as u64 + 1 + EVENTS_OMITTED.len() as u64 <= EVENT_LOG_BYTES {
+            bytes.extend_from_slice(line);
+            bytes.push(b'\n');
+        } else {
+            log.omitted = true;
+            bytes.extend_from_slice(EVENTS_OMITTED);
+        }
+        std::io::Write::write_all(&mut log.file, &bytes).map_err(storage)?;
+        log.written += bytes.len() as u64;
+        Ok(())
     }
 
     /// Queues a prompt on the originally funded native stdin owner.
