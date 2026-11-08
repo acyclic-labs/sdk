@@ -1,7 +1,7 @@
 use super::HR_DIRECTORY_NOT_EMPTY;
 use super::{
     FILE_ATTRIBUTE_REPARSE_POINT, HostRoot, MountFilesystem, MountNodeKind, MountPath,
-    NativeHostWork, NativeMountError, WriteOperations, delete_through, reparse_tag_held, size_of,
+    NativeMountError, WriteOperations, delete_through, reparse_tag_held, size_of,
 };
 
 // Actual held entries, authenticated root handle, backing capacity and birth
@@ -209,15 +209,7 @@ fn collect_projection(
                 .max(4)
                 .checked_mul(2)
                 .ok_or(crate::WorkError::Overflow)?;
-            (&mut &*work)
-                .reconcile_allocation(allocation, (capacity * size_of::<std::fs::File>()) as u64)?;
-            files.try_reserve_exact(capacity - files.len()).map_err(
-                <&crate::NativeMaterializationWork as NativeHostWork>::allocation_failed,
-            )?;
-            (&mut &*work).reconcile_allocation(
-                allocation,
-                (files.capacity() * size_of::<std::fs::File>()) as u64,
-            )?;
+            crate::materializer::reserve_buffer(files, capacity, allocation)?;
         }
         files.push(file);
         if directory

@@ -1,6 +1,6 @@
 --- a/rust/crates/filesystem/src/kernel/persistent_point.rs
 +++ b/rust/crates/filesystem/src/kernel/persistent_point.rs
-@@ -111,7 +111,35 @@
+@@ -124,7 +124,35 @@
              return Ok(());
          }
          let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
@@ -35,5 +35,5 @@
 +            .ok_or(crate::WorkError::Overflow)?;
 +        checked
      }
+ }
  
-     /// Admits both physical backings before growing, retaining the original

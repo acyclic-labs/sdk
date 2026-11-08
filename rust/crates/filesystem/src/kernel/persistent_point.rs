@@ -1,4 +1,4 @@
-//! Single-key authenticated lookup sharing the canonical page and clone leaves.
+//! Accounted value ownership and single-key authenticated lookup.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_batch::Error;
@@ -8,6 +8,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
+use std::collections::VecDeque;
 
 pub(crate) type Failure = OperationFailure<Error>;
 
@@ -64,6 +65,43 @@ impl<T> Owned<T> {
     }
 }
 
+/// Physical backing operations shared by the standard contiguous and ring buffers.
+pub(crate) trait GrowableBuffer: Default {
+    type Item;
+    fn capacity(&self) -> usize;
+    fn len(&self) -> usize;
+    fn try_reserve_exact(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), std::collections::TryReserveError>;
+    fn append(&mut self, other: &mut Self);
+}
+
+macro_rules! growable_buffer {
+    ($buffer:ident) => {
+        impl<T> GrowableBuffer for $buffer<T> {
+            type Item = T;
+            fn capacity(&self) -> usize {
+                $buffer::capacity(self)
+            }
+            fn len(&self) -> usize {
+                $buffer::len(self)
+            }
+            fn try_reserve_exact(
+                &mut self,
+                additional: usize,
+            ) -> Result<(), std::collections::TryReserveError> {
+                $buffer::try_reserve_exact(self, additional)
+            }
+            fn append(&mut self, other: &mut Self) {
+                $buffer::append(self, other);
+            }
+        }
+    };
+}
+growable_buffer!(Vec);
+growable_buffer!(VecDeque);
+
 impl<T> Owned<Vec<T>> {
     pub(crate) fn allocate(
         count: usize,
@@ -72,41 +110,6 @@ impl<T> Owned<Vec<T>> {
         Self::allocate_with(count, accounting, |_| {
             super::CanonicalDecodeError::AllocationFailed.into()
         })
-    }
-
-    fn allocate_with(
-        count: usize,
-        accounting: &mut KernelAccounting<'_>,
-        allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
-    ) -> Result<Self, crate::FsError> {
-        let requested = crate::foundation::usize_to_u64(
-            count
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(crate::WorkError::Overflow)?,
-        );
-        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-        let mut values = Vec::new();
-        if let Err(_error) = values.try_reserve_exact(count) {
-            drop(values);
-            #[cfg(not(target_arch = "wasm32"))]
-            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
-            retire_allocation(allocation, requested, accounting)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native {
-                return Err(crate::FsError::NativeKernel(
-                    crate::NativeTreeMaterializationError::AllocationFailed(_error),
-                ));
-            }
-            return Err(allocation_failed(_error));
-        }
-        let actual = crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<T>());
-        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        let owned = Self::new(values, allocation, actual);
-        if let Err(error) = checked {
-            owned.retire(accounting)?;
-            return Err(error);
-        }
-        Ok(owned)
     }
 
     pub(crate) fn ensure_for_push(
@@ -122,6 +125,44 @@ impl<T> Owned<Vec<T>> {
         }
         let next = self.value.capacity().saturating_mul(2).max(1).min(maximum);
         self.reserve_capacity(next, accounting)
+    }
+}
+
+impl<B: GrowableBuffer> Owned<B> {
+    fn allocate_with(
+        count: usize,
+        accounting: &mut KernelAccounting<'_>,
+        allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
+    ) -> Result<Self, crate::FsError> {
+        let requested = crate::foundation::usize_to_u64(
+            count
+                .checked_mul(std::mem::size_of::<B::Item>())
+                .ok_or(crate::WorkError::Overflow)?,
+        );
+        let mut allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
+        let mut values = B::default();
+        if let Err(_error) = values.try_reserve_exact(count) {
+            drop(values);
+            #[cfg(not(target_arch = "wasm32"))]
+            let native = matches!(&allocation, KernelOwnedAllocation::NativeOriginal(_));
+            retire_allocation(allocation, requested, accounting)?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if native {
+                return Err(crate::FsError::NativeKernel(
+                    crate::NativeTreeMaterializationError::AllocationFailed(_error),
+                ));
+            }
+            return Err(allocation_failed(_error));
+        }
+        let actual =
+            crate::foundation::usize_to_u64(values.capacity() * std::mem::size_of::<B::Item>());
+        let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
+        let owned = Self::new(values, allocation, actual);
+        if let Err(error) = checked {
+            owned.retire(accounting)?;
+            return Err(error);
+        }
+        Ok(owned)
     }
 
     /// Admits both physical backings before growing, retaining the original
@@ -151,7 +192,7 @@ impl<T> Owned<Vec<T>> {
             bytes_copied: crate::foundation::usize_to_u64(
                 self.value
                     .len()
-                    .checked_mul(std::mem::size_of::<T>())
+                    .checked_mul(std::mem::size_of::<B::Item>())
                     .ok_or(crate::WorkError::Overflow)?,
             ),
             ..crate::WorkCounters::UNCHARGED
@@ -170,7 +211,7 @@ impl<T> Owned<Vec<T>> {
         // Elements can carry separately allocated names or values on this
         // guard. Only the old vector backing dies during replacement.
         let backing =
-            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<T>());
+            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<B::Item>());
         let carried = self
             .bytes
             .checked_sub(backing)
@@ -204,6 +245,40 @@ impl<T> Owned<Vec<T>> {
         }
         accounting.record_completed(copied).and(retired)
     }
+}
+
+/// Adapts an existing original native guard without changing its ledger or scope.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn reserve_native_buffer<B: GrowableBuffer>(
+    value: &mut B,
+    capacity: usize,
+    allocation: &mut crate::NativeAllocation,
+) -> Result<(), crate::NativeTreeMaterializationError> {
+    if capacity <= value.capacity() {
+        return Ok(());
+    }
+    let work = allocation.work().clone();
+    let empty = allocation.split_off(0)?;
+    let original = std::mem::replace(allocation, empty);
+    let bytes = original.bytes();
+    let mut owned = Owned::new(
+        std::mem::take(value),
+        KernelOwnedAllocation::NativeOriginal(original),
+        bytes,
+    );
+    let mut accounting = KernelAccounting::native(&work, work.cancellation());
+    let result = owned.reserve_capacity(capacity, &mut accounting);
+    *value = owned.value;
+    let KernelOwnedAllocation::NativeOriginal(original) = owned.allocation else {
+        unreachable!("native buffer retains its original guard")
+    };
+    *allocation = original;
+    result.map_err(|error| match error {
+        crate::FsError::NativeKernel(error) => error,
+        crate::FsError::Work(error) => error.into(),
+        crate::FsError::Cancelled(_) => crate::NativeTreeMaterializationError::Cancelled,
+        error => crate::NativeTreeMaterializationError::Io(std::io::Error::other(error)),
+    })
 }
 
 impl Owned<Vec<u8>> {
