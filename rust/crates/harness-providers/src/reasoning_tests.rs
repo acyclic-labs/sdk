@@ -20,6 +20,65 @@ fn origin(provider: &str, scope: &str) -> ReasoningOrigin {
     }
 }
 
+#[test]
+fn anonymous_routes_replay_only_their_own_native_continuity() {
+    for adapter in [
+        crate::Adapter::Anthropic,
+        crate::Adapter::Responses,
+        crate::Adapter::Gemini,
+        crate::Adapter::Chat,
+    ] {
+        let (mut provider, _) = crate::tests::provider(adapter, 200);
+        let authenticated = provider.reasoning_origin(Some("key"), None);
+        std::sync::Arc::make_mut(&mut provider.config).authentication =
+            crate::Authentication::Optional;
+        let route = provider.reasoning_origin(None, None);
+        assert!(
+            route.credential_scope.is_some(),
+            "anonymous route lost its continuity"
+        );
+        assert_eq!(route, provider.reasoning_origin(Some(""), None));
+        assert_ne!(route.credential_scope, authenticated.credential_scope);
+        let block = ReasoningBlock {
+            kind: ReasoningKind::Signature,
+            text: None,
+            origin: route.clone(),
+            continuity: b"signed-continuity".to_vec(),
+            outcome: ReasoningOutcome::PreservedOpaque,
+        };
+        assert!(matches!(
+            project_reasoning(&block, &route),
+            ProjectedReasoning::Native { .. }
+        ));
+        assert!(matches!(
+            project_reasoning(&block, &authenticated),
+            ProjectedReasoning::Dropped { .. }
+        ));
+        std::sync::Arc::make_mut(&mut provider.config)
+            .headers
+            .insert("x-gateway-tenant".into(), "other".into());
+        assert_ne!(
+            route.credential_scope,
+            provider.reasoning_origin(None, None).credential_scope
+        );
+        let config = std::sync::Arc::make_mut(&mut provider.config);
+        config.headers.clear();
+        config.base_url.push_str("/other");
+        assert_ne!(
+            route.credential_scope,
+            provider.reasoning_origin(None, None).credential_scope
+        );
+        std::sync::Arc::make_mut(&mut provider.config).authentication =
+            crate::Authentication::ApiKey;
+        assert!(
+            provider
+                .reasoning_origin(None, None)
+                .credential_scope
+                .is_none()
+        );
+    }
+}
+
 fn check_chat_native(text: &str) {
     use acyclic_harness_core::model::{ModelContent, ModelContentPart, ModelMessage, ModelRole};
     let escaped = serde_json::to_string(text).unwrap();
