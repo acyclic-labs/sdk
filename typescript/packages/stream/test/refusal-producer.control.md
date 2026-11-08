@@ -25,3 +25,15 @@ product metadata value once at the owned boundary. It adds one envelope, one
 metadata array and the bytes they own. It adds no request, connection, wait,
 retry or success-path work. Status and message retain their original strings.
 The raw Connect cause is released instead of keeping a second diagnostic owner.
+
+The peer's `grpc-status` and `grpc-message` are authoritative even when its
+opaque detail bytes happen to decode as a different Google Status. The adapter
+uses Connect's existing trailer parser on just those two headers; it does not
+introduce another status or details decoder. This adds one two-field Headers
+object and one projected ConnectError on a peer failure. Product metadata uses
+the existing Buffer encoder, without a separate TextEncoder object.
+
+Apply `typescript/packages/stream/test/refusal-status.patch` and repeat the same
+command. It must fail the original-status assertion while still supplying the
+envelope. Reverse the patch and require the unchanged test to pass. This second
+mutation substitutes Connect's detail-derived status for the actual peer status.
