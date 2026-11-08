@@ -54,7 +54,20 @@ async fn binding_preparation_releases_the_checkout_owner() -> Result<()> {
     let workspace = harness
         .workspace()
         .ok_or_else(|| Error::NotFound("binding workspace".into()))?;
-    let view = workspace.spawned_project_view(&harness.project).await?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = workspace
+        .view()
+        .open_related(
+            workspace.view().workspace().clone(),
+            &mut KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &cancellation,
+            },
+        )
+        .await
+        .map_err(storage)?;
     let authority = crate::filesystem::NativeMountAuthority::admitted(
         harness.verifier.clone(),
         harness.signed.copy(&mut None)?,
