@@ -194,6 +194,75 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
     .await?;
     assert_eq!(exact.changes.len(), 1);
     assert!(!exact.truncated);
+    #[cfg(not(target_arch = "wasm32"))]
+    for native in [false, true] {
+        let budget = crate::performance::BOUNDARY_BUDGET;
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = if native {
+            KernelAccounting::native(&original, &cancellation)
+        } else {
+            KernelAccounting::standalone(budget, &cancellation)
+        };
+        let (retained, allocation) = diff_tree_entries_with_accounting(
+            &store,
+            Some(before),
+            Some(after),
+            8,
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(retained.changes, complete.changes);
+        let physical = (retained.changes.capacity()
+            * std::mem::size_of::<ValueChange<LogicalName, TreeEntry>>())
+            as u64
+            + retained
+                .changes
+                .iter()
+                .map(|change| {
+                    change.key.logical_owned_bytes()
+                        + change
+                            .before
+                            .iter()
+                            .chain(&change.after)
+                            .map(|entry| entry.name.logical_owned_bytes())
+                            .sum::<u64>()
+                })
+                .sum::<u64>();
+        assert_eq!(
+            retained.retained_allocation_bytes, physical,
+            "vector growth released moved name capacity"
+        );
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline + physical);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                physical
+            );
+        }
+        drop(retained);
+        retire_allocation(allocation, physical, &mut accounting)?;
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                0
+            );
+        }
+    }
     Ok(())
 }
 
