@@ -7,18 +7,24 @@ export default async function acyclic({client, directory}) {
   let selected;
   let session;
   function select(id) {
-    if (id !== session) {
+    if (id !== session || !selected) {
       session = id;
       // Cache the admission itself. Concurrent hooks retain their own identity
       // even when another native session becomes the most recently selected.
-      selected = (async () => {
+      const admission = (async () => {
         const original = await client.session.get({path: {id}});
         if (original.error || !original.data)
           throw new Error("step=admit OpenCode session: native session absent; recovery=opencode");
         // Native children keep their host's original cwd and lifecycle.
         if (original.data.parentID) return;
         return nativeSession(executable, "opencode", directory, id);
-      })();
+      })().catch(error => {
+        // A failed attempt owns no admission. Its completion must not evict
+        // another session selected while this attempt was still in flight.
+        if (selected === admission) selected = undefined;
+        throw error;
+      });
+      selected = admission;
     }
     return selected;
   }

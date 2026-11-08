@@ -81,11 +81,10 @@ This qualifies native output delivery for the recorded response; it does not
 qualify installed workspace coordination, asynchronous idle-hook completion,
 native tool execution or managed descendants.
 
-The same shared corpus oracle detects the retained terminal-omission mutation:
-
-```sh
-node rust/proofs/qualify.mjs native-reply-terminal
-```
+The same shared corpus oracle detects the retained terminal-omission mutation
+`mutations/native-answer-opencode-terminal.patch`. Apply it from the repository
+root, replay the named corpus test below, then reverse it before accepting the
+positive result.
 
 `opencode-derived-transitions.jsonl` selects its original step/text parts and
 wraps them in the CLI formatter's event shape, then mutates completion timestamps,
@@ -117,11 +116,22 @@ bound-refusal control; this corpus entry adds composition coverage without a
 second bound oracle. The fuzz input limit must exceed this seed's size to reach
 the discard branch; it does not change either production bound.
 
+`opencode-loss-derived.jsonl` retains the original complete OpenCode capture,
+but first pads a copy of its text frame with leading JSON whitespace to one
+byte beyond the production event bound, followed by the unchanged text and
+terminal. Losing one part of an incremental reply must prevent publication of
+the surviving tail as a complete answer. The appended unchanged capture starts
+a new step and recovers. This is a derived loss input, never captured host output.
+`mutations/native-answer-opencode-loss.patch` restores the old incremental path
+after framing loss; the same property must reject that path. Complete snapshot
+replies from other hosts still recover without a turn-start, as checked by the
+existing Codex loss inputs.
+
 Replay the same oracle without libFuzzer instrumentation:
 
 ```sh
 cargo test --locked -p acyclic-harness-fuzz --no-default-features --features native-answer \
-  --test native_answer recorded_and_derived_native_events_satisfy_the_same_fuzz_oracle -- --exact
+  --lib native_answer::recorded_and_derived_native_events_satisfy_the_same_fuzz_oracle -- --exact
 ```
 
 From `rust/crates/harness-fuzz`, use the retained target and corpus:

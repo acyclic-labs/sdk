@@ -4,6 +4,7 @@ import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promise
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Processes } from "../../../scripts/graphcoder-e2e/process.mjs";
 import { hostFixtureDirectory } from "../../../scripts/graphcoder-e2e/fixture-directory.mjs";
 import { environment, nativeEnvironment } from "../../../scripts/graphcoder-e2e/scratch.mjs";
@@ -87,6 +88,16 @@ test("installed native OpenCode records its original session through the shared 
       const recorded = await request({ kind: "hook", host: "opencode", event: "NativeSession", input: { task } });
       assert.equal(recorded.code, 0, "native OpenCode session was not recorded through shared workspace: " + recorded.stderr);
       assert.equal(JSON.parse(recorded.stdout).id, terminal.sessionID);
+      step = "recover the installed admission after an actual workspace refusal";
+      const exported = await run(opencode, ["export", terminal.sessionID]);
+      assert.equal(exported.code, 0, exported.stderr);
+      const info = JSON.parse(exported.stdout).info;
+      assert.equal(info.id, terminal.sessionID);
+      const admission = await run(process.execPath, [
+        fileURLToPath(new URL("./opencode-admission.mjs", import.meta.url)),
+        join(profile, "opencode", "plugins", "acyclic.js"), workspace, JSON.stringify(info),
+      ]);
+      assert.equal(admission.code, 0, admission.stderr);
       step = "capture after the physically retired native process";
       const captured = await request({ kind: "capture", task });
       assert.equal(captured.code, 0, captured.stderr);

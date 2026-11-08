@@ -102,6 +102,12 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                 );
             }
             Some("text") => {
+                if before.omitted {
+                    assert!(
+                        current.pending.is_none(),
+                        "incremental native text retained after framing loss"
+                    );
+                }
                 assert_eq!(
                     current.outcome, before.outcome,
                     "text completed a native turn"
@@ -112,6 +118,7 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                     .filter(|id| !id.is_empty());
                 let text = event.pointer("/part/text").and_then(Value::as_str);
                 if before.outcome.is_none()
+                    && !before.omitted
                     && !before.truncated
                     && event
                         .pointer("/part/time/end")
@@ -135,7 +142,14 @@ fn fold(bytes: &[u8], chunk_size: usize) -> (NativeAnswer, usize) {
                 }
             }
             Some("step_finish") => {
+                if before.omitted {
+                    assert!(
+                        !matches!(current.outcome, Some(Outcome::Succeeded(_))),
+                        "incremental native reply succeeded after framing loss"
+                    );
+                }
                 if before.outcome.is_none()
+                    && !before.omitted
                     && event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
                 {
                     assert_eq!(

@@ -75,6 +75,7 @@ impl NativeAnswer {
                     .and_then(Value::as_u64)
                     .is_some_and(|end| end > 0)
                     && self.outcome.is_none()
+                    && !self.omitted
                     && !self.truncated =>
             {
                 if let (Some(id), Some(text)) = (
@@ -94,7 +95,8 @@ impl NativeAnswer {
             }
             Some("step_finish")
                 if event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
-                    && self.outcome.is_none() =>
+                    && self.outcome.is_none()
+                    && !self.omitted =>
             {
                 self.outcome = self.pending.take().map(Outcome::Succeeded);
             }
