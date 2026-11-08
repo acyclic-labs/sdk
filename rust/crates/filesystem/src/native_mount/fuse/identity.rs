@@ -251,8 +251,8 @@ impl ProjectionState {
         work: &crate::NativeMaterializationWork,
     ) -> Result<impl FnOnce(&mut Self) + use<'p>, NativeMountError> {
         let unbind = self.prepare_unbind(inode, path, work)?;
-        Ok(move |state| {
-            unbind(state);
+        Ok(move |state: &mut Self| {
+            unbind(&mut *state);
             if state.inode_by_path.get(path) == Some(&inode) {
                 state.inode_by_path.remove(path);
             }
@@ -493,7 +493,7 @@ impl ProjectionState {
                 }
             }
         }
-        Ok(move |state| {
+        Ok(move |state: &mut Self| {
             let Some(entry) = state.by_inode.get_mut(&inode) else {
                 return;
             };
