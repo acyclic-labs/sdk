@@ -167,6 +167,34 @@ impl<T> Owned<Vec<T>> {
         #[cfg(target_arch = "wasm32")]
         accounting.admit(copied)?;
         let mut replacement = Self::allocate_with(capacity, accounting, allocation_failed)?;
+        // Elements can carry separately allocated names or values on this
+        // guard. Only the old vector backing dies during replacement.
+        let backing =
+            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<T>());
+        let carried = self
+            .bytes
+            .checked_sub(backing)
+            .ok_or(crate::FsError::Work(crate::WorkError::Overflow));
+        let transfer = carried.and_then(|carried| {
+            let total = replacement
+                .bytes
+                .checked_add(carried)
+                .ok_or(crate::WorkError::Overflow)?;
+            if carried != 0 {
+                let mut elements = split_allocation(&mut self.allocation, carried)?;
+                if let Err(error) = replacement.allocation.absorb(&mut elements) {
+                    self.allocation.absorb(&mut elements)?;
+                    return Err(error);
+                }
+            }
+            self.bytes = backing;
+            replacement.bytes = total;
+            Ok(())
+        });
+        if let Err(error) = transfer {
+            replacement.retire(accounting)?;
+            return Err(error);
+        }
         replacement.value.append(&mut self.value);
         std::mem::swap(self, &mut replacement);
         let retired = replacement.retire(accounting);

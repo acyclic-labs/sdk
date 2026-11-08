@@ -38,3 +38,18 @@ cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,
 Reverse the patch and require the unchanged control to pass. The existing
 `kernel::blob::tests::impossible_blob_buffers_fail_before_allocation_and_preserve_accounting`
 control retains the actual ordinary allocator-error contract.
+
+The existing real tree-diff control also checks that growing the change vector
+keeps every moved key and value name funded on both accounting paths:
+
+```sh
+cargo test --locked -p acyclic-fs --lib --no-default-features --features memory,native-mount kernel::persistent_diff::tests::leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation -- --exact --nocapture
+```
+
+`element-credit.patch` restores the growth body that released element funding
+with the original vector backing. The control must fail with `vector growth
+released moved name capacity`. Reverse the patch and require the same control
+to pass. The oracle counts the actual returned vector and name capacities,
+checks live credit before dropping them, and requires final retirement to
+restore the original baseline. Moving element funding uses constant-work
+guard splits and joins, with no physical allocation or payload copy.
