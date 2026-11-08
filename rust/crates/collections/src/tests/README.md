@@ -24,6 +24,14 @@ Compilation failure is not detection. After restoring the exact source,
 run the same property successfully. These controls cover read admission and
 bounded traversal, not a consumer's value growth or resident custody transfer.
 
+The shared qualifier checks all three retained mutations below against the
+unchanged property, restores each original production file, and requires the
+same property to pass:
+
+```sh
+node rust/proofs/qualify.mjs fixed-index-read-admission
+```
+
 The same property covers admitted exact removal: generated complete keys and
 values agree with the independent map, every insufficient allowance preserves
 the original owner, and cancellation refuses even on an empty index. Trees
