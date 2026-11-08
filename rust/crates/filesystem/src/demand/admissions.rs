@@ -1,47 +1,21 @@
-use super::ownership::accounting as mount_accounting;
 use super::*;
 #[cfg(any(test, feature = "native-mount"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
+use crate::kernel::ProofDataCustody;
 #[cfg(any(test, feature = "native-watch"))]
 use crate::kernel::allocation::AllocationLedger;
-use crate::kernel::{ProofDataCustody, allocation::LogicalVecCapacity};
-use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
+use crate::sync::atomic::{AtomicU64, Ordering, fence};
 use std::sync::Arc;
 
 #[path = "admissions_accounting.rs"]
 mod accounting;
 pub(crate) use accounting::NativeAllocationAccounting;
-#[cfg(any(test, feature = "native-watch"))]
-pub(super) const SCAN: WorkCounters = WorkCounters {
+#[cfg(all(test, feature = "memory"))]
+const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
 };
 
-#[cfg(any(test, feature = "native-watch"))]
-pub(super) fn insert<T>(
-    (values, capacity): &mut (Vec<T>, LogicalVecCapacity),
-    value: T,
-    ledger: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<usize, DemandError> {
-    let copied = WorkCounters {
-        bytes_copied: if values.len() == values.capacity() {
-            (values.len() * std::mem::size_of::<T>()) as u64
-        } else {
-            0
-        },
-        ..WorkCounters::UNCHARGED
-    };
-    work.admit(&copied, &budget)?;
-    capacity
-        .ensure_for_push(values, usize::MAX, ledger, work, budget)
-        .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-    work.charge(&copied, &budget)?;
-    let index = values.len();
-    values.push(value);
-    Ok(index)
-}
 #[derive(Default)]
 pub(crate) struct Admissions {
     pub(super) pending: WorkCounters,
@@ -49,56 +23,23 @@ pub(crate) struct Admissions {
     pub(super) io_failure: Option<DemandError>,
     allocation_accounting: Option<Arc<NativeAllocationAccounting>>,
     paid_non_native: u64,
-    pub(super) native_mount_admission_pending: bool,
-    pub(super) native_mount_dirty: Option<Arc<AtomicBool>>,
-    pub(super) native_mount_admissions: (Vec<(Arc<AtomicU64>, u64)>, LogicalVecCapacity),
     #[cfg(feature = "native-mount")]
     pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
-fn mount_bytes(entry: &(Arc<AtomicU64>, u64)) -> u64 {
-    // The registry retains only this inert gauge. Upgrading custody here could
-    // drop its last owner under the leaf and re-enter it through metadata Drop.
-    mount_accounting::retained(Arc::strong_count(&entry.0), &entry.0)
-}
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
-        let mounts = if self
-            .native_mount_dirty
-            .as_ref()
-            .is_some_and(|dirty| dirty.load(Ordering::Acquire))
-        {
-            self.native_mount_admissions.0.as_slice()
-        } else {
-            &[]
-        };
-        let (released, unrecorded) = mounts
-            .iter()
-            .map(|entry| (entry.1, mount_bytes(entry)))
-            .fold((0u64, 0u64), |(released, unrecorded), (paid, actual)| {
-                (
-                    released
-                        .checked_add(paid.saturating_sub(actual))
-                        .expect("balanced retirement"),
-                    unrecorded
-                        .checked_add(actual.saturating_sub(paid))
-                        .expect("bounded live bytes"),
-                )
-            });
         let (released, unrecorded) = if let Some(shared) = &self.allocation_accounting {
             let actual = shared.non_native.load(Ordering::Acquire);
             (
-                released
-                    .checked_add(shared.retired.load(Ordering::Acquire))
-                    .and_then(|bytes| {
-                        bytes.checked_add(self.paid_non_native.saturating_sub(actual))
-                    })
+                shared
+                    .retired
+                    .load(Ordering::Acquire)
+                    .checked_add(self.paid_non_native.saturating_sub(actual))
                     .expect("balanced retirement"),
-                unrecorded
-                    .checked_add(actual.saturating_sub(self.paid_non_native))
-                    .expect("bounded live bytes"),
+                actual.saturating_sub(self.paid_non_native),
             )
         } else {
-            (released, unrecorded)
+            (0, 0)
         };
         #[cfg(feature = "native-mount")]
         let released = released
@@ -163,7 +104,6 @@ impl DemandWork {
             }
             self.roots.paid_non_native = actual;
         }
-        self.reconcile_native_mounts(&mut failure)?;
         #[cfg(feature = "native-mount")]
         {
             self.roots.view_gates.reconcile(&mut self.allocations)?;
@@ -173,110 +113,15 @@ impl DemandWork {
         }
         failure.map_or(Ok(()), Err)
     }
-    fn reconcile_native_mounts(
-        &mut self,
-        failure: &mut Option<crate::WorkError>,
-    ) -> Result<(), crate::WorkError> {
-        let Some(dirty) = self.roots.native_mount_dirty.as_ref() else {
-            return self.prune_native_mount_admissions();
-        };
-        let Some((empty, retired_mount)) = mount_accounting::reconcile(
-            dirty,
-            &mut self.roots.native_mount_admissions.0,
-            |gauge| mount_accounting::retained(Arc::strong_count(gauge), gauge),
-            |paid, actual| {
-                if actual < paid {
-                    self.allocations
-                        .release(paid - actual)
-                        .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-                } else if actual > paid {
-                    self.allocations
-                        .record_owned_bytes(actual - paid, &mut self.work)
-                        .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-                }
-                if actual > paid
-                    && let Err(error) = self.work.verify(self.budget)
-                {
-                    failure.get_or_insert(error);
-                }
-                Ok(())
-            },
-        )?
-        else {
-            return Ok(());
-        };
-        if retired_mount {
-            self.prune_native_mount_admissions()?;
-        }
-        if empty && self.roots.native_mount_admission_pending {
-            if let Some(dirty) = &self.roots.native_mount_dirty {
-                mount_accounting::publish(dirty);
-            }
-        } else if empty {
-            drop(self.roots.native_mount_dirty.take());
-            self.allocations
-                .release(std::mem::size_of::<AtomicBool>() as u64)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        }
-        Ok(())
-    }
-    fn prune_native_mount_admissions(&mut self) -> Result<(), crate::WorkError> {
-        if self.roots.native_mount_admission_pending {
-            if let Some(dirty) = &self.roots.native_mount_dirty {
-                mount_accounting::publish(dirty);
-            }
-            return Ok(());
-        }
-        if self.roots.native_mount_admissions.0.is_empty() {
-            return Ok(());
-        }
-        let owners = &self.roots.native_mount_admissions.0;
-        let live = owners.iter().filter(|entry| entry.1 != 0).count();
-        let moved = owners[..live].iter().filter(|entry| entry.1 == 0).count();
-        let copied = WorkCounters {
-            bytes_copied: (moved * std::mem::size_of::<(Arc<AtomicU64>, u64)>()) as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        // Retirement is unconditional. Moving survivors requires the current
-        // cancellation, invocation, resource and original-ledger admission.
-        let deferred = moved != 0 && self.charge_reconciled(copied).is_err();
-        let (owners, capacity) = &mut self.roots.native_mount_admissions;
-        let mut released = 0;
-        while owners.last().is_some_and(|entry| entry.1 == 0) {
-            owners.pop();
-            released += super::ownership::GAUGE_ALLOCATION_BYTES;
-        }
-        if deferred {
-            if let Some(dirty) = &self.roots.native_mount_dirty {
-                mount_accounting::publish(dirty);
-            }
-            return self
-                .allocations
-                .release(released)
-                .map_err(|error| error.into_work_or(crate::WorkError::Overflow));
-        }
-        let mut index = 0;
-        while index < owners.len() {
-            if owners[index].1 == 0 {
-                owners.swap_remove(index);
-                released += super::ownership::GAUGE_ALLOCATION_BYTES;
-                while owners.last().is_some_and(|entry| entry.1 == 0) {
-                    owners.pop();
-                    released += super::ownership::GAUGE_ALLOCATION_BYTES;
-                }
-            } else {
-                index += 1;
-            }
-        }
-        if owners.is_empty() {
-            let backing = std::mem::take(owners);
-            released += std::mem::take(capacity).logical_bytes();
-            drop(backing);
-        }
-        self.allocations
-            .release(released)
-            .map_err(|error| error.into_work_or(crate::WorkError::Overflow))?;
-        Ok(())
+    #[cfg(feature = "native-watch")]
+    pub(super) fn owns_native_allocation_accounting(
+        &self,
+        shared: &Arc<NativeAllocationAccounting>,
+    ) -> bool {
+        self.roots
+            .allocation_accounting
+            .as_ref()
+            .is_some_and(|original| Arc::ptr_eq(original, shared))
     }
     pub(crate) fn allocation_accounting(
         &mut self,
@@ -373,8 +218,8 @@ impl NativeDemandReadMeter {
 
 #[cfg(test)]
 #[cfg(feature = "native-watch")]
-#[path = "admissions_registry_tests.rs"]
-mod registry_tests;
+#[path = "admissions_custody_tests.rs"]
+mod custody_tests;
 
 #[cfg(test)]
 #[cfg(feature = "memory")]

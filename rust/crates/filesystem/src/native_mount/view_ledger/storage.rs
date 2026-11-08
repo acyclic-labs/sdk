@@ -218,12 +218,7 @@ pub(super) fn adopt_backing(
     bytes: u64,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<u64, MountSourceError> {
-    if owner
-        .map(|owner| carrier.with_work(|work| owner.is_admitted(work)))
-        .transpose()
-        .map_err(MountSourceError::from)?
-        .is_some_and(|admitted| !admitted)
-    {
+    if owner.is_some_and(|owner| !carrier.with_work(|work| owner.is_admitted(work))) {
         carrier
             .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
             .map_err(MountSourceError::from)?;
