@@ -7,6 +7,9 @@ pub(in crate::local) struct Native {
     mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
     discard: bool,
     binding: Option<(PathBuf, PathBuf)>,
+    // Owned native guards can outlive the logical MountedVolume. Keep the
+    // original key occupied until this projection's physical fields retire.
+    _binding_owner: Option<acyclic_fs::kernel::allocation::RetainedArc<super::bindings::Binding>>,
 }
 
 impl std::ops::Deref for Native {
@@ -136,6 +139,7 @@ impl MountedVolume {
                 mount,
                 discard: false,
                 binding: None,
+                _binding_owner: self._binding.clone(),
             };
             // This is the binding's reserved alias, not authored project
             // content. On restart it can still name the preceding process's

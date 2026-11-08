@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness/src/local/workspace/projection.rs b/rust/crates/harness/src/local/workspace/projection.rs
+--- a/rust/crates/harness/src/local/workspace/projection.rs
++++ b/rust/crates/harness/src/local/workspace/projection.rs
+@@ -169,7 +169,7 @@
+                 mount,
+                 discard: false,
+                 binding: None,
+-                _binding_owner: self._binding.clone(),
++                _binding_owner: None,
+             };
+             // This is the binding's reserved alias, not authored project
+             // content. On restart it can still name the preceding process's
