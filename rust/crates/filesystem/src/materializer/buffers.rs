@@ -5,20 +5,7 @@ pub(crate) fn reserve_buffer<T>(
     capacity: usize,
     allocation: &mut NativeAllocation,
 ) -> Result<(), NativeTreeMaterializationError> {
-    if capacity > values.capacity() {
-        let work = allocation.work().clone();
-        let prior = owned_size(values.capacity(), std::mem::size_of::<T>())?;
-        let copied =
-            NativeResourceCredit::Copy.delta(owned_size(values.len(), std::mem::size_of::<T>())?);
-        let copying = work.reserve_work(copied)?;
-        let (mut replacement, mut storage) = crate::native_host::buffer(capacity, &mut &work)?;
-        replacement.append(values);
-        drop(std::mem::replace(values, replacement));
-        allocation.release(prior)?;
-        allocation.absorb(&mut storage)?;
-        copying.record_completed(copied)?;
-    }
-    Ok(())
+    crate::kernel::reserve_native_buffer(values, capacity, allocation)
 }
 
 pub(super) fn push_buffer<T>(

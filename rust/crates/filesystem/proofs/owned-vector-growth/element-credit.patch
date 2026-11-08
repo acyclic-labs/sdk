@@ -9,7 +9,7 @@ index 5c2ad4d5b95..119a7569de5 100644
 -        // Elements can carry separately allocated names or values on this
 -        // guard. Only the old vector backing dies during replacement.
 -        let backing =
--            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<T>());
+-            crate::foundation::usize_to_u64(self.value.capacity() * std::mem::size_of::<B::Item>());
 -        let carried = self
 -            .bytes
 -            .checked_sub(backing)
