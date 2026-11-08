@@ -26,17 +26,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             self.runtime.poll_prepared(prepared, future)?
         };
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-        carrier
-            .with_work(|leaf| {
-                leaf.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
-            })
-            .map_err(MountSourceError::from)?;
-        if let Err(error) = lease.attach_owned_payload(bytes) {
-            carrier
-                .with_work(|leaf| leaf.release(bytes))
-                .map_err(MountSourceError::from)?;
-            return Err(error);
-        }
+        lease.fund_payload(bytes, &mut carrier)?;
         Ok(Box::new(lease))
     }
 }
