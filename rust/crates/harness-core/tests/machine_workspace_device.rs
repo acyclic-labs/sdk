@@ -970,7 +970,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             // socket, inbox and committed operation stream. The old 16 KiB
             // JSON chunk exceeded one frame for these bytes and lost the link.
             binary.arguments["command"] = if cfg!(windows) {
-                "[Console]::OpenStandardOutput().Write([byte[]](@(255) * 16384))"
+                "[Console]::OpenStandardOutput().Write([byte[]](@(255) * 16384), 0, 16384)"
             } else {
                 "head -c 16384 /dev/zero | LC_ALL=C tr '\\000' '\\377'"
             }
