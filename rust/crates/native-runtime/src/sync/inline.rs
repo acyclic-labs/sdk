@@ -37,6 +37,17 @@ impl<T> Mutex<T> {
             .map_err(TryLockError::Poisoned)
     }
 
+    /// Borrows the value exclusively without acquiring the lock, retaining any
+    /// original owner's poison in the result.
+    pub fn get_mut(&mut self) -> LockResult<&mut T> {
+        let value = self.inner.get_mut();
+        if *self.poisoned.get_mut() {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
+    }
+
     fn guard<'a>(&'a self, inner: parking_lot::MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         checked(MutexGuard {
             inner,
@@ -138,7 +149,7 @@ mod tests {
 
     #[test]
     fn condition_reacquisition_preserves_original_poison_and_value() {
-        let mutex = Mutex::new(0);
+        let mut mutex = Mutex::new(0);
         let changed = Condvar::new();
         std::thread::scope(|scope| {
             let mut guard = mutex.lock().unwrap();
@@ -166,6 +177,7 @@ mod tests {
         });
         assert!(matches!(mutex.try_lock(), Err(TryLockError::Poisoned(_))));
         assert_eq!(*mutex.lock().unwrap_err().into_inner(), 7);
+        assert_eq!(*mutex.get_mut().unwrap_err().into_inner(), 7);
 
         // Acquiring a lock while unwinding must not newly poison it.
         struct DuringUnwind<'a>(&'a Mutex<u8>);

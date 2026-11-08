@@ -1,0 +1,12 @@
+diff --git a/rust/crates/stream/src/lib/revision.rs b/rust/crates/stream/src/lib/revision.rs
+--- a/rust/crates/stream/src/lib/revision.rs
++++ b/rust/crates/stream/src/lib/revision.rs
+@@ -327,7 +327,7 @@
+                     continue;
+                 };
+                 while let Some(next) = explicit.next_if(|next| next.scope < revision.scope) {
+-                    cut.push(next.clone());
++                    let _ = next;
+                 }
+                 if let Some(next) = explicit.next_if(|next| next.scope == revision.scope) {
+                     if !revision.same_authority(next) {

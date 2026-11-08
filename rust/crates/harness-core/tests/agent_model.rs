@@ -1386,3 +1386,67 @@ async fn quorum_wait() -> Result {
     assert!(driver.0.lock().expect("script lock").is_empty());
     Ok(())
 }
+
+/// A wait parks only on children that can still settle, and asks each of
+/// them: a child spawned in the same step is one. A wait no open child can
+/// meet continues at once instead of parking on its deadline, so its call
+/// reports the named failure.
+///
+/// Negative control: mapping the wait before applying the step's spawns
+/// counted the new child unreachable and parked on the deadline alone,
+/// asking no one.
+#[tokio::test]
+async fn a_wait_parks_only_on_children_that_can_settle() -> Result {
+    let root = AgentPath::root(&id(1));
+    let spawned = root.child(&AgentId::derive(&root.id(), "w1"))?;
+    let stranger = root.child(&id(9))?;
+    let start = InboxRecord::Approval(Approval { id: intent("q1") });
+    for (awaited, spawn, parks) in [(spawned.clone(), true, true), (stranger, false, false)] {
+        let state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
+        let outs = if spawn {
+            vec![Out::Spawn {
+                profile: None,
+                history: None,
+                intent: intent("w1"),
+                brief: None,
+                volumes: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let driver = script(vec![TurnStep {
+            reserved_children: 0,
+            checkpoint: Some(b"waiting".to_vec()),
+            outs,
+            wait: Wait::Until(
+                Until::quorum(BTreeSet::from([awaited.clone()]), 1).within(Some(1_000)),
+            ),
+            drops: None,
+        }]);
+        let stepped = step(
+            &driver,
+            &root,
+            Some(state),
+            (1, 5_000),
+            Wake::Inbox {
+                sequence: 0,
+                record: start.clone(),
+            },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let asked = stepped
+            .outs
+            .iter()
+            .filter(|out| matches!(out, Out::Send { to, record: InboxRecord::Awaited } if *to == awaited))
+            .count();
+        assert_eq!(asked, usize::from(parks), "{awaited}");
+        assert_eq!(
+            matches!(stepped.state.phase, Phase::Waiting { .. }),
+            parks,
+            "{awaited}: {:?}",
+            stepped.state.phase
+        );
+    }
+    Ok(())
+}

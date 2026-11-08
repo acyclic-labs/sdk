@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/record_store.rs
++++ b/rust/crates/filesystem/src/record_store.rs
+@@ -37,7 +37,7 @@
+ /// Exhaustion leaves the revision unchanged and cannot reuse a write fence.
+ pub(crate) fn next_revision(revision: &mut u64) -> Option<u64> {
+     let expected = *revision;
+-    *revision = expected.checked_add(1)?;
++    *revision = expected.saturating_add(1);
+     Some(expected)
+ }
+ 

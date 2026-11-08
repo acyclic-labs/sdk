@@ -61,55 +61,15 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
         let plaintext_maximum = maximum.min(self.maximum_object_bytes.unwrap_or(maximum));
         let maximum = self.sealer.stored_limit(id, plaintext_maximum)?;
-        let remaining = work.remaining()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = work.native_work().is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
-        let maximum = maximum.min(remaining.object_bytes_read);
-        let maximum = if native {
-            maximum
-        } else {
-            maximum.min(remaining.peak_allocation_bytes)
-        };
-        let mut body_custody = if native {
-            KernelOwnedAllocation::Standalone
-        } else {
-            work.claim_owned(maximum, 0)?
-        };
+        let maximum = maximum.min(invocation::read_capacity(work)?);
+        let mut body_custody = invocation::read_custody(maximum, work)?;
         let custody = guard(work)?;
-        let result = match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let future = self
-                    .provider
-                    .get_native(
-                        packet((blob(id), ByteRange::FULL, maximum), custody, original)?,
-                        original.runtime_meter(),
-                    )
-                    .map_err(|error| native_error(error, original))?;
-                work.charge(WorkCounters {
-                    object_probes: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                future.await.map_err(|error| native_error(error, original))
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    object_probes: 1,
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let result = self
-                    .provider
-                    .get(blob(id), ByteRange::FULL, maximum)
-                    .await
-                    .map_err(service_error);
-                release(work, custody, 0)?;
-                result
-            }
-        };
+        let result = invocation::Provider::get(
+            &*self.provider,
+            crate::kernel::Owned::new((blob(id), ByteRange::FULL, maximum), custody, 0),
+            work,
+        )
+        .await?;
         let observed = match &result {
             Ok(value) => value.body().len() as u64,
             Err(error) => completed_bytes(error)?,
@@ -123,7 +83,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             completed?;
             return Err(ObjectStoreError::TooLarge { observed, maximum }.into());
         }
-        if !native {
+        if work.standalone_parts().is_some() {
             work.release_owned(&mut body_custody, maximum - observed)?;
         }
         completed?;
@@ -141,15 +101,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         &self,
         requests: &[ObjectReadRequest],
         work: &mut KernelAccounting<'_>,
-    ) -> Result<(Vec<ObjectRead>, KernelOwnedAllocation, u64), crate::FsError> {
+    ) -> Result<crate::kernel::Owned<Vec<ObjectRead>>, crate::FsError> {
         work.check()?;
         if requests.is_empty() {
             return Err(ObjectStoreError::EmptyReadBatch.into());
         }
-        let (mut incoming, custody) = vector::<GetRequest>(requests.len(), work)?;
-        let request_bytes = (incoming.capacity() * size_of::<GetRequest>()) as u64;
+        let mut incoming = crate::kernel::Owned::<Vec<GetRequest>>::allocate(requests.len(), work)?;
         for request in requests {
-            incoming.push((
+            incoming.value.push((
                 blob(request.object_id),
                 ByteRange::FULL,
                 self.sealer.stored_limit(
@@ -160,26 +119,15 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 )?,
             ));
         }
-        let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
-        let mut retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
-        let remaining = work.remaining()?;
+        let mut values = crate::kernel::Owned::<Vec<ObjectRead>>::allocate(requests.len(), work)?;
+        let remaining = invocation::read_capacity(work)?;
         let total = incoming
+            .value
             .iter()
             .try_fold(0u64, |total, request| total.checked_add(request.2));
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = work.native_work().is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
-        let quota = total.and_then(|total| {
-            let mut quota = remaining.object_bytes_read;
-            if !native {
-                quota = quota.min(remaining.peak_allocation_bytes);
-            }
-            (total <= quota).then_some(total)
-        });
+        let quota = total.filter(|total| *total <= remaining);
         let Some(quota) = quota else {
-            drop(incoming);
-            release(work, custody, request_bytes)?;
+            incoming.retire(work)?;
             for request in requests {
                 let read = {
                     let (read, _allocation) = self
@@ -187,99 +135,74 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         .await?;
                     read
                 };
-                retained = retained
+                values.bytes = values
+                    .bytes
                     .checked_add(read.retention.owned_bytes())
                     .ok_or(WorkError::Overflow)?;
-                values.push(read);
+                values.value.push(read);
             }
-            return Ok((values, output, retained));
+            return Ok(values);
         };
-        let body = if native {
-            KernelOwnedAllocation::Standalone
-        } else {
-            work.claim_owned(quota, 0)?
-        };
+        let body = invocation::read_custody(quota, work)?;
         let mut left = quota;
-        for request in &mut incoming {
+        for request in &mut incoming.value {
             request.2 = request.2.min(left);
             left -= request.2;
         }
-        match work {
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => {
-                let original = *original;
-                let future = self
-                    .provider
-                    .get_batch_native(
-                        packet(incoming, custody, original)?,
-                        original.runtime_meter(),
-                    )
-                    .map_err(|error| native_error(error, original))?;
-                work.charge(WorkCounters {
-                    object_probes: requests.len() as u64,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let results = future
-                    .await
-                    .map_err(|error| native_error(error, original))?;
-                (values, retained) = self.finish_reads::<STORED>(
-                    results.map(|value| value.map_err(|error| native_error(error, original))),
-                    requests,
-                    quota,
-                    work,
-                    values,
-                    body,
-                )?;
-            }
-            _ => {
-                work.charge(WorkCounters {
-                    object_probes: requests.len() as u64,
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                let results = self.provider.get_batch(incoming).await;
-                release(work, custody, request_bytes)?;
-                let records = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
-                let (controls, late) = work.record_actual_owned(records)?;
-                let result = self.finish_reads::<STORED>(
-                    results
-                        .into_iter()
-                        .map(|value| value.map_err(service_error)),
-                    requests,
-                    quota,
-                    work,
-                    values,
-                    body,
-                );
-                release(work, controls, records)?;
-                (values, retained) = result?;
-                late?;
-            }
-        }
-        Ok((values, output, retained))
+        invocation::Provider::get_batch(
+            &*self.provider,
+            incoming,
+            work,
+            ReadBatch::<_, _, STORED> {
+                store: self,
+                requests,
+                quota,
+                body,
+                values,
+            },
+        )
+        .await
     }
-    fn finish_reads<const STORED: bool>(
-        &self,
+}
+
+struct ReadBatch<'a, P: ?Sized, S, const STORED: bool> {
+    store: &'a LogicalObjectStore<P, S>,
+    requests: &'a [ObjectReadRequest],
+    quota: u64,
+    values: crate::kernel::Owned<Vec<ObjectRead>>,
+    body: KernelOwnedAllocation,
+}
+
+impl<P: Blobs + ?Sized, S: ObjectSealer, const STORED: bool> invocation::BatchFinish<Object>
+    for ReadBatch<'_, P, S, STORED>
+{
+    type Output = crate::kernel::Owned<Vec<ObjectRead>>;
+
+    fn finish(
+        self,
         results: impl ExactSizeIterator<Item = Result<Object, ObjectStoreError>>,
-        requests: &[ObjectReadRequest],
-        mut left: u64,
         work: &mut KernelAccounting<'_>,
-        mut values: Vec<ObjectRead>,
-        mut body: KernelOwnedAllocation,
-    ) -> Result<(Vec<ObjectRead>, u64), crate::FsError> {
+    ) -> Result<Self::Output, crate::FsError> {
+        let Self {
+            store,
+            requests,
+            quota,
+            mut body,
+            mut values,
+        } = self;
+        let mut left = quota;
         let count_valid = results.len() == requests.len();
-        let quota = left;
         let mut observed = 0u64;
         let mut failure = None;
         for (index, result) in results.enumerate() {
             let maximum = match requests.get(index) {
-                Some(request) => self
+                Some(request) => store
                     .sealer
                     .stored_limit(
                         request.object_id,
                         request
                             .maximum_bytes
-                            .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                            .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                     )?
                     .min(left),
                 None => 0,
@@ -297,7 +220,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     }
                     let bytes = value.into_body();
                     if index < requests.len() {
-                        values.push(ObjectRead {
+                        values.value.push(ObjectRead {
                             retention: retained(&bytes, work),
                             bytes,
                         });
@@ -330,8 +253,8 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 quota.checked_sub(observed).ok_or(WorkError::Overflow)?,
             )?;
         }
-        let mut retained = (values.capacity() * size_of::<ObjectRead>()) as u64;
-        for (value, request) in values.iter_mut().zip(requests) {
+        let mut retained = values.bytes;
+        for (value, request) in values.value.iter_mut().zip(requests) {
             let read = std::mem::replace(
                 value,
                 ObjectRead {
@@ -339,19 +262,20 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     retention: ObjectReadRetention::Shared,
                 },
             );
-            *value = self.read_representation::<STORED>(
+            *value = store.read_representation::<STORED>(
                 request.object_id,
                 read,
                 request
                     .maximum_bytes
-                    .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
+                    .min(store.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                 work,
             )?;
             retained = retained
                 .checked_add(value.retention.owned_bytes())
                 .ok_or(WorkError::Overflow)?;
         }
-        Ok((values, retained))
+        values.bytes = retained;
+        Ok(values)
     }
 }
 pub(super) fn hash(

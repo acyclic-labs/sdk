@@ -500,9 +500,9 @@ where
 /// Retains an authority result's actual newly allocated native storage.
 #[cfg(not(target_arch = "wasm32"))]
 pub type AuthorityAllocation = Option<crate::NativeAllocation>;
-/// Browser authority results need no native allocation guard.
+/// Browser authority results retain their original standalone allocation.
 #[cfg(target_arch = "wasm32")]
-pub type AuthorityAllocation = Option<()>;
+pub type AuthorityAllocation = Option<crate::kernel::RetainedAllocation>;
 
 pub(crate) fn authority_error(error: crate::FsError) -> AuthorityStoreError {
     match error {

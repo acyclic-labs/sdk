@@ -1,4 +1,4 @@
-# Session model routing
+# Production models and mutation controls
 
 These on-demand models use the production synchronization primitives. From the
 repository root, the explicit compiler routing is:
@@ -148,6 +148,21 @@ external wire, authority changes, producer loss, physical restarts, non-owner
 topology and source coverage remain separate. Ordinary `Arc` reference counts
 are not instrumented by Loom. One modeled source does not establish constant
 cost across the scheduler's source map or multiple queued hints.
+
+The JavaScript snapshot property runs the shipping WASM copy entry points in
+Node. It uses actual typed arrays and transferred ArrayBuffers to check exact
+admission, captured intrinsics, original refusal identity and custody retirement
+after a failed copy. With a matching `wasm-bindgen-test-runner` installed:
+
+```sh
+git apply rust/crates/stream/models/mutations/javascript_snapshot_capacity.patch
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner cargo test --locked -p acyclic-stream --no-default-features --features js-bytes --target wasm32-unknown-unknown --lib owned_bytes::javascript::tests::snapshots_preserve_exact_admission_and_retire_custody_on_copy_failure -- --exact
+git apply --reverse rust/crates/stream/models/mutations/javascript_snapshot_capacity.patch
+```
+
+The mutant must fail at `undersized admitted storage grew during copy`; restored
+source must pass the same command. This property covers the shared byte-copy
+boundary. It does not qualify OPFS, IndexedDB transactions or browser scheduling.
 
 The outbound response-reader model polls the production `Outbound::cancelled`
 future while `Outbound::close` publishes through its original `Gate`. A queued

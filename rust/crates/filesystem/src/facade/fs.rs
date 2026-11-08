@@ -97,7 +97,7 @@ impl<A, O> Fs<A, O> {
     ) -> MeasuredResult<OperationReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError>
     {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = self.workspace_name(name.as_ref(), &mut accounting, cancellation);
+        let result = self.workspace_name(name.as_ref(), &mut accounting);
         measured(result, &accounting)
     }
 
@@ -105,55 +105,18 @@ impl<A, O> Fs<A, O> {
         &self,
         name: &str,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let name = crate::WorkspaceName::new(name, &original, cancellation)?;
-            let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
-            return Ok((name, id));
-        }
-        let named = crate::WorkspaceName::new(name, &accounting.remaining()?, cancellation);
-        let spent = match &named {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_creation_backend_work(accounting, spent)?;
-        let name = named.map_err(|failure| failure.error)?.value;
-        accounting.claim_owned(name.retained_bytes(), 0)?;
-        let id = self.workspace_id_for_name(&name, accounting, cancellation)?;
+        let name = crate::WorkspaceName::with_accounting(name, accounting)?;
+        let id = self.workspace_id_for_name(&name, accounting)?;
         Ok((name, id))
     }
 
-    pub(super) fn workspace_id_for_name(
+    pub(crate) fn workspace_id_for_name(
         &self,
         destination: &crate::WorkspaceName,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<crate::WorkspaceId, WorkspaceError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            return crate::WorkspaceId::derive(
-                self.inner.workspace_namespace,
-                destination,
-                &original,
-                cancellation,
-            );
-        }
-        let derived = crate::WorkspaceId::derive(
-            self.inner.workspace_namespace,
-            destination,
-            &accounting.remaining()?,
-            cancellation,
-        );
-        let work = match &derived {
-            Ok(receipt) => receipt.work,
-            Err(failure) => *failure.work,
-        };
-        merge_creation_backend_work(accounting, work)?;
-        derived
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
+        crate::WorkspaceId::with_accounting(self.inner.workspace_namespace, destination, accounting)
     }
 
     /// Derives the deployment-scoped stable identity for one canonical name.

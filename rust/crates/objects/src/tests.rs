@@ -232,7 +232,9 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
 async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = tempfile::tempdir()?;
-    let store = Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
+    let store = Store::new(Counting::new(
+        crate::LocalMedium::open(root.path(), Default::default(), None).await?,
+    ));
     conformance::verify(
         &store.account(b"first")?,
         &store.account(b"second")?,
@@ -251,13 +253,16 @@ async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn
         Err(crate::local::LocalOpenError::AlreadyOwned)
     ));
     drop(store);
-    let reopened =
-        Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
+    let reopened = Store::new(Counting::new(
+        crate::LocalMedium::open(root.path(), Default::default(), None).await?,
+    ));
+    assert!(reopened.medium().recovered());
     let object = reopened
         .account(b"first")?
         .get(digest, ByteRange::FULL, 128)
         .await?;
     assert_eq!(object.body(), &body);
+    assert!(!reopened.medium().recovered());
     Ok(())
 }
 
@@ -635,7 +640,7 @@ impl Default for Shared {
 
 /// Drive one owned operation until the real medium reaches its selected cut.
 /// Unexpected completion fails immediately rather than waiting without a producer.
-async fn drive_to_park<F: Future>(
+async fn drive_to_park<F: Future + ?Sized>(
     operation: std::pin::Pin<&mut F>,
     reached: &mut tokio::sync::oneshot::Receiver<()>,
 ) {
@@ -654,7 +659,7 @@ struct Pause {
 }
 
 impl Shared {
-    fn over(inner: impl Medium, forgetful: bool) -> Self {
+    fn over(inner: impl Medium + 'static, forgetful: bool) -> Self {
         Self {
             inner: std::sync::Arc::new(inner),
             pause: Default::default(),
@@ -1205,7 +1210,7 @@ async fn a_reput_between_envelope_and_payload_removal_survives()
         let removed = blobs.delete(parent).await?;
         assert_eq!(old, removed.references);
         let with_head = store.medium().take();
-        assert!(with_head["read"] > direct["read"]);
+        assert!(with_head["observe"] > direct["observe"]);
         println!("population={population} delete={direct:?} head_then_delete={with_head:?}");
         previous = Some(direct);
     }
@@ -1403,7 +1408,7 @@ async fn a_delete_never_removes_a_writers_pending_reference()
 /// the same bytes is retained. Returns the stalled delete and whether the
 /// retained blob is still readable once it resumes.
 async fn stalled_delete_then_reput(
-    medium: impl Medium,
+    medium: impl Medium + 'static,
     forgetful: bool,
 ) -> Result<(Result<Delete, ErrorCode>, bool), Box<dyn std::error::Error>> {
     let medium = Shared::over(medium, forgetful);
@@ -1801,17 +1806,41 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// Counts each operation of a volatile medium, with the keys of each flush.
-#[derive(Default)]
-pub(crate) struct Counting {
-    inner: MemoryMedium,
+/// Counts original-medium calls, returned bytes and keys in each flush.
+/// Returned byte lengths do not measure decoded or allocated backing.
+pub(crate) struct Counting<M = MemoryMedium> {
+    inner: M,
+    volatile_fixture: bool,
     counts: std::sync::Mutex<std::collections::BTreeMap<&'static str, usize>>,
     flushes: std::sync::Mutex<Vec<usize>>,
 }
 
-impl Counting {
+// The existing in-memory commit fixture deliberately requires flushes.
+impl Default for Counting {
+    fn default() -> Self {
+        Self {
+            volatile_fixture: true,
+            ..Self::new(MemoryMedium::default())
+        }
+    }
+}
+
+impl<M: Medium> Counting<M> {
+    fn new(inner: M) -> Self {
+        Self {
+            volatile_fixture: false,
+            inner,
+            counts: Default::default(),
+            flushes: Default::default(),
+        }
+    }
+
     fn count(&self, operation: &'static str) {
-        *self.counts.lock().unwrap().entry(operation).or_default() += 1;
+        self.record(operation, 1);
+    }
+
+    fn record(&self, operation: &'static str, amount: usize) {
+        *self.counts.lock().unwrap().entry(operation).or_default() += amount;
     }
 
     fn take(&self) -> std::collections::BTreeMap<&'static str, usize> {
@@ -1825,7 +1854,11 @@ impl Counting {
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-impl Medium for Counting {
+impl<M: Medium> Medium for Counting<M> {
+    fn read_allocation_bytes(&self, bytes: &OwnedBytes) -> usize {
+        self.inner.read_allocation_bytes(bytes)
+    }
+
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.count("create");
         self.inner.create(key, bytes).await
@@ -1836,15 +1869,23 @@ impl Medium for Counting {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         self.count("read");
-        self.inner.read(key, range).await
+        let result = self.inner.read(key, range).await?;
+        if let Some(bytes) = &result {
+            self.record("read_bytes", bytes.len());
+        }
+        Ok(result)
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         self.count("remove");
         self.inner.remove(key).await
     }
     async fn observe(&self, key: String) -> Result<Option<Observed<'_>>, MediumError> {
-        self.count("read");
-        self.inner.observe(key).await
+        self.count("observe");
+        let result = self.inner.observe(key).await?;
+        if let Some(observed) = &result {
+            self.record("observed_bytes", observed.bytes.len());
+        }
+        Ok(result)
     }
 
     async fn replace<'a>(
@@ -1866,28 +1907,48 @@ impl Medium for Counting {
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
         self.count("list");
-        self.inner.list(prefix, after, limit).await
+        let result = self.inner.list(prefix, after, limit).await?;
+        self.record("listed_keys", result.len());
+        Ok(result)
     }
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
         self.count("flush");
         self.flushes.lock().unwrap().push(keys.len());
-        Ok(())
+        self.inner.flush(keys).await
     }
     fn volatile(&self) -> bool {
-        true
+        self.volatile_fixture || self.inner.volatile()
     }
     fn recovered(&self) -> bool {
-        false
+        self.inner.recovered()
     }
-    fn settle(&self) {}
+    fn settle(&self) {
+        self.inner.settle();
+    }
+    fn allocate(&self, bytes: u64) -> Result<(), MediumError> {
+        self.inner.allocate(bytes)
+    }
+    fn allocation_capacity(&self, admitted: usize, actual: usize) -> Result<(), MediumError> {
+        self.inner.allocation_capacity(admitted, actual)
+    }
+    fn finish_allocation(&self, bytes: Vec<u8>) -> Result<OwnedBytes, MediumError> {
+        self.inner.finish_allocation(bytes)
+    }
+    fn finish_object(&self, object: crate::Object) -> Result<crate::Object, MediumError> {
+        self.inner.finish_object(object)
+    }
+    fn reserve_writes(&self, operations: u64) -> Result<(), MediumError> {
+        self.inner.reserve_writes(operations)
+    }
 }
 
 /// The operations of one fresh put, and of one usage scan, in an account
 /// already holding `existing` blobs.
-async fn operations(
+async fn operations<M: Medium>(
     existing: u32,
+    medium: Counting<M>,
 ) -> Result<[std::collections::BTreeMap<&'static str, usize>; 2], Box<dyn std::error::Error>> {
-    let store = Store::new(Counting::default());
+    let store = Store::new(medium);
     let blobs = store.account(b"account")?;
     for blob in 0..existing {
         blobs
@@ -1900,22 +1961,66 @@ async fn operations(
         Put::Created { .. }
     ));
     let put = store.medium().take();
-    blobs.usage().await?;
+    let usage = blobs.usage().await?;
+    assert_eq!(usage.blobs, u64::from(existing) + 1);
+    assert_eq!(usage.unique_bytes, u64::from(existing) * 4 + 64);
     Ok([put, store.medium().take()])
 }
 
 #[tokio::test]
 async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size()
 -> Result<(), Box<dyn std::error::Error>> {
-    let [small, small_scan] = operations(1).await?;
-    let [large, large_scan] = operations(2_000).await?;
-    assert_eq!(small.get("create"), Some(&2), "{small:?}");
-    for operation in ["read", "list", "replace", "remove", "remove_if", "flush"] {
-        assert_eq!(small.get(operation), None, "{small:?}");
+    async fn verify<M: Medium>(
+        small: Counting<M>,
+        large: Counting<M>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let [small, small_scan] = operations(1, small).await?;
+        let [large, large_scan] = operations(2_000, large).await?;
+        assert_eq!(small.get("create"), Some(&2), "{small:?}");
+        for operation in [
+            "read",
+            "observe",
+            "list",
+            "replace",
+            "remove",
+            "remove_if",
+            "flush",
+        ] {
+            assert_eq!(small.get(operation), None, "{small:?}");
+        }
+        assert_eq!(small, large);
+        // Negative control: the same count sees a scan grow with the account.
+        assert_ne!(small_scan, large_scan);
+        for scan in [&small_scan, &large_scan] {
+            assert_eq!(scan["observe"], scan["read"]);
+            assert_eq!(
+                scan["read_bytes"], 0,
+                "usage probes return no payload bytes"
+            );
+        }
+        assert!(large_scan["observe"] > small_scan["observe"]);
+        assert!(large_scan["observed_bytes"] > small_scan["observed_bytes"]);
+        assert!(large_scan["list"] > small_scan["list"]);
+        assert_eq!(small_scan["listed_keys"], 2);
+        assert_eq!(large_scan["listed_keys"], 2_001);
+        println!(
+            "{} fresh={small:?} usage_small={small_scan:?} usage_large={large_scan:?}",
+            std::any::type_name::<M>()
+        );
+        Ok(())
     }
-    assert_eq!(small, large);
-    // Negative control: the same count sees a scan grow with the account.
-    assert_ne!(small_scan, large_scan);
+
+    verify(Counting::default(), Counting::default()).await?;
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    {
+        let small = tempfile::tempdir()?;
+        let large = tempfile::tempdir()?;
+        verify(
+            Counting::new(crate::LocalMedium::open(small.path(), Default::default(), None).await?),
+            Counting::new(crate::LocalMedium::open(large.path(), Default::default(), None).await?),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -2819,7 +2924,9 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    let store = Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
+    let store = Store::new(Counting::new(
+        crate::LocalMedium::open(root.path(), Default::default(), None).await?,
+    ));
     let blobs = store.account(b"account")?;
     blobs.flush(None).await?;
     let digest = |put: Put| {
@@ -2838,7 +2945,10 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
     retained?;
     eprintln!("syncs of one put: {child_syncs:?}; of its commit: {commit:?}");
     // Negative control: the same trace sees the commit's barrier.
-    assert!(!commit.is_empty());
+    assert!(
+        !commit.is_empty(),
+        "cost recorder suppressed the original local flush"
+    );
     // Durable now: a second commit of the closure syncs only its own batch.
     let (retained, again) = syncs(blobs.retain(&root_id, vec![parent])).await;
     retained?;
@@ -2849,50 +2959,13 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
     Ok(())
 }
 
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn a_local_root_left_open_is_flushed_whole_on_reopen()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let open = async || crate::LocalMedium::open(root.path(), Default::default(), None).await;
-    let body = OwnedBytes::from(vec![4; 32]);
-    let store = Store::new(open().await?);
-    store
-        .account(b"account")?
-        .put(body.clone(), Vec::new())
-        .await?;
-    drop(store);
-    // A clean close flushed everything and cleared the marker.
-    let marker = root.path().join("OPEN");
-    assert!(!marker.exists());
-    // As a close that never ran leaves it.
-    std::fs::write(&marker, b"")?;
-    // A clean close before the store repaired the root keeps it unclean.
-    let unrepaired = open().await?;
-    assert!(unrepaired.recovered());
-    drop(unrepaired);
-    assert!(marker.exists());
-    let reopened = Store::new(open().await?);
-    assert!(reopened.medium().recovered());
-    let object = reopened
-        .account(b"account")?
-        .get(Digest::of(&body), ByteRange::FULL, 32)
-        .await?;
-    assert_eq!(object.body(), &body);
-    // Its repair settled the root, so this close clears the marker.
-    assert!(!reopened.medium().recovered());
-    drop(reopened);
-    assert!(!marker.exists());
-    Ok(())
-}
-
 #[cfg(all(
     feature = "local",
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
 #[tokio::test]
-async fn a_local_root_closes_only_after_its_last_accepted_write()
+async fn a_dropped_root_stays_owned_until_its_last_accepted_write()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_native_runtime::testing::Schedule;
     use std::sync::atomic::AtomicBool;
@@ -2920,8 +2993,8 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
     });
     let boundary = schedule
         .scope(async {
-            // Control: a root with nothing in flight reopens at once.
-            drop(open().await?);
+            // Control: an explicit close releases a clean root at once.
+            assert_eq!(open().await?.close().await?, crate::LocalClose::Released);
             let medium = open().await?;
             holding.store(true, Ordering::SeqCst);
             let mut write = Box::pin(medium.create("k/key", OwnedBytes::from(vec![1; 8])));
@@ -2929,7 +3002,7 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
                 boundary = held => boundary?,
                 _ = &mut write => return Err::<_, Box<dyn std::error::Error>>("unheld".into()),
             };
-            // The put is cancelled with its write accepted, and its owner closes.
+            // The put is cancelled with its write accepted, and its caller drops.
             drop(write);
             drop(medium);
             assert!(matches!(
@@ -2941,9 +3014,12 @@ async fn a_local_root_closes_only_after_its_last_accepted_write()
         .await?;
     boundary.release();
     schedule.drained().await;
-    // The write done, the root closed clean, the write flushed with it.
+    // Physical completion releases the lock without an unobserved flush.
     let reopened = schedule.scope(open()).await?;
-    assert!(!reopened.recovered());
+    assert!(
+        reopened.recovered(),
+        "accepted write bypassed recovery on Drop"
+    );
     assert!(reopened.read("k/key", None).await?.is_some());
     drop(reopened);
     driver.abort();
@@ -3270,7 +3346,8 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
 }
 
 #[tokio::test]
-async fn a_repeat_put_reads_twice_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_repeat_put_observes_metadata_and_probes_presence_without_writes()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new(Counting::default());
     let blobs = store.account(b"account")?;
     let child = Digest::of(&[1; 8]);
@@ -3282,8 +3359,17 @@ async fn a_repeat_put_reads_twice_and_writes_nothing() -> Result<(), Box<dyn std
     let counts = store.medium().take();
     // The failed envelope create, the envelope and the presence probe.
     assert_eq!(counts.get("create"), Some(&1), "{counts:?}");
-    assert_eq!(counts.get("read"), Some(&2), "{counts:?}");
-    assert_eq!(counts.len(), 2, "{counts:?}");
+    assert_eq!(
+        counts.get("observe"),
+        Some(&1),
+        "version observations must remain distinct from payload reads: {counts:?}"
+    );
+    assert_eq!(counts.get("read"), Some(&1), "{counts:?}");
+    assert_eq!(counts.get("read_bytes"), Some(&0), "{counts:?}");
+    assert!(counts["observed_bytes"] > 0);
+    for operation in ["list", "replace", "remove", "remove_if", "flush"] {
+        assert_eq!(counts.get(operation), None, "{counts:?}");
+    }
     // Negative control: a stored envelope whose payload a put still owes is
     // indexed and written.
     let parent = Digest::of(&[2; 8]).to_hex();
@@ -3399,7 +3485,12 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
-    for cancelled in [false, true] {
+    for (limit, cancelled, withdrawn) in [
+        (u64::MAX, false, false),
+        (u64::MAX, true, false),
+        (u64::MAX, false, true),
+        (0, false, false),
+    ] {
         let store = Store::new(MemoryMedium::default());
         let blobs = store.account(b"account")?;
         let digest = blobs
@@ -3408,26 +3499,51 @@ async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn st
             .verified()
             .ok_or("unknown")?
             .digest;
-        let budget = std::sync::Arc::new(Budget::new(u64::MAX));
+        let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
         let request = crate::ObjectsNativeRequest::new(
             (RootId::new(b"root".to_vec())?, vec![digest]),
             (),
             &meter,
         )?;
-        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter))?;
-        budget.cancelled.store(cancelled, Ordering::SeqCst);
-        let retained = future.await;
-        assert_eq!(retained.is_ok(), !cancelled);
-        if !cancelled {
-            // The batch body and its index key were charged while held.
-            assert!(budget.peak() >= (32 + std::mem::size_of::<String>()) as u64);
-        }
+        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter));
+        let completed = if limit == 0 {
+            let refusal = future.err().map(|error| error.into_cause());
+            assert!(
+                matches!(&refusal, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory),
+                "original frame refusal: {refusal:?}"
+            );
+            false
+        } else {
+            let future = future?;
+            assert!(
+                budget.held.lock().unwrap().0 > 0,
+                "original frame uncharged before dispatch"
+            );
+            if withdrawn {
+                drop(future);
+                false
+            } else {
+                budget.cancelled.store(cancelled, Ordering::SeqCst);
+                let retained = future.await;
+                assert_eq!(retained.is_ok(), !cancelled);
+                if !cancelled {
+                    // The batch body and its index key were charged while held.
+                    assert!(budget.peak() >= (32 + std::mem::size_of::<String>()) as u64);
+                }
+                retained.is_ok()
+            }
+        };
+        assert_eq!(
+            budget.held.lock().unwrap().0,
+            0,
+            "original frame still held"
+        );
         for _ in 0..3 {
             blobs.collect().await?;
         }
-        // Negative control: a retain its caller cancelled leaves no root.
-        assert_eq!(blobs.head(digest).await.is_ok(), !cancelled);
+        // Refusal, cancellation and withdrawal leave no root.
+        assert_eq!(blobs.head(digest).await.is_ok(), completed);
     }
     Ok(())
 }
@@ -3458,7 +3574,11 @@ async fn a_retain_short_of_writes_writes_no_index_key() -> Result<(), Box<dyn st
         let retained = blobs
             .retain_native(request, std::sync::Arc::clone(&meter))?
             .await;
-        assert!(retained.is_err());
+        let refusal = retained.err().map(|error| error.into_cause());
+        assert!(
+            matches!(&refusal, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::QuotaExceeded),
+            "original write refusal: {refusal:?}"
+        );
         blobs.release(&root).await?;
         for _ in 0..3 {
             blobs.collect().await?;

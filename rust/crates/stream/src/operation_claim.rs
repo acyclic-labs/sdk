@@ -42,9 +42,9 @@ impl Default for OperationClaims {
 
 /// Exclusive ownership of one exact operation until physical guard retirement.
 pub struct OperationClaim<'a> {
-    claims: &'a OperationClaims,
+    claims: Option<&'a OperationClaims>,
     key: [u8; 48],
-    observation: Option<OperationObservation>,
+    observation: OperationObservation,
 }
 
 /// Atomic acquisition or an observation pinned to the existing producer.
@@ -165,9 +165,9 @@ impl OperationClaims {
         let observation = registration.observation.clone();
         Ok(if inserted {
             OperationAttempt::Owned(OperationClaim {
-                claims: self,
+                claims: Some(self),
                 key,
-                observation: Some(observation),
+                observation,
             })
         } else {
             OperationAttempt::Observed(observation)
@@ -178,10 +178,7 @@ impl OperationClaims {
 impl OperationClaim<'_> {
     /// Pins this producer's exact-generation termination event before handoff.
     pub fn observe(&self) -> OperationObservation {
-        self.observation
-            .as_ref()
-            .expect("live operation owner")
-            .clone()
+        self.observation.clone()
     }
 
     /// Explicitly retires producer custody. This does not invent a durable result.
@@ -190,26 +187,25 @@ impl OperationClaim<'_> {
     }
 
     fn retire(&mut self, terminal: OperationTermination) {
-        let Some(observation) = self.observation.take() else {
+        let Some(claims) = self.claims.take() else {
             return;
         };
-        let removed = self
-            .claims
+        let removed = claims
             .active
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_if(self.key, |registration| {
-                registration.observation.same_generation(&observation)
+                registration.observation.same_generation(&self.observation)
             });
         // Destroy the detached node before releasing its original funding.
         // The guard's borrow excludes destruction of the provider owner.
-        let (_, mut registration, storage) = removed
-            .expect("live operation claim disappeared")
-            .into_parts();
-        registration.armed = false;
-        drop(registration);
-        drop(storage);
-        observation.publish(terminal);
+        if let Some(removed) = removed {
+            let (_, mut registration, storage) = removed.into_parts();
+            registration.armed = false;
+            drop(registration);
+            drop(storage);
+        }
+        self.observation.publish(terminal);
     }
 }
 

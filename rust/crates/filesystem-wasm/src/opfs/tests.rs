@@ -4,6 +4,72 @@ use wasm_bindgen_test::*;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function holdFirstOpfsLookup(directory) {
+    const original = directory.getFileHandle;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const lookups = [];
+    const files = [];
+    let bodies = 0;
+    directory.getFileHandle = function(...args) {
+        const result = original.apply(this, args).then(handle => {
+            const getFile = handle.getFile;
+            handle.getFile = function(...args) {
+                const result = getFile.apply(this, args).then(file => {
+                    const arrayBuffer = file.arrayBuffer;
+                    file.arrayBuffer = function(...args) {
+                        bodies += 1;
+                        return arrayBuffer.apply(this, args);
+                    };
+                    return file;
+                });
+                files.push(result);
+                return result;
+            };
+            return handle;
+        });
+        lookups.push(result);
+        return lookups.length === 1 ? held.then(() => result) : result;
+    };
+    return {
+        calls: () => lookups.length,
+        lookups: () => Promise.all(lookups.slice(1)),
+        fileCalls: () => files.length,
+        files: () => Promise.all(files),
+        bodyCalls: () => bodies,
+        release: () => {
+            directory.getFileHandle = original;
+            release();
+        },
+    };
+}
+"#)]
+extern "C" {
+    #[wasm_bindgen::prelude::wasm_bindgen(js_name = holdFirstOpfsLookup)]
+    fn hold_first_opfs_lookup(directory: &FileSystemDirectoryHandle) -> LookupHold;
+
+    type LookupHold;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn lookups(this: &LookupHold) -> js_sys::Promise;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, js_name = fileCalls)]
+    fn file_calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn files(this: &LookupHold) -> js_sys::Promise;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method, js_name = bodyCalls)]
+    fn body_calls(this: &LookupHold) -> u32;
+
+    #[wasm_bindgen::prelude::wasm_bindgen(method)]
+    fn release(this: &LookupHold);
+}
+
 fn object(bytes: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from(bytes.to_vec());
     (
@@ -121,10 +187,48 @@ async fn opfs_batches_preserve_order() {
     let reads = {
         let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
         let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result =
-            AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
+        // Hold the actual first browser lookup, without replacing the OPFS
+        // result. Independent members must enter their complete read pipeline.
+        let (__object_result, progress) = {
+            let hold = hold_first_opfs_lookup(&store.directory);
+            let read = AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work);
+            let mut read = std::pin::pin!(read);
+            let mut completion = futures::poll!(read.as_mut());
+            let progress = async {
+                if completion.is_ready() {
+                    return Err("the held lookup must keep the read pending");
+                }
+                if hold.calls() != 3 {
+                    return Err("a held metadata lookup must not serialize siblings");
+                }
+                // Await only browser operations already dispatched above.
+                // Each fixed poll advances one settled producer; no readiness
+                // loop can hide a missing producer or a stage barrier.
+                JsFuture::from(hold.lookups())
+                    .await
+                    .map_err(|_| "a dispatched OPFS lookup failed")?;
+                completion = futures::poll!(read.as_mut());
+                if completion.is_ready() || hold.file_calls() != 2 {
+                    return Err("siblings must reach file metadata before the first lookup");
+                }
+                JsFuture::from(hold.files())
+                    .await
+                    .map_err(|_| "dispatched OPFS file metadata failed")?;
+                completion = futures::poll!(read.as_mut());
+                if completion.is_ready() || hold.body_calls() != 2 {
+                    return Err("siblings must reach body reads before the first lookup");
+                }
+                Ok(())
+            }
+            .await;
+            hold.release();
+            let result = match completion {
+                std::task::Poll::Ready(result) => result,
+                std::task::Poll::Pending => read.await,
+            };
+            (result.map(|(values, _allocation)| values), progress)
+        };
+        assert_eq!(progress, Ok(()));
         __object_work.receipt(__object_result)
     }
     .unwrap_or_else(|failure| unreachable!("OPFS batch read failed: {}", failure.error));
@@ -138,7 +242,7 @@ async fn opfs_batches_preserve_order() {
 }
 
 #[wasm_bindgen_test]
-async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() {
+async fn opfs_batch_retains_live_aliases_and_denies_unfunded_payloads() {
     let name = unique_namespace("acyclic-fs-opfs-retained-carriers-v1");
     let store = OpfsAcceleratedObjectStore::open(&name, 1_024)
         .await
@@ -171,34 +275,41 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
         __object_work.receipt(__object_result)
     }
     .unwrap_or_else(|failure| unreachable!("OPFS setup failed: {}", failure.error));
-    let read = {
-        let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __object_work = acyclic_fs::AuthorityWork::new(__object_args.1, __object_args.2);
-        let __object_result = store
-            .read_many(__object_args.0, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+    let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (reads, _allocation) = store
+        .read_many(&requests, &mut work)
+        .await
+        .unwrap_or_else(|error| unreachable!("OPFS read failed: {error}"));
+    let live = |work: &mut acyclic_fs::AuthorityWork<'_>| {
+        work.accounting()
+            .standalone_parts()
+            .unwrap_or_else(|| unreachable!("ordinary browser accounting"))
+            .0
+            .live_bytes()
+    };
+    let payloads = requests.len() as u64 * 1_024;
+    let required = payloads
+        + allocation_bytes::<ObjectRead>(requests.len())
+            .unwrap_or_else(|error| unreachable!("vector size failed: {error}"));
+    assert!(live(&mut work) >= required);
+    assert_eq!(work.work.items_returned, requests.len() as u64);
+    for (read, write) in reads.iter().zip(&writes) {
+        assert_eq!(read.bytes, write.bytes);
     }
-    .unwrap_or_else(|failure| unreachable!("OPFS read failed: {}", failure.error));
-    let required = allocation_bytes::<ObjectRead>(requests.len())
-        .unwrap_or_else(|error| unreachable!("vector size failed: {error}"))
-        + allocation_bytes::<(ObjectId, Blob, u64)>(16)
-            .unwrap_or_else(|error| unreachable!("handle size failed: {error}"))
-        + allocation_bytes::<ObjectResult<ObjectRead>>(16)
-            .unwrap_or_else(|error| unreachable!("result size failed: {error}"))
-        + 16 * 1_024
-        + 16 * 2 * 1_024;
-    assert!(read.work.peak_allocation_bytes >= required);
-    let required = read.work.peak_allocation_bytes;
-    let cloned = read.value[0].bytes.clone();
-    drop(read);
+    let cloned = reads[0].bytes.clone();
+    drop(reads);
+    assert!(live(&mut work) >= 1_024);
     assert_eq!(cloned.as_ref(), writes[0].bytes.as_ref());
+    let held = live(&mut work);
+    drop(cloned);
+    assert!(live(&mut work) <= held - 1_024);
     let denied = {
         let __object_args = (
             &requests,
             WorkBudget {
-                peak_allocation_bytes: required - 1,
+                // Every successful result must retain all payloads together.
+                // This bound is independent of browser completion ordering.
+                peak_allocation_bytes: payloads - 1,
                 ..WorkBudget::UNBOUNDED
             },
             &cancellation,
@@ -212,7 +323,7 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
     }
     .err()
     .unwrap_or_else(|| unreachable!("retained carriers escaped admission"));
-    assert_eq!(denied.work.object_bytes_read, 16 * 1_024);
+    assert!(denied.work.object_bytes_read <= payloads);
     assert!(matches!(denied.error, ObjectStoreError::Work(_)));
 
     // Complete sibling reads after failure to retain their work and allocation peak.
@@ -237,5 +348,5 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
     .unwrap_or_else(|| unreachable!("corrupt OPFS body was accepted"));
     assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
     assert_eq!(corrupt.work.object_bytes_read, 32 * 1_024);
-    assert!(corrupt.work.peak_allocation_bytes >= required);
+    assert!(corrupt.work.peak_allocation_bytes >= payloads - 1_024);
 }

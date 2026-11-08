@@ -16,7 +16,7 @@ async fn retained_source_fork_work(
     drop(discarded);
     fs.clear_object_cache()?;
     let name = crate::WorkspaceName::new(name, &WorkBudget::UNBOUNDED, cancel)?.value;
-    let destination = fs.workspace_id_for_name(&name, accounting, cancel)?;
+    let destination = fs.workspace_id_for_name(&name, accounting)?;
     let (allocation, admitted) = accounting.record_actual_owned(0)?;
     admitted?;
     let start = accounting.spent();

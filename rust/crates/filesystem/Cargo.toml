@@ -17,6 +17,16 @@ categories = ["filesystem", "data-structures"]
 name = "main"
 path = "tests/main.rs"
 
+[[test]]
+name = "browser_commit"
+path = "tests/browser_commit.rs"
+required-features = ["browser", "memory"]
+
+[[test]]
+name = "browser_blob_custody"
+path = "tests/browser_blob_custody.rs"
+required-features = ["browser"]
+
 [[bench]]
 name = "lease_paths"
 harness = false
@@ -165,7 +175,7 @@ windows = { version = "0.62.2", features = [
 tooling = []
 conformance = ["distributed", "acyclic-stream/conformance", "acyclic-objects/conformance", "dep:tempfile"]
 session = ["distributed", "acyclic-stream/session"]
-test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
+test-support = ["acyclic-auth/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support", "bytes/serde"]
 fuzzing = []
 model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 default = ["local", "memory", "native-watch", "native-mount"]

@@ -12,6 +12,7 @@ use std::{
 use std::{io, sync::Arc};
 #[cfg(all(feature = "js-bytes", target_arch = "wasm32"))]
 pub mod javascript;
+mod owner;
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
 mod sealed;

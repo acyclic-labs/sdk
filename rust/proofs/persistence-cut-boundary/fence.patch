@@ -1,0 +1,13 @@
+diff --git a/rust/crates/stream/src/local/persistence_cut.rs b/rust/crates/stream/src/local/persistence_cut.rs
+index 35ead858393..a7b04c53d28 100644
+--- a/rust/crates/stream/src/local/persistence_cut.rs
++++ b/rust/crates/stream/src/local/persistence_cut.rs
+@@ -68,7 +68,7 @@ impl LocalStream {
+         self.check_available()?;
+         let mut failed = self.inner.failed.subscribe();
+         let installation = std::pin::pin!(async {
+-            let _visibility = self.inner.visibility.write().await;
++            // Installation no longer joins the original mutation fence.
+             self.check_available()?;
+             if self.inner.persistence_cut.get().is_some() {
+                 return Err(StreamError::AlreadyExists);

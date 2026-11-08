@@ -230,6 +230,11 @@ impl Object {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn retain_metadata(self, custody: acyclic_native_runtime::ReadAllocation) -> Self {
+        Self::new_native(self.head, self.start, self.body, Some(custody))
+    }
+
     /// The envelope.
     #[must_use]
     pub const fn head(&self) -> &Head {
@@ -380,7 +385,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     ) -> Vec<Result<Put, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
-            requests,
+            requests.into_iter(),
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
             |(body, references)| self.put_sealed(body, references),
@@ -398,7 +403,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     ) -> Vec<Result<Object, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
-            requests,
+            requests.into_iter(),
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
             |(digest, range, maximum)| self.get(digest, range, maximum),
@@ -409,7 +414,23 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
         results
     }
 
+    /// Checks complete blob presence under the caller's original meter.
+    /// Every physical read is admitted before dispatch; cancellation and
+    /// physical failures remain errors. Only absence returns `false`.
+    /// Temporary head metadata retires within the call.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        _request: ObjectsNativeRequest<Digest>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
+
     /// Reads under the caller's original allocation owner.
+    /// Decoded metadata is admitted before allocation and retains its original
+    /// credit through the returned object's lifetime. Body aliases retain
+    /// their independent original backing credit.
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,
@@ -420,6 +441,7 @@ pub trait Blobs: acyclic_stream::ProviderPlatform {
     }
 
     /// Reads a batch under the caller's original allocation owner.
+    /// Each returned object retains its decoded metadata as in [`Blobs::get_native`].
     #[cfg(not(target_arch = "wasm32"))]
     fn get_batch_native(
         &self,
@@ -533,6 +555,14 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
         requests: Vec<(Digest, ByteRange, u64)>,
     ) -> Vec<Result<Object, Error>> {
         (**self).get_batch(requests).await
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn contains_native(
+        &self,
+        request: ObjectsNativeRequest<Digest>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, bool>, NativeObjectsError> {
+        (**self).contains_native(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(

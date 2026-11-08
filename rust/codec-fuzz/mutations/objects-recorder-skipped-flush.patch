@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/tests.rs
++++ b/rust/crates/objects/src/tests.rs
+@@ -1917,7 +1917,7 @@
+     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+         self.count("flush");
+         self.flushes.lock().unwrap().push(keys.len());
+-        self.inner.flush(keys).await
++        Ok(())
+     }
+     fn volatile(&self) -> bool {
+         self.volatile_fixture || self.inner.volatile()

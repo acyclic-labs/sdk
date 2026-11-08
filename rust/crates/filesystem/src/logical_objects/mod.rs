@@ -133,11 +133,10 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 ..WorkCounters::UNCHARGED
             })
             .map_err(crate::async_storage::object_error)?;
-        let (reads, allocation, retained) = self
+        let reads = self
             .fetch_batch::<STORED>(requests, &mut scope)
             .await
             .map_err(crate::async_storage::object_error)?;
-        let reads = crate::kernel::Owned::new(reads, allocation, retained);
         scope
             .charge(WorkCounters {
                 items_returned: count,
@@ -145,7 +144,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             })
             .map_err(crate::async_storage::object_error)?;
         scope
-            .keep_bytes(retained)
+            .keep_bytes(reads.bytes)
             .map_err(crate::async_storage::object_error)?;
         Ok(crate::async_storage::authority_parts(reads))
     }
@@ -314,19 +313,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         operate!(
             context,
             work,
-            async {
-                work.charge(WorkCounters {
-                    object_probes: 1,
-                    backend_read_operations: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                match self.provider.head(blob(id)).await {
-                    Ok(_) => Ok(true),
-                    Err(error) if error.code == wire::ErrorCode::NotFound => Ok(false),
-                    Err(error) => Err(ObjectStoreError::LogicalObjects(error).into()),
-                }
-            }
-            .await
+            invocation::Provider::contains(&*self.provider, blob(id), &mut work).await
         )
     }
 }
@@ -363,6 +350,7 @@ fn native_error(
 mod requests;
 use requests::*;
 pub(crate) mod epoch;
+mod invocation;
 mod read;
 mod write;
 pub use epoch::Epoch;

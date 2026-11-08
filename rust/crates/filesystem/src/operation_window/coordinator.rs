@@ -47,7 +47,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         )
         .is_some()
         {
-            let expected = next_revision(&mut current.revision);
+            let expected = next_revision(&mut current.revision)
+                .ok_or(OperationWindowError::RevisionExhausted)?;
             if self.cas(workspace_id, expected, current).await? {
                 return Err(OperationWindowError::Reconciling);
             }
@@ -101,7 +102,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 return Err(OperationWindowError::Reconciling);
             }
         };
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(workspace_id, expected, current).await? {
             return Ok(OperationWindowLease {
                 workspace_id,
@@ -129,7 +131,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 subsequent_parent, ..
             } => *subsequent_parent = Some(parent),
         }
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(workspace_id, expected, current).await? {
             return Ok(true);
         }
@@ -180,7 +183,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 None
             }
         };
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(workspace_id, expected, current).await? {
             return match reconcile {
                 Some(reconcile) => self
@@ -228,7 +232,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             .get_mut(&lease.lease_id)
             .ok_or(OperationWindowError::StaleLease)?
             .expires_at_millis = expires_at_millis;
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(lease.workspace_id, expected, current).await? {
             return Ok(OperationWindowLease {
                 workspace_id: lease.workspace_id,
@@ -304,7 +309,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 }
             }
         }
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(lease.workspace_id, expected, current).await? {
             return Ok((
                 result.unwrap_or(OperationWindowFinish::AlreadyClosed),
@@ -509,7 +515,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         let Some(reconcile) = expire_to_reconcile(&mut current.phase, now_millis, ticket) else {
             return Ok(None);
         };
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(workspace_id, expected, current).await? {
             return Ok(Some(reconcile));
         }
@@ -554,7 +561,8 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             }
             _ => return Err(OperationWindowError::StaleTicket),
         }
-        let expected = next_revision(&mut current.revision);
+        let expected =
+            next_revision(&mut current.revision).ok_or(OperationWindowError::RevisionExhausted)?;
         if self.cas(workspace_id, expected, current).await? {
             return Ok(());
         }
@@ -593,7 +601,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, OperationWindowError<S::Error>> {
         if !replacement.is_valid_for(workspace_id)
-            || replacement.revision != expected_revision.saturating_add(1)
+            || expected_revision.checked_add(1) != Some(replacement.revision)
         {
             return Err(OperationWindowError::IncompatibleState);
         }

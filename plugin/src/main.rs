@@ -99,14 +99,14 @@ fn internal(args: &[String]) -> Result<bool> {
             let [_, host, event] = args else {
                 return Err("__hook requires HOST EVENT".into());
             };
-            let answer = match read_json(io::stdin().lock()) {
+            let answer = match read_json(io::stdin().lock(), Some(65_536)) {
                 Ok(input) => hook(host, event, input),
                 Err(error) => hook_failure(event, &error.to_string()),
             };
             println!("{answer}");
         }
         "__workspace" => {
-            let action = serde_json::from_value(read_json(io::stdin().lock())?)?;
+            let action = read_json(io::stdin().lock(), None)?;
             println!("{}", host_files::request(&env::current_dir()?, action)?);
         }
         "install" | "uninstall" | "doctor" => {
@@ -145,8 +145,7 @@ fn internal(args: &[String]) -> Result<bool> {
 }
 
 fn install_package() -> Result<()> {
-    let request: acyclic_fs::package_install::Request =
-        serde_json::from_value(read_json(io::stdin().lock())?)?;
+    let request: acyclic_fs::package_install::Request = read_json(io::stdin().lock(), None)?;
     let recovery = serde_json::to_string(&json!(["node", request.directory.join("install.js")]))?;
     let test = env::var("NODE_ENV").as_deref() == Ok("test");
     use acyclic_fs::package_install::Stage;

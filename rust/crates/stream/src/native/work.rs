@@ -1,5 +1,5 @@
 //! Original native provider work, shared by memory and durable adapters.
-use crate::StreamError;
+use crate::{StreamError, query_sync::SyncMutex as Mutex};
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
     ReadAllocation,
@@ -13,10 +13,10 @@ type WriteReservation = (
 
 pub(crate) struct Work {
     pub(crate) meter: Arc<dyn NativeReadMeter>,
-    error: std::sync::Mutex<Option<std::io::Error>>,
-    write: std::sync::Mutex<Option<WriteReservation>>,
+    error: Mutex<Option<std::io::Error>>,
+    write: Mutex<Option<WriteReservation>>,
     #[cfg(feature = "local")]
-    durability: std::sync::Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
+    durability: Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
     _allocation: ReadAllocation,
 }
 
@@ -83,10 +83,10 @@ impl Work {
     fn with_allocation(meter: Arc<dyn NativeReadMeter>, allocation: ReadAllocation) -> Self {
         Self {
             meter,
-            error: std::sync::Mutex::new(None),
-            write: std::sync::Mutex::new(None),
+            error: Mutex::new(None),
+            write: Mutex::new(None),
             #[cfg(feature = "local")]
-            durability: std::sync::Mutex::new(None),
+            durability: Mutex::new(None),
             _allocation: allocation,
         }
     }

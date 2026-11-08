@@ -6,11 +6,23 @@ pub(crate) struct Budget {
     pub(super) limit: u64,
     pub(super) held: std::sync::Mutex<(u64, u64)>,
     pub(super) cancelled: std::sync::atomic::AtomicBool,
+    /// Physical reads left, unbounded when `None`.
+    pub(super) reads: std::sync::Mutex<Option<u64>>,
     /// Writes left, unbounded when `None`.
     pub(super) writes: std::sync::Mutex<Option<u64>>,
     /// Whether a reservation withholds its writes; a hollow one charges
     /// each reserved write as it happens, as if nothing was reserved.
     pub(super) withholds: bool,
+    pub(super) retirement: std::sync::Mutex<Option<Retirement>>,
+}
+
+/// Watches the original credits for a real read batch's vector and payloads.
+pub(super) struct Retirement {
+    pub(super) results: u64,
+    pub(super) payload: u64,
+    pub(super) live_payloads: u64,
+    pub(super) result_released: bool,
+    pub(super) early_result: bool,
 }
 
 impl Budget {
@@ -19,8 +31,10 @@ impl Budget {
             limit,
             held: std::sync::Mutex::new((0, 0)),
             cancelled: std::sync::atomic::AtomicBool::new(false),
+            reads: std::sync::Mutex::new(None),
             writes: std::sync::Mutex::new(None),
             withholds: true,
+            retirement: std::sync::Mutex::new(None),
         }
     }
 
@@ -34,9 +48,9 @@ impl Budget {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
-    /// Spends `count` writes, refused past the budget.
-    fn spend(&self, count: u64) -> std::io::Result<()> {
-        match &mut *self.writes.lock().unwrap() {
+    /// Spends original operation credit, refused past the budget.
+    fn spend(counter: &std::sync::Mutex<Option<u64>>, count: u64) -> std::io::Result<()> {
+        match &mut *counter.lock().unwrap() {
             Some(left) if *left < count => Err(std::io::ErrorKind::QuotaExceeded.into()),
             Some(left) => {
                 *left -= count;
@@ -54,7 +68,16 @@ impl Budget {
         }
         held.0 += bytes;
         held.1 = held.1.max(held.0);
+        self.adopted(bytes);
         Ok(())
+    }
+
+    fn adopted(&self, bytes: u64) {
+        if let Some(trace) = &mut *self.retirement.lock().unwrap()
+            && bytes == trace.payload
+        {
+            trace.live_payloads += 1;
+        }
     }
 
     /// The peak live allocation since the last call.
@@ -78,7 +101,7 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         count: u64,
     ) -> std::io::Result<()> {
         if self.withholds {
-            self.spend(count)
+            Self::spend(&self.writes, count)
         } else {
             Ok(())
         }
@@ -101,7 +124,7 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         if self.withholds {
             Ok(())
         } else {
-            self.spend(1)
+            Self::spend(&self.writes, 1)
         }
     }
     fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> {
@@ -148,6 +171,7 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         let mut held = self.held.lock().unwrap();
         held.0 += bytes;
         held.1 = held.1.max(held.0);
+        self.adopted(bytes);
         (bytes, Ok(()))
     }
     fn examine(&self, _: u64, _: u64) -> std::io::Result<()> {
@@ -161,19 +185,29 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
     }
     fn release(&self, bytes: u64) {
         self.held.lock().unwrap().0 -= bytes;
+        if let Some(trace) = &mut *self.retirement.lock().unwrap() {
+            if bytes == trace.payload {
+                trace.live_payloads -= 1;
+            }
+            if bytes == trace.results {
+                trace.result_released = true;
+                trace.early_result |= trace.live_payloads != 0;
+            }
+        }
     }
     fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
         Ok(())
     }
     fn admit_read(&self, _: usize) -> std::io::Result<()> {
-        self.check()
+        self.check()?;
+        Self::spend(&self.reads, 1)
     }
     fn record_read(&self, _: usize) -> std::io::Result<()> {
         Ok(())
     }
     fn admit_write(&self, _: usize) -> std::io::Result<()> {
         self.check()?;
-        self.spend(1)
+        Self::spend(&self.writes, 1)
     }
     fn record_write(&self, _: usize) -> std::io::Result<()> {
         Ok(())

@@ -1,0 +1,15 @@
+--- a/rust/crates/objects/src/local.rs
++++ b/rust/crates/objects/src/local.rs
+@@ -249,6 +249,12 @@
+     pub(crate) flushed: std::sync::atomic::AtomicUsize,
+ }
+ 
++impl Drop for Shared {
++    fn drop(&mut self) {
++        drop(self.close());
++    }
++}
++
+ impl Shared {
+     fn close(&mut self) -> std::io::Result<()> {
+         self.sync()?;

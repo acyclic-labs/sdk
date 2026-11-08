@@ -1,0 +1,14 @@
+diff --git a/rust/crates/filesystem/src/browser/indexed_db/objects.rs b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+--- a/rust/crates/filesystem/src/browser/indexed_db/objects.rs
++++ b/rust/crates/filesystem/src/browser/indexed_db/objects.rs
+@@ -232,10 +232,3 @@
+         // active turn. Complete every required check before submitting writes.
+-        for (_, stored, bytes) in &observed.value {
+-            if let Some(blob) = stored
+-                && io.blob_bytes(blob, bytes.len() as u64).await?.as_ref() != bytes.as_ref()
+-            {
+-                return Err(ObjectStoreError::Corrupt);
+-            }
+-        }
+         let missing = observed
+             .value

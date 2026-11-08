@@ -142,7 +142,10 @@ where
         crashed: AtomicBool::new(false),
         unfaithful: Mutex::new(None),
     });
-    stream.cut_persistence(cutter.clone());
+    stream
+        .cut_persistence(cutter.clone())
+        .await
+        .map_err(CutSimulationError::Install)?;
     let result = run(stream.clone()).await;
     let unfaithful = cutter.unfaithful.lock().expect("simulation slot").take();
     if let Some(error) = unfaithful {

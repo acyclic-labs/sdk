@@ -127,210 +127,25 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         object_id: ObjectId,
         maximum_bytes: u64,
         context: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = async {
-            self.read_exact(object_id, maximum_bytes, budget, cancellation)
-                .await
-        }
-        .await;
-        context.accept(result)
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        acyclic_fs::browser::read_one(
+            self,
+            &ObjectReadRequest {
+                object_id,
+                maximum_bytes,
+            },
+            context,
+        )
+        .await
     }
 
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
         context: &mut acyclic_fs::AuthorityWork<'_>,
-    ) -> Result<
-        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
-        acyclic_fs::ObjectStoreError,
-    > {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            if requests.is_empty() {
-                return Err(ObjectFailure::before_work(ObjectStoreError::Rejected(
-                    "object read batch is empty".to_owned(),
-                )));
-            }
-            let vector_bytes = allocation_bytes::<ObjectRead>(requests.len())
-                .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            let mut total = WorkCounters {
-                allocation_operations: 1,
-                peak_allocation_bytes: vector_bytes,
-                ..WorkCounters::default()
-            };
-            WorkCounters {
-                items_returned: requests.len() as u64,
-                ..total
-            }
-            .verify(budget)
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            let mut values = Vec::new();
-            values.try_reserve_exact(requests.len()).map_err(|_| {
-                ObjectFailure::new(
-                    ObjectStoreError::Rejected("object batch result allocation failed".to_owned()),
-                    total,
-                )
-            })?;
-            let mut retained = vector_bytes;
-            for window in requests.chunks(MAX_BATCH_CONCURRENCY) {
-                // Fetch file handles and lengths before any ArrayBuffer allocation.
-                // Prior output carriers remain live throughout the next window.
-                let handles_bytes = allocation_bytes::<(ObjectId, Blob, u64)>(window.len())
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                let results_bytes = allocation_bytes::<ObjectResult<ObjectRead>>(window.len())
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                let live = retained
-                    .checked_add(handles_bytes)
-                    .and_then(|value| value.checked_add(results_bytes))
-                    .ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                    })?;
-                let prospective = total
-                    .checked_add(WorkCounters {
-                        allocation_operations: 2,
-                        peak_allocation_bytes: live,
-                        ..WorkCounters::default()
-                    })
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                prospective
-                    .verify(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                total = prospective;
-                let mut handles = Vec::new();
-                handles.try_reserve_exact(window.len()).map_err(|_| {
-                    ObjectFailure::new(
-                        ObjectStoreError::Rejected(
-                            "OPFS batch handle allocation failed".to_owned(),
-                        ),
-                        total,
-                    )
-                })?;
-                for request in window {
-                    let mut remaining = total
-                        .remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                    remaining.peak_allocation_bytes =
-                        remaining.peak_allocation_bytes.saturating_sub(live);
-                    let prepared = self
-                        .prepare_read(
-                            request.object_id,
-                            request.maximum_bytes,
-                            remaining,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(|failure| {
-                            let mut failed = *failure.work;
-                            failed.peak_allocation_bytes =
-                                live.saturating_add(failed.peak_allocation_bytes);
-                            let spent = total.checked_add(failed).unwrap_or(total);
-                            ObjectFailure::new(failure.error, spent)
-                        })?;
-                    let mut work = prepared.work;
-                    work.peak_allocation_bytes = live
-                        .checked_add(work.peak_allocation_bytes)
-                        .ok_or_else(|| {
-                            ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                        })?;
-                    total = total
-                        .checked_add(work)
-                        .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                    let (blob, length) = prepared.value;
-                    handles.push((request.object_id, blob, length));
-                }
-                let mut window_work = WorkCounters::default();
-                let mut window_retained = 0_u64;
-                for (_, _, length) in &handles {
-                    window_work = combine_parallel_window(
-                        window_work,
-                        materialize_work(*length)
-                            .map_err(|error| ObjectFailure::new(error.into(), total))?,
-                    )
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                    window_retained = window_retained.checked_add(*length).ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                    })?;
-                }
-                let mut futures = handles.into_iter().map(|(object_id, blob, length)| {
-                    Self::materialize_read(
-                        object_id,
-                        blob,
-                        length,
-                        WorkCounters::default(),
-                        cancellation,
-                    )
-                });
-                let first = futures.next().ok_or_else(|| {
-                    ObjectFailure::new(
-                        ObjectStoreError::Rejected("OPFS read window is empty".to_owned()),
-                        total,
-                    )
-                })?;
-                let frames = join_frames_bytes(&first, window.len())
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                window_work.allocation_operations = window_work
-                    .allocation_operations
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                    })?;
-                window_work.peak_allocation_bytes = window_work
-                    .peak_allocation_bytes
-                    .checked_add(frames)
-                    .ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                    })?;
-                window_work.peak_allocation_bytes = live
-                    .checked_add(window_work.peak_allocation_bytes)
-                    .ok_or_else(|| {
-                        ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                    })?;
-                let admitted = total
-                    .checked_add(window_work)
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                admitted
-                    .verify(budget)
-                    .map_err(|error| ObjectFailure::new(error.into(), total))?;
-                let results = join_all(std::iter::once(first).chain(futures)).await;
-                // Every future has completed, including after a corrupt/failed blob.
-                // Preserve the admitted window's live buffers and all performed work.
-                total = admitted;
-                let mut first_error = None;
-                for result in results {
-                    match result {
-                        Ok(receipt) => values.push(receipt.value),
-                        Err(failure) if first_error.is_none() => first_error = Some(failure.error),
-                        Err(_) => {}
-                    }
-                }
-                if let Some(error) = first_error {
-                    return Err(ObjectFailure::new(error, total));
-                }
-                retained = retained.checked_add(window_retained).ok_or_else(|| {
-                    ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total)
-                })?;
-            }
-            total.items_returned = requests.len() as u64;
-            Ok(acyclic_fs::OperationReceipt {
-                value: values,
-                work: total,
-            })
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+    ) -> Result<(Vec<ObjectRead>, acyclic_fs::AuthorityAllocation), ObjectStoreError> {
+        acyclic_fs::browser::read_many(self, requests, MAX_BATCH_CONCURRENCY, context).await
     }
-
     async fn contains(
         &self,
         object_id: ObjectId,
@@ -349,20 +164,22 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             let work = WorkCounters {
                 object_probes: 1,
                 backend_read_operations: 1,
-                allocation_operations: 1,
-                peak_allocation_bytes: 66,
                 ..WorkCounters::default()
             };
             work.verify(budget)
                 .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            let value =
-                match JsFuture::from(self.directory.get_file_handle(&Self::key(object_id))).await {
-                    Ok(handle) => handle.dyn_into::<FileSystemFileHandle>().is_ok(),
-                    Err(error) if is_not_found(&error) => false,
-                    Err(error) => {
-                        return Err(ObjectFailure::new(rejected(&error), work));
-                    }
-                };
+            let value = match JsFuture::from(
+                Self::with_key(object_id, |key| self.directory.get_file_handle(key))
+                    .map_err(ObjectFailure::before_work)?,
+            )
+            .await
+            {
+                Ok(handle) => handle.dyn_into::<FileSystemFileHandle>().is_ok(),
+                Err(error) if is_not_found(&error) => false,
+                Err(error) => {
+                    return Err(ObjectFailure::new(rejected(&error), work));
+                }
+            };
             cancellation
                 .check()
                 .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;

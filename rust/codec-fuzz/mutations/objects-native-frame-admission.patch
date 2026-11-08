@@ -1,0 +1,11 @@
+--- a/rust/crates/objects/src/ownership.rs
++++ b/rust/crates/objects/src/ownership.rs
+@@ -129,7 +129,7 @@
+     F: Future<Output = Result<T, NativeObjectsError>> + Send + 'a,
+ {
+     meter.check()?;
+-    let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<F>())?;
++    let allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+     Ok(Guarded {
+         value: Box::pin(future),
+         _allocation: Some(allocation),
