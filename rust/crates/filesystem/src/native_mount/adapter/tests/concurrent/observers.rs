@@ -58,6 +58,7 @@ fn observer_can_write_the_file_that_triggered_it() -> Result<(), Box<dyn std::er
     let path = native_test_path("observed-write");
     let file = source
         .create_file(&path, metadata(), None, &work)?
+        .lookup
         .node
         .file_id;
     let observer = Arc::new(ReentrantWrite {

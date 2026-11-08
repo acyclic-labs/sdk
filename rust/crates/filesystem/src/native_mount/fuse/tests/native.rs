@@ -146,7 +146,8 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     let path = name("write-authority");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&path, FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     let original = crate::NativeMaterializationWork::new(
         FINITE_HANDLER_POLICY,
         &crate::CancellationToken::new(),
@@ -245,7 +246,8 @@ pub(super) fn installed_write_denial_preserves_reads_and_post_effect_prefix()
     let second = name("second-write-authority");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&second, FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     guard.writable.store(true, Ordering::Release);
     assert!(
         super::mount::finishes_within(Duration::from_secs(5), move || {
@@ -342,7 +344,8 @@ pub(super) fn actual_source_effect_precedes_callback_cancellation_failure()
     let path = name("removed-before-cancellation");
     let created = crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&path, FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     let source: Arc<dyn MountFilesystem> = Arc::new(source);
     let cancellation = crate::CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(FINITE_HANDLER_POLICY, &cancellation)
@@ -505,7 +508,8 @@ pub(super) fn native_access_fuse_open_refuses_an_actual_rebound_file_identity()
     let path = name("rebound");
     let created = crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.create_file(&path, FileMetadata::default(), None, work)
-    })?;
+    })?
+    .lookup;
     let core = projection_core(
         source.clone(),
         FINITE_HANDLER_POLICY,
@@ -514,7 +518,9 @@ pub(super) fn native_access_fuse_open_refuses_an_actual_rebound_file_identity()
     let projection = crate::native_mount::fuse::FuseProjection { core };
     crate::native_mount::adapter::boundary(source.cancellation(), |work| {
         source.remove(&path, Some(created.node.file_id), work)?;
-        let rebound = source.create_file(&path, FileMetadata::default(), None, work)?;
+        let rebound = source
+            .create_file(&path, FileMetadata::default(), None, work)?
+            .lookup;
         assert_ne!(rebound.node.file_id, created.node.file_id);
         assert!(
             matches!(projection.open_source(&path, created.node.file_id, libc::O_RDONLY, None, work), Err(crate::NativeMountError::Io(error)) if error.raw_os_error() == Some(libc::ESTALE))

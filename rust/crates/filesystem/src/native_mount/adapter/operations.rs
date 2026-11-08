@@ -505,7 +505,7 @@ where
         metadata: FileMetadata,
         _absent_since: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateFile {
                 path,
@@ -520,7 +520,7 @@ where
         path: &MountPath,
         metadata: FileMetadata,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateDirectory {
                 path,
@@ -535,7 +535,7 @@ where
         target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<MountWriteFacts, MountSourceError> {
         invoke(&self.runtime, work, || {
             self.create(path, work, |path| AuthoredMutation::CreateSymbolicLink {
                 path,
@@ -552,7 +552,7 @@ where
         device: Option<(u32, u32)>,
         metadata: FileMetadata,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<MountLookup, MountSourceError> {
+    ) -> Result<MountWriteFacts, MountSourceError> {
         let kind = match (kind, device) {
             (MountNodeKind::Fifo, None) => FileKind::Fifo,
             (MountNodeKind::Socket, None) => FileKind::Socket,
@@ -742,9 +742,11 @@ where
         &self,
         source: &MountPath,
         destination: &MountPath,
+        expected: Option<FileId>,
+        facts: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        CheckoutMountSource::hard_link(self, source, destination, work)
+    ) -> Result<MountMutationResult, MountSourceError> {
+        CheckoutMountSource::hard_link(self, source, destination, expected, facts, work)
     }
 
     fn flush(&self, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError> {

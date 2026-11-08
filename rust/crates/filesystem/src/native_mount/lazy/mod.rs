@@ -5,9 +5,10 @@ use super::view_gate::{ViewGate, ViewMutationPhase, ViewReadLease};
 use super::view_ledger::{ViewChange, ViewEffect, ViewStamp};
 use super::{
     CheckoutMountSource, ContentSink, MountAttributePage, MountAttributeWriteMode, MountContentPin,
-    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountNode,
-    MountNodeKind, MountOpenAccess, MountOpenFile, MountPath, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, MountSourceRetirement, ViewObserver, capture_root_identity,
+    MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLookup, MountMutationResult,
+    MountNode, MountNodeKind, MountOpenAccess, MountOpenFile, MountPath, MountRangeAllocation,
+    MountSeekTarget, MountSourceError, MountSourceRetirement, MountWriteFacts, ViewObserver,
+    capture_root_identity,
 };
 use super::{NativeMountError, adapter};
 use crate::demand::{

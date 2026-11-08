@@ -37,7 +37,7 @@ fn paged_aliases(
     let path = |name: &[u8]| MountPath::root().child(name.to_vec());
     source.create_file(&path(b"a"), FileMetadata::default(), None, &work)?;
     source.write_range(&path(b"a"), 0, bytes::Bytes::from(vec![1; first_size]))?;
-    source.hard_link(&path(b"a"), &path(b"b"), &work)?;
+    source.hard_link(&path(b"a"), &path(b"b"), None, false, &work)?;
     let projection = FuseProjection {
         core: projection_core(
             source.clone(),

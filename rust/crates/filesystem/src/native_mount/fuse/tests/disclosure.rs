@@ -3,6 +3,61 @@ use crate::access::Action;
 use crate::native_mount::adapter::tests::access::{deny, publish_test_access};
 use proptest::prelude::*;
 
+#[test]
+fn cached_hard_links_refuse_missing_metadata_authority_before_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (source, around) = shared_sources(posix_config())?;
+    let source = Arc::new(source);
+    let work = fuse_fixture_work();
+    source.create_file(&name("original"), FileMetadata::default(), None, &work)?;
+    let core = projection_core(
+        source.clone(),
+        FINITE_HANDLER_POLICY,
+        &crate::CancellationToken::new(),
+    )?;
+    let projection = crate::native_mount::fuse::FuseProjection { core };
+    let original = projection
+        .core
+        .request(|work| projection.lookup_entry(ROOT_INODE, std::ffi::OsStr::new("original"), work))
+        .map_err(|(cause, _)| cause)?;
+    publish_test_access(&source, vec![deny("metadata", &[Action::List], "**")])?;
+    let refused = projection.core.request(|work| {
+        projection.link_name(
+            original.attr.ino.0,
+            ROOT_INODE,
+            std::ffi::OsStr::new("alias"),
+            work,
+        )
+    });
+    assert!(matches!(refused, Err((cause, _)) if callback_errno(&cause) == libc::EACCES));
+    assert!(
+        around.lookup(&name("alias"))?.is_none(),
+        "a refused metadata-bearing link installed its destination"
+    );
+    publish_test_access(&source, vec![])?;
+    let linked = projection
+        .core
+        .request(|work| {
+            projection.link_name(
+                original.attr.ino.0,
+                ROOT_INODE,
+                std::ffi::OsStr::new("alias"),
+                work,
+            )
+        })
+        .map_err(|(cause, _)| cause)?;
+    assert_eq!(linked.attr.ino, original.attr.ino);
+    assert_eq!(
+        around
+            .lookup(&name("alias"))?
+            .ok_or("missing installed link")?
+            .node
+            .link_count,
+        2
+    );
+    Ok(())
+}
+
 // A parked source page must disclose exactly the current List decisions, even
 // when revocation leaves every namespace/cache stamp unchanged.
 fn cached_disclosure(
