@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/demand/admissions.rs
++++ b/rust/crates/filesystem/src/demand/admissions.rs
+@@ -67,9 +67,6 @@
+         };
+         // Observe the publisher set before draining either completion class.
+         // A last publisher leaving after this observation is drained next time.
+-        if owners == 1 {
+-            fence(Ordering::Acquire);
+-        }
+         #[cfg(feature = "native-mount")]
+         {
+             let (completed, unused, failed) = shared.take_view_reads();
