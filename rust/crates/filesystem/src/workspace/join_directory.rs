@@ -416,11 +416,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// Fixed-width names do not grow with the source component and distinguish
     /// separate record and binding conflicts at the same source path. The
     /// staging volume must admit these names and their resolution suffixes.
-    pub fn conflict_file_path(&self, key: &ConflictKey) -> Result<String, WorkspaceError> {
+    pub fn conflict_file_path(&mut self, key: &ConflictKey) -> Result<String, WorkspaceError> {
+        let bytes = json(key, &mut self.preview.accounting()?)?;
         Ok(format!(
             "{}/conflicts/{}",
             self.path,
-            entry_name(b"conflict-v1\0", &json(key)?)
+            entry_name(b"conflict-v1\0", &bytes)
         ))
     }
 
@@ -525,8 +526,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                             self.path,
                             entry_name(b"clean-v1\0", file.path.as_bytes())
                         );
-                        let bytes = json(&file)?;
                         let mut accounting = self.preview.accounting()?;
+                        let bytes = json(&file, &mut accounting)?;
                         write_file(
                             &mut transaction,
                             &path,
@@ -600,12 +601,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                     };
                     (
                         format!("{path}.conflict.json"),
-                        json(&MergeConflictFile {
-                            version: 1,
-                            kind,
-                            conflict: rendered.value,
-                        })?
-                        .into(),
+                        json(
+                            &MergeConflictFile {
+                                version: 1,
+                                kind,
+                                conflict: rendered.value,
+                            },
+                            &mut self.preview.accounting()?,
+                        )?,
                     )
                 };
             let mut accounting = self.preview.accounting()?;
@@ -623,10 +626,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .ok_or(WorkspaceError::ContentLengthOverflow)?;
         }
         next.complete = next.clean_complete && next.conflicts_complete;
-        let bytes = json(&next)?;
-        let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
+        let digest;
         {
             let mut accounting = self.preview.accounting()?;
+            let bytes = json(&next, &mut accounting)?;
+            digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
             transaction
                 .write_if_with_accounting(
                     &format!("{}/plan.json", self.path),
@@ -656,8 +660,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     }
 }
 
-fn json(value: &impl Serialize) -> Result<Vec<u8>, WorkspaceError> {
-    let serialize = || serde_json::to_vec(value).map_err(WorkspaceError::engine);
+fn json(
+    value: &impl Serialize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
+    let serialize = move || {
+        let accounting = accounting;
+        // Keep serde_json's initial output chunk, admitted before entering the
+        // serializer so a refused allocation cannot allocate an IO error box.
+        let bytes =
+            crate::kernel::allocation::writer::ImageWriter::produce(accounting, 128, |writer| {
+                serde_json::to_writer(writer, value).map_err(WorkspaceError::engine)
+            })?;
+        let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
+        Ok(bytes.into_bytes((), accounting)?.into())
+    };
     #[cfg(all(test, not(target_arch = "wasm32")))]
     return crate::test_support::observe_json_output(serialize);
     #[cfg(not(all(test, not(target_arch = "wasm32"))))]

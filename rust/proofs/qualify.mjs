@@ -221,6 +221,11 @@ const claims = {
       { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
     ] },
   ],
+  "merge-json-admission": [
+    "rust/crates/filesystem/src/workspace/join_directory.rs", "acyclic-fs",
+    "workspace::tests::merge_drivers::merge_directory_json_admission_precedes_output_allocation",
+    "serializer allocated before original admission", ["--no-default-features", "--features", "memory,native-mount"],
+  ],
   "allocation-first-event": [
     "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
     "tests::accounting_matches_complete_allocation_lifetimes",

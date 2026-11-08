@@ -54,22 +54,15 @@ fn encode_image(
     metadata: Option<&crate::WorkspaceMetadata>,
     work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation), NativeTreeMaterializationError> {
-    let mut writer = ImageWriter::new(work)?;
-    std::io::Write::write_all(&mut writer, header).map_err(|_| {
-        writer
-            .failure
-            .take()
-            .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
-    })?;
-    if let Some(metadata) = metadata {
-        serde_json::to_writer(&mut writer, metadata).map_err(|_| {
-            writer
-                .failure
-                .take()
-                .unwrap_or(NativeTreeMaterializationError::InvalidLayout)
-        })?;
-    }
-    Ok((writer.bytes, writer.allocation))
+    crate::kernel::allocation::writer::native_image(work, |writer| {
+        std::io::Write::write_all(writer, header)
+            .map_err(|_| crate::FsError::from(NativeTreeMaterializationError::InvalidLayout))?;
+        if let Some(metadata) = metadata {
+            serde_json::to_writer(writer, metadata)
+                .map_err(|_| crate::FsError::from(NativeTreeMaterializationError::InvalidLayout))?;
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn decode_native_witness(
