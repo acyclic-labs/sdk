@@ -438,7 +438,7 @@ impl FuseProjection {
         let (attr, handle, open_flags) = created.inspect_err(|_| {
             state.release_lookup_reference(inode, 1);
         })?;
-        let ttl = state.admit_entry(source, inode, child, stamp, work)?;
+        let ttl = state.admit_entry(source, parent, inode, child, stamp, work)?;
         Ok((Entry { attr, ttl }, handle, open_flags))
     }
 }
