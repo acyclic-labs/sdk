@@ -184,7 +184,8 @@ mod tests {
     }
 
     #[test]
-    fn native_queue_custody_tracks_backing_and_retries_denied_growth() {
+    fn native_queue_custody_tracks_backing_and_retries_denied_growth()
+    -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = crate::CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(
             crate::WorkBudget {
@@ -232,6 +233,45 @@ mod tests {
             sender.try_send(258),
             Err(TrySendError::Disconnected(258))
         ));
+
+        // The final eight-byte queue fits, but replacing its live four-byte
+        // backing would require twelve bytes at once. Refuse before allocation.
+        let baseline = crate::NativeMaterializationWork::accounting_state_bytes();
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                peak_allocation_bytes: baseline + 8,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let (sender, receiver) = bounded::<u8>(8, Some(allocation));
+        for value in 0..4 {
+            sender.try_send(value)?;
+        }
+        assert_eq!(receiver.retained_slots(), 4);
+        assert_eq!(work.live_allocation_bytes(), baseline + 4);
+        let before = work.receipt();
+        let mut result = Ok(());
+        let physical = acyclic_test_support::measure(|| {
+            result = sender.try_send(4);
+        });
+        assert!(
+            matches!(result, Err(TrySendError::Full(4))),
+            "queue growth admitted replacement while original backing was still live: {result:?}"
+        );
+        assert_eq!(physical.count_total, 0);
+        assert_eq!(receiver.retained_slots(), 4);
+        assert_eq!(work.receipt(), before);
+        for value in 0..4 {
+            assert_eq!(receiver.try_recv(), Ok(value));
+        }
+        sender.try_send(5)?;
+        assert_eq!(receiver.try_recv(), Ok(5));
+        drop(receiver);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+        Ok(())
     }
 
     #[derive(Clone, Debug)]
