@@ -155,7 +155,7 @@ async fn cut_root(root: &Path, stage: usize, name: &str, fail_simulation: bool) 
     // installing the cut; no pre-existing participant may hide a partial root.
     require_absent(&fixture, &original).await?;
     let cut = Arc::new(Cut::new(stage));
-    fixture.stream.inner().cut_persistence(cut.clone());
+    fixture.stream.inner().cut_persistence(cut.clone()).await?;
     let failure = fail_simulation.then(FailedTruncation::inject);
     let outcome = Box::pin(fixture.bound.submit_root(prepared)).await?;
     drop(failure);
