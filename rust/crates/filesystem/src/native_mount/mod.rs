@@ -48,7 +48,6 @@ pub use adapter::{
 };
 
 mod view_gate;
-pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod shared;
 mod view_ledger;

@@ -10,6 +10,11 @@ use std::sync::Arc;
 #[path = "admissions_accounting.rs"]
 mod accounting;
 pub(crate) use accounting::NativeAllocationAccounting;
+#[cfg(feature = "native-mount")]
+#[path = "admissions_view_reads.rs"]
+mod view_reads;
+#[cfg(feature = "native-mount")]
+pub(crate) use view_reads::ViewReadCompletion;
 #[cfg(all(test, feature = "memory"))]
 const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
@@ -23,8 +28,6 @@ pub(crate) struct Admissions {
     pub(super) io_failure: Option<DemandError>,
     allocation_accounting: Option<Arc<NativeAllocationAccounting>>,
     paid_non_native: u64,
-    #[cfg(feature = "native-mount")]
-    pub(crate) view_gates: crate::native_mount::ViewGateReadAdmissions,
 }
 impl Admissions {
     pub(super) fn live_bytes(&self, live: u64) -> u64 {
@@ -41,10 +44,6 @@ impl Admissions {
         } else {
             (0, 0)
         };
-        #[cfg(feature = "native-mount")]
-        let released = released
-            .checked_add(self.view_gates.freed_bytes())
-            .expect("balanced view retirement");
         live.checked_sub(released)
             .and_then(|live| live.checked_add(unrecorded))
             .expect("balanced retained bytes")
@@ -68,14 +67,40 @@ impl DemandWork {
         let Some(shared) = &self.roots.allocation_accounting else {
             return Ok(());
         };
+        // Observe the publisher set before draining either completion class.
+        // A last publisher leaving after this observation is drained next time.
+        let owners = Arc::strong_count(shared);
+        if owners == 1 {
+            fence(Ordering::Acquire);
+        }
+        #[cfg(feature = "native-mount")]
+        {
+            let (completed, unused, failed) = shared.take_view_reads();
+            let settled = completed
+                .checked_add(unused)
+                .ok_or(crate::WorkError::Overflow)?;
+            let returned = WorkCounters {
+                items_examined: settled,
+                ..WorkCounters::UNCHARGED
+            };
+            self.roots.pending = returned.remaining(self.roots.pending)?;
+            self.budget = self.budget.checked_add(returned)?;
+            self.work = self.work.checked_add(WorkCounters {
+                items_examined: completed,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if failed {
+                self.roots.poisoned = true;
+                return Err(crate::WorkError::Overflow);
+            }
+            self.work.verify(self.budget)?;
+        }
         let retired = shared.take_retired();
         if let Err(error) = self.allocations.release(retired) {
             shared.retire_native(retired);
             return Err(error.into_work_or(crate::WorkError::Overflow));
         }
-        if let Some(bytes) =
-            shared.drain_for_final_owner(Arc::strong_count(shared), self.roots.paid_non_native)?
-        {
+        if let Some(bytes) = shared.drain_for_final_owner(owners, self.roots.paid_non_native)? {
             drop(self.roots.allocation_accounting.take());
             self.roots.paid_non_native = 0;
             self.allocations
@@ -103,13 +128,6 @@ impl DemandWork {
                 }
             }
             self.roots.paid_non_native = actual;
-        }
-        #[cfg(feature = "native-mount")]
-        {
-            self.roots.view_gates.reconcile(&mut self.allocations)?;
-            self.roots
-                .view_gates
-                .reconcile_work(&mut self.work, &mut self.budget)?;
         }
         failure.map_or(Ok(()), Err)
     }
