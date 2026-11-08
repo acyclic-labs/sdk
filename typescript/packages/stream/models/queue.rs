@@ -4,7 +4,7 @@ use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, path::Path};
 
-fn driver(fault: &str) -> driver::Driver {
+fn driver(fault: &str) -> std::io::Result<driver::Driver> {
     driver::Driver::configured(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
         "queue-work",
@@ -56,31 +56,33 @@ proptest! {
         capacity in 1usize..17,
         operations in prop::collection::vec((any::<u8>(), any::<u32>()), 0..60),
     ) {
-        static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let driver = DRIVER.get_or_init(|| std::sync::Mutex::new(driver("")));
-        let actual = driver.lock().unwrap().run().call(json!({"action":"trace","capacity":capacity,"operations":operations}));
+        static DRIVER: driver::Shared = driver::Shared::new();
+        let actual = driver::Driver::shared(&DRIVER, &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "queue-work", "")?
+            .run()?.call(&json!({"action":"trace","capacity":capacity,"operations":operations}))?;
         prop_assert_eq!(actual, expected(capacity, &operations));
     }
 }
 #[test]
-fn negative_control_wrong_ring_head_fails_the_same_reference() {
+fn negative_control_wrong_ring_head_fails_the_same_reference() -> std::io::Result<()> {
     let operations = [(0, 10), (0, 20), (1, 0), (1, 0), (0, 30), (1, 0)];
     let actual =
-        driver("head").call(json!({"action":"trace","capacity":3,"operations":operations}));
+        driver("head")?.call(&json!({"action":"trace","capacity":3,"operations":operations}))?;
     assert_ne!(
         actual,
         expected(3, &operations),
         "wrong head escaped the FIFO/ownership reference"
     );
+    Ok(())
 }
 #[test]
-fn dequeue_work_is_one_slot_write_per_record_and_shift_fails_the_same_bound() {
-    let mut shared = driver("");
-    let mut shift = driver("shift");
+fn dequeue_work_is_one_slot_write_per_record_and_shift_fails_the_same_bound() -> std::io::Result<()>
+{
+    let mut shared = driver("")?;
+    let mut shift = driver("shift")?;
     for capacity in [128, 512, 1024] {
         let request = json!({"action":"work","capacity":capacity});
-        let before = shift.call(request.clone());
-        let after = shared.call(request);
+        let before = shift.call(&request)?;
+        let after = shared.call(&request)?;
         let bound = |value: &Value| value["writes"].as_u64().unwrap() <= capacity;
         assert!(bound(&after), "dequeue must write only the consumed slot");
         assert!(
@@ -93,4 +95,5 @@ fn dequeue_work_is_one_slot_write_per_record_and_shift_fails_the_same_bound() {
         assert_eq!(before["retained"], 0);
         eprintln!("queue_dequeue capacity={capacity} shift={before} ring={after}");
     }
+    Ok(())
 }

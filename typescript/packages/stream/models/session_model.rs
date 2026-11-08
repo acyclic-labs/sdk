@@ -1,10 +1,9 @@
 //! JavaScript runs atomically between awaits. Enumerate all bounded external
 //! transport-event orders with loom, then replay each distinct order against
 //! the real TypeScript module, including paused transport writes.
+use super::driver;
 use serde_json::json;
 use std::path::Path;
-#[path = "../fuzz/driver.rs"]
-mod driver;
 
 #[path = "queue.rs"]
 mod queue;
@@ -15,13 +14,13 @@ use schedules::traces;
 // Rust engine in stream/tests/client_pool_loom.rs and stream/models. The
 // browser recovery sequence is qualified in session-latest.test.ts; these
 // remaining models exercise JavaScript provider selection and platform I/O.
-fn follow_selection(fault: &str) {
+fn follow_selection(fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(&["releaseSelection"], &["abort"]) {
-        let mut driver = driver::Driver::configured(&root, "followSelect", fault);
-        driver.call(json!({"action":"ready"}));
+        let mut driver = driver::Driver::configured(&root, "followSelect", fault)?;
+        driver.call(&json!({"action":"ready"}))?;
         for action in trace {
-            let state = driver.call(json!({"action":action}));
+            let state = driver.call(&json!({"action":action}))?;
             if action == "abort" {
                 assert_eq!(
                     state["settled"], true,
@@ -30,17 +29,18 @@ fn follow_selection(fault: &str) {
                 assert_eq!(state["active"], 0);
             }
         }
-        let state = driver.call(json!({"action":"drop"}));
+        let state = driver.call(&json!({"action":"drop"}))?;
         assert_eq!(state["active"], 0);
         assert_eq!(state["outstanding"], 0);
     }
+    Ok(())
 }
 const BUDGET_EXHAUSTED: i32 = 70;
 impl driver::Driver {
     /// Closes stdin and returns the process's exit code once it has ended.
-    fn exit_code(mut self) -> Option<i32> {
+    fn exit_code(mut self) -> std::io::Result<Option<i32>> {
         drop(self.input.take());
-        self.child.wait().expect("wait for model process").code()
+        Ok(self.child.wait()?.code())
     }
 }
 fn repository() -> std::path::PathBuf {
@@ -54,13 +54,22 @@ fn parked_model_owner_process() -> std::io::Result<()> {
     let Some(fault) = std::env::var_os("STREAM_MODEL_OWNER") else {
         return Ok(());
     };
-    let mut driver = driver::Driver::configured(&repository(), "move", fault.to_str().unwrap());
-    driver.send(json!({"action":"park"}));
-    let ack = driver
-        .answer()
-        .expect("model process exited before parking");
+    let mut driver = driver::Driver::configured(
+        &repository(),
+        "move",
+        fault.to_str().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "owner fault is not UTF-8")
+        })?,
+    )?;
+    driver.send(&json!({"action":"park"}))?;
+    let ack = driver.answer()?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "model exited before parking",
+        )
+    })?;
     assert_eq!(ack["ack"], "parked", "{ack}");
-    std::io::Write::write_all(&mut std::io::stderr(), b"parked\n").unwrap();
+    std::io::Write::write_all(&mut std::io::stderr(), b"parked\n")?;
     let mut release = [0];
     std::io::Read::read_exact(&mut std::io::stdin(), &mut release)?;
     Err(std::io::Error::new(
@@ -129,100 +138,129 @@ fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
     assert!(owner_exit_ends_its_model("startupCrash", true).is_err());
 }
 
+#[test]
+fn a_crashed_model_reports_typed_producer_loss() -> std::io::Result<()> {
+    let mut driver = driver::Driver::configured(&repository(), "move", "startupCrash")?;
+    let result = driver.call(&json!({"action":"ready"}));
+    assert!(
+        result.is_err(),
+        "crashed model returned an action result: {result:?}"
+    );
+    if let Err(error) = result {
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(
+            error.to_string().contains("model exited before answering"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
 /// Connects exactly `connections` times in one command against a budget of `steps`: the command itself is one step
 /// and each connection one more. Returns the budget left after the command, or the exit code if the process ended.
-fn connect_at_budget(steps: u64, connections: u64, fault: &str) -> Result<u64, Option<i32>> {
-    let mut driver = driver::Driver::budgeted(&repository(), "move", fault, steps);
-    driver.send(json!({"action":"connect", "count":connections}));
-    match driver.answer() {
+fn connect_at_budget(
+    steps: u64,
+    connections: u64,
+    fault: &str,
+) -> std::io::Result<Result<u64, Option<i32>>> {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", fault, steps)?;
+    driver.send(&json!({"action":"connect", "count":connections}))?;
+    Ok(match driver.answer()? {
         Some(answer) => {
             assert!(answer.get("error").is_none(), "{answer}");
             assert_eq!(answer["result"]["connections"], connections);
             Ok(driver.remaining)
         }
-        None => Err(driver.exit_code()),
-    }
+        None => Err(driver.exit_code()?),
+    })
 }
 #[test]
-fn every_peer_draws_from_one_process_budget_to_its_exact_boundary() {
+fn every_peer_draws_from_one_process_budget_to_its_exact_boundary() -> std::io::Result<()> {
     // 1 command + 15 connections spends exactly 16 steps; the process stays alive with nothing left.
-    assert_eq!(connect_at_budget(16, 15, ""), Ok(0));
+    assert_eq!(connect_at_budget(16, 15, "")?, Ok(0));
     // One more connection is the 17th step: the process ends with the budget exit code, not a crash.
-    assert_eq!(connect_at_budget(16, 16, ""), Err(Some(BUDGET_EXHAUSTED)));
+    assert_eq!(connect_at_budget(16, 16, "")?, Err(Some(BUDGET_EXHAUSTED)));
     // Negative control: a process that dies on its first command is not mistaken for an exhausted budget.
-    assert_eq!(connect_at_budget(16, 15, "startupCrash"), Err(Some(1)));
+    assert_eq!(connect_at_budget(16, 15, "startupCrash")?, Err(Some(1)));
+    Ok(())
 }
 #[test]
-fn a_reconnecting_client_ends_at_the_process_budget() {
-    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 64);
-    driver.send(json!({"action":"storm"}));
-    assert!(driver.answer().is_none());
-    assert_eq!(driver.exit_code(), Some(BUDGET_EXHAUSTED));
+fn a_reconnecting_client_ends_at_the_process_budget() -> std::io::Result<()> {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 64)?;
+    driver.send(&json!({"action":"storm"}))?;
+    assert!(driver.answer()?.is_none());
+    assert_eq!(driver.exit_code()?, Some(BUDGET_EXHAUSTED));
+    Ok(())
 }
 #[test]
-fn fresh_validator_peers_cannot_renew_the_budget() {
+fn fresh_validator_peers_cannot_renew_the_budget() -> std::io::Result<()> {
     // Every decode builds a new validator peer; all of them spend the one process budget, so a stream of decodes ends
     // the process within the budget instead of running forever.
     let steps = 256;
-    let mut driver = driver::Driver::budgeted(&repository(), "decode", "", steps);
+    let mut driver = driver::Driver::budgeted(&repository(), "decode", "", steps)?;
     let frame = "080110019201090a07756e6b6e6f776e"; // closed(unknown) on channel 1, as in the codes property below
     let mut answered = 0;
     loop {
-        driver.send(json!({"action":"decode", "hex":frame}));
-        if driver.answer().is_none() {
+        driver.send(&json!({"action":"decode", "hex":frame}))?;
+        if driver.answer()?.is_none() {
             break;
         }
         answered += 1;
         assert!(answered < steps, "decodes outlived the process budget");
     }
     assert!(answered > 0);
-    assert_eq!(driver.exit_code(), Some(BUDGET_EXHAUSTED));
+    assert_eq!(driver.exit_code()?, Some(BUDGET_EXHAUSTED));
+    Ok(())
 }
 #[test]
-fn queue_items_draw_from_the_process_budget_to_its_exact_boundary() {
-    let run = |steps: u64| {
-        let mut driver = driver::Driver::budgeted(&repository(), "queue-work", "", steps);
-        driver.send(json!({"action":"work", "capacity":8}));
-        match driver.answer() {
+fn queue_items_draw_from_the_process_budget_to_its_exact_boundary() -> std::io::Result<()> {
+    let run = |steps: u64| -> std::io::Result<Result<u64, Option<i32>>> {
+        let mut driver = driver::Driver::budgeted(&repository(), "queue-work", "", steps)?;
+        driver.send(&json!({"action":"work", "capacity":8}))?;
+        Ok(match driver.answer()? {
             Some(answer) => {
                 assert!(answer.get("error").is_none(), "{answer}");
                 Ok(driver.remaining)
             }
-            None => Err(driver.exit_code()),
-        }
+            None => Err(driver.exit_code()?),
+        })
     };
     // 1 command + 8 dequeues.
-    assert_eq!(run(9), Ok(0));
-    assert_eq!(run(8), Err(Some(BUDGET_EXHAUSTED)));
+    assert_eq!(run(9)?, Ok(0));
+    assert_eq!(run(8)?, Err(Some(BUDGET_EXHAUSTED)));
+    Ok(())
 }
 #[test]
-fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() {
-    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 16);
-    driver.run().call(json!({"action":"connect", "count":8}));
+fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() -> std::io::Result<()> {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 16)?;
+    driver
+        .run()?
+        .call(&json!({"action":"connect", "count":8}))?;
     assert_eq!(driver.remaining, 7);
     // Under half the budget left: the next run gets a fresh process with the whole budget.
-    driver.run();
+    driver.run()?;
     assert_eq!(driver.remaining, 16);
     assert_eq!(
-        driver.call(json!({"action":"connect", "count":1}))["connections"],
+        driver.call(&json!({"action":"connect", "count":1}))?["connections"],
         1
     );
     assert_eq!(driver.remaining, 14);
+    Ok(())
 }
 #[test]
 fn default_follow_selection_and_cancellation_are_independent() {
-    follow_selection("");
+    super::completed(follow_selection(""));
 }
 #[test]
 #[should_panic(expected = "follow cancellation must not wait for provider selection")]
 fn follow_selection_negative_control_omits_the_selection_signal() {
-    follow_selection("followSelect");
+    super::completed(follow_selection("followSelect"));
 }
 
-fn rejected_subscription(fault: &str) {
+fn rejected_subscription(fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let mut driver = driver::Driver::configured(&root, "rejection", fault);
-    let state = driver.call(json!({"action":"ready"}));
+    let mut driver = driver::Driver::configured(&root, "rejection", fault)?;
+    let state = driver.call(&json!({"action":"ready"}))?;
     assert_eq!(
         state["settled"], true,
         "a rejected resubscription must settle its real WASM cursor"
@@ -232,27 +270,28 @@ fn rejected_subscription(fault: &str) {
         state["failedSends"], 2,
         "a failed transport send must retry before a wire refusal settles its cursor"
     );
-    assert_eq!(driver.call(json!({"action":"drop"}))["active"], 0);
+    assert_eq!(driver.call(&json!({"action":"drop"}))?["active"], 0);
+    Ok(())
 }
 #[test]
 fn wasm_rejected_resubscription_is_terminal() {
-    rejected_subscription("");
+    super::completed(rejected_subscription(""));
 }
 #[test]
 #[should_panic(expected = "a rejected resubscription must settle its real WASM cursor")]
 fn negative_control_discards_the_io_rejection() {
-    rejected_subscription("rejection");
+    super::completed(rejected_subscription("rejection"));
 }
 
-fn deadline_run(fault: &str, events: &'static [&'static str]) {
+fn deadline_run(fault: &str, events: &'static [&'static str]) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(&["expire"], events) {
-        let mut driver = driver::Driver::configured(&root, "deadline", fault);
-        let ready = driver.call(json!({"action":"ready"}));
+        let mut driver = driver::Driver::configured(&root, "deadline", fault)?;
+        let ready = driver.call(&json!({"action":"ready"}))?;
         assert_eq!(ready["active"], 2);
         let mut terminal = None;
         for action in trace {
-            let state = driver.call(json!({"action":action}));
+            let state = driver.call(&json!({"action":action}))?;
             if action == "expire" || action == "cleanup" {
                 let expected = *terminal.get_or_insert(if action == "expire" { 4 } else { 1 });
                 assert_eq!(
@@ -278,7 +317,7 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) {
                 );
             }
         }
-        let state = driver.call(json!({"action":"finish"}));
+        let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(state["settled"], true);
         assert_eq!(
             state["connections"],
@@ -308,65 +347,69 @@ fn deadline_run(fault: &str, events: &'static [&'static str]) {
             true,
             "batched aggregate credit must stay bounded by delivered frames"
         );
-        let stopped = driver.call(json!({"action":"stop"}));
+        let stopped = driver.call(&json!({"action":"stop"}))?;
         assert_eq!(stopped["active"], 0);
         assert_eq!(stopped["outstanding"], 0);
     }
+    Ok(())
 }
 #[test]
 fn raw_follow_deadline_races_delivery() {
-    deadline_run("", &["deliver"]);
+    super::completed(deadline_run("", &["deliver"]));
 }
 #[test]
 fn raw_follow_deadline_races_reconnection() {
-    deadline_run("", &["reconnect", "releaseReconnect"]);
+    super::completed(deadline_run("", &["reconnect", "releaseReconnect"]));
 }
 #[test]
 fn raw_follow_deadline_races_cleanup() {
-    deadline_run("", &["cleanup"]);
+    super::completed(deadline_run("", &["cleanup"]));
 }
 #[test]
 fn raw_follow_deadline_races_delivery_reconnect_and_cleanup() {
-    deadline_run("", &["deliver", "reconnect", "releaseReconnect", "cleanup"]);
+    super::completed(deadline_run(
+        "",
+        &["deliver", "reconnect", "releaseReconnect", "cleanup"],
+    ));
 }
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_deadline_negative_control_drops_timeout_forwarding() {
-    deadline_run(
+    super::completed(deadline_run(
         "deadline",
         &["deliver", "reconnect", "releaseReconnect", "cleanup"],
-    );
+    ));
 }
 
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_delivery_negative_control_drops_timeout_forwarding() {
-    deadline_run("deadline", &["deliver"]);
+    super::completed(deadline_run("deadline", &["deliver"]));
 }
 #[test]
 #[should_panic(expected = "deadline or cleanup must settle the real raw follow")]
 fn raw_follow_reconnect_negative_control_drops_timeout_forwarding() {
-    deadline_run("deadline", &["reconnect", "releaseReconnect"]);
+    super::completed(deadline_run("deadline", &["reconnect", "releaseReconnect"]));
 }
 #[test]
 #[should_panic(expected = "only the logical deadline owns a timer")]
 fn raw_follow_cleanup_negative_control_drops_timeout_forwarding() {
-    deadline_run("deadline", &["cleanup"]);
+    super::completed(deadline_run("deadline", &["cleanup"]));
 }
 
-fn blocked_deadline(scenario: &str, fault: &str) {
+fn blocked_deadline(scenario: &str, fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     // All six orders of expiry, return(), and completion of the parked write.
     let mut orders = traces(&["expire"], &["return", "releaseWrite"]);
     orders.extend(traces(&["expire"], &["releaseWrite", "return"]));
     assert_eq!(orders.len(), 6);
     for trace in orders {
-        let mut driver = driver::Driver::configured(&root, scenario, fault);
-        assert_eq!(driver.call(json!({"action":"ready"}))["blocked"], true);
+        let mut driver = driver::Driver::configured(&root, scenario, fault)?;
+        assert_eq!(driver.call(&json!({"action":"ready"}))?["blocked"], true);
         let mut expired = false;
         let mut returning = false;
         for action in trace {
-            let state = driver.call(json!({"action":action}));
+            let state = driver.call(&json!({"action":action}))?;
             assert_eq!(
                 state["siblingError"],
                 serde_json::Value::Null,
@@ -394,7 +437,7 @@ fn blocked_deadline(scenario: &str, fault: &str) {
                 );
             }
         }
-        let state = driver.call(json!({"action":"finish"}));
+        let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(
             state["siblingError"],
             serde_json::Value::Null,
@@ -407,44 +450,45 @@ fn blocked_deadline(scenario: &str, fault: &str) {
                 .as_u64()
                 .is_some_and(|frames| frames <= 4)
         );
-        let stopped = driver.call(json!({"action":"stop"}));
+        let stopped = driver.call(&json!({"action":"stop"}))?;
         assert_eq!(stopped["active"], 0);
         assert_eq!(stopped["outstanding"], 0);
     }
+    Ok(())
 }
 #[test]
 fn deadline_cancels_a_blocked_subscription_write() {
-    blocked_deadline("deadline-subscription", "");
+    super::completed(blocked_deadline("deadline-subscription", ""));
 }
 #[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_subscription_negative_control_awaits_the_write() {
-    blocked_deadline("deadline-subscription", "write");
+    super::completed(blocked_deadline("deadline-subscription", "write"));
 }
 #[test]
 fn deadline_cancels_a_blocked_acknowledgement_write() {
-    blocked_deadline("deadline-ack", "");
+    super::completed(blocked_deadline("deadline-ack", ""));
 }
 #[test]
 #[should_panic(expected = "deadline must settle next without releasing the blocked write")]
 fn blocked_acknowledgement_negative_control_awaits_the_write() {
-    blocked_deadline("deadline-ack", "write");
+    super::completed(blocked_deadline("deadline-ack", "write"));
 }
 
 #[test]
 #[should_panic(expected = "cancelling a blocked write must preserve the sibling")]
 fn blocked_subscription_negative_control_drops_the_platform_write_signal() {
-    blocked_deadline("deadline-subscription", "writeSignal");
+    super::completed(blocked_deadline("deadline-subscription", "writeSignal"));
 }
 
-fn queue_cancellation(fault: &str) {
+fn queue_cancellation(fault: &str) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
     for trace in traces(&["abort"], &["drain"]) {
-        let mut driver = driver::Driver::configured(&root, "queue", fault);
-        driver.call(json!({"action":"ready"}));
+        let mut driver = driver::Driver::configured(&root, "queue", fault)?;
+        driver.call(&json!({"action":"ready"}))?;
         let mut aborted = false;
         for action in trace {
-            let state = driver.call(json!({"action":action}));
+            let state = driver.call(&json!({"action":action}))?;
             if action == "drain" && !aborted {
                 assert_eq!(
                     state["accepted"], true,
@@ -467,7 +511,7 @@ fn queue_cancellation(fault: &str) {
                 );
             }
         }
-        let state = driver.call(json!({"action":"finish"}));
+        let state = driver.call(&json!({"action":"finish"}))?;
         assert_eq!(
             state["accepted"], state["acceptedAtAbort"],
             "an unaccepted cancelled frame must never enter the transport"
@@ -485,21 +529,22 @@ fn queue_cancellation(fault: &str) {
         assert_eq!(state["waiting"], 0);
         assert_eq!(state["available"], 1);
     }
+    Ok(())
 }
 #[test]
 fn queued_cancellation_races_admission_without_leaks_or_reordering() {
-    queue_cancellation("");
+    super::completed(queue_cancellation(""));
 }
 #[test]
 #[should_panic(expected = "abort must settle a blocked queue producer")]
 fn queue_negative_control_drops_the_write_signal() {
-    queue_cancellation("queue");
+    super::completed(queue_cancellation("queue"));
 }
 
 #[test]
 #[should_panic(expected = "older waiting writes must precede a fresh producer")]
 fn queue_negative_control_allows_fresh_writes_to_overtake_waiters() {
-    queue_cancellation("order");
+    super::completed(queue_cancellation("order"));
 }
 
 proptest::proptest! {
@@ -513,10 +558,10 @@ proptest::proptest! {
     // actual generated JavaScript decoder/encoder, with shrinking on failure.
     #[test]
     fn untrusted_frames_round_trip(input in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)) {
-        static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
-        let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
-        shared.lock().unwrap().run().call(json!({"action":"decode", "hex":hex}));
+        static DRIVER: driver::Shared = driver::Shared::new();
+        let mut shared = driver::Driver::shared(&DRIVER, &repository(), "decode", "")?;
+        let hex = driver::hex(&input)?;
+        shared.run()?.call(&json!({"action":"decode", "hex":hex}))?;
     }
 
     #[test]
@@ -525,12 +570,12 @@ proptest::proptest! {
         "limit_exceeded", "prefix_not_retained", "out_of_range", "idempotency_mismatch",
         "access_denied", "unavailable", "hierarchy_changed", "deadline_elapsed", "unsupported", "unknown"
     ])) {
-        static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
-        let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
+        static DRIVER: driver::Shared = driver::Shared::new();
+        let mut shared = driver::Driver::shared(&DRIVER, &repository(), "decode", "")?;
         // SessionFrame(channel=1,generation=1,closed(code)): stable fields 1,2,18.
         let mut bytes = vec![8, 1, 16, 1, 146, 1, u8::try_from(code.len() + 2).unwrap(), 10, u8::try_from(code.len()).unwrap()];
         bytes.extend_from_slice(code.as_bytes());
-        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        shared.lock().unwrap().run().call(json!({"action":"decode", "hex":hex}));
+        let hex = driver::hex(&bytes)?;
+        shared.run()?.call(&json!({"action":"decode", "hex":hex}))?;
     }
 }
