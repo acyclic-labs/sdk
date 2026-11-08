@@ -110,6 +110,17 @@ impl CheckoutTools {
                     "workspace differs from the bound project volume".into(),
                 ));
             }
+            let execution_grant = match execution_grant {
+                Some(grant) => Some(
+                    acyclic_native_runtime::run_blocking_io(move || grant.compile_native(), None)
+                        .map_err(Error::process_io)?
+                        .offloaded()
+                        .await
+                        .map_err(Error::process_io)?
+                        .map_err(Error::process_io)?,
+                ),
+                None => None,
+            };
             let (capture_options, capture_policy) = capture::configuration(&workspace)?;
             let shared = StateArc::clone(&workspace.state);
             {
