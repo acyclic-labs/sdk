@@ -241,7 +241,8 @@
       "target": "Installed Claude Code plugin parity",
       "owner": "plugins (#1407)",
       "cases": [
-        "installed-claude"
+        "installed-claude",
+        "installed-claude-fanout"
       ],
       "gaps": [
         "Mock-model child round trip only; real-login model-session parity remains outside this matrix."

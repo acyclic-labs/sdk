@@ -934,3 +934,58 @@ async fn permission_prompts_gate_spawn_and_preserve_host_tool_decisions() -> Res
     }
     Ok(())
 }
+
+/// A depth-1 child's two concurrent spawns both return, naming distinct
+/// children that each start. One coordination thread serves every view, so
+/// it must never ask the kernel about one: the kernel forwards that request
+/// to callbacks that wait on the other spawn's commit, which only this
+/// thread can finish.
+#[tokio::test]
+async fn concurrent_spawns_from_a_child_both_start() -> Result<()> {
+    let mut fixture = Fixture::for_host("claude-code").await?;
+    let spawned = fixture
+        .session(
+            "parent",
+            SessionAction::Spawn {
+                prompt: "parent".into(),
+            },
+        )
+        .await?;
+    let parent: AgentPath = serde_json::from_value(spawned["task"].clone()).map_err(storage)?;
+    let session = |reference: &str, action| HostAction::Session {
+        parent: parent.clone(),
+        reference: reference.into(),
+        action,
+        next: false,
+    };
+    let spawn = |reference: &str| {
+        session(
+            reference,
+            SessionAction::Spawn {
+                prompt: reference.into(),
+            },
+        )
+    };
+    let (left, right) = futures::future::try_join(
+        fixture.owner.dispatch(OperationId::new(), spawn("left")),
+        fixture.owner.dispatch(OperationId::new(), spawn("right")),
+    )
+    .await?;
+    let mut views = Vec::new();
+    for (spawned, reference) in [(left, "left"), (right, "right")] {
+        let child: AgentPath = serde_json::from_value(spawned["task"].clone()).map_err(storage)?;
+        assert_eq!(child.parent().as_ref(), Some(&parent));
+        let turn = fixture
+            .owner
+            .dispatch(
+                OperationId::new(),
+                session(reference, SessionAction::Next {}),
+            )
+            .await?;
+        assert_eq!(turn["task"], json!(child));
+        assert_eq!(turn["prompt"], reference);
+        views.push(cwd(&turn)?);
+    }
+    assert_ne!(views[0], views[1], "each child runs in its own view");
+    Ok(())
+}
