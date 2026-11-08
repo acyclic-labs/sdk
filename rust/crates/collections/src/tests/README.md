@@ -8,14 +8,14 @@ widths. Every insufficient work allowance refuses before exposing a mutable
 value; cancelled empty reads must also refuse.
 
 ```sh
-cargo test --locked -p acyclic-collections --lib tests::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
+cargo test --locked -p acyclic-collections --lib tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
 ```
 
 The planted production mutation removes exact-read admission on an empty index:
 
 ```sh
 git apply rust/crates/collections/src/tests/unchecked_empty_read.patch
-cargo test --locked -p acyclic-collections --lib tests::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
+cargo test --locked -p acyclic-collections --lib tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
 git apply -R rust/crates/collections/src/tests/unchecked_empty_read.patch
 ```
 
@@ -34,7 +34,7 @@ The retained mutation delays the second-walk admission until after unlinking:
 
 ```sh
 git apply rust/crates/collections/src/tests/late_remove_admission.patch
-cargo test --locked -p acyclic-collections --lib tests::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
+cargo test --locked -p acyclic-collections --lib tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
 git apply -R rust/crates/collections/src/tests/late_remove_admission.patch
 ```
 
@@ -52,7 +52,7 @@ The retained mutation swallows the previous window's refusal:
 
 ```sh
 git apply rust/crates/collections/src/tests/swallowed_window_refusal.patch
-cargo test --locked -p acyclic-collections --lib tests::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
+cargo test --locked -p acyclic-collections --lib tests::ordered::ordered_seek_and_mutation_preserve_original_credit_and_sparse_cursors -- --exact
 git apply -R rust/crates/collections/src/tests/swallowed_window_refusal.patch
 ```
 
