@@ -341,23 +341,30 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
         issuer.public_workload_trust()?,
         journal.verifier.public_checkpoint_key(),
     )?;
+    // The host's public trust has its own serving owner. Dropping signing
+    // custody must not also close the trust needed to authorize this read.
+    let trust_owner = std::mem::replace(&mut journal.verifier, public);
+    let trust_closed = issuer.trust_changes().changed();
     drop(issuer);
-    journal.verifier = public;
-    let recovered = journal.load_index_checkpoint(operation, None).await;
-    assert!(
-        matches!(&recovered, Ok(Some(_))),
-        "public-only checkpoint verification attempted to sign"
-    );
-    let recovered = recovered?.ok_or_else(|| missing(None))?;
-    assert_eq!(
-        recovered.0.tail, 1,
-        "public-only checkpoint verification attempted to sign"
-    );
+    let recovered = journal
+        .load_index_checkpoint(operation, None)
+        .await?
+        .ok_or_else(|| missing(None))?;
+    assert_eq!(recovered.0.tail, 1);
     assert!(
         journal
             .encode_index_checkpoint(recovered.0, None)
             .await
             .is_err()
     );
+    drop(trust_owner);
+    assert_eq!(
+        futures::FutureExt::now_or_never(trust_closed),
+        Some(Err(acyclic_auth::trust::SourceClosed))
+    );
+    assert!(matches!(
+        journal.load_index_checkpoint(operation, None).await,
+        Err(Error::Unauthorized(_))
+    ));
     Ok(())
 }
