@@ -19,7 +19,8 @@ const claims = {
     "rust/crates/stream/src/session/frame.rs", "acyclic-stream",
     "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
     "local socket lost its original refusal", ["--features", "serde,test-support"],
-    { nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
+    { oracle: "rust/crates/stream/src/session/tests/refusals.rs",
+      nextest: ["--profile", "ci", "--no-fail-fast", "--retries", "0", "--no-tests=fail"],
       positive: [
         "session::tests::refusals::local_socket_refusals_retain_the_original_error_after_prior_data",
         "session::tests::sockets::receive_refusal_releases_owner_before_uncredited_frames_drain",
