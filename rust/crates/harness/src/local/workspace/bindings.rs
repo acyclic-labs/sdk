@@ -11,7 +11,7 @@ pub(super) struct Bindings {
 
 pub(super) struct Binding {
     index: RetainedArc<Bindings>,
-    key: [u8; 32],
+    pub(super) key: [u8; 32],
     completed: acyclic_stream::OperationObservation,
     mounts: crate::sync::SyncMutex<Option<std::sync::Weak<Mounts>>>,
 }

@@ -194,13 +194,11 @@ impl LocalWorkspace {
     ) -> Result<Arc<Mounts>> {
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
-        let binding = blake3::hash(project.storage_name(&mut None)?.as_bytes())
-            .to_hex()
-            .to_string();
+        let directory = blake3::Hash::from_bytes(binding.key).to_hex();
         let root = self
             .held_task_mount_root()?
             .create_directories(
-                &Path::new(".bindings").join(binding),
+                &Path::new(".bindings").join(directory.as_str()),
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;
