@@ -1,0 +1,14 @@
+diff --git a/rust/crates/collections/src/compiled_prefix.rs b/rust/crates/collections/src/compiled_prefix.rs
+--- a/rust/crates/collections/src/compiled_prefix.rs
++++ b/rust/crates/collections/src/compiled_prefix.rs
+@@ -350,6 +350,9 @@
+             work.examine(end.checked_sub(from).ok_or(Invariant)? as u64)
+                 .map_err(Work)?;
+-            if query.get(from..end).ok_or(Invariant)? != key.get(from..end).ok_or(Invariant)?
++            let Some(label) = key.get(from..end) else {
++                return Ok(result);
++            };
++            if query.get(from..end).ok_or(Invariant)? != label
+                 || query.len() < node.end
+             {
+                 return Ok(result);

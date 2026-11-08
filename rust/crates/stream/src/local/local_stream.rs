@@ -678,7 +678,8 @@ impl LocalStream {
         }
     }
 
-    /// Runs one mutation under exclusive visibility on its own task, so a
+    /// Runs one mutation under exclusive visibility on its own task, retaining
+    /// publication and completion custody even when its caller stops observing.
     fn exclusive<T, F, O>(
         &self,
         span: obs::OperationSpan,
@@ -695,14 +696,16 @@ impl LocalStream {
                 return Ok(span.in_scope(|| finish(Err(error))));
             }
             let stream = self.worker();
+            let mut failed = self.inner.failed.subscribe();
             // The mutation owns completion as well as durability, even if its caller is dropped.
             let operation = span.clone();
-            spawn(publication_scope(async move {
+            let pending = spawn(publication_scope(async move {
                 let task = std::pin::pin!(async {
                     let (result, required) = {
                         let _visibility = stream.inner.visibility.write().await;
                         stream.check_available()?;
                         let publication = stream.inner.publication.write().await;
+                        stream.check_available()?;
                         let result = mutation(stream.clone()).await;
                         stream.inner.commit_clock.unpin();
                         let _retained = stream.release_publication(publication);
@@ -716,14 +719,18 @@ impl LocalStream {
                 });
                 let result = operation.scope(task).await;
                 operation.in_scope(|| finish(result))
-            }))
-            .await
-            .map_err(|_| StreamError::Unavailable)
+            }));
+            LocalInner::observe(&mut failed, pending)
+                .await?
+                .map_err(|_| StreamError::Unavailable)
         }
     }
 
     /// Observes accepted publications without joining their durability wait.
-    async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+    async fn accepted<T, F>(&self, read: impl FnOnce() -> F + Send) -> Result<T, StreamError>
+    where
+        F: Future<Output = T> + Send,
+    {
         let read = self.accepted_snapshot(read);
         #[cfg(feature = "test-support")]
         return acyclic_native_runtime::testing::observe_read(read).await;
@@ -733,10 +740,28 @@ impl LocalStream {
 
     // Snapshot operations have no asynchronous acknowledgement after mutation.
     // The shared stream driver owns observation outside its cancellable probe.
-    async fn accepted_snapshot<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        self.check_available()?;
-        let _visibility = self.inner.publication.read().await;
-        self.check_available()?;
-        Ok(read.await)
+    // This private probe stays inline; provider boundaries erase the outer future.
+    fn accepted_snapshot<'a, T: 'a, F>(
+        &'a self,
+        read: impl FnOnce() -> F + Send + 'a,
+    ) -> impl Future<Output = Result<T, StreamError>> + Send + 'a
+    where
+        F: Future<Output = T> + Send + 'a,
+    {
+        let read = read();
+        async move {
+            self.check_available()?;
+            let mut failed = self.inner.failed.subscribe();
+            let read = std::pin::pin!(async {
+                let _visibility = self.inner.publication.read().await;
+                self.check_available()?;
+                Ok(read.await)
+            });
+            let unavailable = std::pin::pin!(LocalInner::unavailable(&mut failed));
+            match futures::future::select(unavailable, read).await {
+                futures::future::Either::Left((error, _)) => Err(error),
+                futures::future::Either::Right((result, _)) => result,
+            }
+        }
     }
 }

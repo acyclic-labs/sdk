@@ -1,0 +1,7 @@
+diff --git a/rust/crates/stream/src/changes.rs b/rust/crates/stream/src/changes.rs
+--- a/rust/crates/stream/src/changes.rs
++++ b/rust/crates/stream/src/changes.rs
+@@ -557,2 +557,2 @@
+-        let changes = admitted.decode(count, |key| keep(key, &self.headers))?;
++        let changes = admitted.decode(count, |_| true)?;
+         if admitted.format != Some(FORMAT) {

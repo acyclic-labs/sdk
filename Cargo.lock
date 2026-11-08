@@ -1396,6 +1396,7 @@ dependencies = [
 name = "acyclic-stream-publication-models"
 version = "0.0.0"
 dependencies = [
+ "acyclic-auth",
  "futures",
  "loom",
  "proptest",

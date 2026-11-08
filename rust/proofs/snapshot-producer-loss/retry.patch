@@ -1,0 +1,18 @@
+diff --git a/rust/crates/stream/src/snapshot.rs b/rust/crates/stream/src/snapshot.rs
+--- a/rust/crates/stream/src/snapshot.rs
++++ b/rust/crates/stream/src/snapshot.rs
+@@ -81,7 +81,13 @@
+     wasm_bindgen_futures::spawn_local(worker);
+     // Job retirement publishes Unavailable after its lock future has retired.
+     // A still-held writer cannot make an implicit replacement worker finish.
+-    completed.await
++    let (mut state, result) = completed.await;
++    if matches!(result, Err(crate::StreamError::Unavailable)) {
++        let result = state.read().await;
++        (state, result)
++    } else {
++        (state, result)
++    }
+ }
+ 
+ #[cfg(loom)]
