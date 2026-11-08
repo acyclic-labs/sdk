@@ -32,17 +32,17 @@ impl LocalWorkspace {
         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let key = *blake3::hash(project.storage_name(&mut None)?.as_bytes()).as_bytes();
-        let (binding, producer) =
+        let (selection, producer) =
             bindings::Bindings::select(&self.bindings, key, &work, &cancellation)?;
         let mounts = if let Some(producer) = producer {
             let mounts = self
-                .bound_mounts(project, scratch, authority, &binding)
+                .bound_mounts(project, scratch, authority, &selection.binding)
                 .await?;
-            binding.publish(&mounts);
+            selection.publish(&mounts)?;
             producer.release();
             mounts
         } else {
-            let mounts = binding.mounts().await?;
+            let mounts = selection.mounts().await?;
             if mounts
                 .named(Some(crate::filesystem::HOME_VOLUME))?
                 .1

@@ -7,6 +7,6 @@
 +            for _ in 0..1024 {
 +                let _ = entries.get(key, &mut accounting).map_err(storage)?;
 +            }
-             return Ok((binding, None));
-         }
-         // The old value may already be in Drop, waiting for this same index.
+             let result = {
+                 let publication = binding
+                     .publication
