@@ -262,12 +262,12 @@ $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 $previousRegionReport = $env:ACYCLIC_TERMINAL_REGION_REPORT
 try {
     $scenarios = if ($Scenario) { @($Scenario) } elseif ($FrameRegions) { @('frames') } else { @('break','close','blocked','input-close') }
-    foreach ($scenario in $scenarios) {
-        $report = Join-Path $artifactRoot ($scenario + '.txt')
+    foreach ($selectedScenario in $scenarios) {
+        $report = Join-Path $artifactRoot ($selectedScenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report
-        $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $scenario
+        $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $selectedScenario
         $env:ACYCLIC_TERMINAL_REGION_REPORT = $report
-        [TerminalSignalConPty]::Run($Binary,$scenario,$report)
+        [TerminalSignalConPty]::Run($Binary,$selectedScenario,$report)
     }
 } finally {
     $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $previousReport
