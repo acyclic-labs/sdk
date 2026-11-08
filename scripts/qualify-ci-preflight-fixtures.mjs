@@ -61,12 +61,10 @@ function prepare(plans, directory) {
     builds.set(built.executable, build);
   }
   const executable = { mode: 0o755 };
+  const compilerErrors = readFileSync(new URL("./fixtures/hermetic-clippy-negative.jsonl", import.meta.url), "utf8");
   const compilerCases = hermeticCompilerPlans().map(plan => {
-    // Real Clippy separately proves these compiler-resolved rejections. Here
-    // execute the actual CLI's result validation with controlled compiler output.
-    const messages = plan.negative ? Array.from({length: 11}, (_, index) => JSON.stringify({reason: "compiler-message", message: {
-      level: "error", code: {code: "clippy::disallowed_methods"}, rendered: "fixture rejection", spans: [{is_primary: true, line_start: index + 1}],
-    }}) + "\n").join("") : "";
+    // Replay captured Clippy diagnostics through the actual CLI's validation.
+    const messages = plan.negative ? compilerErrors : "";
     return [plan.args, `operation compiler-${plan.negative ? "negative" : "positive"}; printf '%s' ${quote(messages)}; exit ${plan.negative ? 1 : 0}`];
   });
   const prelude = `source ${quote(join(directory, "operation.sh"))}; `;
