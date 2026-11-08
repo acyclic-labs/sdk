@@ -45,11 +45,47 @@ impl DirectoryState {
     }
 }
 
+#[derive(Default)]
+struct DirectoryPosition {
+    ready: Option<DirectoryState>,
+    publishing: bool,
+}
+
+// The registry retains only a weak locator for encoded continuations. The
+// consumer and an in-flight publication own the actual enumeration together.
+pub(super) struct DirectoryCursor {
+    position: RankedMutex<DirectoryPosition, CURSOR>,
+    source: std::sync::Weak<NativeDemandInner>,
+    token: u64,
+    original: Option<crate::NativeMaterializationWork>,
+}
+
+impl Drop for DirectoryCursor {
+    fn drop(&mut self) {
+        if let Some(source) = self.source.upgrade() {
+            match source.cursors.lock() {
+                Ok(mut cursors) => {
+                    cursors.retire_if(self.token.to_be_bytes(), |owner| {
+                        std::ptr::eq(owner.as_ptr(), self)
+                    });
+                }
+                Err(_) => {
+                    if let Some(original) = &self.original {
+                        original.with_original_leaf(|work| {
+                            work.record_native_io_failure(DemandError::StaleCursor);
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A producer position held until the consumer accepts its page.
 pub struct SourceDirectoryPublication {
     source: NativeDemandSource,
     reference: SourceReference,
-    token: u64,
+    cursor: RetainedArc<DirectoryCursor>,
     state: Option<DirectoryState>,
     restore: bool,
     end: usize,
@@ -72,37 +108,27 @@ fn publication_cleanup() -> WorkCounters {
 impl SourceDirectoryPublication {
     fn finish(&mut self, end: Option<usize>) -> Result<(), DemandError> {
         let result = (|| {
-            if self.restore || end.is_some() && self.state.is_some() {
-                let mut active = self
-                    .source
-                    .inner
-                    .cursors
+            if let Some(mut state) = self.state.take() {
+                let mut position = self
+                    .cursor
+                    .position
                     .lock()
                     .map_err(|_| DemandError::StaleCursor)?;
                 if self.source.reference() != self.reference {
+                    *position = DirectoryPosition::default();
                     return Err(DemandError::StaleSource);
                 }
-                if self.restore && !active.contains_key(&self.token) {
-                    return Err(DemandError::StaleCursor);
-                }
-                let state = self
-                    .state
-                    .take()
-                    .filter(|state| end.is_none_or(|end| state.has_next(end)));
-                if let Some(mut state) = state {
+                position.ready = if (self.restore || end.is_some())
+                    && end.is_none_or(|end| state.has_next(end))
+                {
                     if let Some(end) = end {
                         state.offset = end;
                     }
-                    if !self.restore
-                        && active.len() >= 1024
-                        && let Some(oldest) = active.keys().next().copied()
-                    {
-                        active.remove(&oldest);
-                    }
-                    active.insert(self.token, Some(state));
+                    Some(state)
                 } else {
-                    active.remove(&self.token);
-                }
+                    None
+                };
+                position.publishing = false;
                 self.restore = false;
             }
             Ok(())
@@ -317,23 +343,48 @@ impl NativeDemandSource {
         }
         let observed = version(&stat);
         let restore = cursor.is_some();
-        let (token, state) = if let Some(cursor) = cursor {
+        let (cursor, state) = if let Some(cursor) = cursor {
             if cursor.source != source {
                 return Err(DemandError::StaleCursor);
             }
-            let mut active = self
-                .inner
-                .cursors
-                .lock()
-                .map_err(|_| DemandError::StaleCursor)?;
-            let slot = active
-                .get_mut(&cursor.token)
-                .ok_or(DemandError::StaleCursor)?;
-            let state = slot.as_ref().ok_or(DemandError::CursorBusy)?;
-            if state.directory != *directory || state.version != observed {
+            let owner = match cursor.native {
+                Some(owner) => owner,
+                None => {
+                    let cursors = self
+                        .inner
+                        .cursors
+                        .lock()
+                        .map_err(|_| DemandError::StaleCursor)?;
+                    account_source(work, |accounting, _| {
+                        cursors
+                            .get(cursor.token.to_be_bytes(), accounting)
+                            .map_err(DemandError::from)?
+                            .and_then(RetainedWeak::upgrade)
+                            .ok_or(DemandError::StaleCursor)
+                    })?
+                }
+            };
+            if !std::sync::Weak::ptr_eq(&owner.source, &Arc::downgrade(&self.inner)) {
                 return Err(DemandError::StaleCursor);
             }
-            (cursor.token, slot.take().ok_or(DemandError::CursorBusy)?)
+            let state =
+                {
+                    let mut position = owner
+                        .position
+                        .lock()
+                        .map_err(|_| DemandError::StaleCursor)?;
+                    if position.publishing {
+                        return Err(DemandError::CursorBusy);
+                    }
+                    if !position.ready.as_ref().is_some_and(|state| {
+                        state.directory == *directory && state.version == observed
+                    }) {
+                        return Err(DemandError::StaleCursor);
+                    }
+                    position.publishing = true;
+                    position.ready.take().ok_or(DemandError::StaleCursor)?
+                };
+            (owner, state)
         } else {
             let token = self
                 .inner
@@ -343,12 +394,42 @@ impl NativeDemandSource {
                 })
                 .map_err(|_| DemandError::StaleCursor)?
                 + 1;
-            (token, self.open_directory_state(directory, observed, work)?)
+            let state = self.open_directory_state(directory, observed, work)?;
+            let original = work.native_source_work().map(|work| work.allocation_work());
+            let cursor = account_source(work, |accounting, _| {
+                RetainedArc::admit(accounting).map_err(DemandError::from)
+            })?
+            .into_value(DirectoryCursor {
+                position: RankedMutex::new(DirectoryPosition {
+                    publishing: true,
+                    ..DirectoryPosition::default()
+                }),
+                source: Arc::downgrade(&self.inner),
+                token,
+                original,
+            });
+            let inserted = {
+                let mut cursors = self
+                    .inner
+                    .cursors
+                    .lock()
+                    .map_err(|_| DemandError::StaleCursor)?;
+                account_source(work, |accounting, _| {
+                    cursors
+                        .get_or_try_insert_with(token.to_be_bytes(), accounting, |_| {
+                            Ok(cursor.downgrade())
+                        })
+                        .map(|_| ())
+                        .map_err(DemandError::from)
+                })
+            };
+            inserted?;
+            (cursor, state)
         };
         let mut lease = SourceDirectoryPublication {
             source: self.clone(),
             reference: source,
-            token,
+            cursor,
             state: Some(state),
             restore,
             end: 0,
@@ -357,11 +438,18 @@ impl NativeDemandSource {
         };
         let state = lease.state.as_mut().ok_or(DemandError::StaleCursor)?;
         let entries = self.page_entries(state, maximum as usize, work)?;
-        let next = state
-            .has_next(entries.range.end)
-            .then_some(SourceCursor { source, token });
+        let next = state.has_next(entries.range.end).then(|| SourceCursor {
+            source,
+            token: lease.cursor.token,
+            native: Some(lease.cursor.clone()),
+        });
         self.check(source, work)?;
         if self.metadata(directory, work)?.as_ref().map(version) != Some(observed) {
+            *lease
+                .cursor
+                .position
+                .lock()
+                .map_err(|_| DemandError::StaleCursor)? = DirectoryPosition::default();
             lease.state.take();
             return Err(DemandError::StaleVersion);
         }

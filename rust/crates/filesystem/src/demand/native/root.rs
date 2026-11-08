@@ -18,7 +18,7 @@ struct NativeDemandInner {
     epoch: AtomicU64,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    cursors: RankedMutex<BTreeMap<u64, Option<DirectoryState>>, CURSOR>,
+    cursors: RankedMutex<FixedIndex<RetainedWeak<DirectoryCursor>, 8>, CURSOR>,
     next_cursor: AtomicU64,
     requests: Arc<Semaphore>,
     observer: Option<Arc<dyn DemandDirectoryObserver>>,
@@ -177,7 +177,7 @@ impl NativeDemandSource {
                                     epoch: AtomicU64::new(reference.epoch),
                                     profile,
                                     limits,
-                                    cursors: RankedMutex::new(BTreeMap::new()),
+                                    cursors: RankedMutex::new(FixedIndex::default()),
                                     next_cursor: AtomicU64::new(0),
                                     requests: Arc::new(Semaphore::new(MAXIMUM_NATIVE_REQUESTS)),
                                     observer,
@@ -292,12 +292,9 @@ impl NativeDemandSource {
         result
     }
 
-    /// Invalidates prior source references and directory cursors without
+    /// Invalidates prior source references and cursors without visiting consumers.
     pub fn invalidate(&self) -> SourceReference {
         let epoch = self.inner.epoch.fetch_add(1, Ordering::AcqRel) + 1;
-        if let Ok(mut cursors) = self.inner.cursors.lock() {
-            cursors.clear();
-        }
         SourceReference {
             identity: self.inner.identity,
             epoch,

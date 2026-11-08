@@ -784,7 +784,7 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))?;
-    let cursor = first.value.next.ok_or("second root entry missing")?;
+    let cursor = first.value.next.take().ok_or("second root entry missing")?;
     assert!(matches!(
         source
             .list_page(reference, &path("/directory")?, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
@@ -794,33 +794,28 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     // Each consumer retains its own continuation. Opening unrelated consumers
     // must neither evict this position nor make its next page replay the prefix.
     let directory = path("/")?;
+    let peer_stop = CancellationToken::new();
+    let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
+        .map_err(|(error, _)| error)?;
+    let baseline = peer_work.live_allocation_bytes();
     let mut peers = Vec::new();
     for _ in 0..1024 {
         let mut peer = source
-            .list_page(
-                reference,
-                &directory,
-                None,
-                1,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .list_page(reference, &directory, None, 1, &peer_work, &peer_stop)
             .await?;
-        peer.value
-            .publication
+        peer.publication
             .as_mut()
             .ok_or("peer publication absent")?
-            .accept(&mut crate::kernel::KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED,
-                &cancellation,
+            .accept(&mut crate::kernel::KernelAccounting::native(
+                &peer_work, &peer_stop,
             ))?;
-        peers.push(peer.value.next.ok_or("peer continuation absent")?);
+        peers.push(peer.next.ok_or("peer continuation absent")?);
     }
-    let resumed = source
+    let mut resumed = source
         .list_page(
             reference,
             &directory,
-            Some(cursor),
+            Some(SourceCursor::detached(reference, cursor.token)),
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -829,8 +824,59 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
     assert_eq!(resumed.value.entries.len(), 1);
     assert_eq!(resumed.work.source_entries_visited, 0);
     assert!(resumed.value.next.is_none());
+    assert!(matches!(
+        source
+            .list_page(reference, &directory, Some(cursor.clone()), 1, WorkBudget::UNBOUNDED, &cancellation)
+            .await,
+        Err(failure) if matches!(failure.error, DemandError::CursorBusy)
+    ));
+    resumed
+        .value
+        .publication
+        .as_mut()
+        .ok_or("resumed publication absent")?
+        .abort(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))?;
+    let expected = resumed.value.entries[0].clone();
     drop(resumed);
+    let mut replayed = source
+        .list_page(
+            reference,
+            &directory,
+            Some(cursor.clone()),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+    assert_eq!(
+        replayed.value.entries.as_ref(),
+        std::slice::from_ref(&expected)
+    );
+    assert_eq!(replayed.work.source_entries_visited, 0);
+    replayed
+        .value
+        .publication
+        .as_mut()
+        .ok_or("replayed publication absent")?
+        .accept(&mut crate::kernel::KernelAccounting::standalone(
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))?;
+    drop(replayed);
+    let token = cursor.token;
+    drop(cursor);
+    drop(first);
+    peer_stop.cancel();
     drop(peers);
+    assert_eq!(peer_work.live_allocation_bytes(), baseline);
+    assert!(matches!(
+        source.list_page(reference, &directory, Some(SourceCursor::detached(reference, token)),
+            1, WorkBudget::UNBOUNDED, &cancellation).await,
+        Err(failure) if matches!(failure.error, DemandError::StaleCursor)
+    ));
     source.invalidate();
     assert!(matches!(
         source
@@ -838,6 +884,10 @@ async fn version_and_cursor_evidence_fail_closed() -> Result<(), Box<dyn Error>>
             .await,
         Err(failure) if matches!(failure.error, DemandError::StaleSource)
     ));
+    #[cfg(feature = "test-support")]
+    for (_, bytes) in crate::lazy_workspace::codec_fuzz::seeds()? {
+        assert!(crate::lazy_workspace::codec_fuzz::check(&bytes));
+    }
     Ok(())
 }
 
