@@ -528,6 +528,26 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         let edit = crate::tool::files::edit()?;
         #[cfg(not(target_arch = "wasm32"))]
         {
+            for (tool, arguments) in [
+                (edit.clone(), json!({"path":"missing.txt","old_text":"one","new_text":"two"})),
+                (crate::tools::variants::apply_patch()?, json!({"patch":"*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch"})),
+            ] {
+                let invocation = ToolInvocation {
+                    operation_id: OperationId::new(), call_id: "missing-path".into(),
+                    name: tool.definition.name.clone(), arguments,
+                };
+                let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
+                let original = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &acyclic_fs::CancellationToken::new())
+                    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+                let error = tool.executor.execute_with_native_context(&context, &invocation, &original)?.await.unwrap_err();
+                assert_eq!(error.code(), crate::wire::ErrorCode::NotFound, "{error:?}");
+                assert!(error.is_tool_failure(), "missing path stopped native tool execution: {error:?}");
+                assert!(!error.is_native_failure(), "{error:?}");
+                assert!(!error.leaves_effect_uncertain());
+                let io = crate::executor::PreparationIo::from_native_work(&original)?;
+                let cause = crate::executor::with_history_io(Some(&io), |history| crate::executor::ToolFailureCause::of(&error, history))?;
+                assert!(matches!(crate::executor::tool_failure_content(crate::executor::ToolFailureKind::ExecutorRejected, &cause, Some(&io))?, crate::model::ToolResultContent::Error { .. }));
+            }
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(), call_id: "bounded-path".into(), name: "read".into(),
                 arguments: json!({"path":"large.txt","range":{"start":1024,"end":1040}}),

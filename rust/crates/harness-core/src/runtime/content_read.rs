@@ -298,6 +298,7 @@ impl TaskContext {
                     crate::wire::ErrorCode::NotFound,
                     "selected file does not exist",
                 )
+                .tool_input()
             })?;
         crate::executor::with_history_io(io, |history| {
             scope.limits().validate_file(&file, history)?;
