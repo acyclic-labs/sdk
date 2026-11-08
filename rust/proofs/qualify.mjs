@@ -36,6 +36,28 @@ const claims = {
       ],
     },
   ],
+  "config-composition-cut": [
+    "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "composition discarded its original refused module cut", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-composition-cut/refusal.patch", label: "discarded-original-refused-module-cut", diagnostic: "composition discarded its original refused module cut" },
+        { patch: "rust/proofs/config-composition-cut/generations.patch", label: "discarded-original-layer-generations", diagnostic: "composition identity discarded its original layer generations" },
+      ],
+    },
+  ],
+  "config-retained-cut": [
+    "rust/crates/harness-core/src/config/evaluate/prepared.rs", "acyclic-harness-core",
+    "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
+    "original dependency observation was discarded", ["--features", "filesystem"],
+    {
+      mutations: [
+        { patch: "rust/proofs/config-retained-cut/absence.patch", label: "discarded-original-absent-import", diagnostic: "original dependency observation was discarded" },
+        { patch: "rust/proofs/config-retained-cut/identity.patch", label: "discarded-original-read-cut-identity", diagnostic: "settings input identity aliased a different dependency cut" },
+      ],
+    },
+  ],
   "trust-fenced-close-progress": [
     "rust/crates/stream/src/trust_feed.rs", "acyclic-stream",
     "trust_anchor::closing_a_fenced_environment_ends_its_original_anchor_wait",
