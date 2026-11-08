@@ -1,0 +1,11 @@
+diff --git a/rust/crates/test-support/src/lib.rs b/rust/crates/test-support/src/lib.rs
+--- a/rust/crates/test-support/src/lib.rs
++++ b/rust/crates/test-support/src/lib.rs
+@@ -188,6 +188,6 @@ fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
+     if !pointer.is_null() && allocate && FIRST_ALLOCATION.get() == Some(None) {
+-        FIRST_ALLOCATION.set(Some(Some(size)));
++        FIRST_ALLOCATION.set(Some(None));
+     }
+     if !pointer.is_null()
+         && let Some(mut info) = COUNTER.get()
+     {

@@ -594,7 +594,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
 }
 
 fn json(value: &impl Serialize) -> Result<Vec<u8>, WorkspaceError> {
-    serde_json::to_vec(value).map_err(WorkspaceError::engine)
+    let serialize = || serde_json::to_vec(value).map_err(WorkspaceError::engine);
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    return crate::test_support::observe_json_output(serialize);
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    serialize()
 }
 
 // Source paths are preserved in descriptors, never expanded into staging

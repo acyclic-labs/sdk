@@ -15,6 +15,11 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "allocation-first-event": [
+    "rust/crates/test-support/src/lib.rs", "acyclic-test-support",
+    "tests::accounting_matches_complete_allocation_lifetimes",
+    "first allocation event differs from physical trace", [],
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],

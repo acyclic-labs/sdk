@@ -93,6 +93,29 @@ impl std::ops::AddAssign for AllocationInfo {
 }
 thread_local! {
     static COUNTER: Cell<Option<AllocationInfo>> = const { Cell::new(None) };
+    static FIRST_ALLOCATION: Cell<Option<Option<usize>>> = const { Cell::new(None) };
+}
+struct FirstAllocationScope(Option<Option<usize>>);
+impl Drop for FirstAllocationScope {
+    fn drop(&mut self) {
+        if let Some(first) = &mut self.0 {
+            *first = first.or(FIRST_ALLOCATION.get().flatten());
+        }
+        FIRST_ALLOCATION.set(self.0);
+    }
+}
+/// Record this thread's first successful allocation, including nested scopes.
+/// The observation does not allocate and restores its caller's scope on unwind.
+pub fn first_allocation(run: impl FnOnce()) -> Option<usize> {
+    assert!(
+        INSTALLED.load(Ordering::Relaxed),
+        "acyclic_test_support::first_allocation needs `acyclic_test_support::counting_allocator!();` at this binary's crate root"
+    );
+    let scope = FirstAllocationScope(FIRST_ALLOCATION.replace(Some(None)));
+    run();
+    let first = FIRST_ALLOCATION.get().flatten();
+    drop(scope);
+    first
 }
 struct Scope(Option<AllocationInfo>);
 impl Drop for Scope {
@@ -161,6 +184,9 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
     if !INSTALLED.load(Ordering::Relaxed) {
         INSTALLED.store(true, Ordering::Relaxed);
+    }
+    if !pointer.is_null() && allocate && FIRST_ALLOCATION.get() == Some(None) {
+        FIRST_ALLOCATION.set(Some(Some(size)));
     }
     if !pointer.is_null()
         && let Some(mut info) = COUNTER.get()
