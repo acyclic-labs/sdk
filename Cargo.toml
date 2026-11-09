@@ -293,8 +293,10 @@ opt-level = 1
 # Parallel code generation without local ThinLTO keeps dev and test builds fast.
 lto = "off"
 codegen-units = 64
-# Keep panic/backtrace file:line information without full type/variable debuginfo.
-debug = "line-tables-only"
+# No debuginfo: links stay short, and every invocation path (cargo, cargo nextest,
+# any build host) compiles each crate with identical arguments, so build caches and
+# test-binary digests never split on it. Panic messages keep their file:line.
+debug = false
 
 [profile.dev.package.acyclic-fs-wire]
 opt-level = 0
