@@ -163,9 +163,13 @@ where
             work.admit(crate::WorkCounters::default())
                 .map_err(MountLifecycleError::from)
                 .map_err(|cause| (E::from(cause), None))?;
-            with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
-                .await
-                .map_err(|cause| (E::from(cause), None))?;
+            with_session_work_async(
+                &self.session,
+                self.source.as_ref(),
+                NativeSessionControl::FlushCallbacks,
+            )
+            .await
+            .map_err(|cause| (E::from(cause), None))?;
             self.source
                 .sync_async_with_permit_qualified_native_work_guarded_with_ack(
                     permit,
@@ -240,9 +244,13 @@ where
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     )));
                 }
-                with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
-                    .await
-                    .map_err(E::from)?;
+                with_session_work_async(
+                    &self.session,
+                    self.source.as_ref(),
+                    NativeSessionControl::FlushCallbacks,
+                )
+                .await
+                .map_err(E::from)?;
                 let snapshot = self
                     .source
                     .import_selected(
@@ -272,8 +280,12 @@ where
     ) -> Result<Option<crate::LazySnapshotRef>, NativeMountError> {
         work.admit(crate::WorkCounters::default())?;
         async {
-            with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
-                .await?;
+            with_session_work_async(
+                &self.session,
+                self.source.as_ref(),
+                NativeSessionControl::FlushCallbacks,
+            )
+            .await?;
             self.revalidate_async().await
         }
         .await
@@ -322,7 +334,12 @@ where
 
     async fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
         work.admit(crate::WorkCounters::default())?;
-        with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks).await?;
+        with_session_work_async(
+            &self.session,
+            self.source.as_ref(),
+            NativeSessionControl::FlushCallbacks,
+        )
+        .await?;
         self.revalidate_async().await
     }
 
