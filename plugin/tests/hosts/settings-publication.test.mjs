@@ -12,7 +12,12 @@ const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary && isAbsolute(binary), `step=admit shipping executable; recovery=${recovery}`);
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 
-for (const host of ["claude-code", "pi", "opencode"]) for (const selection of ["settings argument", "native profile"]) {
+for (const [host, profiles] of [
+  ["claude-code", [["CLAUDE_CONFIG_DIR", ""]]],
+  ["pi", [["PI_CODING_AGENT_DIR", "extensions"]]],
+  ["opencode", [["OPENCODE_CONFIG_DIR", "plugins"], ["XDG_CONFIG_HOME", "opencode/plugins"]]],
+]) for (const selectedProfile of [null, ...profiles]) {
+  const selection = selectedProfile ? `native profile ${selectedProfile[0]}` : "settings argument";
   test(`${host} CLI installs, preserves foreign settings and uninstalls using ${selection}`, async t => {
     const processes = new Processes();
     let fixture;
@@ -21,26 +26,27 @@ for (const host of ["claude-code", "pi", "opencode"]) for (const selection of ["
       fixture = hostFixtureDirectory("settings-publication-");
       const home = join(fixture, "home");
       const profile = join(fixture, "settings with spaces");
-      const settings = selection === "native profile" && host !== "claude-code"
-        ? join(profile, host === "pi" ? "extensions" : "plugins") : profile;
+      const settings = selectedProfile ? join(profile, selectedProfile[1]) : profile;
       mkdirSync(settings, { recursive: true });
       const env = environment(home, { ...nativeEnvironment(), LANG: "C.UTF-8" });
-      if (selection === "native profile") {
-        env[host === "pi" ? "PI_CODING_AGENT_DIR" : host === "opencode" ? "OPENCODE_CONFIG_DIR" : "CLAUDE_CONFIG_DIR"] = profile;
+      if (selectedProfile) {
         // A selected native profile owns configuration without a home lookup.
         // The previous installer either ignored the selector or resolved home
         // before considering it; this input refuses both paths.
-        delete env.HOME;
-        delete env.USERPROFILE;
+        // Isolate every profile selector before selecting one. In particular,
+        // XDG_CONFIG_HOME is a valid OpenCode fallback even without HOME.
+        for (const variable of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", ...profiles.map(([variable]) => variable)])
+          delete env[variable];
+        env[selectedProfile[0]] = profile;
       }
       const member = host === "pi" ? "acyclic.ts" : host === "opencode" ? "acyclic.js" : "settings.json";
       const path = join(settings, member);
-      if (selection === "native profile") {
+      if (selectedProfile) {
         step = "refuse an empty native profile without a default home";
         const refused = await processes.runOwned(binary,
           ["install", host, "--plugin-root", packageRoot], {
             cwd: fixture,
-            env: { ...env, [host === "pi" ? "PI_CODING_AGENT_DIR" : host === "opencode" ? "OPENCODE_CONFIG_DIR" : "CLAUDE_CONFIG_DIR"]: "" },
+            env: { ...env, [selectedProfile[0]]: "" },
           });
         t.diagnostic(JSON.stringify(refused));
         assert.notEqual(refused.code, 0, `step=${step}; recovery=${recovery}`);
