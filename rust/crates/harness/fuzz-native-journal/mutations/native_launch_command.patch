@@ -7,8 +7,8 @@
 -            arguments.push(cwd.into());
 +            arguments.extend(["exec", "--text", "--cd"].into_iter().map(OsString::from));
 +            arguments.push(OsString::from("/wrong-native-root"));
-             if let Some(id) = session {
-                 arguments.extend(["resume", id].into_iter().map(OsString::from));
+             if let Some(session) = session {
+                 arguments.extend(["resume", session.id].into_iter().map(OsString::from));
 @@ -204,5 +204,5 @@
          "claude-code" => {
              arguments.extend(
@@ -22,4 +22,4 @@
 -            arguments.extend(["--mode", "json", "-p"].into_iter().map(OsString::from));
 +            arguments.extend(["--kind", "text", "-p"].into_iter().map(OsString::from));
              arguments.extend(policy);
-             if let Some(file) = session {
+             // Each turn runs in a fresh view directory and the previous one

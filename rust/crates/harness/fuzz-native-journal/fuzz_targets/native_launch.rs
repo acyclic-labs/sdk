@@ -148,9 +148,22 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
         inherited,
         "native policy decoder changed root argument vector"
     );
-    for session in [None, Some(reference)] {
-        let arguments = launch::child_arguments(host, &inherited, cwd, session)
-            .map_err(|error| format!("admitted inherited policy was refused: {host}, {inherited:?}, {session:?}: {error}"))?;
+    let file = format!("{reference}.jsonl");
+    for session in [
+        None,
+        Some(launch::NativeSession {
+            id: reference,
+            file: None,
+        }),
+        Some(launch::NativeSession {
+            id: reference,
+            file: Some(&file),
+        }),
+    ] {
+        let arguments = launch::child_arguments(host, &inherited, cwd, session).map_err(|error| {
+            let session = session.map(|session| (session.id, session.file));
+            format!("admitted inherited policy was refused: {host}, {inherited:?}, {session:?}: {error}")
+        })?;
         let (prefix, suffix): (&[&str], Vec<OsString>) = match host {
             "codex" => (
                 &[],
@@ -169,13 +182,21 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
             .chain(inherited.iter().map(OsString::from))
             .chain(suffix)
             .collect::<Vec<_>>();
-        if let Some(reference) = session {
+        if let Some(session) = session {
             let option = match host {
                 "codex" => "resume",
                 "claude-code" => "--resume",
                 _ => "--fork",
             };
-            expected.extend([option, reference].into_iter().map(OsString::from));
+            let resume = if host == "pi" {
+                session.file.unwrap_or(session.id)
+            } else {
+                session.id
+            };
+            expected.extend([option, resume].into_iter().map(OsString::from));
+            if host == "pi" {
+                expected.extend(["--session-id", session.id].into_iter().map(OsString::from));
+            }
         }
         if host == "codex" {
             expected.push("-".into());
@@ -185,13 +206,24 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
             "native child changed the complete command vector"
         );
     }
-    assert!(
-        matches!(
-            launch::child_arguments(host, &inherited, cwd, Some("--untrusted-option")),
-            Err(Error::Invalid(_))
-        ),
-        "native resume reference was admitted as an option"
-    );
+    for session in [
+        launch::NativeSession {
+            id: "--untrusted-option",
+            file: None,
+        },
+        launch::NativeSession {
+            id: reference,
+            file: Some("--untrusted-option"),
+        },
+    ] {
+        assert!(
+            matches!(
+                launch::child_arguments(host, &inherited, cwd, Some(session)),
+                Err(Error::Invalid(_))
+            ),
+            "native resume reference was admitted as an option"
+        );
+    }
     Ok(())
 }
 
