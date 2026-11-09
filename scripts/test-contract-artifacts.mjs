@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { createInterface } from "node:readline";
+import { contractModules } from "./generate-contracts.mjs";
 
 test("the generator compares executed bytes and records failure without changing checked files", async () => {
   const root = mkdtempSync(join(tmpdir(), "sdk-contract-drift-"));
@@ -27,8 +28,9 @@ test("the generator compares executed bytes and records failure without changing
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
     put("scripts/package-closure.mjs", source("package-closure.mjs"));
+    put("scripts/generated-bindings.mjs", source("generated-bindings.mjs"));
     put("package.json", JSON.stringify({ workspaces: [] }));
-    for (const [, name] of generator.matchAll(/^  "([^"]+\.mjs)",/gm)) {
+    for (const name of contractModules()) {
       put(`scripts/${name}`, name === "generate-actors-routes.mjs"
         ? 'export const rust = [["fixture", "bin", "contract"]]; export const render = ([stdout]) => ({"contract.txt": stdout});'
         : 'export const render = () => ({});');
@@ -56,6 +58,7 @@ fn main() -> std::io::Result<()> {
       return result.stdout.trim();
     };
     git(["init", "--quiet"]);
+    git(["add", "contract.txt"]);
     git(["-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "Fixture"]);
     const sourceSha = git(["rev-parse", "HEAD"]);
     env.CI_HEAD_SHA = sourceSha;
@@ -88,7 +91,7 @@ JSON.parse = (text, ...args) => {
     put("candidate.txt", "substituted\n");
     const substituted = run();
     assert.notEqual(substituted.status, 0);
-    assert.match(substituted.stderr, /generated contracts are stale/);
+    assert.match(substituted.stderr, /stale artifacts contract\.txt/);
     assert.equal(receipt().status, "failed");
     assert.equal(receipt().phase, "drift-check");
     assert.equal(readFileSync(join(root, "contract.txt"), "utf8"), "current\n");
