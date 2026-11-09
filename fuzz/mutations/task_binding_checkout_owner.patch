@@ -1,0 +1,10 @@
+--- a/rust/crates/harness/src/local/workspace/task_views.rs
++++ b/rust/crates/harness/src/local/workspace/task_views.rs
+@@ -28,6 +28,7 @@
+         owner: &dyn super::owner::ViewOwner,
+         authority: &crate::filesystem::NativeMountAuthority,
+     ) -> Result<Arc<LocalWorkspace>> {
++        let _checkout = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
+         let cancellation = CancellationToken::new();
+         let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

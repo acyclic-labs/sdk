@@ -85,6 +85,7 @@ export async function pty(processes, binary, fixture, input, capture) {
         snapshots.push({ action: index, visible });
         if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         index++;
+        if (action.prompt !== undefined || action.send !== undefined || action.kill) frames.consume();
         if (action.prompt !== undefined) {
           prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);

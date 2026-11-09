@@ -54,14 +54,12 @@ impl PathSelection {
         self.view().matches_content(file)
     }
 
-    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.view().logical_owned_bytes(self.path.capacity())
     }
 }
 
 impl PathSelectionView<'_> {
-    #[cfg(feature = "filesystem")]
     fn logical_owned_bytes(&self, path_capacity: usize) -> Result<u64> {
         crate::core::owned_sum([
             self.volume.logical_owned_bytes()?,
@@ -92,6 +90,8 @@ impl PathSelectionView<'_> {
         Ok(())
     }
 }
+/// Original allocation ownership for an authored file selection.
+pub(crate) type FileSelectionCustody = Option<crate::filesystem::PreparationCustody>;
 
 /// An immutable authored file selection. This identifies the selected generation
 /// and path; it makes no whole-file digest or native snapshot completeness claim.

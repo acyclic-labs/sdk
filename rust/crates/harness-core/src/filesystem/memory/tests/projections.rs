@@ -805,6 +805,48 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         serde_json::to_value(selected).unwrap(),
         expected["file"]["authored"]
     );
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )?;
+    let available = io.remaining()?.peak_allocation_bytes;
+    let range = runtime.block_on(context.read_tool_path_range(
+        "lines.txt",
+        None,
+        acyclic_fs::ByteRange {
+            offset: 0,
+            length: 32,
+        },
+        Some(&io),
+    ))?;
+    assert!(io.remaining()?.peak_allocation_bytes < available);
+    drop(range);
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        available,
+        "retired range left its original physical storage credit behind"
+    );
+    let refused = runtime.block_on(context.read_tool_path_range(
+        "lines.txt",
+        None,
+        acyclic_fs::ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+        Some(&io),
+    ));
+    let Err(error) = refused else {
+        return Err(Error::Storage(
+            "range past the original file's end was accepted".into(),
+        ));
+    };
+    assert_eq!(error.code(), crate::wire::ErrorCode::Invalid);
+    assert_eq!(
+        io.remaining()?.peak_allocation_bytes,
+        available,
+        "refused range left its original physical storage credit behind"
+    );
     let pages = runtime.block_on(task.list_private_directory(
         &private.volume,
         "",

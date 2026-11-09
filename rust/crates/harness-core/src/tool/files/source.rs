@@ -3,7 +3,7 @@ use super::*;
 /// One decoded or provider-selected source, kept with its original funding.
 pub(super) struct ReadSource {
     pub source: Option<super::version::SelectedVersion>,
-    pub custody: acyclic_fs::NativeCustody,
+    pub custody: crate::conversation::FileSelectionCustody,
 }
 
 impl ReadSource {
@@ -27,7 +27,10 @@ impl ReadSource {
             }
             None => (None, None),
         };
-        Ok(Self { source, custody })
+        Ok(Self {
+            source,
+            custody: selection_custody(custody),
+        })
     }
 }
 
@@ -80,5 +83,18 @@ impl FileReadSource {
             Self::Content(file) => file.logical_owned_bytes(),
             Self::Authored(file) => file.logical_owned_bytes(),
         }
+    }
+}
+
+/// Keeps decoded native ownership in the same carrier as provider selections.
+pub(super) fn selection_custody(
+    custody: crate::NativeCustody,
+) -> crate::conversation::FileSelectionCustody {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    return custody.map(crate::filesystem::PreparationCustody::Native);
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        let _ = custody;
+        None
     }
 }

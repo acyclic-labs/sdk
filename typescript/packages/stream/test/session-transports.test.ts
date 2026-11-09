@@ -5,7 +5,7 @@ import { SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/
 import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
 import { SessionFilterSchema } from "../generated/proto/stream/v1/stream_pb.js";
-import { SessionNode } from "./session-node.js";
+import { SessionNode, sessionInterest } from "./session-node.js";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 import type { SessionTransport } from "../src/session.js";
 import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/auth/credential";
@@ -84,7 +84,7 @@ test("public gRPC follows and unaries share one physical HTTP/2 session", async 
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
     const hello = node.received.find(frame => frame.body.case === "hello")!;
     expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
-    const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
+    const interest = node.received.flatMap(frame => sessionInterest(frame)?.upsert ?? [])
       .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
     expect(interest?.filter).toEqual(filter);
     node.publishLatest("status", 3n);
@@ -186,7 +186,7 @@ test("public browser follows use one authenticated binary WebSocket without fetc
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
     const hello = node.received.find(frame => frame.body.case === "hello")!;
     expect(hello.body.case === "hello" && hello.body.value.credentials[0]).toEqual(new Uint8Array([1, 2, 3]));
-    const interest = node.received.flatMap(frame => frame.body.case === "interest" ? frame.body.value.upsert : [])
+    const interest = node.received.flatMap(frame => sessionInterest(frame)?.upsert ?? [])
       .find(subscription => subscription.kind.case === "follow" && subscription.kind.value.resource === "streams:/status");
     expect(interest?.filter).toEqual(filter);
     node.publishLatest("status", 3n);

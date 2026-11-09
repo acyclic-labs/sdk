@@ -86,6 +86,26 @@ fn stream_failure(case: &'static str, error: acyclic_stream::StreamError) -> Fai
     }
 }
 
+fn observation_failure(case: &'static str, error: AgentClientError) -> Failure {
+    let detail = error.to_string();
+    let cause = match error {
+        AgentClientError::Session(WireSessionError::Stream(error))
+        | AgentClientError::Subscription {
+            cause: WireSessionError::Stream(error),
+            ..
+        } => Some(Cause::Stream(error)),
+        AgentClientError::Refused { code, .. } => Some(Cause::Stream(
+            acyclic_stream::StreamError::from_session_close(&code),
+        )),
+        _ => None,
+    };
+    Failure {
+        case,
+        detail,
+        cause,
+    }
+}
+
 /// Completed cases only; not a credit, scale, outbox or OS proof.
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -129,7 +149,7 @@ async fn validate_fixture<P: StreamProvider + ?Sized>(
         if provider
             .tail(path)
             .await
-            .map_err(|error| failure("fixture_tail", error))?
+            .map_err(|error| stream_failure("fixture_tail", error))?
             != end
         {
             return Err(failure(
@@ -160,14 +180,14 @@ async fn verify_observation(
         fixture.status_from,
         credential,
     )
-    .map_err(|error| failure("open", error))?;
+    .map_err(|error| observation_failure("open", error))?;
     let mut conversation = false;
     let mut status = false;
     while !conversation || !status {
         match client
             .next()
             .await
-            .map_err(|error| failure("observe", error))?
+            .map_err(|error| observation_failure("observe", error))?
         {
             AgentEvent::Conversation {
                 agent,
@@ -208,7 +228,7 @@ async fn verify_observation(
     let revision = client.conversation().revision();
     client
         .set_view(selection(), std::iter::empty())
-        .map_err(|error| failure("retain_selection", error))?;
+        .map_err(|error| observation_failure("retain_selection", error))?;
     if client.conversation().next_sequence() != cursor
         || client.conversation().revision() != revision
         || client.conversation().records().len() != 1
@@ -293,7 +313,7 @@ async fn verify_observation(
     // tests ownership release and explicit cursor admission, not absent follows.
     client
         .set_view(AgentSelection::new(unknown, 0, 0), std::iter::empty())
-        .map_err(|error| failure("reselection_cursor", error))?;
+        .map_err(|error| observation_failure("reselection_cursor", error))?;
     if client.agent_conversation(&fixture.agent).is_some() {
         return Err(failure(
             "reselection_cursor",
@@ -305,7 +325,7 @@ async fn verify_observation(
             AgentSelection::new(fixture.agent.clone(), cursor, fixture.status_from + 1),
             std::iter::empty(),
         )
-        .map_err(|error| failure("reselection_cursor", error))?;
+        .map_err(|error| observation_failure("reselection_cursor", error))?;
     if client.conversation().next_sequence() != cursor || client.conversation().records().len() != 0
     {
         return Err(failure(

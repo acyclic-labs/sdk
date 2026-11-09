@@ -4,6 +4,9 @@ use super::*;
 use acyclic_fs::{CancellationToken, MountOptions, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
 
+#[cfg(all(test, feature = "native-execution", not(loom)))]
+mod tests;
+
 pub(super) fn view_options(
     admission: &std::sync::OnceLock<Arc<acyclic_fs::HeldRoot>>,
     options: MountOptions,
@@ -25,29 +28,50 @@ impl LocalWorkspace {
         owner: &dyn super::owner::ViewOwner,
         authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
-        let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
-        let key = project.storage_name(&mut None)?;
-        if let Some(workspace) = state
-            .allocated_workspaces
-            .get(&key)
-            .and_then(std::sync::Weak::upgrade)
-        {
-            owner.verify().await?;
-            return Ok(workspace);
-        }
-        state
-            .allocated_workspaces
-            .retain(|_, workspace| workspace.strong_count() != 0);
-        let mounts = self.bound_mounts(project, scratch, authority).await?;
-        let workspace = self
-            .mount_task_view(view, owner, Some(mounts), authority)
-            .await?;
-        // Every turn and background command of this binding shares its primary
-        // view, capture cursor and auxiliary projections through one owner.
-        state
-            .allocated_workspaces
-            .insert(key, Arc::downgrade(&workspace));
-        Ok(workspace)
+        let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let key = *blake3::hash(project.storage_name(&mut None)?.as_bytes()).as_bytes();
+        let (selection, producer) =
+            bindings::Bindings::select(&self.bindings, key, &work, &cancellation)?;
+        let mounts = if let Some(producer) = producer {
+            let mounts = self
+                .bound_mounts(project, scratch, authority, &selection.binding)
+                .await?;
+            selection.publish(&mounts)?;
+            producer.release();
+            mounts
+        } else {
+            let mounts = selection.mounts().await?;
+            if mounts
+                .named(Some(crate::filesystem::HOME_VOLUME))?
+                .1
+                .view
+                .volume
+                != scratch
+            {
+                return Err(Error::Conflict(
+                    "project already has a different live scratch binding".into(),
+                ));
+            }
+            // A retained result is physical custody, never fresh authority.
+            // Recheck the actual caller against each retained auxiliary source.
+            for (_, mount) in mounts.mounts() {
+                if let Some(source) = &mount.view.source {
+                    authority
+                        .mount_options(
+                            source.workspace.workspace(),
+                            Some(&mount.view.volume),
+                            !mount.mode.read_only(),
+                            &work,
+                        )
+                        .await?;
+                }
+            }
+            mounts
+        };
+        self.mount_task_view(view, owner, Some(mounts), authority)
+            .await
     }
 
     /// All task views enter the filesystem's shared instance. The host may
@@ -185,6 +209,8 @@ impl LocalWorkspace {
                     view.workspace().id(),
                     Arc::clone(&self.mounts),
                 ))),
+                binding: mounts.clone(),
+                bindings: self.bindings.clone(),
                 mounts: mounts.unwrap_or_else(|| Arc::clone(&self.mounts)),
                 context_line: self.context_line().into(),
                 processes: self.processes.clone(),
@@ -301,6 +327,8 @@ impl LocalWorkspace {
             context_line: mounts.context_line(),
             processes: self.processes.clone(),
             mounts: Arc::clone(&mounts),
+            binding: self.binding.clone(),
+            bindings: self.bindings.clone(),
             // This cached physical handle must not retain its owning cache.
             state: StateArc::new(AsyncMutex::new(State::new(
                 view.workspace().id(),

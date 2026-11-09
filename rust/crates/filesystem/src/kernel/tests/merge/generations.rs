@@ -338,7 +338,7 @@ fn one_file_added_on_both_sides_keeps_the_later_times() {
         .expect("the same file added twice reconciles");
     assert_eq!(merged.modified_ns, MetadataField::Value(30));
     assert_eq!(merged.posix_mode, MetadataField::Value(0o644));
-    // Without a base, authored state must agree.
+    // Without a base, two exact authored facts must agree.
     assert!(merge_added_metadata_fields(timed(30, 0o600), timed(20, 0o644)).is_none());
 }
 
@@ -447,7 +447,10 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
 }
 
 mod laws {
-    use super::{FileMetadata, MetadataField, merge_metadata_fields, resolve_three};
+    use super::{
+        FileMetadata, MetadataField, merge_added_metadata_fields, merge_metadata_fields,
+        resolve_three,
+    };
     use crate::foundation::Digest;
     use crate::storage::{ObjectId, ObjectKind};
     use proptest::prelude::*;
@@ -530,6 +533,13 @@ mod laws {
             prop_assert_eq!(
                 merge_metadata_fields(base, ours, theirs),
                 merge_metadata_fields(base, theirs, ours)
+            );
+            prop_assert_eq!(merge_added_metadata_fields(ours, FileMetadata::default()), Some(ours));
+            prop_assert_eq!(merge_added_metadata_fields(FileMetadata::default(), ours), Some(ours));
+            prop_assert_eq!(merge_added_metadata_fields(ours, ours), Some(ours));
+            prop_assert_eq!(
+                merge_added_metadata_fields(ours, theirs),
+                merge_added_metadata_fields(theirs, ours)
             );
         }
     }

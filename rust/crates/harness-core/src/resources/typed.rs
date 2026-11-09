@@ -159,12 +159,6 @@ resource_conversion!(WorkspaceRef, Workspace);
 resource_conversion!(GenerationRef, Generation);
 resource_conversion!(StreamRef, Stream);
 
-impl WorkspaceRef {
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.0.logical_owned_bytes()
-    }
-}
-
 impl GenerationRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.logical_owned_bytes()

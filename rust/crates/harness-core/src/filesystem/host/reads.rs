@@ -133,7 +133,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &unmeasured
         };
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
         let (file, reservation) = read_content_metadata(&generation, volume, path, io)
@@ -161,7 +160,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         reservation.into_retained()?;
         drop(workspace_ref);
-        drop(workspace_hold);
         Ok((file, bytes))
     }
 
@@ -342,9 +340,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &unmeasured
         };
         let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
-        let workspace_ref = (workspace_ref, workspace_hold);
-        let workspace = self.open(&workspace_ref.0, Some(io)).await?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
             None => self.current_generation(&workspace, io).await?,
@@ -438,8 +434,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let requested_hold = io.guard_owned(requested.capacity() as u64)?;
+        let requested = (requested, requested_hold);
         let stat = io
-            .sdk(generation.stat(&requested, io, io.cancellation()).await)
+            .sdk(generation.stat(&requested.0, io, io.cancellation()).await)
             .map_err(path_read_refusal)?;
         let length = match (stat.kind, stat.logical_bytes) {
             (acyclic_fs::kernel::FileKind::Regular, Some(length)) => length,
@@ -463,7 +460,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let chunk = io.sdk(
             generation
                 .read_range(
-                    &requested,
+                    &requested.0,
                     range.offset,
                     remaining.min(range.length),
                     io,
@@ -472,7 +469,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await,
         )?;
         selected.recheck(grant, io).await?;
-        drop(requested_hold);
+        drop(requested);
         let selected_id = generation.id();
         Ok((chunk.bytes, selected_id, length))
     }
@@ -509,7 +506,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &unmeasured
         };
         let reference = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
-        let reference_hold = io.guard_owned(reference.logical_owned_bytes()?)?;
         let workspace = (self).open(&reference, Some(io)).await?;
         let pinned = (self).generation(&workspace, generation, Some(io)).await?;
         let label = crate::core::filesystem_scope_label(
@@ -563,7 +559,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(path);
         drop(path_hold);
         drop(reference);
-        drop(reference_hold);
         super::super::access::require_current(&workspace, &view.0, io).await?;
         if let Some((workspace, view)) = &data_access {
             super::super::access::require_current(workspace, &view.0, io).await?;

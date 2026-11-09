@@ -19,4 +19,7 @@ there are no per-tool write markers. Resume passes the saved native session
 reference to Pi in the recreated view. The extension only obtains that opaque
 reference from Pi's session manager; Pi reads its own transcript.
 
-Merge captured changes with `acyclic fs merge agents/<reference>`.
+A parent merges its direct child's captured changes with
+`acyclic fs merge agents/<reference>`. A child returns its own result to its
+parent; it does not merge itself. Each Pi session records its canonical
+AgentPath as an `acyclic.agent.v1` custom entry, without prompt matching.

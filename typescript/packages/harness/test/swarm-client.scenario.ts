@@ -15,7 +15,7 @@ export async function exerciseAgents(stream: WasmStream, recover?: () => Promise
   const entry = (id: string) => conversation(id, inbox);
   for (const [agent, id] of [[root, rootId], [child, childId]] as const) {
     await append(`${agent}/conversation`, entry(id));
-    await append(`harness/status/${id}`, `{"phase":"running","cursor":${inbox}}`);
+    await append(agent.replace("harness/agents/", "harness/status/"), `{"phase":"running","cursor":${inbox}}`);
   }
   const client = new AgentClient(stream, root, 0n, 0n, 0);
   const record = (agent: string, index: number) => {

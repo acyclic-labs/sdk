@@ -263,7 +263,7 @@ pub use directory::{
     PrivateDirectoryPage,
 };
 pub use file_source::{FilePathSelection, PathSelection};
-pub(crate) use file_source::{PathSelectionView, names_generation};
+pub(crate) use file_source::{PathSelectionView, names_generation, FileSelectionCustody};
 pub use files::{FileDescriptor, FileRef};
 pub(crate) use files::{PublicationDomain, PublicationWitness};
 pub use message::{ConversationMessage, MessageKind};

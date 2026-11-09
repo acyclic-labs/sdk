@@ -1,0 +1,23 @@
+diff --git a/rust/crates/harness/src/local/host_owner/agents.rs b/rust/crates/harness/src/local/host_owner/agents.rs
+index 6d44180b589..35725834386 100644
+--- a/rust/crates/harness/src/local/host_owner/agents.rs
++++ b/rust/crates/harness/src/local/host_owner/agents.rs
+@@ -532,18 +532,6 @@ fn snapshot(agent: &AgentState, inbox: u64) -> OperationId {
+ 
+ /// Spawned session `reference` of `parent`: the spawn intent names it.
+ pub(crate) fn child(parent: &AgentPath, reference: &str) -> Result<AgentPath> {
+-    if reference.contains('/') {
+-        let child = AgentPath::try_from(reference.to_owned()).map_err(|_| {
+-            Error::Invalid("reference must be a local child name or a canonical AgentPath".into())
+-        })?;
+-        if !child.is_child_of(parent) {
+-            return Err(Error::Invalid(
+-                "only direct children can be waited on or coordinated; ask the owning parent"
+-                    .into(),
+-            ));
+-        }
+-        return Ok(child);
+-    }
+     super::super::host_workspace::child_reference(reference)?;
+     let intent = IntentId::try_from(reference).map_err(storage)?;
+     parent
