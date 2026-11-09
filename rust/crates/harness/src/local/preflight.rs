@@ -59,7 +59,7 @@ impl LocalHarnessConfig {
             if self.workspace_mounting == WorkspaceMounting::Native
                 && matches!(self.project, LocalProject::Workspace(_))
                 && let Err(error) =
-                    workspace::volumes::require_available(acyclic_fs::probe_native_mount())
+                    workspace::volumes::require_available(self.native_mount_probe.probe())
             {
                 failures.push(error);
             }

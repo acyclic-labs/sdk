@@ -272,7 +272,7 @@ impl HostWorkspace {
         }
         // Opening a fork is the first operation that requires an OS projection.
         // Roots coordinate and capture the already admitted physical checkout.
-        workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+        workspace::volumes::require_available(self.workspace.native_mount_probe.probe())?;
         acyclic_fs::initialize_native_mount_services_async()
             .await
             .map_err(storage)?;

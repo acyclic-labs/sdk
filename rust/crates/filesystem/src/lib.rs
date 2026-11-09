@@ -343,7 +343,7 @@ pub use native_mount::{
     MountOptions, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
     MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
     NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
-    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind,
+    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind, NativeMountProbe,
     NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
     NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,

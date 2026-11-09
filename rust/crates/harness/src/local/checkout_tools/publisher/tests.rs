@@ -94,6 +94,7 @@ async fn open_fixture(
                 operation: acyclic_fs::OperationId::new(),
                 native_mounts: false,
                 mounting: crate::local::WorkspaceMounting::Native,
+                native_mount_probe: &Default::default(),
                 authority: None,
             },
             acyclic_fs::hold_root(directory).map_err(storage)?,

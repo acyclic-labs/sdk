@@ -58,6 +58,7 @@ pub(super) type TaskMount = acyclic_fs::native_mount::LazyMount<
 
 /// Lazy view over a held checkout root, with persistent source identity.
 pub struct LocalWorkspace {
+    pub(super) native_mount_probe: acyclic_fs::NativeMountProbe,
     pub(super) path: PathBuf,
     pub(super) fresh: bool,
     /// A new native checkout still owes its first authored source import.
@@ -344,6 +345,7 @@ pub(super) struct Attach<'a> {
     pub(super) operation: acyclic_fs::OperationId,
     pub(super) native_mounts: bool,
     pub(super) mounting: WorkspaceMounting,
+    pub(super) native_mount_probe: &'a acyclic_fs::NativeMountProbe,
 }
 
 pub(super) async fn open(
@@ -420,6 +422,7 @@ pub(super) async fn open(
     )));
     let mount_directory = path.join(HOST_VIEW_ROOT);
     Ok(LocalWorkspace {
+        native_mount_probe: attach.native_mount_probe.clone(),
         #[cfg(all(test, not(loom)))]
         selection_reads: std::sync::atomic::AtomicUsize::new(0),
         #[cfg(all(test, not(loom)))]
