@@ -87,7 +87,7 @@ impl HostSession {
         )
     }
 
-    fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
+    pub(super) fn serve(&self, buffers: &mut PacketBuffers) -> Result<bool, NativeMountError> {
         let capacity = self.protocol.packet_capacity();
         // /dev/fuse needs the complete negotiated receive envelope.
         let input = PacketBuffers::input_for(&mut buffers.input, capacity, capacity)?;
@@ -98,11 +98,12 @@ impl HostSession {
         };
         let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
+        let mut pending = PendingReply::new(&self.io, self.connection.as_ref(), &request);
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
         let publish = |reply: PacketResponse<'_>| {
             if let Some(slices) = reply.slices() {
-                self.io.publish(&slices)?;
+                pending.publish(&slices)?;
             }
             #[cfg(test)]
             if let Some((capture, sequence)) = self.capture.as_ref().zip(sequence) {
@@ -166,6 +167,56 @@ impl Drop for HandshakeStop<'_> {
         if !self.0.protocol.ready() {
             self.0.io.stop();
             self.0.protocol.close();
+        }
+    }
+}
+
+/// Own the kernel's reply obligation before buffer preparation or dispatch.
+/// PacketReply only exists after dispatch; protocol closure alone cannot finish
+/// a received request while another worker or notifier retains the device.
+struct PendingReply<'a> {
+    io: &'a HostIo,
+    connection: Option<&'a Connection>,
+    unique: Option<u64>,
+}
+
+impl<'a> PendingReply<'a> {
+    fn new(
+        io: &'a HostIo,
+        connection: Option<&'a Connection>,
+        request: &PacketRequest<'_>,
+    ) -> Self {
+        Self {
+            io,
+            connection,
+            unique: (!matches!(request.opcode, 2 | 42)).then_some(request.unique),
+        }
+    }
+
+    fn publish(&mut self, slices: &[std::io::IoSlice<'_>]) -> std::io::Result<()> {
+        // A failed/short write has uncertain delivery. Do not send a second
+        // reply: end the connection instead, before any worker join can wait.
+        self.unique = None;
+        self.io.publish(slices).inspect_err(|_| self.abort())
+    }
+
+    fn abort(&self) {
+        if let Some(connection) = self.connection
+            && let Err(error) = connection.abort()
+        {
+            tracing::error!(%error, "aborting a failed FUSE reply failed");
+        }
+    }
+}
+
+impl Drop for PendingReply<'_> {
+    fn drop(&mut self) {
+        if let Some(unique) = self.unique.take() {
+            let mut error = [0; super::packet::OUTPUT_HEADER];
+            error[..4].copy_from_slice(&(super::packet::OUTPUT_HEADER as u32).to_ne_bytes());
+            error[4..8].copy_from_slice(&(-libc::EIO).to_ne_bytes());
+            error[8..].copy_from_slice(&unique.to_ne_bytes());
+            let _ = self.publish(&[std::io::IoSlice::new(&error)]);
         }
     }
 }
