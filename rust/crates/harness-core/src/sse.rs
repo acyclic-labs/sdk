@@ -203,11 +203,11 @@ impl Decoder {
         Ok(())
     }
 
-    fn add_bytes(&mut self, bytes: usize, maximum: usize) -> Result<()> {
+    fn add_bytes(&mut self, bytes: usize, maximum: Option<usize>) -> Result<()> {
         self.bytes = self
             .bytes
             .checked_add(bytes)
-            .filter(|bytes| *bytes <= maximum)
+            .filter(|bytes| maximum.is_none_or(|maximum| *bytes <= maximum))
             .ok_or_else(|| self.failure("SSE event exceeds configured byte limit"))?;
         Ok(())
     }
@@ -217,12 +217,13 @@ impl Decoder {
 /// EOF inside an event refuses; a pending body retains its original producer wait.
 pub fn frames<'a, S>(
     body: S,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
     decoder: Decoder,
 ) -> impl Stream<Item = Result<Frame>> + acyclic_stream::ProviderTask + 'a
 where
     S: Stream<Item = Result<Bytes>> + acyclic_stream::ProviderTask + Unpin + 'a,
 {
+    let maximum = maximum.into();
     futures::stream::try_unfold(
         (body, Bytes::new(), decoder),
         move |(mut body, mut chunk, mut decoder)| async move {
@@ -303,7 +304,7 @@ where
 /// Ordinary data-only projection of the same complete event decoder.
 pub fn decode<'a>(
     body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
 ) -> BoxProviderStream<'a, Result<String>> {
     Box::pin(frames(body, maximum, Decoder::default()).map(|frame| frame.map(|frame| frame.data)))
 }
@@ -373,6 +374,40 @@ mod tests {
                 });
                 assert_eq!(work.live_allocation_bytes(), baseline);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn absent_capacity_has_no_implicit_event_ceiling() {
+        let expected = "x".repeat(1024 * 1024 + 1);
+        let input = format!("data: {expected}\n\n");
+        for width in [4096, input.len()] {
+            let decode = |maximum| {
+                futures::executor::block_on(
+                    decode(
+                        Box::pin(futures::stream::iter(
+                            input
+                                .as_bytes()
+                                .chunks(width)
+                                .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                                .collect::<Vec<_>>(),
+                        )),
+                        maximum,
+                    )
+                    .collect::<Vec<_>>(),
+                )
+            };
+            let events = decode(None);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].as_ref().unwrap(), &expected);
+            let refused = decode(Some(1024 * 1024));
+            assert_eq!(refused.len(), 1);
+            assert!(refused[0].is_err());
         }
     }
 }

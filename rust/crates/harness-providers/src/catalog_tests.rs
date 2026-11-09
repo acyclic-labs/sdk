@@ -17,7 +17,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
             response_field: crate::TokenCountField::InputTokens,
             framing_tokens: 0,
         }),
-        max_event_bytes: 4096,
+        max_event_bytes: Some(4096),
         retry: crate::RetrySpec::DEFAULT,
         timeouts: crate::TimeoutSpec::DEFAULT,
         prompt_cache: crate::PromptCache::Native,
@@ -292,4 +292,28 @@ proptest! {
         Arc::make_mut(&mut selected.config).headers.insert(reserved.into(), value);
         prop_assert!(crate::registry::validate_spec("fixture", &selected.config).is_err());
     }
+}
+
+#[tokio::test]
+async fn omitted_event_capacity_reaches_protocol_admission() -> Result<()> {
+    let value = json!({"adapter":"chat","authentication":"optional",
+        "base_url":"http://localhost:1234/v1",
+        "models":{"fixture":{"capacity":{"context_tokens":8192,"output_tokens":1024}}}});
+    let spec: ProviderSpec =
+        serde_json::from_value(value).map_err(|cause| invalid(cause.to_string()))?;
+    let (_, script) = provider(Adapter::Chat, 200);
+    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), script);
+    registry.register("local".into(), spec)?;
+    let provider = registry.resolve("local/fixture")?;
+    let (request, dispatch) = request(&provider)?;
+    let events = provider
+        .generate(&request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await?;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, ModelEvent::Completed { .. }))
+    );
+    Ok(())
 }

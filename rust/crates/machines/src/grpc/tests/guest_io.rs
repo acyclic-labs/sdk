@@ -23,7 +23,8 @@ pub(super) struct GuestIo {
     file_writes: Mutex<Vec<wire::WriteFileRequest>>,
     file_read: Mutex<wire::ReadFileResponse>,
     file_write: Mutex<wire::WriteFileResponse>,
-    file_write_error: Mutex<Option<Code>>,
+    file_read_error: Mutex<Option<Status>>,
+    file_write_error: Mutex<Option<Status>>,
 }
 
 impl GuestIo {
@@ -32,6 +33,9 @@ impl GuestIo {
         request: Request<wire::ReadFileRequest>,
     ) -> Result<Response<wire::ReadFileResponse>, Status> {
         self.file_reads.lock().unwrap().push(request.into_inner());
+        if let Some(error) = self.file_read_error.lock().unwrap().clone() {
+            return Err(error);
+        }
         Ok(Response::new(self.file_read.lock().unwrap().clone()))
     }
     pub(super) fn write_file(
@@ -39,8 +43,8 @@ impl GuestIo {
         request: Request<wire::WriteFileRequest>,
     ) -> Result<Response<wire::WriteFileResponse>, Status> {
         self.file_writes.lock().unwrap().push(request.into_inner());
-        if let Some(code) = *self.file_write_error.lock().unwrap() {
-            return Err(Status::new(code, "native completion unavailable"));
+        if let Some(error) = self.file_write_error.lock().unwrap().clone() {
+            return Err(error);
         }
         Ok(Response::new(self.file_write.lock().unwrap().clone()))
     }
@@ -469,17 +473,37 @@ async fn native_files_preserve_binary_ranges_errno_and_lost_write_identity() {
         Err(ProviderError::Rejected(_))
     ));
     assert_eq!(io.file_writes.lock().unwrap().len(), before_admission);
-    let before = io.file_writes.lock().unwrap().len();
-    *io.file_write_error.lock().unwrap() = Some(Code::Unavailable);
-    assert_eq!(
-        machine
-            .write_file(access, vec![1], true)
-            .await
-            .unwrap_err()
-            .classification(),
-        &ProviderError::FileIndeterminate(machine.id())
-    );
-    assert_eq!(io.file_writes.lock().unwrap().len(), before + 1);
+    for code in [Code::Unavailable, Code::PermissionDenied] {
+        let status = Status::with_details(
+            code,
+            "native completion unavailable",
+            b"original-file-status-details".as_slice().into(),
+        );
+        *io.file_read_error.lock().unwrap() = Some(status.clone());
+        *io.file_write_error.lock().unwrap() = Some(status.clone());
+        let before_reads = io.file_reads.lock().unwrap().len();
+        let before_writes = io.file_writes.lock().unwrap().len();
+        for error in [
+            machine.read_file(access.clone(), 1).await.unwrap_err(),
+            machine
+                .write_file(access.clone(), vec![1], true)
+                .await
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                error.classification(),
+                &ProviderError::FileIndeterminate(machine.id())
+            );
+            let original = std::error::Error::source(&error)
+                .and_then(|cause| cause.downcast_ref::<Status>())
+                .expect("file reply erased its original status");
+            assert_eq!(original.code(), code);
+            assert_eq!(original.message(), status.message());
+            assert_eq!(original.details(), status.details());
+        }
+        assert_eq!(io.file_reads.lock().unwrap().len(), before_reads + 1);
+        assert_eq!(io.file_writes.lock().unwrap().len(), before_writes + 1);
+    }
     assert!(io.commands.lock().unwrap().is_empty());
     stop(shutdown, task).await;
 }
