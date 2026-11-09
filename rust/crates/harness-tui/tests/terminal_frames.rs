@@ -545,8 +545,19 @@ fn real_terminal_frame_cost() -> io::Result<()> {
                 &script,
                 include_str!("../../../../scripts/test-terminal-signals.ps1"),
             )?;
-            let status = std::process::Command::new("pwsh")
-                .args(["-NoProfile", "-File"])
+            // Windows ships this host; PowerShell 7 is an optional install.
+            // Resolve the inbox executable independently of the caller's PATH.
+            let system = std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?;
+            let powershell = std::path::Path::new(&system)
+                .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+            let status = std::process::Command::new(powershell)
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
                 .arg(script)
                 .arg("-Binary")
                 .arg(std::env::current_exe()?)

@@ -830,6 +830,16 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
     // While a process holds the fence, acceptance carries no work.
     let child: AgentPath = serde_json::from_value(accepted["task"].clone()).map_err(storage)?;
     let workspace = fixture.checkout.path().to_path_buf();
+    assert!(matches!(
+        super::super::host_process::HostProcessLease::acquire(
+            &workspace,
+            &child,
+            &workspace.with_extension("outside").join("view"),
+        ),
+        Err(Error::Unauthorized(_))
+    ));
+    // The reply may spell a Windows drive/UNC prefix in its verbatim form;
+    // the checkout's equivalent ordinary spelling must name the same fence.
     let held = super::super::host_process::HostProcessLease::acquire(
         &workspace,
         &child,

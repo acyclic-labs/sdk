@@ -142,11 +142,12 @@ impl HostProcessLease {
     /// Acquires the task's workspace-local custody before claiming an input.
     /// A live owner refuses acquisition; a dead owner's trees are fenced using
     /// the runtime's existing cross-platform process containment implementation.
-    /// Both paths are canonical: the owner that serves `view` passes the path
-    /// it mounted and never resolves it, since resolving a served view waits
-    /// on the owner's own callbacks.
+    /// Both paths name canonical locations; Windows drive/UNC prefixes may use
+    /// equivalent verbatim spelling. The owner that serves `view` passes the
+    /// path it mounted and never resolves it, since resolving a served view
+    /// waits on the owner's own callbacks.
     pub(super) fn acquire(workspace: &Path, task: &AgentPath, view: &Path) -> Result<Self> {
-        if !view.starts_with(workspace) {
+        if acyclic_native_runtime::paths::strip_native_prefix(view, workspace).is_none() {
             return Err(Error::Unauthorized(
                 "step=admit native process view: outside workspace; recovery: reopen the task through acyclic host".into(),
             ));
