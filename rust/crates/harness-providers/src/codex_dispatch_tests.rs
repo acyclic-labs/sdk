@@ -288,7 +288,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness_
                     features: ModelFeatures::default(),
                 },
             )]),
-            max_event_bytes: 4096,
+            max_event_bytes: Some(4096),
             retry: crate::RetrySpec::DEFAULT,
             timeouts: crate::TimeoutSpec::DEFAULT,
             prompt_cache: crate::PromptCache::Native,
