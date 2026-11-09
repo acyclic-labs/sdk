@@ -85,6 +85,68 @@ the command above. This runs qualification, native mounts, agent hosts, and
 generator checks through the release graph without publishing. Those reusable
 workflows have no independent manual triggers.
 
+## Release build reuse
+
+`build-product.mjs` and the release workflow's qualifier and Cargo-install
+commands use `scripts/release-build.mjs`. Each invocation emits a terminal
+`RELEASE_BUILD_RESULT` JSON line containing its action, PASS/FAIL and wall
+seconds, including failures and cache hits. Architecture/runtime ABI checks,
+installed executable checks, native mounts and assembly still run after the
+builds. A restored executable is build evidence; it is not a native-mount pass.
+
+A host can opt into the shared artifact cache by setting
+`SDK_RELEASE_BUILD_CONTEXT` to an admitted `artifact-build-context.v2` file.
+The adapter loads `/mnt/bb/cx/artifact-build.mjs`, or the absolute module named
+by `SDK_ARTIFACT_BUILD_MODULE`. Missing or invalid admitted infrastructure fails
+explicitly. Without a context, the original compiler command runs.
+
+The context declares a builder digest for OS, dependency sources and external
+configuration, a measured `toolchain` declaration, the entire compiler process
+environment's allowed names, and every mutable/generated input outside the
+clean Git tree. The shared runner executes with only that environment and keys
+the action on the tree, builder, actual environment values, command/arguments,
+output path, adapter bytes and additional input contents. Its builder digest
+does not substitute for toolchain measurement. The shared runner resolves the
+selected rustc (including rustup), hashes its bytes and `-vV`, host and target
+sysroot rlibs, compiler driver libraries, and the target specification. It hashes
+the declared cc/linker drivers and executables selected by their dry runs,
+including the backend linker. The declared drivers are pinned through `RUSTC`,
+`CC` and Cargo target linker environment variables. Wrapper dependencies outside
+those probes must be enumerated in `toolchain.executables`.
+
+`toolchain` contains absolute `rustc`, `cc` and `linker` paths, a `target` triple
+or JSON specification path, and optional additional `executables`. File hashes
+are retained by resolved path, device, inode, size, nanosecond mtime/ctime and mode;
+an unchanged file costs a stat rather than reading its bytes again. Driver probes
+and target specifications are measured each time. Measurement repeats before
+publication; toolchain installation must share the producer lease to exclude
+writes during lookup and execution. The host must decline caching when it cannot establish
+that closure. Only successful builds publish artifacts through the existing
+shared action cache; failed builds never publish a PASS.
+
+The host retains one leased checkout and compatible target directory for each
+platform/profile/flag closure. Release and artifact requests use the shared
+`release-dist` pool family, with a distinct dist compatibility identity. The
+canonical profile environment clears inherited Cargo profile and Rust flag
+overrides before execution; profiles and linker flags stay in repository config.
+The shared artifact runner partitions compiled units within that target by the
+measured toolchain key: Cargo only fingerprints compiler version output, which
+cannot detect every in-place binary or sysroot update. It maps declared target
+paths in the command to that partition and returns the executable at the recipe
+output path. Existing pool locks and content maps retain targets and restore source clocks
+across jobs. Source updates preserve unchanged file mtimes;
+Cargo then rebuilds only affected units on a cache miss. Product builds honor
+`CARGO_TARGET_DIR`; qualifier and install builds retain their separate target
+directories. The installation destination is stable within that lease, so its
+temporary name does not change the action key on every request.
+
+The artifact declaration conservatively uses the complete source tree. It can
+reuse a retry or another request for identical inputs; unrelated source edits
+still enter Cargo's incremental dependency check. A narrower artifact closure
+requires evidence of every build-script and generated input before adoption.
+Builder admission and persistent target provisioning belong to shared host
+infrastructure and require their own installed configuration.
+
 ## Dependency preservation
 
 The PR335 JavaScript updates apply to the current workspace, without replacing

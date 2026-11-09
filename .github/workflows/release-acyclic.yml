@@ -144,7 +144,8 @@ jobs:
           pids=()
           names=()
           if [[ "$BUILD_QUALIFIER" == true ]]; then
-            cargo build --timings --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
+            node scripts/release-build.mjs qualifier "$RUNNER_TEMP/target-qualifier/$CARGO_BUILD_TARGET/release/${{ matrix.qualifier }}" -- \
+              cargo build --timings --locked --release --target "$CARGO_BUILD_TARGET" -p acyclic-conformance \
               --features local-runner --bin native-mount-qualify --target-dir "$RUNNER_TEMP/target-qualifier" \
               >"$RUNNER_TEMP/qualifier.log" 2>&1 &
             pids+=("$!")
@@ -152,8 +153,9 @@ jobs:
           fi
           if [[ "$VERIFY_CARGO_INSTALL" == true ]]; then
             (
-              install_root=$(mktemp -d)
-              env -u CARGO_BUILD_TARGET cargo install --timings --locked --path plugin --root "$install_root" \
+              install_root="$RUNNER_TEMP/cargo-install-root"
+              env -u CARGO_BUILD_TARGET node scripts/release-build.mjs cargo-install "$install_root/bin/acyclic" -- \
+                cargo install --timings --locked --path plugin --root "$install_root" \
                 --target-dir "$RUNNER_TEMP/cargo-install-target"
               expected=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')
               test "$("$install_root/bin/acyclic" --version)" = "$expected"
