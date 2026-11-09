@@ -53,6 +53,10 @@ status and tools watermark are the final observation boundary, not evidence of
 a wait whose deadline fired. Reconstructed child `ended_at` values cannot
 establish wall-clock ordering here: the reviewer is assigned 22:00:32.875,
 which precedes its committed spawn result at 22:02:13.909.
+In fact, all six child end times equal the same 21:59:32.034 origin plus
+that child's sum of `usage.latency_ns`. For example, the reviewer's eight
+model calls sum to 60.841298223 seconds. Those reconstructed times omit spawn
+offsets and time outside model calls.
 
 ## Completion mechanism and attribution boundary
 
