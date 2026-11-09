@@ -80,7 +80,11 @@ impl StockExecution<'_> {
         let mut projection = self
             .transform_projection_original(&context_input, base)
             .await?;
-        let accounting = if let Some(capacity) = self.model_capacity()? {
+        let accounting = if matches!(
+            self.compaction_policy()?,
+            crate::context::CompactionPolicy::Threshold(_)
+        ) {
+            let capacity = self.model_capacity()?;
             let prepared = crate::model::PreparedModelRequest::prepare(
                 self.request_taking_context(&mut projection)?,
                 self.stock.limits,
@@ -244,7 +248,7 @@ impl StockExecution<'_> {
         match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
-                if self.model_capacity()? != Some(accounting.capacity) {
+                if self.model_capacity()? != accounting.capacity {
                     return Err(stock_boundary(
                         self.io,
                         crate::wire::ErrorCode::Conflict,
