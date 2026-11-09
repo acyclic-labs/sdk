@@ -326,11 +326,13 @@ mod tests {
                 .iter()
                 .map(|reference| reference.with_seed(custody, |seed| *seed))
                 .collect::<io::Result<Vec<_>>>()?;
-            assert_eq!(
-                references[0].with_seed(custody, |seed| *seed)?,
-                seeds[0],
-                "reopening changed an owner's seed"
-            );
+            for (reference, seed) in references.iter().zip(&seeds) {
+                assert_eq!(
+                    reference.with_seed(custody, |seed| *seed)?,
+                    *seed,
+                    "reopening changed an owner's seed"
+                );
+            }
             seeds.sort_unstable();
             seeds.dedup();
             assert_eq!(seeds.len(), references.len(), "owners shared a seed");
