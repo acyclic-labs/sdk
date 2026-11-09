@@ -76,7 +76,7 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                 let work = NativeMaterializationWork::new(
                     WorkBudget {
                         backend_read_operations: if kind == 2 {
-                            2 + (2 + u64::from(fallback)) * u64::from(admitted)
+                            2 + (3 + u64::from(fallback)) * u64::from(admitted)
                         } else {
                             (1 + u64::from(fallback)) * u64::from(admitted)
                         },
@@ -105,20 +105,26 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                         1 => root
                             .stat_source_metadata(Path::new("file"), &mut work.clone())
                             .map_err(capture_demand_error),
-                        2 => reader
-                            .as_mut()
-                            .unwrap()
-                            .0
-                            .next_metadata(&mut &work)
-                            .map(|entry| {
-                                let (mut entry, allocation) = entry.expect("fixture has one file");
-                                assert!(entry.is_named("file"));
-                                let stat = entry.stat.take().unwrap();
-                                drop(entry);
-                                drop(allocation);
-                                stat
-                            })
-                            .map_err(CaptureError::from),
+                        2 => {
+                            let reader = &mut reader.as_mut().unwrap().0;
+                            reader
+                                .next_metadata(&mut &work)
+                                .and_then(|entry| {
+                                    let (mut entry, allocation) =
+                                        entry.expect("fixture has one file");
+                                    assert!(entry.is_named("file"));
+                                    let stat = entry.stat.take().unwrap();
+                                    drop(entry);
+                                    drop(allocation);
+                                    // Native enumeration does not promise that the dot
+                                    // records precede the file. Finish the directory so
+                                    // the oracle covers all three authored records,
+                                    // independent of their order, and the EOF query.
+                                    assert!(reader.next_metadata(&mut &work)?.is_none());
+                                    Ok(stat)
+                                })
+                                .map_err(CaptureError::from)
+                        }
                         _ => root
                             .stat_source_metadata(Path::new(""), &mut work.clone())
                             .map_err(capture_demand_error),
@@ -151,7 +157,7 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                 let expected_work = before
                     .checked_add(WorkCounters {
                         backend_read_operations: if success {
-                            (if kind == 2 { 2 } else { 1 }) + u64::from(fallback)
+                            (if kind == 2 { 3 } else { 1 }) + u64::from(fallback)
                         } else {
                             0
                         },
