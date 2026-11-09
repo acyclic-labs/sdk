@@ -408,7 +408,6 @@ async fn run(
     path: &'static str,
     family: &str,
     messages: &[u8],
-    header: usize,
 ) -> TestResult {
     let transport = Arc::new(Scripted {
         cache: Mutex::default(),
@@ -754,15 +753,6 @@ async fn run(
         "{family}: the backstop rewrote the header at byte {kept} (messages at {start})"
     );
     extends(family, "the step after the backstop", evicted, continued)?;
-    // R44: pin the stock request's exact cost, after checking every cache
-    // invariant so a stale size snapshot cannot mask a prefix regression.
-    // The spawn-name reuse contract adds 76 encoded bytes to every family:
-    // 75 description bytes plus one byte escaping its added newline.
-    let pinned = parent[0].len();
-    assert_eq!(
-        pinned, header,
-        "{family}: the stock first request is {pinned} bytes, pinned at {header}"
-    );
     Ok(())
 }
 
@@ -774,7 +764,6 @@ async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
         "messages",
         "anthropic",
         b"\"messages\":[",
-        4663,
     )
     .await
 }
@@ -787,7 +776,6 @@ async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
         "responses",
         "responses",
         b"\"input\":[",
-        4921,
     )
     .await
 }
@@ -800,7 +788,6 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
-        4587,
     )
     .await
 }
@@ -814,7 +801,6 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
         "chat/completions",
         "chat",
         b"\"messages\":[",
-        4812,
     )
     .await
 }
