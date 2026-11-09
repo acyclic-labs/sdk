@@ -86,37 +86,47 @@ impl UserWatch {
         let generation = self.generation.load(Ordering::Acquire);
         let mut watches = Vec::new();
         for root in roots {
+            // Arm the root before listing: a newly created child must either
+            // be listed below or invalidate this scan through the root watch.
+            match self.watch(root) {
+                Some(watch) => watches.push(watch),
+                None => {
+                    watches.push(self.watch(root.parent()?)?);
+                    // Creation before the parent was armed cannot be cached.
+                    if root.exists() {
+                        return None;
+                    }
+                }
+            }
             let directories: Vec<PathBuf> = match std::fs::read_dir(root) {
-                Ok(entries) => std::iter::once(root.clone())
-                    .chain(
-                        entries
-                            .filter_map(std::result::Result::ok)
-                            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                            .map(|entry| entry.path()),
-                    )
+                Ok(entries) => entries
+                    .filter_map(std::result::Result::ok)
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .map(|entry| entry.path())
                     .collect(),
                 // An absent root's creation is a change in its parent.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    vec![root.parent()?.to_path_buf()]
-                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
                 Err(_) => return None,
             };
             for directory in directories {
-                let changed = Arc::clone(&self.generation);
-                let watch = acyclic_fs::hold_root(&directory)
-                    .ok()?
-                    .watch_changes(move |event| {
-                        // Reading a skill is no change to it.
-                        if !event.is_ok_and(|event| event.kind.is_access()) {
-                            changed.fetch_add(1, Ordering::AcqRel);
-                        }
-                    })
-                    .ok()?;
-                watches.push(watch);
+                watches.push(self.watch(&directory)?);
             }
         }
         *self.watches.lock().ok()? = watches;
         Some(generation)
+    }
+
+    fn watch(&self, directory: &Path) -> Option<acyclic_fs::HeldRootWatch> {
+        let changed = Arc::clone(&self.generation);
+        acyclic_fs::hold_root(directory)
+            .ok()?
+            .watch_changes(move |event| {
+                // Reading a skill is no change to it.
+                if !event.is_ok_and(|event| event.kind.is_access()) {
+                    changed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                }
+            })
+            .ok()
     }
 
     fn current(&self) -> u64 {
