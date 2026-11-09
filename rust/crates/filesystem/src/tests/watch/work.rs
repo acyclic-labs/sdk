@@ -516,12 +516,26 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     crate::watch::initialize_native_watch_services()?;
-    for (cancel_birth, fail_delivery) in [(false, false), (true, false), (true, true)] {
+    for (cancel_birth, fail_delivery) in
+        [(false, false), (true, false), (true, true), (false, true)]
+    {
         let directory = tempfile::tempdir()?;
         std::fs::create_dir(directory.path().join("child"))?;
         let birth_cancel = CancellationToken::new();
-        let birth = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &birth_cancel)
-            .map_err(|(error, _)| error)?;
+        let birth = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                // Registration returns no changes. The first actual delivery
+                // must refuse its item on the original ledger.
+                items_returned: if fail_delivery && !cancel_birth {
+                    0
+                } else {
+                    u64::MAX
+                },
+                ..WorkBudget::UNBOUNDED
+            },
+            &birth_cancel,
+        )
+        .map_err(|(error, _)| error)?;
         let mut watch = NativeWatch::open_with_profile_with_native_work(
             &directory.path().canonicalize()?,
             FilesystemProfile::Portable,
@@ -553,8 +567,8 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
             birth_cancel.cancel();
         }
         if fail_delivery {
-            // The original producer must observe its cancelled birth work on
-            // a real notification, rather than only during explicit shutdown.
+            // Observe cancellation or exhausted delivery credit on a real
+            // notification before attempting dependent housekeeping.
             std::fs::write(directory.path().join("child/reported"), b"changed")?;
             let state = watch.shared.lock().map_err(|_| "watch state poisoned")?;
             drop(
@@ -584,9 +598,9 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
                 .map_err(|(error, _)| error)?;
         let current_before = current.receipt();
         let result = watch.shutdown_with_native_work(&current);
-        if fail_delivery {
+        if fail_delivery && !cancel_birth {
             assert!(
-                matches!(result, Err(NativeWatchError::Cancelled(_))),
+                matches!(result, Err(NativeWatchError::Work(_))),
                 "original producer refusal disappeared after cleanup admission: {result:?}"
             );
         } else {

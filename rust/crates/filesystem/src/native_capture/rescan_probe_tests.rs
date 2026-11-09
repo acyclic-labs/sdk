@@ -465,9 +465,11 @@ fn exact_rescan_work_tracks_native_root_names() {
     drop(fixture._health.take());
     std::fs::rename(&long, &short).unwrap();
     assert_eq!(observations[0].2, observations[1].2);
+    // Root-name validation examines each native code unit once. The Windows
+    // full-path size query and fill are native calls, not additional scans.
     assert_eq!(
         observations[1].1 - observations[0].1,
-        (if cfg!(windows) { 2 } else { 1 }) * (observations[1].0 - observations[0].0)
+        observations[1].0 - observations[0].0
     );
     assert_ne!(
         observations[0].1, observations[1].1,

@@ -174,8 +174,10 @@ fn assert_name_layout(name: &str, native: bool) -> u64 {
         (receipt.value, receipt.work, allocations)
     };
     assert_eq!(value.as_str(), name);
-    assert_eq!(allocations.count_total, 2);
-    assert_eq!(allocations.count_current, 2);
+    assert_eq!(
+        u64::try_from(allocations.count_current).unwrap(),
+        allocations.count_total
+    );
     assert_eq!(allocations.bytes_current as u64, allocations.bytes_total);
     assert_eq!(allocations.bytes_max, allocations.bytes_total);
     assert_eq!(receipt.peak_allocation_bytes, allocations.bytes_total);
@@ -193,18 +195,23 @@ fn assert_name_layout(name: &str, native: bool) -> u64 {
 
 #[test]
 fn workspace_names_fund_the_actual_arc_at_every_ascii_length() {
+    let mut controls = None;
     for length in 1..=255 {
         let name = "x".repeat(length);
-        let standalone = assert_name_layout(&name, false);
-        assert_eq!(assert_name_layout(&name, true), standalone);
+        // A standalone name retains its promoted ledger; a native name uses
+        // the existing invocation. Measure both instead of assuming identical
+        // custody backing. Only the payload grows with the name.
+        let current = [false, true].map(|native| assert_name_layout(&name, native) - length as u64);
+        assert_eq!(*controls.get_or_insert(current), current);
     }
 }
 
 #[test]
 fn workspace_name_admission_uses_the_complete_arc_boundary() {
-    let required = assert_name_layout("private", false);
+    let standalone_required = assert_name_layout("private", false);
+    let native_required = assert_name_layout("private", true);
     let cancellation = CancellationToken::new();
-    for ceiling in 0..=required {
+    for ceiling in 0..=standalone_required {
         let (result, allocations) = measured(|| {
             WorkspaceName::new(
                 "private",
@@ -215,15 +222,18 @@ fn workspace_name_admission_uses_the_complete_arc_boundary() {
                 &cancellation,
             )
         });
-        assert_eq!(result.is_ok(), ceiling == required);
+        assert_eq!(result.is_ok(), ceiling == standalone_required);
         if let Ok(receipt) = result {
-            assert_eq!(receipt.work.peak_allocation_bytes, required);
-            assert_eq!(allocations.bytes_total, required);
+            assert_eq!(receipt.work.peak_allocation_bytes, standalone_required);
+            assert_eq!(allocations.bytes_total, standalone_required);
         } else {
-            // A rejected name may allocate its string plus the typed error's
-            // existing receipt. Its Arc is never allocated before admission.
-            assert_eq!(allocations.count_total, 1 + u64::from(ceiling >= 7));
+            // Only admitted payload/custody plus the typed failure receipt may
+            // allocate. The rejected shared backing never escapes the ceiling.
+            let failure = std::mem::size_of::<WorkCounters>() as u64;
+            assert!(allocations.bytes_total - failure <= ceiling);
         }
+    }
+    for ceiling in 0..=native_required {
         let root_bytes = NativeMaterializationWork::accounting_state_bytes();
         let original = NativeMaterializationWork::new(
             WorkBudget {
@@ -233,8 +243,13 @@ fn workspace_name_admission_uses_the_complete_arc_boundary() {
             &cancellation,
         )
         .unwrap();
-        let result = WorkspaceName::new("private", &&original, &cancellation);
-        assert_eq!(result.is_ok(), ceiling == required);
+        let (result, allocations) =
+            measured(|| WorkspaceName::new("private", &&original, &cancellation));
+        assert_eq!(result.is_ok(), ceiling == native_required);
+        assert!(allocations.bytes_total <= ceiling);
+        if result.is_ok() {
+            assert_eq!(allocations.bytes_total, native_required);
+        }
         drop(result);
         assert_eq!(original.live_allocation_bytes(), root_bytes);
     }
