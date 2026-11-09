@@ -12,11 +12,13 @@ pub fn interactive() -> bool {
 }
 
 /// Reads one line on OS input events, without a readiness timer or polling.
-/// Raw mode is restored on every return, including cancellation.
-pub fn read(label: &str, secret: bool) -> io::Result<Zeroizing<String>> {
-    // The same native lifecycle as the conversation view owns raw mode,
-    // signal restoration and Windows VT admission during setup.
-    let _terminal = crate::term::Tty::open()?;
+/// The caller owns one native terminal through setup and the conversation;
+/// dropping that owner restores raw mode, including on cancellation.
+pub fn read(
+    _terminal: &mut crate::term::Tty,
+    label: &str,
+    secret: bool,
+) -> io::Result<Zeroizing<String>> {
     let mut output = io::stdout().lock();
     write!(output, "{label}: ")?;
     output.flush()?;
@@ -62,17 +64,21 @@ pub fn read(label: &str, secret: bool) -> io::Result<Zeroizing<String>> {
 }
 
 /// Numeric choices keep provider/model names out of the input parser.
-pub fn choose(label: &str, choices: &[String]) -> io::Result<usize> {
+pub fn choose(
+    terminal: &mut crate::term::Tty,
+    label: &str,
+    choices: &[String],
+) -> io::Result<usize> {
     for (index, choice) in choices.iter().enumerate() {
-        println!("{}. {choice}", index + 1);
+        print!("{}. {choice}\r\n", index + 1);
     }
     loop {
-        let input = read(label, false)?;
+        let input = read(terminal, label, false)?;
         if let Ok(number) = input.trim().parse::<usize>()
             && let Some(index) = number.checked_sub(1).filter(|index| *index < choices.len())
         {
             return Ok(index);
         }
-        println!("Choose a listed number.");
+        print!("Choose a listed number.\r\n");
     }
 }
