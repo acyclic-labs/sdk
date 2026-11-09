@@ -23,4 +23,4 @@ printf 'NOFUSE_ENVIRONMENT sha=%s filesystem=%s fuse=absent\n' "$QUALIFICATION_S
 apt-get update -qq
 # The shared process-tree controller is a test-harness dependency.
 apt-get install -y -qq --no-install-recommends nodejs git ca-certificates python3
-node --test --test-concurrency=1 "$(dirname -- "$0")/workspace-nofuse.test.mjs"
+node --test --test-concurrency=1 "$(dirname -- "$0")/workspace-nofuse.mjs"
