@@ -17,6 +17,7 @@ use std::sync::Arc;
 pub(in crate::filesystem) struct FilesystemTurnEffects<P: ?Sized, A: 'static, O: 'static> {
     files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
+    within: acyclic_actors::addressing::ActorReference,
     agent: AgentPath,
     directory: String,
     maximum_bytes: u64,
@@ -39,6 +40,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
     pub(in crate::filesystem) fn new(
         files: Arc<AgentInternalFiles<A, O>>,
         stream: Arc<P>,
+        within: acyclic_actors::addressing::ActorReference,
         agent: AgentPath,
         (turn, segment): (OperationId, u32),
         maximum_bytes: u64,
@@ -46,6 +48,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
         Self {
             files,
             stream,
+            within,
             agent,
             directory: format!("effects/v4/{turn}/{segment}"),
             maximum_bytes,
@@ -99,21 +102,24 @@ where
                 InternalFileCreation::Existing(existing) => return decode(&existing),
                 InternalFileCreation::Vacant(file) => file,
             };
-            // A spawn names a new child: a name already taken would make the
-            // step's fork conflict on every retry.
-            if let TurnEffect::Spawn { intent, .. } = effect {
-                let child = TurnEffect::child(&self.agent, intent)
+            let mut effect = effect.clone();
+            if let TurnEffect::Spawn { intent, .. } = &mut effect {
+                let name = crate::agent::spawn_names::spawn_name(intent)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                match crate::agent::inbox_tail(&*self.stream, &child).await {
-                    Err(crate::agent::Error::NoSuchAgent) => {}
-                    Ok(_) => return Err(Error::Conflict("an agent with this name exists".into())),
-                    Err(error) => return Err(Error::Storage(error.to_string())),
-                }
+                let resolution =
+                    crate::agent::resolve_spawn_name(&self.stream, &self.within, &self.agent, name)
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                let crate::agent::SpawnResolution::Free(generation) = resolution else {
+                    return Err(Error::Conflict("an agent with this name exists".into()));
+                };
+                *intent = crate::agent::spawn_names::spawn_intent(name, generation)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
             }
-            let bytes = crate::agent::records::seal(effect)?;
+            let bytes = crate::agent::records::seal(&effect)?;
             match vacant.create(&bytes).await? {
                 Some(existing) => decode(&existing),
-                None => Ok(effect.clone()),
+                None => Ok(effect),
             }
         })
     }
@@ -163,7 +169,6 @@ mod tests {
     use super::*;
     use crate::{
         AgentId, Capabilities,
-        agent::IntentId,
         conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
         core::{AggregateKind, Authority, AuthorityRoot},
         filesystem::FilesystemHost,
@@ -211,13 +216,15 @@ mod tests {
         let effects = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"test", b"effects", b"host")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             agent,
             (OperationId::from_bytes([5; 16]), 0),
             4096,
         );
         let effect = |name: &str| -> Result<TurnEffect> {
             Ok(TurnEffect::Spawn {
-                intent: IntentId::try_from(name)
+                intent: crate::agent::spawn_names::spawn_intent(name, 0)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
                 brief: Box::new(crate::conversation::FileRef::new(
                     volume.clone(),
@@ -253,6 +260,8 @@ mod tests {
         let alone = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"test", b"effects", b"host")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
             (OperationId::from_bytes([5; 16]), 1),
             4096,
@@ -276,6 +285,8 @@ mod tests {
         let old = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"test", b"effects", b"host")
+                .map_err(|error| Error::Invalid(error.to_string()))?,
             AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
             (OperationId::from_bytes([5; 16]), 2),
             4096,
@@ -386,6 +397,8 @@ mod tests {
             let paged = FilesystemTurnEffects::new(
                 files.clone(),
                 Arc::new(acyclic_stream::MemoryStream::default()),
+                acyclic_actors::addressing::ActorReference::new(b"test", b"effects", b"host")
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
                 AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
                 (OperationId::from_bytes([5; 16]), 3),
                 4096,

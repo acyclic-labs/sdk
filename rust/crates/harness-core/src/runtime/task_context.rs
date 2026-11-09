@@ -9,9 +9,25 @@ pub struct TaskContext {
     pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
     /// The agent whose turn this is, with the volumes it binds.
     pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::VolumeBinding>)>,
+    pub(super) children: Option<Arc<dyn crate::agent::TurnChildren>>,
 }
 
 impl TaskContext {
+    /// Binds the host's shared name resolver for filesystem tools.
+    #[must_use]
+    pub fn with_agent_children(
+        mut self,
+        children: Option<Arc<dyn crate::agent::TurnChildren>>,
+    ) -> Self {
+        self.children = children;
+        self
+    }
+
+    /// The original host observer and name resolver for this turn.
+    pub fn agent_children(&self) -> Option<&dyn crate::agent::TurnChildren> {
+        self.children.as_deref()
+    }
+
     /// Retains the same finalized journal supplied to this turn's executor.
     #[must_use]
     pub fn with_execution_journal(

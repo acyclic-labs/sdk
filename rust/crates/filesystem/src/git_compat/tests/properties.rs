@@ -4,6 +4,33 @@ use proptest::prelude::*;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
+    fn branch_rebinding_preserves_the_selected_generation(stale in any::<bool>()) {
+        futures::executor::block_on(async {
+            let main = WorkspaceId::from_bytes([1; 16]);
+            let old = WorkspaceId::from_bytes([2; 16]);
+            let new = WorkspaceId::from_bytes([3; 16]);
+            let repository = GitCompatRepository::new(main, MemoryGitCompatStore::default());
+            repository.register_branch_workspace("topic", old, None, false).await.unwrap();
+            let expected = if stale { main } else { old };
+            let result = repository.rebind_branch_workspace("topic", expected, new).await;
+            prop_assert_eq!(result.is_ok(), !stale);
+            if stale {
+                prop_assert!(matches!(result, Err(GitCompatError::Contended)));
+            } else {
+                repository.rebind_branch_workspace("topic", old, new).await.unwrap();
+            }
+            let selected = if stale { old } else { new };
+            let state = repository.load().await.unwrap();
+            prop_assert_eq!(state.branches.get("topic").unwrap().workspace_id, selected);
+            let GitCommandOutput::Prepared { action, .. } = repository.execute(
+                GitCommand::Merge { branch: "topic".into() }, GitTreeRef::exact(main, generation(1)),
+            ).await.unwrap() else { panic!("pending join"); };
+            prop_assert!(matches!(action, GitFilesystemAction::Join { source_workspace, .. } if source_workspace == selected), "merge must use the selected workspace");
+            Ok(())
+        })?;
+    }
+
+    #[test]
     fn conflict_paths_belong_to_one_pending_transition(path in "[a-z]{1,16}", stale in any::<bool>()) {
         futures::executor::block_on(async {
             let main = WorkspaceId::from_bytes([1; 16]);

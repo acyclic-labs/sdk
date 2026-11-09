@@ -105,6 +105,8 @@ pub struct AgentState {
     /// Inherited conversation tail at adoption: this agent's own entries are
     /// `[conversation_base, conversation_tail)`, in increasing inbox order.
     pub conversation_base: u64,
+    /// An agent action has committed, even if its model turn never answered.
+    pub committed_actions: bool,
     /// Conversation sequence of the latest context checkpoint (compaction,
     /// rewind or clear), committed with that entry: the one entry a turn's
     /// context starts from, however far behind the tail it is.
@@ -172,6 +174,26 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// A terminal setup failure frees its name only before any reply or action
+    /// committed. Model failure after a tool action must retain the identity.
+    /// The brief is queued at adoption, not appended to the conversation: the
+    /// first committed entry includes its response. Inherited entries do not
+    /// count. Done is terminal, so a released generation remains released.
+    #[must_use]
+    pub fn released(&self) -> bool {
+        super::release::released(
+            matches!(
+                self.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            ),
+            self.conversation_tail,
+            self.conversation_base,
+            self.committed_actions,
+        )
+    }
+
     /// Whether an inbox input remains unread, queued, or is the running turn.
     /// `cursor` is the original actor delivery's exclusive inbox cursor. The
     /// bounded input window and existing overflow exceptions are the authority;
@@ -223,6 +245,7 @@ impl AgentState {
             steered_through: 0,
             dropped_before: 0,
             conversation_base: adopted.conversation_tail,
+            committed_actions: false,
             checkpoint: adopted.checkpoint,
             // A spawned agent announces its tree's roster in its first turn.
             roster: None,
@@ -775,6 +798,17 @@ fn finalize_step(
         .iter()
         .filter(|out| matches!(out, Out::Conversation(_)))
         .count() as u64;
+    state.committed_actions |= outs.iter().any(|out| {
+        matches!(
+            out,
+            Out::Spawn { .. }
+                | Out::Archive { .. }
+                | Out::Send {
+                    record: InboxRecord::Message(_),
+                    ..
+                }
+        )
+    });
     let phase = published(&state);
     // An awaited child answers its parent once it settles, in the commit
     // that publishes it so: the parent's wait wakes on exactly that record.

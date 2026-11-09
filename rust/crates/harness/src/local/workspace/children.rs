@@ -202,12 +202,13 @@ impl LocalWorkspace {
     /// project: that child's project is a lazy fork of this checkout, bound
     /// into the workspace graph (if nothing bound it earlier) and registered
     /// the first time its parent names it, in the same turn that spawned it.
-    /// A registered branch is left as it is; one discarded and named again is
+    /// A registered branch follows its child generation; one discarded and named again is
     /// registered again, since discarding retires only this repository's
     /// reference to the child's fork.
     pub(in crate::local) async fn register_named_children(
         &self,
         agent: &crate::agent::AgentPath,
+        resolver: &dyn crate::agent::TurnChildren,
         volumes: &[crate::agent::VolumeBinding],
         arguments: &[String],
     ) -> Result<()> {
@@ -241,7 +242,7 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         for name in names {
             // A name no spawn could carry names no child; git reports it.
-            let Ok(child) = crate::tools::spawned_child(agent, name) else {
+            let Some(child) = resolver.resolve(agent, name).await?.live() else {
                 continue;
             };
             let volume = crate::filesystem::spawned_binding(&child, project).map_err(storage)?;
@@ -259,16 +260,28 @@ impl LocalWorkspace {
                     state.fork_origin.is_some() && state.parent_workspace_id == Some(repository)
                 });
             let branch = format!("agents/{name}");
-            if !forked || registered.contains_key(&branch) {
+            if !forked
+                || registered
+                    .get(&branch)
+                    .is_some_and(|known| known.workspace_id == id)
+            {
                 continue;
             }
             // Bound first, so the branch names a workspace that serves reads;
             // a stop between the two steps repeats both idempotently.
             self.spawned_project_view(&volume).await?;
-            acyclic_fs::GitCompatRepository::new(repository, self.store.clone())
-                .register_branch_workspace(branch, id, None, false)
-                .await
-                .map_err(storage)?;
+            let git = acyclic_fs::GitCompatRepository::new(repository, self.store.clone());
+            match registered.get(&branch) {
+                Some(previous) => git
+                    .rebind_branch_workspace(branch, previous.workspace_id, id)
+                    .await
+                    .map_err(storage)?,
+                None => {
+                    git.register_branch_workspace(branch, id, None, false)
+                        .await
+                        .map_err(storage)?;
+                }
+            }
         }
         Ok(())
     }

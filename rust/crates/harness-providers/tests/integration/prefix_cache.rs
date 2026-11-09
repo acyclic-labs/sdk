@@ -585,7 +585,11 @@ async fn run(
         )
         .await?;
     agents.drain(&root).await?;
-    let child: AgentPath = acyclic_harness::tools::spawned_child(&root, "kid")?;
+    let child: AgentPath = agents
+        .resolve_spawn_name(&root, "kid")
+        .await?
+        .live()
+        .ok_or("missing kid")?;
     // Child homes are fresh. A matching grandchild directive requires an
     // explicit override in its own parent's home as well.
     set_template(child.clone()).await?;
@@ -599,7 +603,11 @@ async fn run(
         )
         .await?;
     agents.drain(&child).await?;
-    let grandchild = acyclic_harness::tools::spawned_child(&child, "grandkid")?;
+    let grandchild = agents
+        .resolve_spawn_name(&child, "grandkid")
+        .await?
+        .live()
+        .ok_or("missing grandkid")?;
     transport.label("grandchild");
     agents.drain(&grandchild).await?;
     transport.label("child");

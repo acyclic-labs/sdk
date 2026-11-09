@@ -19,11 +19,12 @@
 //! `merge agents/<name>` (inspect with `diff`). `wait`
 //! names that branch for each settled child it was given by spawn name.
 
+use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
     Error, Result,
     agent::{
         AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects,
+        TurnChildren, TurnEffect, TurnEffects, named_child,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -47,7 +48,8 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// Child name, unique under this agent; it names the child's path and branch.
+    /// Child name, unique under this agent; reusable after a setup failure
+    /// before any reply or agent action committed. It names the child's path and branch.
     pub name: String,
     /// Self-contained task brief, including the child's file ownership.
     pub task: String,
@@ -134,19 +136,6 @@ fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> Strin
     crate::agent::call_key(step, invocation.operation_id)
 }
 
-/// Prefix of every tool spawn's intent; the rest is the child's name.
-const SPAWN: &str = "spawn:";
-
-/// The child `parent`'s `spawn` tool names `name`: the one derivation every
-/// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
-///
-/// # Errors
-/// When `name` is not a valid spawn name or the child would exceed the depth.
-pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
-    let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
-    TurnEffect::child(parent, &intent).map_err(agent)
-}
-
 impl AgentTool {
     async fn run(
         &self,
@@ -155,7 +144,9 @@ impl AgentTool {
     ) -> Result<ToolResult> {
         let turn = &*self.turn;
         if self.name == "wait" {
-            return self.wait(invocation.arguments).await;
+            return self
+                .wait(invocation.operation_id, invocation.arguments)
+                .await;
         }
         let key = call_key(&invocation, context.as_ref());
         let operation = crate::agent::operation_key(invocation.operation_id);
@@ -172,7 +163,7 @@ impl AgentTool {
                 if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("task is empty or too large"));
                 }
-                let Ok(intent) = IntentId::try_from(format!("{SPAWN}{}", input.name)) else {
+                let Ok(intent) = spawn_intent(&input.name, 0) else {
                     return Ok(rejected(
                         "name must be short printable ASCII without spaces",
                     ));
@@ -234,20 +225,11 @@ impl AgentTool {
                 };
                 // A peer by path, or by sibling name; the scope's grants or
                 // the parent's spawn-time peers authorize it.
-                let peer = || {
-                    let path = AgentPath::try_from(input.agent.clone()).ok().or_else(|| {
-                        turn.parent
-                            .as_ref()
-                            .and_then(|parent| spawned_child(parent, &input.agent).ok())
-                    })?;
-                    let granted = context.as_ref().is_some_and(|context| {
-                        crate::agent::peer_send_allowed(context.effective_scope().grants(), &path)
-                    }) || turn.templates.as_ref().is_some_and(|(creation, _)| {
-                        crate::agent::peer_send_allowed(&creation.peers, &path)
-                    });
-                    granted.then_some(path)
+                let recipient = match self.recipient(&input.agent, true).await? {
+                    Some(path) => Some(path),
+                    None => self.peer(&input.agent, context.as_ref()).await?,
                 };
-                let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
+                let Some(to) = recipient else {
                     return Ok(rejected(
                         "send requires a parent, open child or authorized peer inbox",
                     ));
@@ -279,7 +261,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(target) = self.recipient(&input.agent, false) else {
+                let Some(target) = self.recipient(&input.agent, false).await? else {
                     return Ok(rejected("archive reaches only an open child"));
                 };
                 TurnEffect::Archive {
@@ -301,7 +283,7 @@ impl AgentTool {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
                 "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
-                "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
+                "name": spawn_name(&intent).map_err(agent)?,
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
@@ -325,25 +307,67 @@ impl AgentTool {
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    fn recipient(&self, agent: &str, parent: bool) -> Option<AgentPath> {
+    async fn recipient(&self, agent: &str, parent: bool) -> Result<Option<AgentPath>> {
         let turn = &*self.turn;
         if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
-            return Some(to.clone());
+            return Ok(Some(to.clone()));
         }
-        named_child(&turn.agent, agent).filter(|child| turn.children.contains(child))
+        Ok(
+            named_child(turn.observer.as_deref(), &turn.agent, agent, false)
+                .await?
+                .filter(|child| turn.children.contains(child)),
+        )
+    }
+
+    async fn peer(
+        &self,
+        reference: &str,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<AgentPath>> {
+        let turn = &*self.turn;
+        let path = match AgentPath::try_from(reference.to_owned()) {
+            Ok(path) => Some(path),
+            Err(_) => match &turn.parent {
+                Some(parent) => {
+                    named_child(turn.observer.as_deref(), parent, reference, false).await?
+                }
+                None => None,
+            },
+        };
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        for grants in context
+            .map(|context| context.effective_scope().grants())
+            .into_iter()
+            .chain(turn.templates.as_ref().map(|(creation, _)| &creation.peers))
+        {
+            if crate::agent::peer_send_allowed(grants, &path) {
+                return Ok(Some(path));
+            }
+            if let Some(observer) = &turn.observer
+                && let Some(parent) = &turn.parent
+            {
+                if crate::agent::sibling_send_allowed(&**observer, grants, parent, &path).await? {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Reads the named children once; see [`WaitAgentInput`]. Its call
     /// dispatches only once enough settled or its timeout passed (see
     /// [`awaited`]), so a child still running here has not settled yet or
     /// started again since, and is reported running.
-    async fn wait(&self, arguments: Value) -> Result<ToolResult> {
+    async fn wait(&self, operation: crate::OperationId, arguments: Value) -> Result<ToolResult> {
         let Some(observer) = &self.turn.observer else {
             return Ok(rejected("this host observes no children"));
         };
-        let (children, ..) = match waited(&self.turn.agent, arguments) {
+        let (children, ..) = match waited(&**observer, operation, arguments).await {
             Ok(waited) => waited,
-            Err(rejected) => return Ok(rejected),
+            Err(error @ Error::Invalid(_)) => return Ok(super::rejected_input(error)),
+            Err(error) => return Err(error),
         };
         let mut settled = Vec::with_capacity(children.len());
         let mut running = Vec::new();
@@ -381,7 +405,7 @@ impl AgentTool {
 }
 
 /// The send labels `peers` confers on a child of `parent`: each sibling
-/// name's exact inbox, or `*` for `parent`'s whole subtree. A spawning agent
+/// name's current inbox, or `*` for `parent`'s whole subtree. A spawning agent
 /// confers only inboxes under itself, which it may already reach.
 fn peer_grants(
     parent: &AgentPath,
@@ -392,50 +416,33 @@ fn peer_grants(
         grants.push(if peer == "*" {
             format!("agent.send-subtree:{parent}")
         } else {
-            let sibling = spawned_child(parent, &peer)
+            spawn_intent(&peer, 0)
                 .map_err(|_| rejected(format!("peer {peer} is not a valid sibling name")))?;
-            format!("agent.send:{sibling}")
+            format!("agent.send-sibling:{peer}")
         });
     }
     Ok(crate::Capabilities::new(grants))
-}
-
-/// The child of `agent` that `reference` names: a spawn name, or the agent
-/// path of one of its children, open or settled.
-fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
-    if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-        return path.is_child_of(agent).then_some(path);
-    }
-    spawned_child(agent, reference).ok()
 }
 
 /// The distinct children a `wait` of `agent` names, each with the reference
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
-fn waited(
-    agent: &AgentPath,
+async fn waited(
+    observer: &dyn TurnChildren,
+    operation: crate::OperationId,
     arguments: Value,
-) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
-    let input: WaitAgentInput = decode(arguments)?;
-    let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
-    for reference in input.agents {
-        let Some(child) = named_child(agent, &reference) else {
-            return Err(rejected(format!(
-                "{reference} names no child of this agent"
-            )));
-        };
-        if !children.iter().any(|(_, known)| *known == child) {
-            children.push((reference, child));
-        }
-    }
+) -> Result<(Vec<(String, AgentPath)>, u32, Option<u64>)> {
+    let input: WaitAgentInput =
+        serde_json::from_value(arguments).map_err(|error| Error::Invalid(error.to_string()))?;
+    let children = observer.select(operation, &input.agents).await?;
     if children.is_empty() {
-        return Err(rejected("wait names no child"));
+        return Err(Error::Invalid("wait names no child".into()));
     }
     let named = u32::try_from(children.len()).unwrap_or(u32::MAX);
     let need = input.need.unwrap_or(named);
     if need == 0 || need > named {
-        return Err(rejected(format!(
+        return Err(Error::Invalid(format!(
             "need must be between 1 and the {named} distinct children named"
         )));
     }
@@ -457,6 +464,7 @@ fn waited(
 /// dispatches, whether or not its condition now holds.
 pub(crate) async fn awaited(
     children: &dyn TurnChildren,
+    operation: crate::OperationId,
     tool: &str,
     arguments: &Value,
     released: &std::sync::atomic::AtomicBool,
@@ -465,8 +473,10 @@ pub(crate) async fn awaited(
         return Ok(None);
     }
     // A malformed wait dispatches to receive its error.
-    let Ok((named, mut need, timeout_ms)) = waited(children.agent(), arguments.clone()) else {
-        return Ok(None);
+    let (named, mut need, timeout_ms) = match waited(children, operation, arguments.clone()).await {
+        Ok(waited) => waited,
+        Err(Error::Invalid(_)) => return Ok(None),
+        Err(error) => return Err(error),
     };
     let mut unsettled = BTreeSet::new();
     for (_, child) in named {
@@ -708,11 +718,38 @@ mod tests {
     struct Children {
         agent: AgentPath,
         settled: BTreeSet<AgentPath>,
+        stream: Arc<acyclic_stream::MemoryStream>,
     }
 
     impl TurnChildren for Children {
         fn agent(&self) -> &AgentPath {
             &self.agent
+        }
+
+        fn select<'a>(
+            &'a self,
+            _: crate::OperationId,
+            references: &'a [String],
+        ) -> BoxProviderFuture<'a, Result<Vec<(String, AgentPath)>>> {
+            Box::pin(crate::agent::select_children(self, references))
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            parent: &'a AgentPath,
+            name: &'a str,
+        ) -> BoxProviderFuture<'a, Result<crate::agent::SpawnResolution>> {
+            Box::pin(async move {
+                crate::agent::resolve_spawn_name(
+                    &self.stream,
+                    &acyclic_actors::addressing::ActorReference::new(b"a", b"agents", b"owner")
+                        .expect("actor namespace"),
+                    parent,
+                    name,
+                )
+                .await
+                .map_err(agent)
+            })
         }
 
         fn settled<'a>(
@@ -739,37 +776,100 @@ mod tests {
     async fn a_deadline_release_goes_to_the_first_wait_it_reaches() -> Result<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
         let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-        let [a, b] = ["a", "b"].map(|name| spawned_child(&agent, name));
+        let [a, b] = ["a", "b"].map(|name| {
+            TurnEffect::child(
+                &agent,
+                &spawn_intent(name, 0).map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))
+        });
         let (a, b) = (a?, b?);
         let children = Children {
             agent: agent.clone(),
             settled: BTreeSet::from([a.clone()]),
+            stream: Arc::new(acyclic_stream::MemoryStream::default()),
         };
         let both = json!({"agents": [a.as_str(), b.as_str()], "timeout_ms": 5});
         let first = json!({"agents": [a.as_str()]});
         // Unreleased, an unmet condition holds the wait until its deadline.
-        let held = awaited(&children, "wait", &both, &AtomicBool::new(false)).await?;
+        let operation = crate::OperationId::from_bytes([1; 16]);
+        let held = awaited(&children, operation, "wait", &both, &AtomicBool::new(false)).await?;
         assert!(held.is_some_and(|until| until.need == 1 && until.timeout_ms == Some(5)));
         // The release goes to the first wait even when its condition already
         // holds, so a later wait in the turn is still held.
         let released = AtomicBool::new(true);
         assert!(
-            awaited(&children, "send", &both, &released)
+            awaited(&children, operation, "send", &both, &released)
                 .await?
                 .is_none()
         );
         assert!(released.load(Ordering::Acquire), "only a wait takes it");
         assert!(
-            awaited(&children, "wait", &first, &released)
+            awaited(&children, operation, "wait", &first, &released)
                 .await?
                 .is_none()
         );
         assert!(!released.load(Ordering::Acquire));
         assert!(
-            awaited(&children, "wait", &both, &released)
+            awaited(&children, operation, "wait", &both, &released)
                 .await?
                 .is_some()
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deepest_agent_lookup_still_reaches_its_authorized_sibling() -> Result<()> {
+        use crate::agent::{AgentId, MAX_DEPTH};
+        let mut parent = AgentPath::root(&AgentId::from_bytes([1; 16]));
+        for _ in 1..MAX_DEPTH {
+            parent = parent.child(&AgentId::from_bytes([2; 16])).map_err(agent)?;
+        }
+        let deepest = parent.child(&AgentId::from_bytes([3; 16])).map_err(agent)?;
+        let sibling = TurnEffect::child(&parent, &spawn_intent("sibling", 0).map_err(agent)?)
+            .map_err(agent)?;
+        let children = Children {
+            agent: deepest.clone(),
+            settled: BTreeSet::new(),
+            stream: Arc::new(acyclic_stream::MemoryStream::default()),
+        };
+        let actor = acyclic_actors::addressing::ActorReference::new(
+            b"a",
+            b"agents",
+            sibling.id().as_str().as_bytes(),
+        )
+        .expect("sibling actor");
+        let effects = crate::agent::actor_store(&children.stream)
+            .map_err(agent)?
+            .create(&actor, Default::default(), None)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let request = acyclic_stream::CommitRequest {
+            deadline_unix_millis: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"sibling".to_vec())
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            conditions: effects
+                .iter()
+                .flat_map(|effect| effect.conditions.clone())
+                .collect(),
+            mutations: effects.into_iter().map(|effect| effect.mutation).collect(),
+        };
+        assert!(matches!(
+            crate::agent::submit(&*children.stream, request)
+                .await
+                .map_err(agent)?,
+            crate::agent::Submitted::Committed(_)
+        ));
+        assert!(
+            named_child(Some(&children), &deepest, "sibling", false)
+                .await?
+                .is_none()
+        );
+        assert_eq!(
+            named_child(Some(&children), &parent, "sibling", false).await?,
+            Some(sibling.clone())
+        );
+        let grants = crate::Capabilities::new(["agent.send-sibling:sibling"]);
+        assert!(crate::agent::sibling_send_allowed(&children, &grants, &parent, &sibling).await?);
         Ok(())
     }
 }

@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 /// maxima, texts by their own limits), so every record a step builds is
 /// within this; `checkpoint`'s bound test checks each kind at its worst.
 pub const MAX_RECORD_BYTES: usize = 56 * 1024;
-/// Largest intent identity.
+/// Largest external intent identity or spawn-name base. Generated spawn intents
+/// append a separator and a canonical nonzero `u64` generation.
 pub const MAX_INTENT_BYTES: usize = 128;
 /// Largest failure message carried in a record.
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
@@ -40,7 +41,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 14 adds the waiting-user phase to named MessagePack values after a
 /// four-byte big-endian version.
 /// Version 15 requires membership feeds created atomically with every agent.
-pub const RECORD_VERSION: u32 = 15;
+/// Version 16 retains committed agent actions and compact wait selections.
+pub const RECORD_VERSION: u32 = 16;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
@@ -157,9 +159,10 @@ impl TryFrom<String> for IntentId {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Error> {
-        if !value.is_empty()
+        if (!value.is_empty()
             && value.len() <= MAX_INTENT_BYTES
-            && value.bytes().all(|byte| byte.is_ascii_graphic())
+            && value.bytes().all(|byte| byte.is_ascii_graphic()))
+            || super::spawn_names::generated_intent(&value)
         {
             Ok(Self(value))
         } else {
@@ -239,7 +242,8 @@ pub struct CreationConfig {
     /// The exact original template file, absent for the root default.
     pub template: Option<FileRef>,
     /// Peer inboxes this agent may `send` to beyond its parent and its open
-    /// children, as `agent.send:<path>` and `agent.send-subtree:<path>`
+    /// children, as `agent.send:<path>`, `agent.send-subtree:<path>` and
+    /// `agent.send-sibling:<name>` (resolved under this agent's parent)
     /// labels its parent conferred at spawn over its own children.
     #[serde(default, skip_serializing_if = "crate::Capabilities::is_empty")]
     pub peers: crate::Capabilities,

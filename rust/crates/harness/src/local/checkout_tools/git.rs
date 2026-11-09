@@ -34,9 +34,11 @@ impl CheckoutTools {
     ) -> Result<ToolResult> {
         // A parent names its spawned children as `agents/<name>` branches of
         // its own checkout.
-        if let Some((agent, volumes)) = context.task().agent() {
+        if let Some((agent, volumes)) = context.task().agent()
+            && let Some(resolver) = context.task().agent_children()
+        {
             self.workspace
-                .register_named_children(agent, volumes, &parsed.arguments)
+                .register_named_children(agent, resolver, volumes, &parsed.arguments)
                 .await?;
         }
         match self

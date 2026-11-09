@@ -436,6 +436,8 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     goals: Option<crate::goal::GoalContinuationPolicy>,
     policy: crate::approvals::ApprovalPolicy,
     templates: Arc<dyn crate::agent::SpawnTemplates>,
+    #[cfg(feature = "test-support")]
+    binding_fault: Option<Arc<dyn Fn(&AgentState) -> Result<()> + Send + Sync>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -519,7 +521,21 @@ where
             approvers: Default::default(),
             goals: Some(Default::default()),
             policy,
+            #[cfg(feature = "test-support")]
+            binding_fault: None,
         }
+    }
+
+    /// Injects a deterministic failure before a turn binds or reads content.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_binding_fault(
+        mut self,
+        fault: impl Fn(&AgentState) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.binding_fault = Some(Arc::new(fault));
+        self
     }
 
     /// The same reader both model and host child creation use.
@@ -1723,6 +1739,10 @@ where
             Some(stop.clone()),
             async move {
                 // The admission is verified before the turn's first read.
+                #[cfg(feature = "test-support")]
+                if let Some(fault) = &self.binding_fault {
+                    fault(agent)?;
+                }
                 let admitted = self.admit(agent)?;
                 // The model context holds every settled turn of the agent's
                 // conversation, inherited ones included: a spawned child is a
@@ -1803,11 +1823,13 @@ where
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&files),
                     Arc::clone(&self.stream),
+                    self.within.clone(),
                     agent.path.clone(),
                     (turn, segment),
                     self.limits.maximum_bytes,
                 )) as Arc<dyn crate::agent::TurnEffects>;
                 let children = Arc::new(FilesystemTurnChildren {
+                    files: Arc::clone(&files),
                     stream: Arc::clone(&self.stream),
                     within: self.within.clone(),
                     host: Arc::clone(&self.host),
@@ -1920,6 +1942,7 @@ where
 /// What one agent turn's `wait` observes: each child's status and, once it
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
@@ -1938,6 +1961,66 @@ where
 {
     fn agent(&self) -> &AgentPath {
         &self.agent
+    }
+
+    fn select<'a>(
+        &'a self,
+        operation: OperationId,
+        references: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<(String, AgentPath)>>> {
+        Box::pin(async move {
+            use super::agent_internal::InternalFileCreation;
+            let open = |bytes: &[u8]| -> Result<Vec<(String, AgentPath)>> {
+                let selected: Vec<(Option<String>, [u8; 16])> = crate::agent::records::open(bytes)
+                    .map_err(|_| Error::Storage("invalid wait selection".into()))?;
+                selected
+                    .into_iter()
+                    .map(|(reference, id)| {
+                        let child = self
+                            .agent
+                            .child(&crate::agent::AgentId::from_bytes(id))
+                            .map_err(agent_error)?;
+                        Ok((reference.unwrap_or_else(|| child.as_str().into()), child))
+                    })
+                    .collect()
+            };
+            let path = format!("waits/v1/{operation}.msgpack");
+            let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
+                InternalFileCreation::Existing(bytes) => {
+                    return open(&bytes);
+                }
+                InternalFileCreation::Vacant(file) => file,
+            };
+            let selected = crate::agent::select_children(self, references).await?;
+            // All selections are direct children. Derive their ancestry and any
+            // path reference from the owner instead of repeating it per child.
+            let compact: Vec<_> = selected
+                .iter()
+                .map(|(reference, child)| {
+                    (
+                        (reference != child.as_str()).then_some(reference),
+                        child.id_bytes(),
+                    )
+                })
+                .collect();
+            let bytes = crate::agent::records::seal(&compact)?;
+            match vacant.create(&bytes).await? {
+                None => Ok(selected),
+                Some(bytes) => open(&bytes),
+            }
+        })
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        parent: &'a AgentPath,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<crate::agent::SpawnResolution>> {
+        Box::pin(async move {
+            crate::agent::resolve_spawn_name(&self.stream, &self.within, parent, name)
+                .await
+                .map_err(agent_error)
+        })
     }
 
     fn settled<'a>(

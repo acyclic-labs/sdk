@@ -84,6 +84,21 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     /// The agent whose turn observes its children.
     fn agent(&self) -> &AgentPath;
 
+    /// Resolves a child's or sibling's spawn name from committed state.
+    fn resolve<'a>(
+        &'a self,
+        parent: &'a AgentPath,
+        name: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<super::SpawnResolution>>;
+
+    /// Pins a wait call's references to child identities before it suspends.
+    /// Replays of `operation` return the original selection after name reuse.
+    fn select<'a>(
+        &'a self,
+        operation: crate::OperationId,
+        references: &'a [String],
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<(String, AgentPath)>>>;
+
     /// `child`'s phase once it settled (see [`settled`]), else `None`.
     fn settled<'a>(
         &'a self,
@@ -96,4 +111,56 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         &'a self,
         child: &'a AgentPath,
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<String>>>;
+}
+
+/// Selects the current child, or the latest released generation when the name
+/// has no replacement. The caller persists this selection before waiting.
+pub(crate) async fn select_children(
+    observer: &dyn TurnChildren,
+    references: &[String],
+) -> crate::Result<Vec<(String, AgentPath)>> {
+    let parent = observer.agent();
+    let mut children = Vec::with_capacity(references.len());
+    for reference in references {
+        let child = named_child(Some(observer), parent, reference, true)
+            .await?
+            .ok_or_else(|| {
+                crate::Error::Invalid(format!("{reference} names no child of this agent"))
+            })?;
+        if !children.iter().any(|(_, known)| *known == child) {
+            children.push((reference.clone(), child));
+        }
+    }
+    Ok(children)
+}
+
+/// Resolves a direct child's path or spawn name. Waits may select the last
+/// released generation; commands requiring ownership select only a live name.
+pub(crate) async fn named_child(
+    observer: Option<&dyn TurnChildren>,
+    parent: &AgentPath,
+    reference: &str,
+    released: bool,
+) -> crate::Result<Option<AgentPath>> {
+    if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
+        return Ok(path.is_child_of(parent).then_some(path));
+    }
+    if parent.depth() == super::MAX_DEPTH || super::spawn_names::spawn_intent(reference, 0).is_err()
+    {
+        return Ok(None);
+    }
+    let Some(observer) = observer else {
+        return Ok(None);
+    };
+    match observer.resolve(parent, reference).await? {
+        super::SpawnResolution::Live(_, child) => Ok(Some(child)),
+        super::SpawnResolution::Free(generation) if released && generation > 0 => {
+            let intent = super::spawn_names::spawn_intent(reference, generation - 1)
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            Ok(Some(super::TurnEffect::child(parent, &intent).map_err(
+                |error| crate::Error::Invalid(error.to_string()),
+            )?))
+        }
+        super::SpawnResolution::Free(_) => Ok(None),
+    }
 }

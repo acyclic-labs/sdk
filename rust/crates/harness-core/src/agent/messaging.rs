@@ -3,6 +3,29 @@
 
 use super::AgentPath;
 
+/// A sibling capability follows its name across released setup failures. The
+/// caller supplies the sender's parent; a child cannot confer a foreign name.
+pub async fn sibling_send_allowed(
+    resolver: &dyn super::TurnChildren,
+    grants: &crate::Capabilities,
+    parent: &AgentPath,
+    recipient: &AgentPath,
+) -> crate::Result<bool> {
+    if !recipient.is_child_of(parent) {
+        return Ok(false);
+    }
+    for grant in grants.iter() {
+        if let Some(name) = grant.strip_prefix("agent.send-sibling:") {
+            if super::spawn_names::spawn_intent(name, 0).is_ok()
+                && resolver.resolve(parent, name).await?.live().as_ref() == Some(recipient)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Explicit extra authority beyond an agent's parent and open children.
 /// `agent.send:<path>` grants one inbox; `agent.send-subtree:<path>` grants
 /// that inbox and its descendants. Unrelated string prefixes never match.

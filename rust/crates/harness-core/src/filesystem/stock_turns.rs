@@ -61,7 +61,8 @@ impl Tasks {
         let context = harness
             .agent_context(&authority.grants, authority.content.clone())?
             .with_execution_journal(Arc::clone(&authority.journal))
-            .for_agent(agent.path.clone(), agent.volumes.clone());
+            .for_agent(agent.path.clone(), agent.volumes.clone())
+            .with_agent_children(authority.children.clone());
         let executor = executor
             .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
