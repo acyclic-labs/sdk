@@ -106,7 +106,7 @@ for family in [socket.AF_INET, socket.AF_INET6]:
 os.execv(sys.argv[1], sys.argv[1:])
 `;
   try {
-    for (const file of ["buf.yaml", "buf.lock", "buf.gen.yaml", "package.json",
+    for (const file of [".gitignore", "buf.yaml", "buf.lock", "buf.gen.yaml", "package.json",
       "scripts/generate-proto.mjs", "scripts/generated-bindings.mjs"]) {
       mkdirSync(dirname(join(root, file)), { recursive: true });
       cpSync(file, join(root, file));

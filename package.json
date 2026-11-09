@@ -33,6 +33,7 @@
     "@types/node": "26.6.5",
     "ajv": "8.20.0",
     "fast-check": "4.10.2",
+    "ignore": "7.0.14",
     "saxes": "6.0.0",
     "typescript": "7.0.2",
     "typescript-parser": "npm:typescript@6.0.3",

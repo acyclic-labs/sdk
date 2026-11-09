@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { generateFiles } from "./generated-bindings.mjs";
 
@@ -36,37 +36,58 @@ test("private generation publishes changed bytes, preserves unchanged files and 
   assert.equal(readFileSync(join(output, "package.json"), "utf8"), "source-owned");
 });
 
-test("every inventory importer rejects ignored copies before using files", t => {
-  const root = mkdtempSync(join(tmpdir(), "sdk-packaged-copies-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  execFileSync("git", ["init", "--quiet", root], { windowsHide: true });
+test("inventory policy rejects ignored copies in exports and checkouts independently of parent policy", t => {
+  const parent = mkdtempSync(join(tmpdir(), "sdk-packaged-copies-"));
+  const root = join(parent, "export");
+  t.after(() => rmSync(parent, { recursive: true, force: true }));
+  execFileSync("git", ["init", "--quiet", parent], { windowsHide: true });
+  writeFileSync(join(parent, ".gitignore"), "/export/\n");
+  mkdirSync(root);
   mkdirSync(join(root, "scripts"));
-  writeFileSync(join(root, ".gitignore"), "/generated/*\n!/generated/pinned.json\n");
+  symlinkSync(resolve("node_modules"), join(root, "node_modules"), "junction");
+  writeFileSync(join(root, ".gitignore"), "/generated/*\n!/generated/pinned.json\n/nested/*.json\n/blocked/\n");
+  mkdirSync(join(root, "nested"));
+  writeFileSync(join(root, "nested/.gitignore"), "!pinned.json\nlocal.json\n");
+  mkdirSync(join(root, "blocked"));
+  writeFileSync(join(root, "blocked/.gitignore"), "!pinned.json\n");
   const module = new URL("./generated-bindings.mjs", import.meta.url);
   const original = readFileSync(module, "utf8");
   const inventory = "export const packagedSourceCopies = [";
-  const run = copy => {
-    writeFileSync(join(root, "scripts/generated-bindings.mjs"), original.replace(inventory,
+  const ignored = "generated/build-only.json";
+  const copies = [ignored, "nested/ignored.json", "nested/local.json", "blocked/pinned.json",
+    "pinned/copy.json", "generated/pinned.json", "nested/pinned.json"];
+  for (const [index, copy] of copies.entries()) {
+    writeFileSync(join(root, `scripts/generated-bindings-${index}.mjs`), original.replace(inventory,
       `${inventory}\n  ["missing-source.json", ${JSON.stringify(copy)}],`));
-    return spawnSync(process.execPath, ["--input-type=module", "-e", 'import "./scripts/generated-bindings.mjs"'], {
+  }
+  const run = () => {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      const results = [];
+      for (let index = 0; index < ${copies.length}; index++) {
+        try { await import('./scripts/generated-bindings-' + index + '.mjs'); results.push(null); }
+        catch (error) { results.push(error.message); }
+      }
+      console.log(JSON.stringify(results));`], {
       cwd: root, encoding: "utf8", windowsHide: true,
     });
+    assert.equal(result.status, 0, result.stderr);
+    const errors = JSON.parse(result.stdout);
+    for (const [index, copy] of copies.entries()) {
+      if (index < 4) {
+        assert.ok(errors[index]?.startsWith(`STEP_FAILED packaged-source-copy-ignored: ${copy};`), errors[index]);
+      } else assert.equal(errors[index], null, copy);
+    }
   };
   // Absence and existence must have identical policy results, even if force-added.
-  const ignored = "generated/build-only.json";
   for (const state of ["absent", "present", "tracked"]) {
     if (state === "present") {
       mkdirSync(join(root, "generated"));
       writeFileSync(join(root, ignored), "{}");
     }
-    if (state === "tracked") execFileSync("git", ["add", "--force", ignored], { cwd: root, windowsHide: true });
-    const result = run(ignored);
-    assert.equal(result.status, 1, result.stderr);
-    assert.match(result.stderr, /STEP_FAILED packaged-source-copy-ignored: generated\/build-only\.json/);
-    assert.doesNotMatch(result.stderr, /ENOENT/);
-  }
-  for (const copy of ["pinned/copy.json", "generated/pinned.json"]) {
-    const result = run(copy);
-    assert.equal(result.status, 0, result.stderr);
+    if (state === "tracked") {
+      execFileSync("git", ["init", "--quiet", root], { windowsHide: true });
+      execFileSync("git", ["add", "--force", ignored], { cwd: root, windowsHide: true });
+    }
+    run();
   }
 });

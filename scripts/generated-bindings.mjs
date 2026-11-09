@@ -1,4 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import ignore from "ignore";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -131,13 +132,30 @@ export const packagedSourceCopies = [
   ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
 ];
 
-const ignoredCopies = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
-  cwd: sourceRoot, encoding: "utf8", windowsHide: true,
-  input: packagedSourceCopies.map(([, copy]) => copy).join("\0") + "\0",
-});
-if (ignoredCopies.error || (ignoredCopies.status !== 0 && ignoredCopies.status !== 1)) {
-  throw new Error(`STEP_FAILED packaged-source-copy-ignore-check: ${ignoredCopies.error?.message ?? ignoredCopies.stderr}`);
+// Evaluate source-owned policy even in exported trees. Parent repositories,
+// global excludes and the presence of a Git index cannot change this inventory.
+const ignoreRules = new Map();
+function ignoredSourceCopy(copy) {
+  const parts = copy.split("/");
+  const rules = [];
+  for (let depth = 0; depth < parts.length; depth++) {
+    const directory = parts.slice(0, depth).join("/");
+    if (!ignoreRules.has(directory)) {
+      const path = join(sourceRoot, directory, ".gitignore");
+      ignoreRules.set(directory, ignore({ ignorecase: false }).add(existsSync(path) ? readFileSync(path, "utf8") : ""));
+    }
+    rules.push(ignoreRules.get(directory));
+    // Stop at an excluded parent: a child's negation cannot re-include it.
+    for (let index = depth; index >= 0; index--) {
+      const path = parts.slice(index, depth + 1).join("/") + (depth < parts.length - 1 ? "/" : "");
+      const result = rules[index].test(path);
+      if (result.ignored) return true;
+      if (result.unignored) break;
+    }
+  }
+  return false;
 }
-if (ignoredCopies.status === 0) {
-  throw new Error(`STEP_FAILED packaged-source-copy-ignored: ${ignoredCopies.stdout.split("\0").filter(Boolean).join(", ")}; remove ignored copies from packagedSourceCopies`);
+const ignoredCopies = packagedSourceCopies.map(([, copy]) => copy).filter(ignoredSourceCopy);
+if (ignoredCopies.length > 0) {
+  throw new Error(`STEP_FAILED packaged-source-copy-ignored: ${ignoredCopies.join(", ")}; remove ignored copies from packagedSourceCopies`);
 }
