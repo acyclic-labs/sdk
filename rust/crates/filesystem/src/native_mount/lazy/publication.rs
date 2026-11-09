@@ -144,6 +144,8 @@ where
                 self.finish_detached_publication(&work)?;
                 self.clear_mount_removals()?;
             }
+            self.retire_settled_publication(operation, generation, &mut accounting)
+                .await?;
             return Ok(snapshot);
         }
         let published = self

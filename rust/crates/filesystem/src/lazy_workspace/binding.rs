@@ -244,6 +244,53 @@ impl<
         Err(LazyWorkspaceError::Concurrent)
     }
 
+    /// Selects companion indexes for a retained mounted checkout without mutation.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn mounted_read_state(
+        &self,
+        checkout: &crate::native_mount::SharedCheckoutObservation<'_, A, O>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        if checkout.volume_id() != self.workspace.volume.id() {
+            return Err(crate::FsError::VolumeMismatch.into());
+        }
+        let mut state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        let source = self.source.reference();
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source.identity != source.identity
+            || state.source.epoch > source.epoch
+        {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        state.require_ready_fork()?;
+        if let Some(pending) = &state.pending_remove {
+            if state.source != source {
+                return Err(LazyWorkspaceError::StaleSource);
+            }
+            // install_publication installs the candidate and retains its operation
+            // atomically. Its read projection therefore owns these prepared indexes,
+            // even before DATA is decided or while its ACK remains unknown.
+            if state.overlay != pending.prepared_overlay
+                || !matches!(
+                    pending.kind,
+                    PendingLazyRemoveKind::Mounted { idempotency_key }
+                        if Some(idempotency_key.operation_id()) == checkout.retained_operation()
+                )
+            {
+                return Err(LazyWorkspaceError::Concurrent);
+            }
+        }
+        // Readers can follow the source epoch locally, but must not CAS or recover
+        // a binding while holding the checkout/source read leases.
+        state.source = source;
+        Ok(state)
+    }
+
     pub(super) async fn recover_pending_remove(
         &self,
         ctx: &mut KernelAccounting<'_>,

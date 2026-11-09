@@ -195,13 +195,17 @@ where
                 Some(self.authored.cancellation()),
             )
             .await?;
-        observation.ensure_publication_resolved()?;
         let mut checkout = observation
             .observer(
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )
             .map_err(mount_engine_error)?;
+        let state = self
+            .lazy
+            .mounted_read_state(&observation, &mut accounting)
+            .await
+            .map_err(lazy_error)?;
         let (lookup, _, allocation) = self
             .lazy
             .inspect_unauthored(
@@ -209,6 +213,7 @@ where
                 text,
                 None,
                 crate::lazy_workspace::InspectBasis {
+                    state: Some(&state),
                     authored_absent: true,
                     ..Default::default()
                 },

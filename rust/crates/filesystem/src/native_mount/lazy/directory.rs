@@ -63,14 +63,21 @@ where
                             Some(self.authored.cancellation()),
                         )
                         .await?;
-                    observation.ensure_publication_resolved()?;
                     let mut checkout = observation
                         .observer(&mut accounting, work.cancellation())
                         .map_err(mount_engine_error)?;
-                    let (mut page, state, _page_allocation) = self
+                    let state = self
                         .runtime
                         .prepare_future(work, || {
-                            self.lazy.list_directory_in_checkout(
+                            self.lazy.mounted_read_state(&observation, &mut accounting)
+                        })?
+                        .await
+                        .map_err(lazy_error)?;
+                    let (mut page, _, _page_allocation) = self
+                        .runtime
+                        .prepare_future(work, || {
+                            self.lazy.list_directory_at(
+                                &state,
                                 &mut checkout,
                                 &text,
                                 cursor,

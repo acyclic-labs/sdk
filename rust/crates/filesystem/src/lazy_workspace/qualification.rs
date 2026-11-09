@@ -126,6 +126,63 @@ impl<
             generation: generation.id(),
         })
     }
+    /// Checks exact pending state, or a ready successor against original DATA.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub(crate) async fn publication_companion_settled(
+        &self,
+        operation: crate::OperationId,
+        context: NativeSnapshotContext,
+        generation: Option<crate::GenerationId>,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<bool, LazyWorkspaceError> {
+        let cut = match context {
+            NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
+            NativeSnapshotContext::Authored { .. } => {
+                return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+            }
+        };
+        let state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+        state.require_ready_fork()?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || cut.workspace_id != self.workspace.id()
+            || cut.config != self.workspace.volume.config
+            || state.workspace_id != cut.workspace_id
+            || state.source.identity != cut.source.identity
+            || state.source.epoch < cut.source.epoch
+            || cut.source.identity != self.source.reference().identity
+            || state.overlay != cut.overlay
+            || state.shadows != cut.shadows
+        {
+            return Err(LazyWorkspaceError::StaleIdentity);
+        }
+        match state.pending_remove {
+            None => {
+                let generation =
+                    generation.ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
+                if self
+                    .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), ctx)
+                    .await?
+                    != Some(generation)
+                {
+                    return Err(LazyWorkspaceError::OriginalSnapshotUnavailable);
+                }
+                Ok(true)
+            }
+            Some(pending)
+                if state.source == cut.source
+                    && pending.prepared_overlay == cut.overlay
+                    && matches!(pending.kind, PendingLazyRemoveKind::Mounted { idempotency_key }
+                    if idempotency_key.operation_id() == operation) =>
+            {
+                Ok(false)
+            }
+            _ => Err(LazyWorkspaceError::Concurrent),
+        }
+    }
     pub(crate) async fn publication_cut(
         &self,
         operation: Option<crate::OperationId>,

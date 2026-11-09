@@ -685,3 +685,706 @@ fn abandoned_directory_cursors_are_bounded_and_cleared() {
         Err(MountSourceError::Stale)
     ));
 }
+
+#[cfg(all(
+    feature = "native-watch",
+    feature = "local",
+    feature = "memory",
+    any(unix, windows)
+))]
+async fn mounted_native_view_of<A, O, D, S>(
+    lazy: Arc<LazyWorkspace<A, O, D, S>>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<LazyMountSource<A, O, D, S>, Box<dyn std::error::Error>>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    let cancellation = work.cancellation();
+    let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
+    let checkout = lazy
+        .workspace()
+        .checkout_accounted(
+            crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(),
+            &mut accounting,
+            cancellation,
+        )
+        .await?;
+    let config = checkout.volume_config();
+    let root = crate::workspace::customer_path_with_accounting(
+        "/",
+        config,
+        &mut accounting,
+        cancellation,
+    )?;
+    let root_text = root
+        .0
+        .unicode_text_with_accounting(&mut accounting, cancellation)
+        .map_err(crate::WorkspaceError::from)?;
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(authored_root) = root.1
+    else {
+        return Err("authored root lacks native allocation custody".into());
+    };
+    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(lazy_root) = root_text.1
+    else {
+        return Err("lazy root lacks native allocation custody".into());
+    };
+    CallbackRuntime::create()?;
+    let shared = crate::native_mount::SharedCheckout::with_publication_meter(
+        checkout,
+        crate::native_mount::MountPublication::Manual,
+        work,
+    )?;
+    let authored = adapter::tests::access::bind_test_access(
+        CheckoutMountSource::new_at_meter(shared, config, root.0, authored_root, work, None)?,
+        vec![],
+        None,
+    )?
+    .into_arc_meter(work)?;
+    // Match production mount composition: both retained roots and the source
+    // allocation belong to the original native work, not a borrowed receipt.
+    let mut source_allocation = work.claim(
+        std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64,
+        1,
+        crate::WorkCounters::UNCHARGED,
+    )?;
+    Ok(LazyMountSource::new(
+        lazy,
+        authored,
+        root_text.0,
+        adapter::NativeDemandCarrier::Native(work),
+        Some((lazy_root, &mut source_allocation)),
+    )?)
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "multi_thread")]
+async fn mounted_read_selection_rejects_other_pending_kinds_and_prepared_forks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_root = tempfile::tempdir()?;
+    std::fs::write(source_root.path().join("removed"), b"source")?;
+    let store = crate::MemoryLazyWorkspaceStore::default();
+    let view = mounted_view_of(
+        Arc::new(
+            native_source(
+                source_root.path(),
+                crate::model::FilesystemProfile::Portable,
+            )
+            .await?,
+        ),
+        "pending-read-negatives",
+        store.clone(),
+    )
+    .await?;
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let mut accounting = crate::kernel::KernelAccounting::native(&work, &cancellation);
+    let prior = view.lazy.state(&mut accounting).await?;
+    let cut = view.lazy.snapshot(&mut accounting).await?;
+    let operation = IdempotencyKey::new();
+    view.lazy
+        .prepare_mount_removals(
+            &["/removed".to_owned()],
+            &[],
+            &[],
+            operation,
+            &mut accounting,
+        )
+        .await?;
+    let staged = store
+        .load_lazy_workspace(view.lazy.workspace().id(), &mut accounting)
+        .await?
+        .ok_or("staged removal")?;
+    // This fixture supplies operation custody only to exercise rejection paths;
+    // the consumer test above obtains it through real candidate installation.
+    view.authored
+        .shared_checkout()
+        .lock()
+        .await
+        .retain_operation_id(operation.operation_id())?;
+    let mut carrier = adapter::NativeDemandCarrier::Native(&work);
+    let observation = view
+        .authored
+        .shared_checkout()
+        .observe(
+            ViewGate::callback_owner()?,
+            &mut carrier,
+            &cancellation,
+            None,
+        )
+        .await?;
+    let foreign = mounted_view(source_root.path(), "foreign-pending-read").await?;
+    let foreign_observation = foreign
+        .authored
+        .shared_checkout()
+        .observe(
+            ViewGate::callback_owner()?,
+            &mut carrier,
+            &cancellation,
+            None,
+        )
+        .await?;
+    assert!(matches!(
+        view.lazy
+            .mounted_read_state(&foreign_observation, &mut accounting)
+            .await,
+        Err(LazyWorkspaceError::Filesystem(
+            crate::FsError::VolumeMismatch
+        ))
+    ));
+    let mut revision = staged.revision;
+    for case in [
+        "source-only",
+        "authored",
+        "overlay",
+        "fork",
+        "source",
+        "epoch",
+    ] {
+        let mut next = staged.clone();
+        next.revision = revision + 1;
+        match case {
+            "source-only" => {
+                next.pending_remove.as_mut().ok_or("pending")?.kind =
+                    crate::lazy_workspace::PendingLazyRemoveKind::SourceOnly
+            }
+            "authored" => {
+                next.pending_remove.as_mut().ok_or("pending")?.kind =
+                    crate::lazy_workspace::PendingLazyRemoveKind::Authored {
+                        idempotency_key: operation,
+                    }
+            }
+            "overlay" => {
+                next.pending_remove
+                    .as_mut()
+                    .ok_or("pending")?
+                    .prepared_overlay = prior.overlay
+            }
+            "fork" => {
+                next.fork_origin = Some(crate::lazy_workspace::LazyForkOrigin {
+                    operation_id: crate::OperationId::new(),
+                    snapshot: cut,
+                    config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                    phase: crate::lazy_workspace::LazyForkPhase::Prepared,
+                })
+            }
+            "source" => next.source.identity[0] ^= 1,
+            _ => next.source.epoch += 1,
+        }
+        assert!(
+            store
+                .compare_and_swap_lazy_workspace(
+                    view.lazy.workspace().id(),
+                    revision,
+                    next.clone(),
+                    &mut accounting,
+                )
+                .await?
+        );
+        revision = next.revision;
+        assert!(matches!(
+            view.lazy
+                .mounted_read_state(&observation, &mut accounting)
+                .await,
+            Err(LazyWorkspaceError::Concurrent | LazyWorkspaceError::StaleSource)
+        ));
+        assert_eq!(
+            store
+                .load_lazy_workspace(view.lazy.workspace().id(), &mut accounting)
+                .await?,
+            Some(next),
+            "rejected read changed durable pending-removal authority"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "native-watch",
+    feature = "local",
+    feature = "memory",
+    any(unix, windows)
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::{KernelAccounting, KernelOwnedAllocation};
+    use crate::lazy_workspace::{
+        LazyOverlay, LazyOverlayId, LazyShadow, LazyShadowId, LazyWorkspaceState,
+        PendingLazyRemoveKind,
+    };
+    use std::sync::atomic::AtomicBool;
+
+    #[derive(Clone)]
+    struct PausedSettlement {
+        inner: crate::core_state::LocalCoreStateStore,
+        armed: Arc<AtomicBool>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        cancel_after_cas: bool,
+    }
+    impl LazyWorkspaceStore for PausedSettlement {
+        async fn load_lazy_workspace(
+            &self,
+            id: crate::WorkspaceId,
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<Option<LazyWorkspaceState>, LazyWorkspaceError> {
+            self.inner.load_lazy_workspace(id, ctx).await
+        }
+        async fn load_lazy_overlay(
+            &self,
+            id: LazyOverlayId,
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<Option<(LazyOverlay, KernelOwnedAllocation)>, LazyWorkspaceError> {
+            self.inner.load_lazy_overlay(id, ctx).await
+        }
+        async fn load_lazy_shadow(
+            &self,
+            id: LazyShadowId,
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<Option<(LazyShadow, KernelOwnedAllocation)>, LazyWorkspaceError> {
+            self.inner.load_lazy_shadow(id, ctx).await
+        }
+        async fn compare_and_swap_lazy_workspace(
+            &self,
+            id: crate::WorkspaceId,
+            revision: u64,
+            state: LazyWorkspaceState,
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<bool, LazyWorkspaceError> {
+            let mut settlement = false;
+            if state.pending_remove.is_none() && self.armed.load(Ordering::Acquire) {
+                let original = self.inner.load_lazy_workspace(id, ctx).await?;
+                if original.as_ref().is_some_and(|original| {
+                    original.revision == revision
+                        && original.pending_remove.as_ref().is_some_and(|pending| {
+                            matches!(pending.kind, PendingLazyRemoveKind::Mounted { .. })
+                        })
+                }) && self.armed.swap(false, Ordering::AcqRel)
+                {
+                    settlement = true;
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+            }
+            let applied = self
+                .inner
+                .compare_and_swap_lazy_workspace(id, revision, state, ctx)
+                .await?;
+            if settlement && applied && self.cancel_after_cas {
+                ctx.native_work()
+                    .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?
+                    .cancellation()
+                    .cancel();
+            }
+            Ok(applied)
+        }
+        async fn put_lazy_overlay(
+            &self,
+            id: LazyOverlayId,
+            value: (LazyOverlay, KernelOwnedAllocation),
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<(), LazyWorkspaceError> {
+            self.inner.put_lazy_overlay(id, value, ctx).await
+        }
+        async fn put_lazy_shadow(
+            &self,
+            id: LazyShadowId,
+            value: (LazyShadow, KernelOwnedAllocation),
+            ctx: &mut KernelAccounting<'_>,
+        ) -> Result<(), LazyWorkspaceError> {
+            self.inner.put_lazy_shadow(id, value, ctx).await
+        }
+    }
+
+    for (unknown_ack, cancel_after_cas) in [(false, false), (true, false), (false, true)] {
+        let source_root = tempfile::tempdir()?;
+        let state_root = tempfile::tempdir()?;
+        std::fs::write(source_root.path().join("source-only"), b"source")?;
+        std::fs::write(source_root.path().join("removed"), b"removed")?;
+        let store = PausedSettlement {
+            inner: crate::core_state::LocalCoreStateStore::new(state_root.path()),
+            armed: Arc::new(AtomicBool::new(false)),
+            entered: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            cancel_after_cas,
+        };
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut accounting = KernelAccounting::native(&work, &cancellation);
+        let simulation = crate::Simulation::default();
+        let (authority, objects) = simulation.stores();
+        let fs = crate::Fs::new(authority, objects, crate::EmbeddedCapabilities::MEMORY);
+        let lazy = Arc::new(
+            LazyWorkspace::attach(
+                &fs,
+                "post-ack-settlement",
+                Arc::new(
+                    native_source(
+                        source_root.path(),
+                        crate::model::FilesystemProfile::Portable,
+                    )
+                    .await?,
+                ),
+                store.clone(),
+                crate::VolumeInitialization {
+                    config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+                    access_policy: None,
+                },
+                crate::OperationId::new(),
+                &mut accounting,
+            )
+            .await?
+            .0,
+        );
+        let view = Arc::new(mounted_native_view_of(lazy, &work).await?);
+        let source_path = mounted(&["source-only"]);
+        let expected_source = view
+            .lookup_pinned_with_meter(&source_path, &work)?
+            .ok_or("source-only lookup")?;
+        let source_pin = expected_source.1.ok_or("source content pin")?;
+        let authored_path = mounted(&["authored"]);
+        view.create_file(&authored_path, FileMetadata::default(), None, &work)?;
+        view.write_range(&authored_path, 0, Bytes::from_static(b"authored"))?;
+        let expected_authored = view
+            .lookup_with_meter(&authored_path, &work)?
+            .ok_or("authored lookup")?;
+        view.remove(&mounted(&["removed"]), None, &work)?;
+        let root_before = view
+            .authored
+            .shared_checkout()
+            .lock()
+            .await
+            .root()
+            .file_table;
+        store.armed.store(true, Ordering::Release);
+        let original = work.clone();
+        let allow = move |work: &crate::NativeMaterializationWork| {
+            assert!(work.shares_ledger(&original));
+            assert!(work.shares_resource_allowance(&original));
+            std::future::ready(Ok::<(), MountSourceError>(()))
+        };
+        let mut acknowledged = None;
+        if unknown_ack {
+            simulation.schedule_next(
+                crate::SimulationOperation::AuthorityAppend,
+                crate::SimulationFault::AmbiguousAuthorityAppend,
+            )?;
+            let lost = view
+                .sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                    crate::PublicationPermit::Unrestricted,
+                    &work,
+                    &cancellation,
+                    &mut acknowledged,
+                    allow.clone(),
+                )
+                .await;
+            assert!(matches!(
+                lost,
+                Err((
+                    MountSourceError::Filesystem(crate::FsError::Authority(
+                        crate::AuthorityStoreError::Indeterminate { .. }
+                    )),
+                    _
+                ))
+            ));
+            assert!(acknowledged.is_none());
+            assert_eq!(
+                view.lookup_pinned_with_meter(&source_path, &work)?,
+                Some(expected_source)
+            );
+            let mut carrier = adapter::NativeDemandCarrier::Native(&work);
+            assert!(matches!(
+                view.authored
+                    .shared_checkout()
+                    .candidate(
+                        None,
+                        &mut carrier,
+                        &cancellation,
+                        Some(view.authored.cancellation()),
+                    )
+                    .await,
+                Err(MountSourceError::Stale)
+            ));
+        }
+        let appended_before_reconciliation = work.receipt().authority_records_appended;
+        let guarded = move |work: &crate::NativeMaterializationWork| {
+            assert!(!unknown_ack, "a durable original must not be sealed twice");
+            allow(work)
+        };
+        let mut publication = Box::pin(
+            view.sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                crate::PublicationPermit::Unrestricted,
+                &work,
+                &cancellation,
+                &mut acknowledged,
+                guarded,
+            ),
+        );
+        tokio::select! {
+            _ = store.entered.notified() => {}
+            result = &mut publication => panic!("publication escaped its real settlement CAS: {result:?}"),
+        }
+        // DATA is durable and the real companion CAS is still pending. This is
+        // after SharedCheckout::publish returned, not inside its pre-DATA guard.
+        let pending = store
+            .inner
+            .load_lazy_workspace(view.lazy.workspace().id(), &mut accounting)
+            .await?
+            .ok_or("pending companion")?;
+        let pending_remove = pending.pending_remove.as_ref().ok_or("mounted marker")?;
+        let PendingLazyRemoveKind::Mounted { idempotency_key } = pending_remove.kind else {
+            return Err("wrong pending kind".into());
+        };
+        let generation = view
+            .lazy
+            .operation_generation(idempotency_key, &mut accounting)
+            .await?
+            .ok_or("DATA was not committed before settlement")?;
+        let mut carrier = adapter::NativeDemandCarrier::Native(&work);
+        let observation = view
+            .authored
+            .shared_checkout()
+            .observe(
+                ViewGate::callback_owner()?,
+                &mut carrier,
+                &cancellation,
+                Some(view.authored.cancellation()),
+            )
+            .await?;
+        let observed_operation = observation.retained_operation();
+        let observed_root = observation.root().file_table;
+        let observed_generation = observation.generation_id();
+        let source_lookup = view.lookup_pinned_with_meter(&source_path, &work);
+        let source_bytes = view.read_range_with_meter(&source_path, 0, 6, &work);
+        let mut pinned_delivered = 0;
+        let mut pinned_packets_match = true;
+        let pinned_delivery = view.read_pinned_with_meter(
+            &source_path,
+            source_pin,
+            crate::ByteRange {
+                offset: 0,
+                length: 6,
+            },
+            3,
+            &mut |offset, packet| {
+                let packet_bytes = packet.bytes.as_ref();
+                let end = pinned_delivered + packet_bytes.len();
+                pinned_packets_match &= offset == pinned_delivered as u64
+                    && b"source".get(pinned_delivered..end) == Some(packet_bytes);
+                pinned_delivered = end;
+                Ok(())
+            },
+            &work,
+        );
+        let root_lookup = view.lookup_with_meter(&MountPath::root(), &work);
+        let authored_lookup = view.lookup_with_meter(&authored_path, &work);
+        let authored_bytes = view.read_range_with_meter(&authored_path, 0, 8, &work);
+        let identity = view
+            .authored
+            .record_by_id(
+                expected_authored.node.file_id,
+                ViewGate::callback_owner()?,
+                &mut carrier,
+            )
+            .await;
+        let directory = (|| {
+            let mut pages = Vec::<MountDirectoryPage>::new();
+            for _ in 0..4 {
+                let cursor = pages.last().and_then(|page| page.next_cursor.as_deref());
+                let page = view.read_directory_with_meter(&MountPath::root(), cursor, 1, &work)?;
+                assert!(page.entries.len() <= 1);
+                let complete = page.next_cursor.is_none();
+                pages.push(page);
+                if complete {
+                    break;
+                }
+            }
+            assert!(pages.last().is_some_and(|page| page.next_cursor.is_none()));
+            let mut actual = pages
+                .iter()
+                .flat_map(|page| &page.entries)
+                .map(|entry| (entry.name.clone(), entry.node.file_id))
+                .collect::<Vec<_>>();
+            actual.sort();
+            Ok::<_, MountSourceError>(actual)
+        })();
+        drop(observation);
+        let strict_denied = matches!(
+            view.authored
+                .shared_checkout()
+                .candidate(
+                    None,
+                    &mut carrier,
+                    &cancellation,
+                    Some(view.authored.cancellation()),
+                )
+                .await,
+            Err(MountSourceError::Stale)
+        );
+        assert_eq!(
+            store
+                .inner
+                .load_lazy_workspace(view.lazy.workspace().id(), &mut accounting)
+                .await?,
+            Some(pending),
+            "reads must not settle the companion marker"
+        );
+        // Release real storage before assertions, so either outcome returns
+        // custody through the production publication/settlement path.
+        store.release.notify_one();
+        let result = publication.await;
+        if cancel_after_cas {
+            assert!(cancellation.is_cancelled());
+            assert!(
+                result.is_err(),
+                "post-CAS cancellation must remain a failure"
+            );
+        } else {
+            result.map_err(|(error, _)| error)?;
+        }
+        let ack = acknowledged.ok_or("settled ACK")?;
+        assert_eq!(ack.operation(), Some(idempotency_key.operation_id()));
+        assert_eq!(ack.generation(), generation);
+        assert_eq!(observed_root, root_before);
+        assert_eq!(observed_generation, generation);
+        assert_eq!(
+            source_lookup?,
+            Some(expected_source),
+            "post-ACK source lookup"
+        );
+        assert_eq!(source_bytes?.bytes.as_ref(), b"source");
+        pinned_delivery?;
+        assert!(
+            pinned_packets_match,
+            "post-ACK pinned content or offsets changed"
+        );
+        assert_eq!(
+            pinned_delivered, 6,
+            "post-ACK pinned delivery was incomplete"
+        );
+        assert!(root_lookup?.is_some());
+        assert_eq!(authored_lookup?, Some(expected_authored));
+        assert_eq!(authored_bytes?.bytes.as_ref(), b"authored");
+        assert_eq!(identity?.file_id, expected_authored.node.file_id);
+        let mut expected = [
+            (
+                source_path.components()[0].clone(),
+                expected_source.0.node.file_id,
+            ),
+            (
+                authored_path.components()[0].clone(),
+                expected_authored.node.file_id,
+            ),
+        ]
+        .to_vec();
+        expected.sort();
+        assert_eq!(directory?, expected, "post-ACK listing");
+        assert_eq!(observed_operation, Some(idempotency_key.operation_id()));
+        assert!(strict_denied, "mutation must await companion settlement");
+        if cancel_after_cas {
+            let retry_cancel = CancellationToken::new();
+            let retry_work =
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &retry_cancel)
+                    .map_err(|(error, _)| error)?;
+            let mut retry_accounting = KernelAccounting::native(&retry_work, &retry_cancel);
+            let ready = store
+                .inner
+                .load_lazy_workspace(view.lazy.workspace().id(), &mut retry_accounting)
+                .await?
+                .ok_or("companion already settled before cancellation")?;
+            assert!(ready.pending_remove.is_none());
+            let mut retry_carrier = adapter::NativeDemandCarrier::Native(&retry_work);
+            let retained = view
+                .authored
+                .shared_checkout()
+                .observe(
+                    ViewGate::callback_owner()?,
+                    &mut retry_carrier,
+                    &retry_cancel,
+                    None,
+                )
+                .await?;
+            assert_eq!(
+                retained.retained_operation(),
+                Some(idempotency_key.operation_id())
+            );
+            drop(retained);
+            assert_eq!(
+                view.lookup_pinned_with_meter(&source_path, &retry_work)?,
+                Some(expected_source)
+            );
+            assert!(matches!(
+                view.authored
+                    .shared_checkout()
+                    .candidate(
+                        None,
+                        &mut retry_carrier,
+                        &retry_cancel,
+                        Some(view.authored.cancellation()),
+                    )
+                    .await,
+                Err(MountSourceError::Stale)
+            ));
+            let no_second_seal = |_: &crate::NativeMaterializationWork|
+                -> std::future::Ready<Result<(), MountSourceError>> {
+                panic!("settled committed DATA must not be sealed again")
+            };
+            let mut retry_ack = None;
+            view.sync_async_with_permit_qualified_native_work_guarded_with_ack(
+                crate::PublicationPermit::Unrestricted,
+                &retry_work,
+                &retry_cancel,
+                &mut retry_ack,
+                no_second_seal,
+            )
+            .await
+            .map_err(|(error, _)| error)?;
+            let retried = retry_ack.ok_or("reconciled post-CAS ACK")?;
+            assert_eq!(retried.operation(), ack.operation());
+            assert_eq!(retried.generation(), ack.generation());
+            assert_eq!(retry_work.receipt().authority_records_appended, 0);
+            let settled = view
+                .authored
+                .shared_checkout()
+                .observe(
+                    ViewGate::callback_owner()?,
+                    &mut retry_carrier,
+                    &retry_cancel,
+                    None,
+                )
+                .await?;
+            assert_eq!(settled.retained_operation(), None);
+            continue;
+        }
+        let ready = store
+            .inner
+            .load_lazy_workspace(view.lazy.workspace().id(), &mut accounting)
+            .await?
+            .ok_or("settled companion")?;
+        assert!(ready.pending_remove.is_none());
+        let settled_observation = view
+            .authored
+            .shared_checkout()
+            .observe(
+                ViewGate::callback_owner()?,
+                &mut carrier,
+                &cancellation,
+                None,
+            )
+            .await?;
+        assert_eq!(settled_observation.retained_operation(), None);
+        if unknown_ack {
+            assert_eq!(
+                work.receipt().authority_records_appended,
+                appended_before_reconciliation
+            );
+        }
+    }
+    Ok(())
+}

@@ -388,7 +388,6 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .checkout
             .observe(owner, carrier, &cancellation, Some(&self.cancellation))
             .await?;
-        observation.ensure_publication_resolved()?;
         let original = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeWork(

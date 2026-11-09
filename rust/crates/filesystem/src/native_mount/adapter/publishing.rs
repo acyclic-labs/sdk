@@ -162,8 +162,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckoutState<A, O> {
         context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &mut Option<crate::NativePublicationSnapshot>,
     ) -> Result<(), MountSourceError> {
-        if ack.is_some()
-            || self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay
+        let companion = matches!(
+            context,
+            Some(
+                crate::lazy_workspace::NativeSnapshotContext::Lazy(_)
+                    | crate::lazy_workspace::NativeSnapshotContext::Selected { .. }
+            )
+        ) && ack.as_ref().is_some_and(|(id, _)| *id == Some(operation));
+        if !companion
+            && (ack.is_some()
+                || self.checkout.mode().mutations == crate::model::MutationMode::PrivateOverlay)
         {
             self.clear_retained_operation(operation);
         }
