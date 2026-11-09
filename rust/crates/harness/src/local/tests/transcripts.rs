@@ -66,10 +66,62 @@ async fn transcripts_follow_two_spawn_levels_and_match_original_journals() -> Re
         std::fs::read_dir(&output)
             .map_err(crate::local::storage)?
             .count(),
-        3,
+        paths.len() + 1,
         "every spawned agent needs a transcript"
     );
-    for path in paths {
+    let index = std::fs::read(output.join("agents.jsonl")).map_err(crate::local::storage)?;
+    let index = serde_json::Deserializer::from_slice(&index)
+        .into_iter::<Value>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(crate::local::storage)?;
+    assert_eq!(
+        index.len(),
+        paths.len(),
+        "one index row per discovered agent"
+    );
+    let mut usage = Vec::new();
+    conversation.write_usage_jsonl(&mut usage).await?;
+    let usage = serde_json::Deserializer::from_slice(&usage)
+        .into_iter::<Value>()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(crate::local::storage)?;
+    let joins_usage = |index: &[Value]| {
+        paths.iter().all(|path| {
+            let mut mappings = index
+                .iter()
+                .filter(|row| row["id"] == path.id().to_string());
+            let Some(mapping) = mappings.next() else {
+                return false;
+            };
+            mappings.next().is_none()
+                && usage.iter().any(|row| {
+                    row["usage"]["agent_path"] == path.as_str()
+                        && mapping["agent_path"] == row["usage"]["agent_path"]
+                })
+        })
+    };
+    assert!(
+        joins_usage(&index),
+        "every transcript must join its own usage"
+    );
+    // A valid but wrong agent path must fail even though it occurs in usage.
+    let mut wrong = index.clone();
+    wrong[1]["agent_path"] = index[0]["agent_path"].clone();
+    assert!(
+        !joins_usage(&wrong),
+        "a child mapped to its parent must fail"
+    );
+    eprintln!("TRANSCRIPTS_IDENTITY_NEGATIVE_CONTROL=PASS (child mapped to parent rejected)");
+    for (path, mapping) in paths.into_iter().zip(index) {
+        assert_eq!(
+            mapping,
+            json!({
+                "version": 1,
+                "id": path.id(),
+                "agent_path": path.as_str(),
+                "parent": path.parent().map(|parent| parent.id()),
+            })
+        );
         let selected = Conversation::open(connection.select(path.clone()).await?);
         let bytes = std::fs::read(output.join(format!("{}.jsonl", path.id())))
             .map_err(crate::local::storage)?;

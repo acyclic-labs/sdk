@@ -15,6 +15,9 @@ impl Conversation {
     /// `directory`. Files are replaced on each invocation and flushed per
     /// record/chunk, using the same version-one envelopes and authorized
     /// payload reads as root event output. No inherited calls are duplicated.
+    /// `agents.jsonl` is replaced on each invocation, then appended and flushed
+    /// on discovery: version 1, file-stem `id`, usage `agent_path`, parent id
+    /// (null for a root).
     /// Membership is followed from creation; each agent retains one bounded
     /// execution page and one stream continuation, with no threads or scans.
     /// After `run` ends, drain the committed frontier of every discovered agent.
@@ -50,11 +53,14 @@ async fn export(
     operation: &str,
     finish: watch::Receiver<bool>,
 ) -> Result<()> {
+    let mut agents =
+        BufWriter::new(std::fs::File::create(directory.join("agents.jsonl")).map_err(failed)?);
     let jobs = futures::stream::FuturesUnordered::new();
     add(
         &jobs,
         connection.clone(),
         directory,
+        &mut agents,
         operation,
         finish.clone(),
     )
@@ -68,7 +74,15 @@ async fn export(
             } else {
                 connection.select(child).await?
             };
-            add(&jobs, selected, directory, operation, finish.clone()).await?;
+            add(
+                &jobs,
+                selected,
+                directory,
+                &mut agents,
+                operation,
+                finish.clone(),
+            )
+            .await?;
         }
     }
     Ok(())
@@ -78,11 +92,21 @@ async fn add<'a>(
     jobs: &futures::stream::FuturesUnordered<Job<'a>>,
     connection: Connection,
     directory: &Path,
+    agents: &mut BufWriter<std::fs::File>,
     operation: &'a str,
     finish: watch::Receiver<bool>,
 ) -> Result<()> {
     let path = directory.join(format!("{}.jsonl", connection.root().id()));
     let file = std::fs::File::create(path).map_err(failed)?;
+    line(
+        agents,
+        &serde_json::json!({
+            "version": 1,
+            "id": connection.root().id(),
+            "agent_path": connection.root().as_str(),
+            "parent": connection.root().parent().map(|parent| parent.id()),
+        }),
+    )?;
     let bounded = *finish.borrow();
     let follow = MembershipFollow::open(connection.clone(), 0, bounded).await?;
     jobs.push(follow.next(finish.clone()).boxed_local());

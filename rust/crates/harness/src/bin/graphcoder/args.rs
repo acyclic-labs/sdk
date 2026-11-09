@@ -54,6 +54,10 @@ pub struct Args {
     pub usage_jsonl: Option<PathBuf>,
     /// Follow every agent's own journal to DIR/<stable-agent-id>.jsonl.
     /// Uses the root event output's version-one execution and payload envelopes.
+    /// Also writes DIR/agents.jsonl, appending once on discovery:
+    /// {"version":1,"id":"<file stem>","agent_path":"<usage.agent_path>","parent":null}.
+    /// parent is the parent file-stem id, or null for a root; agent_path is
+    /// byte-identical to --usage-jsonl's usage.agent_path. Files are replaced on replay.
     #[arg(long, value_name = "DIR")]
     pub transcripts: Option<PathBuf>,
     /// Explicit number of retained diagnostic text records; no default credit.
