@@ -9,7 +9,9 @@ export async function managedSession(argv,clock=()=>performance.now()) {
  const recovery='node plugin/tests/hosts/managed-session.mjs ACYCLIC GRAPHCODER CODEX lifecycle|recursive|resume';
  assert.ok(binaryArg&&ownerArg&&codexArg&&!extra.length&&['lifecycle','recursive','resume'].includes(scenario),`step=admit managed session; recovery=${recovery}`);
  const [binary,graphcoder,codex]=[binaryArg,ownerArg,codexArg].map(value=>resolve(value));
- const started=clock(),root=mkdtempSync(join(process.env.HOME,'.plugins-session-proof-'));
+ // Codex workspace-write grants /tmp and TMPDIR by default. Keep the denied
+ // sibling outside both grants, on the Linux sandbox qualification leg.
+ const started=clock(),root=mkdtempSync(join('/var/tmp','.plugins-session-proof-'));
  const workspace=join(root,'workspace'),state=join(root,'state'),bins=join(root,'bin');
  for(const path of [workspace,state,bins])mkdirSync(path);
  const gate=await barrier(),gates=[];
@@ -48,6 +50,13 @@ export async function managedSession(argv,clock=()=>performance.now()) {
   }catch(error){abort.abort();throw error;}
  };
  try{
+  // Require the real sandbox capability before exercising managed sessions.
+  // A missing sandbox fails this leg; it cannot silently weaken the oracle.
+  const probe=join(state,'sandbox-probe');writeFileSync(probe,'parent-writable');rmSync(probe);
+  await checked(codex,['sandbox','-c','sandbox_mode="workspace-write"','-c','approval_policy="never"','--',
+   'sh','-c','set -eu; printf allowed > "$1"; if (printf denied > "$2") 2>/dev/null; then exit 41; fi; test ! -e "$2"',
+   'sandbox-capability',join(workspace,'sandbox-probe'),probe],{cwd:workspace,env});
+  rmSync(join(workspace,'sandbox-probe'));phase('linux-native-sandbox-required');
   const flags=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',workspace,'exec','--json','--cd',workspace];
   for(const tail of [['--help'],['resume','fixture-id','--help']])await checked(codex,[...flags,...tail],{cwd:workspace,env});
   await ownerStart();await checked(binary,['host','codex','--','--sandbox','workspace-write','--ask-for-approval','never'],{cwd:workspace,env});
