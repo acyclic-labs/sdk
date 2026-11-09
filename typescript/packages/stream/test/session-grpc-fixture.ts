@@ -22,6 +22,8 @@ export async function grpcFixture(identity: { key: string; cert: string }, failu
   const adapter = connectNodeAdapter({ routes(router) {
     router.service(StreamService, {
       tail(_request, context) {
+        const rejected = failure?.();
+        if (rejected) throw rejected;
         const echo = context.requestHeader.get("x-follow-options") ?? "";
         context.responseHeader.set("x-follow-options", echo);
         context.responseTrailer.set("x-follow-options", echo);

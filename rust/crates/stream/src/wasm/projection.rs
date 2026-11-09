@@ -13,6 +13,38 @@ pub fn grpc_error_code(code: i32, message: &str) -> String {
         .to_owned()
 }
 
+/// Decode a platform gRPC status with its original diagnostic metadata.
+#[wasm_bindgen(js_name = grpcStatusError)]
+pub fn grpc_status_error(code: i32, message: &str, metadata: Vec<String>) -> JsValue {
+    let mut headers = ::http::HeaderMap::new();
+    for pair in metadata.chunks_exact(2) {
+        if let [name, value] = pair
+            && let (Ok(name), Ok(value)) = (
+                ::http::HeaderName::from_bytes(name.as_bytes()),
+                ::http::HeaderValue::from_str(value),
+            )
+        {
+            headers.append(name, value);
+        }
+    }
+    let mut metadata = tonic::metadata::MetadataMap::from_headers(headers);
+    let details = match metadata.remove_bin("grpc-status-details-bin") {
+        Some(value) => match value.to_bytes() {
+            Ok(details) => details,
+            Err(_) => return js_error(StreamError::InvalidResponse),
+        },
+        None => bytes::Bytes::new(),
+    };
+    js_error(wire_codec::status(
+        &tonic::Status::with_details_and_metadata(
+            tonic::Code::from_i32(code),
+            message,
+            details,
+            metadata,
+        ),
+    ))
+}
+
 /// Complete Rust-owned code inventory; adapters must not maintain another list.
 #[wasm_bindgen(js_name = streamErrorCodes)]
 pub fn stream_error_codes() -> Vec<String> {

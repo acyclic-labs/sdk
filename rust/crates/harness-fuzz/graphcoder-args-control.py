@@ -14,8 +14,8 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_stdin_binary": (
         "plugin/src/input.rs",
-        b"input.take(65_537).read_to_end(&mut bytes)?;",
-        b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+        b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
+        b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
         "null",
         b"native stdin read error must retain its original cause",
     ),
@@ -41,7 +41,7 @@ controls = {
         b"valid over-bound settings must be refused",
     ),
     "native_marketplace": (
-        "plugin/src/install/marketplace.rs",
+        "plugin/src/marketplace.rs",
         b'if name == "acyclic" && selected.replace(entry).is_some() {',
         b'if name == "acyclic" && { selected = Some(entry); false } {',
         "duplicate-registration",
@@ -77,7 +77,7 @@ controls = {
     ),
     "native_input": (
         "plugin/src/input.rs",
-        b"if bytes.len() > 65_536 {",
+        b"if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {",
         b"if false {",
         "null",
         b"native input exceeds its admitted byte bound",
@@ -86,42 +86,42 @@ controls = {
 additional_controls = {
     "native_marketplace": [
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b'let name = entry.get("name").and_then(Value::as_str).ok_or_else(|| {\n                format!("step=admit Codex marketplace: native marketplace name absent; {RECOVERY}")\n            })?;',
             b'let name = entry.get("name").and_then(Value::as_str).unwrap_or("foreign");',
             "missing-name",
             b"every native marketplace must retain its name",
         ),
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b"root.zip(original).filter(|_| local)",
             b"root.zip(original)",
             "nonlocal-type",
             b"native source must have local root and origin",
         ),
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b'let entries = self\n            .0\n            .get("marketplaces")\n            .and_then(Value::as_array)\n            .ok_or_else(|| {\n                format!("step=admit Codex marketplaces: marketplace list absent; {RECOVERY}")\n            })?;',
             b'let Some(entries) = self.0.get("marketplaces").and_then(Value::as_array) else { return Ok(None); };',
             "missing-list",
             b"native output must name a marketplace list",
         ),
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b'let root = entry.get("root").and_then(Value::as_str);',
             b'let root = entry.get("root").and_then(Value::as_str).or(Some(""));',
             "missing-root",
             b"native source must have local root and origin",
         ),
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b'.and_then(Value::as_str);\n        let local = source',
             b'.and_then(Value::as_str).or(Some(""));\n        let local = source',
             "missing-origin",
             b"native source must have local root and origin",
         ),
         (
-            "plugin/src/install/marketplace.rs",
+            "plugin/src/marketplace.rs",
             b"let Some(entry) = selected else {",
             b"let Some(entry) = selected.or_else(|| entries.first()) else {",
             "foreign-name",
@@ -175,15 +175,15 @@ additional_controls = {
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
             b"input.take(1).read_to_end(&mut bytes)?;",
             "null",
             b"native input admission changed its original JSON",
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
-            b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
+            b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
             "null",
             b"native input read failure must retain its OS error",
         ),
@@ -344,7 +344,7 @@ def run(target, seed, witness, *, capture=False, runs=0):
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-plugin",
             "--test", "main", "--profile", "ci", "-E",
-            "test(native_input::native_stdin_failures_stop_before_workspace_effects)",
+            "test(native_input::native_input_failures_stop_before_workspace_effects)",
         ]
     else:
         command = [

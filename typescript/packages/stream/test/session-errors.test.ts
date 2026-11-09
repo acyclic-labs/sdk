@@ -36,7 +36,7 @@ for (const fault of ["", "aliases", "disposition"]) {
     expect(child.error).toBeUndefined();
     if (fault) {
       expect(child.status).not.toBe(0);
-      expect(child.stderr).toContain(fault === "aliases" ? "JS transport must emit canonical Rust code: invalid_response"
+      expect(child.stderr).toContain(fault === "aliases" ? "JS transport must emit canonical Rust code: not_found"
         : "physical connection loss ended the original follows");
     } else {
       if (child.status !== 0) throw new Error(child.stderr || child.stdout);

@@ -1,19 +1,29 @@
 //! Read-only native marketplace admission, before filesystem source resolution.
-use super::Result;
+use crate::input::Result;
 use serde_json::Value;
 
-pub(super) const RECOVERY: &str = "recovery=codex plugin marketplace list --json";
+/// Native command supplying the authoritative marketplace inventory.
+pub const RECOVERY: &str = "recovery=codex plugin marketplace list --json";
 
-pub(super) struct Marketplaces(Value);
+/// Native marketplace inventory admitted before filesystem source resolution.
+pub struct Marketplaces(Value);
 
 impl Marketplaces {
-    pub(super) fn parse(bytes: &[u8]) -> Result<Self> {
+    /// Decode the native command's JSON inventory.
+    ///
+    /// # Errors
+    /// Returns a decode error naming the failing step and recovery command.
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
         serde_json::from_slice(bytes)
             .map(Self)
             .map_err(|error| format!("step=decode Codex marketplaces: {error}; {RECOVERY}").into())
     }
 
-    pub(super) fn local_source(&self) -> Result<Option<(&str, &str)>> {
+    /// Return the unique local registration's root and original source.
+    ///
+    /// # Errors
+    /// Refuses malformed entries, duplicate registrations and nonlocal sources.
+    pub fn local_source(&self) -> Result<Option<(&str, &str)>> {
         let entries = self
             .0
             .get("marketplaces")

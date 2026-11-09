@@ -1,10 +1,7 @@
 #![no_main]
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
 // The installed binary uses this same decoder before canonicalizing paths.
-#[path = "../../../../plugin/src/install/marketplace.rs"]
-mod marketplace;
+use acyclic_plugin::marketplace;
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let admitted = marketplace::Marketplaces::parse(bytes);
