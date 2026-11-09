@@ -3,14 +3,17 @@
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
 `pty-first-run` also requires `E2E_CREDENTIALS_FIXTURE`, the prebuilt
 `acyclic-harness-providers` example `credential-fixture`. It uses a unique
-provider entry in the real OS keychain, verifies discovery across a restart,
-then removes that entry through the shared credentials API. On Linux run in
+provider entry in the real OS keychain, selects `chosen` instead of the catalog
+default `tiny`, and requires both launches to send the selected model. It then
+removes that entry through the shared credentials API. On Linux run in
 an isolated unlocked Secret Service session (for example a private D-Bus
 session with gnome-keyring); unavailable keychains fail this acceptance case.
 The fixture key is never allowed in terminal captures or model context.
 `doctor-all-missing` independently breaks credentials, network, shell, terminal
 and state and requires every remedy from one invocation. `doctor-ok` checks
-the supplied-key headless path and requires no model generation.
+the supplied-key headless path and requires no model generation. Doctor checks
+state separation and signing policy without opening storage or creating state;
+normal opening alone allocates lazy hermetic state.
 Run Windows suites serially. Compile `scripts/graphcoder-conpty.cs` with the
 .NET Framework C# compiler and supply its executable as `E2E_CONPTY_HOST`
 before running a Windows PTY case. `scripts/qualify-ci.ps1` prepares both hosts
