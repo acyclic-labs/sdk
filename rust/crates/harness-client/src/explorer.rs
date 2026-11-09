@@ -3,7 +3,7 @@
 //! A swarm is a stream subtree and an agent fork is a stream fork, so this
 //! layer adds no data API: it lists `harness/agents` and `<agent>/children`
 //! with `children_page` (projecting each child's `conversation` head), reads
-//! `harness/status/<id>` heads and conversation ranges with `read`, follows
+//! the matching ancestry under `harness/status` and conversation ranges with `read`, follows
 //! only the displayed live tails. The reader learns each stream's exact
 //! inherited cut from the primitive Head/origin, so opening a forked child
 //! reuses cached history without reconstructing lineage from agent records.

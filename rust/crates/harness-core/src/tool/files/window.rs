@@ -5,7 +5,7 @@ pub(super) struct Window {
     pub source: FileReadSource,
     pub bytes: acyclic_stream::OwnedBytes,
     // The source must be dropped before the credit that owns it.
-    _hold: crate::NativeCustody,
+    _hold: crate::conversation::FileSelectionCustody,
 }
 
 pub(super) fn custody(
@@ -25,6 +25,7 @@ impl Window {
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
+        selected: Option<&crate::conversation::FilePathSelection>,
         range: acyclic_fs::ByteRange,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
@@ -39,7 +40,15 @@ impl Window {
             .transpose()?;
         let original = match original {
             Some((FileReadSource::Content(file), hold)) => {
-                source_hold = hold;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                {
+                    source_hold = hold.map(crate::filesystem::PreparationCustody::Native);
+                }
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                {
+                    let _ = hold;
+                    source_hold = None;
+                }
                 let range = content_range(&file, range, work)?;
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
@@ -50,12 +59,15 @@ impl Window {
             }
             original => original,
         };
-        let expected = original.as_ref().and_then(|(source, _)| match source {
-            FileReadSource::Authored(file) => Some(file),
-            FileReadSource::Content(_) => None,
-        });
+        let expected = original
+            .as_ref()
+            .and_then(|(source, _)| match source {
+                FileReadSource::Authored(file) => Some(file),
+                FileReadSource::Content(_) => None,
+            })
+            .or(selected);
         let hold;
-        let (source, bytes, retained) = context
+        let (source, bytes, custody) = context
             .read_tool_path_range(
                 &input.path,
                 expected.map(|file| &file.generation),
@@ -63,7 +75,7 @@ impl Window {
                 io,
             )
             .await?;
-        hold = custody(io, retained)?;
+        hold = custody;
         if expected.is_some_and(|expected| expected != &source) {
             return Err(executor::rejection(
                 work,
@@ -93,10 +105,10 @@ impl Window {
             }
             FileReadSource::Authored(original) => {
                 let _hold;
-                let (selected, bytes, retained) = context
+                let (selected, bytes, custody) = context
                     .read_tool_path_range(path, Some(&original.generation), range, io)
                     .await?;
-                _hold = custody(io, retained)?;
+                _hold = custody;
                 if selected != *original {
                     return Err(executor::rejection(
                         work,

@@ -31,9 +31,18 @@ export function scratchDirectory(prefix, env = process.env, platform = process.p
 }
 
 // Credential-free fixtures retain the OS launcher and its original process owner.
+export const platformInherited = Object.freeze({
+  PATH: "PATH", SYSTEMROOT: "SystemRoot", WINDIR: "WINDIR", COMSPEC: "ComSpec",
+  PATHEXT: "PATHEXT", E2E_PROCESS_HOST: "E2E_PROCESS_HOST",
+});
+
 export function nativeEnvironment(inherited = process.env) {
-  return Object.fromEntries(Object.entries(inherited)
-    .filter(([key]) => /^(PATH|SystemRoot|WINDIR|ComSpec|PATHEXT|E2E_PROCESS_HOST)$/i.test(key)));
+  const selected = {};
+  for (const [key, value] of Object.entries(inherited)) {
+    const name = platformInherited[key.toUpperCase()];
+    if (name) selected[name] = value;
+  }
+  return selected;
 }
 
 // This same profile reaches the shipping program, PTY transport, host-test

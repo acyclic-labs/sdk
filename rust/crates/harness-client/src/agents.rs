@@ -18,6 +18,15 @@ pub enum AgentClientError {
     /// Canonical session admission, transport or authorization failure.
     #[error(transparent)]
     Session(#[from] WireSessionError),
+    /// The original failure of one selected producer, with its resource.
+    #[error("follow failed for {resource}: {cause}")]
+    Subscription {
+        /// Canonical resource selected by the failed subscription.
+        resource: String,
+        /// Original typed admission, transport or provider failure.
+        #[source]
+        cause: WireSessionError,
+    },
     /// A bounded agent record failed its canonical decoder.
     #[error(transparent)]
     Record(#[from] acyclic_harness_core::agent::Error),
@@ -45,6 +54,7 @@ impl AgentClientError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Session(cause) => cause.code(),
+            Self::Subscription { cause, .. } => cause.code(),
             Self::Record(cause) => cause.code(),
             Self::Closed(_) => "agent_stream_closed",
             Self::ResourceClosed(_) => "agent_resource_closed",
@@ -128,6 +138,7 @@ pub struct AgentClient {
     resources: Vec<String>,
     next_stream: usize,
     credential: u32,
+    command: Option<(Client, u32)>,
     all: bool,
 }
 
@@ -140,10 +151,15 @@ pub struct AgentDelivery {
 }
 
 impl AgentClient {
-    /// Bind controls to this observer's exact authenticated pool and slot.
+    /// Bind controls to the original command owner while retaining observation.
     /// The host supplies canonical routing; no second wire owner is opened.
     pub fn controls(&self, binding: crate::AgentBinding) -> crate::AgentControls {
-        crate::AgentControls::new(self.session.client().clone(), self.credential, binding)
+        crate::AgentControls::observed(
+            self.session.client().clone(),
+            self.credential,
+            self.command.clone(),
+            binding,
+        )
     }
 
     /// Follow from explicit exclusive cursors. Callers choose a bounded history
@@ -161,6 +177,7 @@ impl AgentClient {
             AgentSelection::new(agent, conversation_from, status_from),
             credential,
             false,
+            None,
         )
     }
 
@@ -177,6 +194,7 @@ impl AgentClient {
             AgentSelection::new(agent, conversation_from, status_from),
             credential,
             true,
+            None,
         )
     }
 
@@ -185,6 +203,7 @@ impl AgentClient {
         selection: AgentSelection,
         credential: u32,
         all: bool,
+        command: Option<(Client, u32)>,
     ) -> Result<Self, AgentClientError> {
         let conversation = selection.agent.conversation()?;
         let mut selected = Self {
@@ -195,6 +214,7 @@ impl AgentClient {
             resources: Vec::new(),
             next_stream: 0,
             credential,
+            command,
             all,
         };
         selected.set_view(selection, std::iter::empty())?;
@@ -470,7 +490,12 @@ impl AgentClient {
                         waiting = true;
                         continue;
                     }
-                    Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
+                    Poll::Ready(Err(cause)) => {
+                        return Poll::Ready(Err(AgentClientError::Subscription {
+                            resource: resource.clone(),
+                            cause,
+                        }));
+                    }
                     Poll::Ready(Ok(None)) => {
                         return Poll::Ready(Err(WireSessionError::Stream(
                             acyclic_stream::StreamError::Unavailable,
@@ -501,7 +526,12 @@ impl AgentClient {
                     waiting = true;
                     continue;
                 }
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+                Poll::Ready(Err(cause)) => {
+                    return Poll::Ready(Err(AgentClientError::Subscription {
+                        resource: wire_codec::session::stream_resource(path.as_str()),
+                        cause,
+                    }));
+                }
                 Poll::Ready(Ok(None)) => {
                     return Poll::Ready(Err(WireSessionError::Stream(
                         acyclic_stream::StreamError::Unavailable,

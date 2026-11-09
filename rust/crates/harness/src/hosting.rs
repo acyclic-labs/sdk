@@ -402,9 +402,22 @@ where
         match command {
             AgentCommand::Bind { agent } => {
                 let agent = self.within_tree(agent.as_ref().unwrap_or(&self.root))?;
+                #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+                if agent != &self.root {
+                    if let Some((tools, credential)) =
+                        self.bound.selected_observation(&self.root, agent).await?
+                    {
+                        return Ok(AgentBinding::reply(
+                            &self.binding(),
+                            tools,
+                            Some(&credential),
+                        ));
+                    }
+                }
                 Ok(AgentBinding::reply(
                     &self.binding(),
                     self.bound.tool_resource(agent).await?,
+                    None,
                 ))
             }
             AgentCommand::Root {} => Ok(AgentReply::Root {
@@ -756,7 +769,7 @@ where
                         view.validate_for(&request).map_err(Error::Stream)?;
                         view
                     }
-                    Err(StreamError::NotFound) => {
+                    Err(error) if error.category() == StreamError::NotFound => {
                         return Ok(AgentReply::Children {
                             items: Vec::new(),
                             next: None,
@@ -1064,7 +1077,7 @@ where
     async fn tail(&self, path: StreamPath) -> Result<u64, Error> {
         match self.bound.agents().provider().tail(path).await {
             Ok(tail) => Ok(tail),
-            Err(StreamError::NotFound) => Ok(0),
+            Err(error) if error.category() == StreamError::NotFound => Ok(0),
             Err(error) => Err(Error::Stream(error)),
         }
     }

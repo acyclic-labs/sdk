@@ -161,9 +161,8 @@ fn read_available(pipe: &impl Pipe, buffer: &mut [std::mem::MaybeUninit<u8>]) ->
     Ok(actual as usize)
 }
 
-pub(super) fn read_pipe(
-    pipe: &mut (impl Read + Pipe),
-    buffer: &mut [std::mem::MaybeUninit<u8>],
+pub(super) fn pipe_available(
+    pipe: &impl Pipe,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
     let mut available = 0;
@@ -188,7 +187,7 @@ pub(super) fn read_pipe(
         })?;
     match peek {
         Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE.cast_signed()) => {
-            return Ok((Some(0), recorded));
+            return Ok((None, recorded));
         }
         Err(error) => {
             recorded?;
@@ -196,11 +195,23 @@ pub(super) fn read_pipe(
         }
         Ok(()) => {}
     }
+    Ok((Some(available as usize), recorded))
+}
+
+pub(super) fn read_pipe(
+    pipe: &mut (impl Read + Pipe),
+    buffer: &mut [std::mem::MaybeUninit<u8>],
+    meter: Option<&dyn crate::NativeReadMeter>,
+) -> io::Result<(Option<usize>, io::Result<()>)> {
+    let (available, recorded) = pipe_available(pipe, meter)?;
+    let Some(available) = available else {
+        return Ok((Some(0), recorded));
+    };
     if available == 0 {
         return Ok((None, recorded));
     }
     recorded?;
-    let length = buffer.len().min(available as usize).min(u32::MAX as usize);
+    let length = buffer.len().min(available).min(u32::MAX as usize);
     let buffer = buffer
         .get_mut(..length)
         .ok_or(io::ErrorKind::InvalidInput)?;

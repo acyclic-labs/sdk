@@ -10,13 +10,14 @@
 //! harness/agents/<path>/machines/<name>    this agent's own Machine on provisioned
 //!                                          target <name>: one MachineBinding
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
-//! harness/status/<id>                      status records, outside the subtree
+//! harness/status/<root>/children/<id>     status records, outside the subtree
 //! harness/membership/<root>/<id>           self then direct child creations (v1)
 //! ```
 //!
 //! Status lives outside the subtree so the commit that creates an agent (a spawn
 //! fork may write nothing inside its destination) also writes its first status:
-//! every agent a `children` page lists already has one.
+//! every agent a `children` page lists already has one. Status paths preserve
+//! agent ancestry, so observing a subtree needs one scoped prefix grant.
 //! Membership also lives outside fork destinations. Its first record and each
 //! parent's child record share the creation commit, so consumers discover new
 //! agents by following, without rescanning child listings.
@@ -36,7 +37,7 @@ pub const AGENTS: &str = "harness/agents";
 pub const ACTORS: &str = "harness/actors";
 /// Root of every agent volume authority stream, in the same domain.
 pub const VOLUMES: &str = "harness/volumes";
-/// Root of every agent's status stream, keyed by its globally unique id.
+/// Root of every agent's status stream, preserving its agent ancestry.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 5] = [CHILDREN, CLOSED, TARGETS, MACHINES, "context"];
@@ -72,7 +73,7 @@ fn id_bytes(text: &str) -> [u8; 16] {
 
 /// 128-bit agent identity, canonical lowercase hex. It is also the actor id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+#[serde(try_from = "String")]
 pub struct AgentId(String);
 
 impl AgentId {
@@ -161,14 +162,17 @@ impl fmt::Display for AgentId {
 }
 
 /// The canonical path of an agent's root (inbox) stream; the agent's address.
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, crate::HeapLayout,
-)]
-#[serde(try_from = "String", into = "String")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, crate::HeapLayout)]
+#[serde(try_from = "String")]
 #[heap_layout(as = String)]
 pub struct AgentPath {
     text: String,
     depth: usize,
+}
+impl Serialize for AgentPath {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.text)
+    }
 }
 crate::core::ownership::owned_struct!(AgentPath { text, depth });
 
@@ -272,7 +276,7 @@ impl AgentPath {
 
     /// Status stream.
     pub fn status(&self) -> Result<StreamPath, Error> {
-        stream(&format!("{STATUSES}/{}", self.id_text()))
+        stream(&format!("{STATUSES}{}", &self.text[AGENTS.len()..]))
     }
 
     /// Close marker stream; its existence refuses every later inbox append.
@@ -447,7 +451,7 @@ mod tests {
             // Addressing borrows the canonical identity and root; owning either
             // again is the retained allocation negative control.
             let (_, status_work) = acyclic_test_support::differential(
-                || stream(&format!("{STATUSES}/{}", parsed.id())).expect("canonical status"),
+                || parsed.clone().status().expect("canonical status"),
                 || parsed.status().expect("canonical status"),
             );
             let (_, target_work) = acyclic_test_support::differential(
