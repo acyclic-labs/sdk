@@ -148,18 +148,35 @@ impl<V, A> CompiledPrefixIndex<V, A> {
         work.charge_items(entries.len() as u64).map_err(Work)?;
         order.extend(0..entries.len());
         sort(&mut order, &mut |&left, &right| {
-            let left_key = key.bytes(&entries[left]);
-            let right_key = key.bytes(&entries[right]);
+            let left_key = key.bytes(entry(&entries, left));
+            let right_key = key.bytes(entry(&entries, right));
             work.charge_items(left_key.len().min(right_key.len()) as u64 + 1)?;
             Ok::<_, W::Error>(left_key.cmp(right_key).then_with(|| left.cmp(&right)))
         })
         .map_err(Work)?;
-        let index =
-            CompiledPrefixIndex::compile(entries, key, |position| order[position], distinct, work)?;
+        let index = CompiledPrefixIndex::compile(
+            entries,
+            key,
+            |position| {
+                *order
+                    .get(position)
+                    .unwrap_or_else(|| unreachable!("compilation stays within the permutation"))
+            },
+            distinct,
+            work,
+        )?;
         drop(order);
         drop(allocation);
         Ok(index)
     }
+}
+
+// Every position originates in 0..entries.len(); sorting only permutes it and
+// compilation retains it unchanged in the private node table.
+fn entry<V>(entries: &[V], position: usize) -> &V {
+    entries
+        .get(position)
+        .unwrap_or_else(|| unreachable!("positions retain their original entry"))
 }
 
 // In-place heapsort permits an immediate typed refusal before each comparison.
@@ -173,12 +190,22 @@ fn sort<T, E>(
         mut root: usize,
         compare: &mut impl FnMut(&T, &T) -> Result<std::cmp::Ordering, E>,
     ) -> Result<(), E> {
-        while root < items.len() / 2 {
+        while let Some((parent, tail)) = items.get(root..).and_then(|tail| tail.split_first()) {
+            let Some((left, siblings)) = tail.get(root..).and_then(|tail| tail.split_first())
+            else {
+                break;
+            };
+            // Finding this child first proves that the coordinate fits usize.
             let mut child = root * 2 + 1;
-            if child + 1 < items.len() && compare(&items[child], &items[child + 1])?.is_lt() {
+            let selected = if let Some(right) = siblings.first()
+                && compare(left, right)?.is_lt()
+            {
                 child += 1;
-            }
-            if !compare(&items[root], &items[child])?.is_lt() {
+                right
+            } else {
+                left
+            };
+            if !compare(parent, selected)?.is_lt() {
                 break;
             }
             items.swap(root, child);
@@ -189,16 +216,21 @@ fn sort<T, E>(
     for root in (0..items.len() / 2).rev() {
         sift(&mut *items, root, compare)?;
     }
-    for end in (1..items.len()).rev() {
-        items.swap(0, end);
-        sift(&mut items[..end], 0, compare)?;
+    let mut heap = items;
+    while let Some((last, rest)) = heap.split_last_mut() {
+        let Some(first) = rest.first_mut() else {
+            break;
+        };
+        std::mem::swap(first, last);
+        sift(rest, 0, compare)?;
+        heap = rest;
     }
     Ok(())
 }
 
 impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
     fn key(&self, position: usize) -> &[u8] {
-        self.key.bytes(&self.entries[position])
+        self.key.bytes(entry(&self.entries, position))
     }
 
     fn compile<W: IndexWork<Allocation = A>>(
@@ -210,8 +242,8 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
     ) -> Result<Self, CompiledPrefixError<W::Error>> {
         use CompiledPrefixError::{Allocation, Capacity, Order, Work};
         for index in 1..entries.len() {
-            let left = key.bytes(&entries[position(index - 1)]);
-            let right = key.bytes(&entries[position(index)]);
+            let left = key.bytes(entry(&entries, position(index - 1)));
+            let right = key.bytes(entry(&entries, position(index)));
             work.charge_items(left.len().min(right.len()) as u64 + 1)
                 .map_err(Work)?;
             let order = left.cmp(right);
@@ -238,59 +270,75 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             .nodes
             .try_reserve_exact(capacity)
             .map_err(Allocation)?;
-        if result.entries.is_empty() {
-            return Ok(result);
+        result.compile_nodes(position, work)?;
+        Ok(result)
+    }
+
+    fn compile_nodes<W: IndexWork<Allocation = A>>(
+        &mut self,
+        position: impl Fn(usize) -> usize,
+        work: &mut W,
+    ) -> Result<(), CompiledPrefixError<W::Error>> {
+        use CompiledPrefixError::Work;
+        if self.entries.is_empty() {
+            return Ok(());
         }
-        result.nodes.push(Node {
+        self.nodes.push(Node {
             key: 0,
             end: 0,
             // Pending nodes use this range for their original entry group.
             // Processing replaces it with their contiguous child-node range.
-            children: 0..result.entries.len(),
+            children: 0..self.entries.len(),
         });
         let mut cursor = 0;
-        while cursor < result.nodes.len() {
+        while let Some(node) = self.nodes.get(cursor) {
             work.charge_items(1).map_err(Work)?;
-            let node = &result.nodes[cursor];
             let end = node.end;
             let before = node.children.end;
             let mut from = node.children.start;
-            while from < before && result.key(position(from)).len() == end {
+            while from < before && self.key(position(from)).len() == end {
                 work.charge_items(1).map_err(Work)?;
                 from += 1;
             }
-            let first_child = result.nodes.len();
+            let first_child = self.nodes.len();
             while from < before {
-                let first = result.key(position(from));
+                let first = self.key(position(from));
+                let Some(byte) = first.get(end) else {
+                    unreachable!("terminal keys precede their nonterminal group")
+                };
                 let mut to = from + 1;
                 while to < before {
                     work.charge_items(1).map_err(Work)?;
-                    if result.key(position(to))[end] != first[end] {
+                    if self.key(position(to)).get(end) != Some(byte) {
                         break;
                     }
                     to += 1;
                 }
-                let last = result.key(position(to - 1));
+                let last = self.key(position(to - 1));
                 let mut common = end;
-                while common < first.len().min(last.len()) {
+                for (left, right) in first.iter().zip(last).skip(end) {
                     work.charge_items(1).map_err(Work)?;
-                    if first[common] != last[common] {
+                    if left != right {
                         break;
                     }
                     common += 1;
                 }
-                result.nodes.push(Node {
+                self.nodes.push(Node {
                     key: from,
                     end: common,
                     children: from..to,
                 });
                 from = to;
             }
-            result.nodes[cursor].children = first_child..result.nodes.len();
-            result.nodes[cursor].key = position(result.nodes[cursor].key);
+            let after_children = self.nodes.len();
+            let Some(node) = self.nodes.get_mut(cursor) else {
+                unreachable!("appending children preserves the current node")
+            };
+            node.children = first_child..after_children;
+            node.key = position(node.key);
             cursor += 1;
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Borrows entries in their original input order, without traversing nodes.
@@ -314,19 +362,20 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             exact: None,
             shortest: None,
         };
-        if self.nodes.is_empty() {
+        let Some(mut node) = self.nodes.first() else {
             return Ok(result);
-        }
-        let mut cursor = 0;
+        };
         let mut from = 0;
         loop {
             work.examine(1)?;
-            let node = &self.nodes[cursor];
-            let entry = &self.entries[node.key];
+            let entry = entry(&self.entries, node.key);
             let key = self.key.bytes(entry);
             let end = node.end.min(query.len());
             work.examine((end - from) as u64)?;
-            if query[from..end] != key[from..end] || query.len() < node.end {
+            let Some(label) = key.get(from..end) else {
+                unreachable!("the stable key contains its compiled label")
+            };
+            if query.get(from..end) != Some(label) || query.len() < node.end {
                 return Ok(result);
             }
             if key.len() == node.end {
@@ -347,22 +396,26 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             let Some(&byte) = query.get(node.end) else {
                 return Ok(result);
             };
-            let mut children = node.children.clone();
+            let Some(mut children) = self.nodes.get(node.children.clone()) else {
+                unreachable!("compiled children belong to the node table")
+            };
             let child = loop {
-                if children.is_empty() {
+                let (lower, upper) = children.split_at(children.len() / 2);
+                let Some((middle, higher)) = upper.split_first() else {
                     return Ok(result);
-                }
-                let middle = children.start + children.len() / 2;
+                };
                 work.examine(1)?;
-                let observed = self.key(self.nodes[middle].key)[node.end];
-                match byte.cmp(&observed) {
-                    std::cmp::Ordering::Less => children.end = middle,
-                    std::cmp::Ordering::Greater => children.start = middle + 1,
+                let Some(observed) = self.key(middle.key).get(node.end) else {
+                    unreachable!("a child label extends its parent's label")
+                };
+                match byte.cmp(observed) {
+                    std::cmp::Ordering::Less => children = lower,
+                    std::cmp::Ordering::Greater => children = higher,
                     std::cmp::Ordering::Equal => break middle,
                 }
             };
             from = node.end;
-            cursor = child;
+            node = child;
         }
     }
 }
