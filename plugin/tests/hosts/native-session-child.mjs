@@ -34,16 +34,17 @@ try{
    }
   }
  }else{
+  const policy=['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',env.FIXTURE_WORKSPACE];
+  const delegation=['--config','features.multi_agent_v2=false','--config','agents.enabled=false'];
   if(!args.includes('exec')){
-   assert.deepEqual(args,['--sandbox','workspace-write','--ask-for-approval','never','--add-dir',env.FIXTURE_WORKSPACE]);
+   assert.deepEqual(args,[...policy,...delegation]);
    assert.equal(cwd,env.ACYCLIC_WORKSPACE);assert.equal(cwd,env.FIXTURE_WORKSPACE);
-   assert.deepEqual(JSON.parse(env.ACYCLIC_HOST_ARGS),args);
-   writeFileSync('root-launch.json',JSON.stringify({task:env.ACYCLIC_TASK,args}));
+   assert.deepEqual(JSON.parse(env.ACYCLIC_HOST_ARGS),policy);
+   writeFileSync('root-launch.json',JSON.stringify({task:env.ACYCLIC_TASK,args:policy}));
   }else{
-   assert.deepEqual(args.slice(6,8),['exec','--json']);
-   assert.equal(args[args.indexOf('--sandbox')+1],'workspace-write');
-   assert.equal(args[args.indexOf('--ask-for-approval')+1],'never');
-   assert.equal(args[args.indexOf('--cd')+1],cwd);
+   const resume=args.includes('resume')?['resume',JSON.parse(readFileSync(env.FIXTURE_EVENTS,'utf8').split('\n')[0]).thread_id]:[];
+   assert.deepEqual(args,[...policy,...delegation,'exec','--json','--cd',cwd,...resume,'-']);
+   assert.deepEqual(JSON.parse(env.ACYCLIC_HOST_ARGS),policy);
    assert.ok(!relative(join(env.FIXTURE_WORKSPACE,'.volumes/agents'),cwd).startsWith('..'));
    assert.equal(readFileSync('AGENTS.md','utf8'),'native instruction discovery fixture');
    // Read exactly the first byte before starting the stream reader. The

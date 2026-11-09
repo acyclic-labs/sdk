@@ -81,7 +81,7 @@ test("release packaging validates without state access or authentication", () =>
       writeFileSync(path, JSON.stringify(hooks));
       const rejected = run("validate-package.mjs", [output]);
       assert.notEqual(rejected.status, 0, "a broad permission hook must fail package admission");
-      assert.match(rejected.stderr, /exact spawn permission prompts/);
+      assert.match(rejected.stderr, /step=validate host hooks:/);
       writeFileSync(path, original);
     }
     const path = join(output, "plugin", ".mcp.json");

@@ -155,6 +155,8 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
     // the real-file property covers the same production argument boundary.
     if host == "agy" {
         let mut values = flags.iter();
+        let mut inline = false;
+        let mut admitted = true;
         while let Some(name) = values.next() {
             if name == "--sandbox" {
                 continue;
@@ -163,16 +165,21 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
                 .next()
                 .ok_or_else(|| format!("validated option value absent: {name}, {flags:?}"))?;
             if name == "--settings" {
-                if value.trim_start().starts_with('{') {
-                    let result = launch::child_arguments(host, &inherited, cwd, None);
-                    if serde_json::from_str::<serde_json::Value>(value).is_err() {
-                        assert!(matches!(result, Err(Error::Invalid(_))));
-                    } else {
-                        assert!(result.is_ok());
-                    }
+                if !value.trim_start().starts_with('{') {
+                    return Ok(());
                 }
-                return Ok(());
+                inline = true;
+                admitted &= settings_admitted(value, cwd);
             }
+        }
+        if inline {
+            let result = launch::child_arguments(host, &inherited, cwd, None);
+            if admitted {
+                assert!(result.is_ok());
+            } else {
+                assert!(matches!(result, Err(Error::Invalid(_))));
+            }
+            return Ok(());
         }
     }
     let policy = expected_policy(host, &inherited)?;
@@ -318,6 +325,38 @@ fn expected_policy(host: &str, inherited: &[String]) -> Result<Vec<OsString>, St
     Ok(policy)
 }
 
+fn permission_path_admitted(target: &str, cwd: &Path) -> bool {
+    target.is_empty()
+        || target == "*"
+        || target.starts_with('~')
+        || Path::new(target).is_absolute()
+        || (cwd.is_absolute()
+            && cwd.to_str().is_some()
+            && Path::new(target).components().all(|component| {
+                matches!(
+                    component,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            }))
+}
+
+fn settings_admitted(value: &str, cwd: &Path) -> bool {
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(value) else {
+        return false;
+    };
+    ["allow", "ask", "deny"]
+        .into_iter()
+        .filter_map(|list| settings.get("permissions")?.get(list)?.as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .all(|rule| {
+            ["read_file(", "write_file("]
+                .into_iter()
+                .filter_map(|action| rule.strip_prefix(action)?.strip_suffix(')'))
+                .all(|target| permission_path_admitted(target, cwd))
+        })
+}
+
 fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(), String> {
     let target = format!("./{input}");
     let mut original = serde_json::json!({
@@ -342,12 +381,7 @@ fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(
         original.to_string(),
     ];
     let result = launch::child_arguments("agy", &flags, cwd, None);
-    if Path::new(&target).components().any(|component| {
-        !matches!(
-            component,
-            std::path::Component::Normal(_) | std::path::Component::CurDir
-        )
-    }) {
+    if !permission_path_admitted(&target, cwd) {
         return match result {
             Err(Error::Invalid(_)) => Ok(()),
             other => Err(format!(
