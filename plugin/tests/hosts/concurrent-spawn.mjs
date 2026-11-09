@@ -5,6 +5,7 @@ import {join,resolve,relative,delimiter} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createServer,connect} from 'node:net';
 import {once} from 'node:events';
+import {finished} from 'node:stream/promises';
 import {scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {fixtureEnvironment,workspaceOwner,checked,start,coordination,socketLine} from './native-fixture.mjs';
 import {concurrentCorpus,fuzz} from './native-calls.mjs';
@@ -39,11 +40,17 @@ export async function native(){
   assert.ok(['left','right','lost'].includes(side));
   const file=openSync(join(cwd,side+'.txt'),'w');
   const socket=connect({host:'127.0.0.1',port:Number(env.FIXTURE_RENDEZVOUS)});
+  const closed=finished(socket,{cleanup:true});closed.catch(()=>{});
   try{
    writeSync(file,prompt);
    await once(socket,'connect');socket.write(prompt+'\n');
    assert.equal(await socketLine(socket),turn??'retired');
-  }finally{socket.destroy();closeSync(file);}
+  }finally{
+   // Complete both halves of this one-line exchange. Destroying the socket
+   // after its answer can reset the peer before its FIN has been consumed.
+   socket.end();socket.resume();
+   try{await closed;}finally{closeSync(file);}
+  }
  }
  process.stdout.write(readFileSync(env.FIXTURE_EVENTS));
 }
@@ -61,8 +68,12 @@ export async function concurrentSpawn(binaryArg,ownerArg,host,data){
  // same turn. A parked wait can precede the second spawn on the original pipe.
  const server=createServer(socket=>{
   sockets.add(socket);socket.once('close',()=>sockets.delete(socket));
+  finished(socket,{cleanup:true}).catch(failed.resolve);
   (async()=>{
    const prompt=await socketLine(socket);
+   // No more input follows this prompt; retain EOF/error custody after the
+   // line iterator returns, including while a peer or producer is parked.
+   socket.resume();
    if(prompt==='lost'){lost.resolve(socket);return;}
    const [side,turn]=prompt.split(':');assert.ok(['left','right'].includes(side));
    let pair=turns.get(turn);if(!pair){pair=new Map();turns.set(turn,pair);}
