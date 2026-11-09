@@ -59,6 +59,10 @@ pub fn typescript() -> Result<String, String> {
         RouteSpec,
         WorkerPatternRoute
     );
+    output.push_str(&format!(
+        "export const HostCredential = {} as const;\n",
+        serde_json::json!({ "ACCOUNT_LEAF": HostCredential::ACCOUNT_LEAF })
+    ));
     Ok(output
         .lines()
         .map(str::trim_end)
