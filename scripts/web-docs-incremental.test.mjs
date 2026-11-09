@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { webDocsCommands } from "./web-docs-build.mjs";
 import { writeChanged } from "./generated-bindings.mjs";
 
 test("project builds reject changed dependency types and restore missing emitted output", t => {
@@ -22,10 +23,11 @@ test("project builds reject changed dependency types and restore missing emitted
   const initial = "export const value: number = 1;\n";
   writeChanged(api, initial);
   writeFileSync(join(root, "consumer/index.ts"), "import { value } from '../api';\nexport const result: number = value;\n");
-  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
   const compiler = resolve("node_modules/typescript/bin/tsc");
   // Exercise the maintained build flags and the actual compiler.
-  const args = scripts.build.split(" && ").at(-1).split(" ").slice(1);
+  const compile = webDocsCommands("build").at(-1);
+  assert.ok(compile);
+  const args = compile.slice(2);
   const measurements = [];
   const build = (label = "build") => {
     const started = performance.now();
@@ -35,7 +37,8 @@ test("project builds reject changed dependency types and restore missing emitted
     const result = spawnSync(timed ? "/usr/bin/time" : process.execPath,
       timed ? ["-f", "%U %S", "-o", timing, process.execPath, ...compilerArgs] : compilerArgs,
       { cwd: root, encoding: "utf8" });
-    const cpu = timed ? readFileSync(timing, "utf8").trim().split("\n").at(-1).split(" ").map(Number) : [];
+    const lastTiming = timed ? readFileSync(timing, "utf8").trim().split("\n").at(-1) : undefined;
+    const cpu = lastTiming ? lastTiming.split(" ").map(Number) : [];
     measurements.push({ label, seconds: (performance.now() - started) / 1000,
       cpuSeconds: cpu.length ? cpu[0] + cpu[1] : null, exitCode: result.status });
     return result;

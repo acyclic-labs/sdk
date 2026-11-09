@@ -540,12 +540,12 @@ case "$lane" in
     # targets compile, which the wasm32 builds above never download.
     cargo fetch --locked
     bun install --frozen-lockfile
-    bun run --filter '@acyclic-labs/fs' build
+    node scripts/web-docs-build.mjs package filesystem
     # The combined browser pages consume the public Stream and Harness builds;
     # Harness also needs its Objects package declaration dependency.
-    bun run --filter '@acyclic-labs/objects' build
-    bun run --filter '@acyclic-labs/stream' build
-    bun run --filter '@acyclic-labs/harness' build
+    node scripts/web-docs-build.mjs package objects
+    node scripts/web-docs-build.mjs package stream
+    node scripts/web-docs-build.mjs package harness
     bash scripts/qualify-cloudflare.sh
     export CHROME="$(command -v google-chrome || command -v chromium)"
     browser_qualification() {
