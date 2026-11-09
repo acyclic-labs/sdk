@@ -1,4 +1,3 @@
-pub(crate) use crate::query_sync::SyncMutex as Mutex;
 #[cfg(loom)]
 use loom::sync;
 #[cfg(not(loom))]
