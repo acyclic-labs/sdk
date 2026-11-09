@@ -29,11 +29,41 @@ impl WorkspaceName {
         ascii: impl Fn(&char) -> bool,
         probe: &mut impl FnMut(u8, u64, u64),
     ) -> Result<Self, WorkspaceError> {
+        Self::parse_with(name, accounting, ascii, probe, Self::retain)
+    }
+
+    pub(crate) fn is_canonical(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceError> {
+        Self::parse_with(
+            name,
+            accounting,
+            char::is_ascii,
+            &mut |_, _, _| {},
+            |canonical, _, _| Ok(canonical == name),
+        )
+    }
+
+    fn parse_with<T, P: FnMut(u8, u64, u64)>(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+        ascii: impl Fn(&char) -> bool,
+        probe: &mut P,
+        finish: impl FnOnce(&str, &mut KernelAccounting<'_>, &mut P) -> Result<T, WorkspaceError>,
+    ) -> Result<T, WorkspaceError> {
         accounting.check()?;
         let (all_ascii, invalid_ascii, maximum_pending, maximum_chunk) =
             plan::inspect(name, accounting, ascii, probe)?;
         if !all_ascii {
-            return normalize::parse(name, maximum_pending, maximum_chunk, accounting, probe);
+            return normalize::parse(
+                name,
+                maximum_pending,
+                maximum_chunk,
+                accounting,
+                probe,
+                finish,
+            );
         }
         // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
         // the zero-work admission before reporting canonical-name errors.
@@ -50,7 +80,7 @@ impl WorkspaceName {
         if invalid_ascii {
             return Err(WorkspaceNameError::InvalidCharacter.into());
         }
-        Self::retain(name, accounting, probe)
+        finish(name, accounting, probe)
     }
 
     fn retain(
