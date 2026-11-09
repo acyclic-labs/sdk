@@ -10,7 +10,7 @@ pub(crate) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
 const PATH: &str = "ACYCLIC_PROJFS_METADATA_PATH";
 const READY: &str = "ACYCLIC_METADATA_READY";
 
-pub(super) fn run(
+pub(in super::super) fn run(
     mode: &str,
     path: &Path,
     before_action: impl FnOnce() -> Result<(), Box<dyn std::error::Error>>,
