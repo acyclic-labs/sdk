@@ -46,7 +46,10 @@ pub fn read_json<T: DeserializeOwned>(input: impl io::Read, maximum: Option<u64>
 
 /// Map native hook fields once, before the shared workspace boundary.
 /// A non-idle Stop still belongs to Antigravity's running background work.
-pub(super) fn agy_hook(
+///
+/// # Errors
+/// Refuses unknown events and missing native retirement, workspace or session fields.
+pub fn agy_hook(
     event: &str,
     input: &mut Value,
     workspace: Option<&str>,
