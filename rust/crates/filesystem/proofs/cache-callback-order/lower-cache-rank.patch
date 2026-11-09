@@ -1,0 +1,8 @@
+--- a/rust/crates/filesystem/src/lock_order.rs
++++ b/rust/crates/filesystem/src/lock_order.rs
+@@ -20,4 +20,4 @@
+ #[cfg(any(test, all(feature = "native-watch", not(target_arch = "wasm32"))))]
+ pub(crate) const CURSOR: u16 = 40;
+-pub(crate) const OPERATION_CACHE: u16 = 45;
++pub(crate) const OPERATION_CACHE: u16 = 35;
+ #[cfg(any(test, not(target_arch = "wasm32")))]
