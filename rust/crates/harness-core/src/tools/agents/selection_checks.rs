@@ -31,11 +31,15 @@ impl TurnChildren for Selection {
     fn settled<'a>(
         &'a self,
         _: &'a AgentPath,
-    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Settlement>>> {
+    ) -> BoxProviderFuture<'a, Result<crate::agent::Settlement>> {
         unreachable!("selection never observes settlement")
     }
 
-    fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
+    fn answer<'a>(
+        &'a self,
+        _: &'a AgentPath,
+        _: u64,
+    ) -> BoxProviderFuture<'a, Result<(String, crate::agent::TurnOutcome)>> {
         unreachable!("selection never reads an answer")
     }
 }

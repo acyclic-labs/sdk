@@ -4,11 +4,14 @@ use super::{model_selection as selection, workspace};
 use crate as harness;
 
 mod model;
+pub use model::exercise as check_model_selection;
 #[cfg(feature = "hooks")]
 mod settings;
 #[path = "validation/workspace.rs"]
 mod workspace_contract;
+pub use workspace_contract::exercise as check_workspace;
 
+#[cfg(test)]
 proptest::proptest! {
     #[test]
     fn shared_workspace_contract(input in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..128)) {

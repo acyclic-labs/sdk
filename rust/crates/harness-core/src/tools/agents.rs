@@ -400,9 +400,18 @@ impl AgentTool {
             }
             Err(error) => return Err(error),
         };
+        let open = self.open().await?;
         let observations = futures::future::try_join_all(children.iter().map(|(name, child)| {
             let observer = &**observer;
-            async move { observer.settled(child).await.map_err(|error| (name, error)) }
+            let open = &open;
+            async move {
+                match observer.settled(child).await {
+                    Ok(observed) => Ok(Some(observed)),
+                    // Spawned this turn: its creation commits with the step.
+                    Err(Error::NotFound(_)) if open.contains(child) => Ok(None),
+                    Err(error) => Err((name, error)),
+                }
+            }
         }))
         .await;
         let observations = match observations {
@@ -414,30 +423,48 @@ impl AgentTool {
             }
             Err((_, error)) => return Err(error),
         };
-        let mut unsettled = BTreeSet::new();
-        for ((_, child), observed) in children.iter().zip(&observations) {
-            if observed.is_some() {
+        let mut pending = BTreeSet::new();
+        let mut unsettled = Vec::new();
+        let mut stranded = Vec::new();
+        for ((name, child), observed) in children.iter().zip(&observations) {
+            if observed.as_ref().is_some_and(|observed| observed.settled) {
                 need = need.saturating_sub(1);
-            } else if !released {
-                unsettled.insert(child.clone());
+                continue;
             }
+            let phase = observed
+                .as_ref()
+                .map_or(Ok(json!("spawning")), |observed| {
+                    serde_json::to_value(&observed.phase)
+                        .map_err(|error| Error::Invalid(error.to_string()))
+                })?;
+            if open.contains(child) {
+                pending.insert(child.clone());
+                unsettled.push(json!({"name": name, "phase": phase}));
+            } else {
+                stranded.push(format!("{name} ({phase}, not an open child)"));
+            }
+        }
+        if pending.len() < need as usize {
+            return Ok(ToolPreparation::Ready(rejected(format!(
+                "wait cannot be satisfied: {}",
+                stranded.join(", ")
+            ))));
         }
         if !released && need != 0 {
             return Ok(ToolPreparation::Deferred(
-                crate::agent::Until::quorum(unsettled, need).within(timeout_ms),
+                crate::agent::Until::quorum(pending, need).within(timeout_ms),
             ));
         }
-        let mut running = Vec::new();
         let settled = futures::future::try_join_all(children.iter().zip(observations).filter_map(
             |((name, child), observed)| {
-                let Some(observed) = observed else {
-                    running.push(name.as_str());
-                    return None;
-                };
+                let observed = observed.filter(|observed| observed.settled)?;
                 Some(async move {
-                    let answer = match observed.answer {
-                        Some(sequence) => Some(observer.answer(child, sequence).await?),
-                        None => None,
+                    let (answer, outcome) = match observed.answer {
+                        Some(sequence) => {
+                            let (text, outcome) = observer.answer(child, sequence).await?;
+                            (Some(text), Some(outcome))
+                        }
+                        None => (None, None),
                     };
                     let mut entry = json!({
                         "name": name,
@@ -446,8 +473,10 @@ impl AgentTool {
                             .map_err(|error| Error::Invalid(error.to_string()))?,
                         "answer": answer,
                     });
-                    // The branch is named only when the first reference was
-                    // a spawn name; preserve the original selected ordering.
+                    if let Some(TurnOutcome::Failed { message }) = outcome {
+                        entry["failed"] = json!(message);
+                    }
+                    // The first reference selects the branch's display name.
                     if name != child.as_str() {
                         entry["branch"] = json!(format!("agents/{name}"));
                     }
@@ -457,7 +486,7 @@ impl AgentTool {
         ))
         .await?;
         Ok(ToolPreparation::Ready(ToolResult {
-            value: json!({"settled": settled, "running": running}),
+            value: json!({"settled": settled, "unsettled": unsettled}),
         }))
     }
 }
@@ -797,22 +826,29 @@ mod tests {
         fn settled<'a>(
             &'a self,
             child: &'a AgentPath,
-        ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Settlement>>> {
-            let phase = self
-                .settled
-                .contains(child)
-                .then(|| crate::agent::Settlement {
-                    phase: crate::agent::Phase::Done {
+        ) -> BoxProviderFuture<'a, Result<crate::agent::Settlement>> {
+            let settled = self.settled.contains(child);
+            let phase = crate::agent::Settlement {
+                settled,
+                phase: if settled {
+                    crate::agent::Phase::Done {
                         outcome: crate::agent::AgentOutcome::Failed {
                             message: String::new(),
                         },
-                    },
-                    answer: None,
-                });
+                    }
+                } else {
+                    crate::agent::Phase::Running
+                },
+                answer: None,
+            };
             Box::pin(async move { Ok(phase) })
         }
 
-        fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
+        fn answer<'a>(
+            &'a self,
+            _: &'a AgentPath,
+            _: u64,
+        ) -> BoxProviderFuture<'a, Result<(String, crate::agent::TurnOutcome)>> {
             Box::pin(async { Err(Error::Invalid("no answer selected".into())) })
         }
     }

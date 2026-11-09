@@ -52,7 +52,7 @@ impl TurnChildren for Children {
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Option<Settlement>>> {
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Settlement>> {
         Box::pin(async move {
             self.probe.reads.fetch_add(1, Ordering::SeqCst);
             let selected = self.original.settled(child).await?;
@@ -75,7 +75,7 @@ impl TurnChildren for Children {
         &'a self,
         child: &'a AgentPath,
         sequence: u64,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<String>> {
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<(String, TurnOutcome)>> {
         Box::pin(async move {
             self.probe.answers.lock().unwrap().push(sequence);
             let gate = self.probe.answer_gate.lock().unwrap().take();
@@ -283,11 +283,7 @@ async fn observe(
     child: &AgentPath,
     control: &mut acyclic_actors::local::ClockControl,
 ) -> Result {
-    let old = settled(stream, &within(), child)
-        .await?
-        .unwrap()
-        .answer
-        .unwrap();
+    let old = settled(stream, &within(), child).await?.answer.unwrap();
     let (release, gate) = oneshot::channel();
     let (observing, observed) = oneshot::channel();
     *probe.observing.lock().unwrap() = Some(observing);
@@ -299,11 +295,7 @@ async fn observe(
     }
     assert_eq!(probe.reads.load(Ordering::SeqCst), 1);
     deliver(host, child, requested("advance-after-selection", child)).await?;
-    let latest = settled(stream, &within(), child)
-        .await?
-        .unwrap()
-        .answer
-        .unwrap();
+    let latest = settled(stream, &within(), child).await?.answer.unwrap();
     assert_ne!(old, latest);
     release
         .send(())
@@ -322,7 +314,7 @@ async fn observe(
     let value = result(model);
     assert_eq!(value["settled"][0]["answer"], "later child answer");
     assert_eq!(value["settled"][0]["agent"], child.as_str());
-    assert_eq!(value["running"], serde_json::json!([]));
+    assert_eq!(value["unsettled"], serde_json::json!([]));
 
     // A real committed child input makes the original condition unsatisfied.
     let Wake::Inbox { record, .. } = requested("unconsumed-child", child) else {
@@ -451,8 +443,8 @@ async fn deadlines(
     );
     assert_eq!(model.requests().len(), requests + 2);
     assert_eq!(
-        result(model)["running"],
-        serde_json::json!([child.as_str()])
+        result(model)["unsettled"],
+        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
     );
     control.advance_to(129)?;
     host.drain(parent).await?;
@@ -463,8 +455,8 @@ async fn deadlines(
     assert_eq!(model.requests().len(), requests + 3);
     assert_eq!(result(model)["settled"], serde_json::json!([]));
     assert_eq!(
-        result(model)["running"],
-        serde_json::json!([child.as_str()])
+        result(model)["unsettled"],
+        serde_json::json!([{ "name": child.as_str(), "phase": "idle" }])
     );
     assert_eq!(probe.reads.swap(0, Ordering::SeqCst), 4);
     host.drain(child).await?;
@@ -547,16 +539,8 @@ async fn parallel(
     model.extend([ScriptedTurn::Text("parallel child answer".into())]);
     host.drain(&other).await?;
     let selected = [
-        settled(stream, &within(), child)
-            .await?
-            .unwrap()
-            .answer
-            .unwrap(),
-        settled(stream, &within(), &other)
-            .await?
-            .unwrap()
-            .answer
-            .unwrap(),
+        settled(stream, &within(), child).await?.answer.unwrap(),
+        settled(stream, &within(), &other).await?.answer.unwrap(),
     ];
     model.extend([
         wait_selected(&[child, &other]),

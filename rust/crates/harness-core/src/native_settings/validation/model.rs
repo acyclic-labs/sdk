@@ -32,7 +32,11 @@ fn check(bytes: &[u8]) {
     }
 }
 
-pub(super) fn exercise(bytes: &[u8]) {
+/// Exercises the production admission contract.
+///
+/// # Panics
+/// Panics if an admission invariant fails.
+pub fn exercise(bytes: &[u8]) {
     check(bytes);
     // Original TOML writer exercises quoting without manufacturing host output.
     let name = String::from_utf8_lossy(bytes);

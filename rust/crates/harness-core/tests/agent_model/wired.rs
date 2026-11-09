@@ -1532,15 +1532,13 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     };
     let (_, child) = requested_child(&parent, inbox)?;
     root_host.drain(&parent).await?;
-    assert_eq!(
-        settled(&stream, &within(), &child).await?,
-        None,
+    assert!(
+        !settled(&stream, &within(), &child).await?.settled,
         "an unconsumed child inbox was reported settled"
     );
     root_host.drain(&child).await?;
-    let observed = settled(&stream, &within(), &child)
-        .await?
-        .ok_or("child did not settle its first answer")?;
+    let observed = settled(&stream, &within(), &child).await?;
+    assert!(observed.settled, "child did not settle its first answer");
     let position = observed.answer.ok_or("child omitted its own answer")?;
     assert_eq!(position, 1, "the child's answer follows inherited context");
     let first = answer(&*stream, &child, position).await?;
@@ -1575,7 +1573,7 @@ async fn a_child_inherits_context_but_retains_its_own_observed_answer_across_tur
     assert_eq!(requests.control(), 0, "no status or live-tail discovery");
     let latest = settled(&stream, &within(), &child)
         .await?
-        .and_then(|settled| settled.answer)
+        .answer
         .ok_or("child did not settle its second answer")?;
     assert_ne!(latest, position);
     assert!(matches!(

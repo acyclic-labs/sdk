@@ -115,7 +115,7 @@ pub(super) async fn check(
                 Err(Error::Stream(StreamError::Unavailable))
             ));
         } else {
-            assert_eq!(result?, Some(expected.clone()));
+            assert_eq!(result?, expected.clone());
             let requests = provider.inner.requests();
             assert_eq!(requests.control(), 2, "one inbox and one actor head");
             assert_eq!(requests.data(), 0, "actor head retains its checkpoint");
@@ -138,11 +138,11 @@ pub(super) async fn check(
     assert!(observation.as_mut().now_or_never().is_none());
     advance.await?;
     release.send(()).expect("original inbox observer is active");
-    assert_eq!(
-        observation
+    assert!(
+        !observation
             .now_or_never()
-            .expect("inbox producer release did not finish settlement")?,
-        None,
+            .expect("inbox producer release did not finish settlement")?
+            .settled,
         "an older actor checkpoint covered a newer inbox cut"
     );
     Ok(())

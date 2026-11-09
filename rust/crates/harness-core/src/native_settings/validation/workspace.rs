@@ -5,7 +5,11 @@ fn same(left: &str, right: &str, windows: bool) {
     assert!(workspace::equivalent(right, left, windows));
 }
 
-pub(super) fn exercise(bytes: &[u8]) {
+/// Exercises the production admission contract.
+///
+/// # Panics
+/// Panics if an admission invariant fails.
+pub fn exercise(bytes: &[u8]) {
     assert!(
         !workspace::equivalent("C:", "C:/", true),
         "workspace roots must remain distinct"

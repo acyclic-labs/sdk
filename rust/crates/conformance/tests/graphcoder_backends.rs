@@ -665,7 +665,11 @@ impl Shape {
             .expect("wait named no settlement");
         assert_eq!(settled.len(), 1, "{waited}");
         assert_eq!(settled[0]["agent"], spawned["agent"]);
-        let completed = json!([settled[0]["phase"], settled[0]["answer"], waited["running"]]);
+        let completed = json!([
+            settled[0]["phase"],
+            settled[0]["answer"],
+            waited["unsettled"]
+        ]);
         assert_eq!(completed, json!(["idle", CHILD_REPLY, []]));
         let child: Vec<&str> = spawned["agent"]
             .as_str()

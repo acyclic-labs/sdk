@@ -4,18 +4,20 @@
 use super::{AgentPath, ConversationEntry, Error, Phase, inbox_tail};
 use std::{collections::HashSet, sync::Arc};
 
-/// A settled phase and its answer position from the same actor checkpoint.
+/// A phase, readiness and answer position from the same actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
-    /// The observed settled phase.
+    /// Whether the checkpoint covers the observed inbox cut.
+    pub settled: bool,
+    /// The observed phase, including when the child has not settled.
     pub phase: Phase,
     /// Exact conversation position of the agent's last own turn, if any.
     /// Inherited history is never an answer. Read this position with [`answer`].
     pub answer: Option<u64>,
 }
 
-/// `agent`'s settlement if it has settled every inbox record committed before this
-/// call (idle, waiting for a user, or done), else `None`: one read of its
+/// `agent`'s phase and whether it has settled every inbox record committed before
+/// this call (idle, waiting for a user, or done): one read of its
 /// inbox tail and its original actor state, read concurrently. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
 /// An inbox cut newer than the actor checkpoint can only defer settlement:
@@ -28,23 +30,20 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &Arc<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
-) -> Result<Option<Settlement>, Error> {
+) -> Result<Settlement, Error> {
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
     let agents = super::handler::Agents::new(super::actor_store(provider)?);
     let (inbox, (state, cursor)) =
         futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
-    if matches!(state.phase, Phase::Done { .. })
+    let settled = matches!(state.phase, Phase::Done { .. })
         || matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
-            && state.settled_before(cursor) >= inbox
-    {
-        Ok(Some(Settlement {
-            phase: state.phase,
-            answer: (state.conversation_tail > state.conversation_base)
-                .then(|| state.conversation_tail - 1),
-        }))
-    } else {
-        Ok(None)
-    }
+            && state.settled_before(cursor) >= inbox;
+    Ok(Settlement {
+        settled,
+        phase: state.phase,
+        answer: (settled && state.conversation_tail > state.conversation_base)
+            .then(|| state.conversation_tail - 1),
+    })
 }
 
 /// `agent`'s immutable answer at the exact position selected by [`settled`].
@@ -80,11 +79,11 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         references: &'a [String],
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<(String, AgentPath)>>>;
 
-    /// `child`'s phase and exact answer position once it settled, else `None`.
+    /// `child`'s phase, readiness and exact settled answer position.
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<Settlement>>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Settlement>>;
 
     /// The text at `child`'s selected answer position, read under the turn's
     /// authority. The caller retains the position from the same settlement.
@@ -92,7 +91,7 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         &'a self,
         child: &'a AgentPath,
         sequence: u64,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<String>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<(String, super::TurnOutcome)>>;
 }
 
 /// Selects the current child, or the latest released generation when the name
