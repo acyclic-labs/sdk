@@ -503,7 +503,7 @@ async fn a_closed_lease_attempt_does_not_poison_a_new_lease_for_the_same_operati
             Ok(())
         }
 
-        async fn native_commit<P: acyclic_stream::NativeStreamProvider>(
+        async fn native_commit<P: acyclic_stream::NativeStreamProvider + ?Sized>(
             &mut self,
             provider: &P,
             request: acyclic_stream::CommitRequest,
