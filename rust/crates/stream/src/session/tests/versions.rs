@@ -8,7 +8,7 @@ async fn admission_golden_frame_opens_without_another_request() -> TestResult {
         0,
         0,
         Body::Hello(wire::SessionHello {
-            version: VERSION,
+            version: crate::SESSION_PROTOCOL_VERSION,
             client_id: Bytes::from_static(b"c"),
             interest: Some(wire::SessionInterest {
                 revision: 1,

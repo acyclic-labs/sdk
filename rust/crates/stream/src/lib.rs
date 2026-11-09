@@ -1,4 +1,7 @@
 #![doc = include_str!("../README.md")]
+/// Session admission version. Checked before credentials or the first request.
+pub const SESSION_PROTOCOL_VERSION: u32 = 3;
+
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 pub mod authorization;
