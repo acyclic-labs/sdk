@@ -845,7 +845,12 @@ mod tests {
         let before = fixture.requests().requests();
         let missing = crate::MachineId::from_digest([0x55; 32]);
         assert!(matches!(
-            fixture.provider().inspect_machine(missing).await,
+            fixture
+                .provider()
+                .inspect_machine(missing)
+                .await
+                .as_ref()
+                .map_err(ProviderError::classification),
             Err(ProviderError::NotFound(_))
         ));
         let failed = fixture.requests().requests().since(before);
