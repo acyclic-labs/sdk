@@ -140,13 +140,13 @@ async fn first_turn_failure_after_send_retains_the_spawn_name() -> Result {
     let child = named(&agents, &root, "w").await?;
     agents.drain(&child).await?;
     let state = agents.state(&child).await?;
+    assert_eq!(state.phase, Phase::Idle);
+    let entries = super::super::values(&*stream, child.conversation()?).await?;
+    assert_eq!(state.conversation_tail - state.conversation_base, 1);
     assert!(matches!(
-        state.phase,
-        Phase::Done {
-            outcome: AgentOutcome::Failed { .. }
-        }
+        ConversationEntry::decode(entries.last().ok_or("missing failed turn")?)?.outcome,
+        TurnOutcome::Failed { message } if message.contains("failure after send")
     ));
-    assert_eq!(state.conversation_tail, state.conversation_base);
     assert!(!state.released());
     assert_eq!(named(&agents, &root, "w").await?, child);
     assert!(
@@ -366,7 +366,9 @@ proptest::proptest! {
             agents.drain(&live).await?;
             if fails_after_turn {
                 deliver(&agents, &live, requested("fail-after-work", &live)).await?;
-                assert!(matches!(agents.state(&live).await?.phase, Phase::Done { outcome: AgentOutcome::Failed { message } } if message.contains("failure after work")));
+                assert_eq!(agents.state(&live).await?.phase, Phase::Idle);
+                let entries = super::super::values(&*stream, live.conversation()?).await?;
+                assert!(matches!(ConversationEntry::decode(entries.last().ok_or("missing failed turn")?)?.outcome, TurnOutcome::Failed { message } if message.contains("failure after work")));
             }
             assert!(!agents.state(&live).await?.released());
             let counted = Arc::new(Counted::new((*stream).clone()));
