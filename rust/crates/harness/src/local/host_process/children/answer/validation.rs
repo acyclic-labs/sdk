@@ -10,6 +10,8 @@ fn copy(answer: &NativeAnswer) -> NativeAnswer {
         pending: answer.pending.clone(),
         outcome: answer.outcome.clone(),
         omitted: answer.omitted,
+        last_part: answer.last_part.clone(),
+        truncated: answer.truncated,
     }
 }
 
@@ -17,6 +19,8 @@ fn same(left: &NativeAnswer, right: &NativeAnswer) {
     assert_eq!(left.pending, right.pending);
     assert_eq!(left.outcome, right.outcome);
     assert_eq!(left.omitted, right.omitted);
+    assert_eq!(left.last_part, right.last_part);
+    assert_eq!(left.truncated, right.truncated);
 }
 
 fn prefix(original: &str, retained: &str) {
@@ -120,7 +124,7 @@ fn successful_prefix(text: &str, current: &NativeAnswer, message: &str) {
 }
 
 fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
-    if event.get("type").and_then(Value::as_str) != Some("turn.started")
+    if !matches!(event.get("type").and_then(Value::as_str), Some("turn.started" | "step_start"))
         && matches!(
             before.outcome,
             Some(Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. })
@@ -129,8 +133,12 @@ fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
         same(current, &before);
         return;
     }
+    if event.get("event").and_then(Value::as_str) == Some("result") {
+        check_agy_result(&event["result"], current);
+        return;
+    }
     match event.get("type").and_then(Value::as_str) {
-        Some("turn.started") => same(current, &NativeAnswer::default()),
+        Some("turn.started" | "step_start") => same(current, &NativeAnswer::default()),
         Some("item.completed") => {
             assert_eq!(current.outcome, before.outcome, "preview completed a turn");
             if before.outcome.is_none()
@@ -155,11 +163,34 @@ fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
                     .or_else(|| before.pending.map(Outcome::Succeeded))
             );
         }
+        Some("text") => check_text(event, current, &before),
+        Some("step_finish") => {
+            if before.omitted && before.outcome.is_none() {
+                assert!(
+                    !matches!(current.outcome, Some(Outcome::Succeeded(_))),
+                    "incremental native reply succeeded after framing loss"
+                );
+            }
+            if before.outcome.is_none()
+                && !before.omitted
+                && event.pointer("/part/reason").and_then(Value::as_str) == Some("stop")
+            {
+                assert_eq!(
+                    current.outcome,
+                    before.pending.map(Outcome::Succeeded),
+                    "native OpenCode terminal lost"
+                );
+                assert!(current.pending.is_none());
+            } else {
+                same(current, &before);
+            }
+        }
         Some("turn.failed" | "error") => {
             assert!(matches!(current.outcome, Some(Outcome::Failed { .. })));
             assert!(current.pending.is_none());
             if let Some(message) = event
                 .pointer("/error/message")
+                .or_else(|| event.pointer("/error/data/message"))
                 .or_else(|| event.get("message"))
                 .and_then(Value::as_str)
             {
@@ -178,6 +209,78 @@ fn check_event(event: &Value, current: &NativeAnswer, before: NativeAnswer) {
             check_message(event, current);
         }
         _ => same(current, &before),
+    }
+}
+
+fn check_text(event: &Value, current: &NativeAnswer, before: &NativeAnswer) {
+    if before.omitted {
+        assert_eq!(
+            current.pending, before.pending,
+            "incremental native text retained after framing loss"
+        );
+    }
+    assert_eq!(
+        current.outcome, before.outcome,
+        "text completed a native turn"
+    );
+    let id = event
+        .pointer("/part/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    let text = event.pointer("/part/text").and_then(Value::as_str);
+    if before.outcome.is_none()
+        && !before.omitted
+        && !before.truncated
+        && event
+            .pointer("/part/time/end")
+            .and_then(Value::as_u64)
+            .is_some_and(|end| end > 0)
+        && let (Some(id), Some(text)) = (id, text)
+        && before.last_part.as_deref() != Some(id)
+    {
+        let joined: String = before
+            .pending
+            .as_deref()
+            .into_iter()
+            .chain([text])
+            .collect();
+        assert!(current.pending.is_some(), "lost native text");
+        if let Some(retained) = current.pending.as_deref() {
+            prefix(&joined, retained);
+            assert_eq!(current.truncated, joined.len() > retained.len());
+        }
+        assert_eq!(current.last_part.as_deref(), Some(id));
+    } else {
+        same(current, before);
+    }
+}
+
+fn check_agy_result(result: &Value, current: &NativeAnswer) {
+    assert!(current.pending.is_none());
+    match result.get("status").and_then(Value::as_str) {
+        Some("SUCCESS")
+            if result.get("error").is_none() && result.get("finished_reason").is_none() =>
+        {
+            match result.get("response").and_then(Value::as_str) {
+                Some(text) => successful_prefix(text, current, "successful native result lost"),
+                None => assert!(current.outcome.is_none()),
+            }
+        }
+        Some("CANCELED" | "INTERRUPTED") => assert_eq!(current.outcome, Some(Outcome::Cancelled)),
+        _ => {
+            assert!(
+                matches!(current.outcome, Some(Outcome::Failed { .. })),
+                "native refusal became success"
+            );
+            if let Some(message) = result.get("error").and_then(Value::as_str) {
+                assert_eq!(
+                    current.outcome,
+                    Some(Outcome::Failed {
+                        message: message.into()
+                    })
+                );
+            }
+        }
     }
 }
 
