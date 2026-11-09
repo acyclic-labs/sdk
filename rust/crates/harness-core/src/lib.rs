@@ -84,7 +84,7 @@ pub mod model;
 ))]
 #[doc(hidden)]
 pub mod native_environment;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native_future;
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -218,7 +218,7 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use json_literal::deserialize as deserialize_json_value;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use native_future::NativeFutureBundle;
 mod process_error;
 pub use process_error::ProcessError;
