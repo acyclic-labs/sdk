@@ -106,6 +106,85 @@ fn cwd(value: &Value) -> Result<PathBuf> {
     })?))
 }
 
+/// Drives the production workspace carrier, including readiness and joined
+/// owner replacement. Every wait has its producer in this same lifetime.
+struct PublicOwner {
+    workspace: PathBuf,
+    state: PathBuf,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+impl PublicOwner {
+    async fn start(workspace: &Path, state: PathBuf) -> Result<Self> {
+        let mut owner = Self {
+            workspace: workspace.to_path_buf(),
+            state,
+            stop: None,
+            task: None,
+        };
+        owner.restart().await?;
+        Ok(owner)
+    }
+
+    async fn restart(&mut self) -> Result<()> {
+        self.stop().await?;
+        let local = Arc::new(
+            LocalHarness::open(
+                LocalHarnessConfig::native_host(&self.workspace).state_directory(&self.state),
+            )
+            .await?,
+        );
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(super::super::host_files::serve_until(
+            local,
+            move || ready.send(()).map_err(|()| Error::Cancelled),
+            async move { stopped.await.map_err(storage) },
+        ));
+        if let Err(error) = started.await {
+            drop(stop);
+            return Error::after_cleanup(Err(storage(error)), task.await.map_err(storage)?);
+        }
+        self.stop = Some(stop);
+        self.task = Some(task);
+        Ok(())
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        match self.task.take() {
+            Some(task) => task.await.map_err(storage)?,
+            None => Ok(()),
+        }
+    }
+
+    async fn request(&self, action: HostAction) -> Result<Value> {
+        let workspace = self.workspace.clone();
+        tokio::task::spawn_blocking(move || super::super::host_files::request(&workspace, action))
+            .await
+            .map_err(storage)?
+    }
+
+    async fn session(
+        &self,
+        parent: &AgentPath,
+        reference: &str,
+        action: SessionAction,
+        next: bool,
+    ) -> Result<Value> {
+        self.request(HostAction::Session {
+            parent: parent.clone(),
+            reference: reference.into(),
+            action,
+            next,
+        })
+        .await
+    }
+}
+
 #[tokio::test]
 async fn codex_native_session_lifecycle() -> Result<()> {
     native_session_lifecycle("codex").await
@@ -117,6 +196,194 @@ async fn claude_native_session_lifecycle() -> Result<()> {
 #[tokio::test]
 async fn pi_native_session_lifecycle() -> Result<()> {
     native_session_lifecycle("pi").await
+}
+
+#[tokio::test]
+async fn native_event_log_keeps_late_usage_and_resume_after_recovery() -> Result<()> {
+    use super::super::host_process::{HostProcessLease, Receipt};
+    use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
+    use sha2::{Digest, Sha256};
+
+    use futures::FutureExt as _;
+
+    let checkout = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    std::fs::write(checkout.path().join("source.txt"), b"source").map_err(storage)?;
+    let mut owner = PublicOwner::start(checkout.path(), state.path().join("owner")).await?;
+    let result = std::panic::AssertUnwindSafe(async {
+        let opened = owner
+            .request(HostAction::Open {
+                host: "codex".into(),
+                session: "retained-native-events".into(),
+            })
+            .await?;
+        let parent = serde_json::from_value(opened["task"].clone()).map_err(storage)?;
+        let accepted = owner
+            .session(
+                &parent,
+                "recorded",
+                SessionAction::Spawn {
+                    prompt: "retain original observations".into(),
+                },
+                true,
+            )
+            .await?;
+        let turn = &accepted["next"];
+        let claim = claim(turn)?;
+        let child = claim.agent.clone();
+        // A second member must remain independently usable throughout custody.
+        owner
+            .session(
+                &parent,
+                "sibling",
+                SessionAction::Spawn {
+                    prompt: "independent member".into(),
+                },
+                false,
+            )
+            .await?;
+        let receipt = Receipt::accepted(&accepted)?;
+        let lease = HostProcessLease::admit(checkout.path(), &receipt, turn)?;
+        let mut process = lease.funded_process()?;
+        let mut command = ProcessCommand::new(std::env::current_exe().map_err(storage)?);
+        command
+            .args(["--list", "native_event_retention_no_cases"])
+            .current_dir(cwd(turn)?)
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::null())
+            .stderr(ProcessStdio::null());
+        process.spawn(&mut command, claim.operation)?;
+
+        // Replay unchanged installed-host captures, with the only resume identity
+        // after the old whole-log cutoff. Repetition is a derived load schedule,
+        // never a claim of another captured provider call.
+        let codex = include_bytes!("../host_process/fixtures/codex-completed.jsonl");
+        let claude = include_bytes!("../host_process/fixtures/claude-code-completed.jsonl");
+        native_events::check_native_event_resume(codex);
+        native_events::check_native_event_resume(claude);
+        native_events::check_native_event_resume(include_bytes!(
+            "../host_process/fixtures/pi-assistant-error.jsonl"
+        ));
+        native_events::check_native_event_resume(claude.strip_suffix(b"\n").unwrap_or(claude));
+        // Mutate the captured representation: malformed UTF-8 and one oversized
+        // frame must not consume the next unchanged captured resume event.
+        let mut damaged = vec![0xff; super::super::host_process::EVENT_LINE_BYTES + 1];
+        damaged.push(b'\n');
+        damaged.extend_from_slice(claude);
+        native_events::check_native_event_resume(&damaged);
+        let mut digest = Sha256::new();
+        let mut length = 0;
+        while length <= 4 * 1024 * 1024 {
+            for line in codex.split_inclusive(|byte| *byte == b'\n') {
+                let line = line.strip_suffix(b"\n").unwrap_or(line);
+                process.record_event(line)?;
+                digest.update(line);
+                digest.update(b"\n");
+                length += line.len() as u64 + 1;
+            }
+        }
+        let line = claude.strip_suffix(b"\n").unwrap_or(claude);
+        process.record_event(line)?;
+        digest.update(line);
+        digest.update(b"\n");
+        length += line.len() as u64 + 1;
+        // Retire the real process and replace its owner before public settlement.
+        drop(process);
+        owner.restart().await?;
+        owner
+            .request(HostAction::Reopen {
+                task: child.clone(),
+            })
+            .await?;
+        let completed = owner
+            .session(
+                &parent,
+                "recorded",
+                SessionAction::Complete {
+                    claim: claim.clone(),
+                    outcome: crate::Outcome::Cancelled,
+                },
+                false,
+            )
+            .await?;
+        let events: crate::conversation::FileRef =
+            serde_json::from_value(completed["events"].clone()).map_err(storage)?;
+        assert_eq!(
+            events.descriptor().byte_length(),
+            length,
+            "native event publication lost records after the old cutoff"
+        );
+        let expected: [u8; 32] = digest.finalize().into();
+        assert_eq!(
+            events.descriptor().sha256(),
+            &expected,
+            "native event publication changed original bytes"
+        );
+        let replay = owner
+            .session(
+                &parent,
+                "recorded",
+                SessionAction::Complete {
+                    claim,
+                    outcome: crate::Outcome::Cancelled,
+                },
+                false,
+            )
+            .await?;
+        assert_eq!(replay["events"], completed["events"]);
+        owner.restart().await?;
+        owner
+            .request(HostAction::Reopen {
+                task: child.clone(),
+            })
+            .await?;
+        let next = owner
+            .session(
+                &parent,
+                "recorded",
+                SessionAction::Send {
+                    prompt: "resume from retained event".into(),
+                },
+                true,
+            )
+            .await?;
+        assert_eq!(
+            next["next"]["session"]["id"],
+            "a14f2590-4397-48a1-a076-1f2dac2d5349"
+        );
+        assert_eq!(
+            owner
+                .session(&parent, "sibling", SessionAction::Next {}, false)
+                .await?["turn"],
+            1
+        );
+
+        // A shortened finite source must refuse before publishing success. EOF
+        // itself produces the error; no timeout, notification or retry is involved.
+        for (before, after) in [(32, 0), (0, 1)] {
+            let file = tempfile::tempfile().map_err(storage)?;
+            file.set_len(before).map_err(storage)?;
+            let mutate = file.try_clone().map_err(storage)?;
+            let mut source = native_events::NativeEvents::new(file)?;
+            mutate.set_len(after).map_err(storage)?;
+            let failure = futures::io::AsyncReadExt::read_to_end(&mut source, &mut Vec::new())
+                .await
+                .expect_err("changed event source cannot become a successful artifact");
+            assert_eq!(failure.kind(), std::io::ErrorKind::InvalidData);
+            assert!(failure.to_string().contains("source length changed"));
+        }
+        Ok(())
+    })
+    .catch_unwind()
+    .await;
+    let cleanup = owner.stop().await;
+    match result {
+        Ok(result) => Error::after_cleanup(result, cleanup),
+        Err(panic) => {
+            cleanup.expect("public owner must retire after a failed native event control");
+            std::panic::resume_unwind(panic)
+        }
+    }
 }
 
 /// One child through spawn, follow-up, a failed write, an owner restart,
