@@ -528,7 +528,10 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "", wrapper: env.RUSTC_WORKSPACE_WRAPPER ?? null };
   if (options.expectedFailure) plan.expectedFailure = options.expectedFailure;
   if (run === planOnly) return plan;
+  const buildStarted = performance.now();
   const build = run("cargo", args, { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, ...(options.env ? { env: options.env } : {}) });
+  console.log("MODEL_CHECK_PHASE " + JSON.stringify({ phase: "build", crate, target,
+    seconds: (performance.now() - buildStarted) / 1000, status: build.status === 0 ? "PASS" : "FAIL" }));
   if (build.error) throw build.error;
   if (build.status !== 0) {
     const diagnostics = build.stdout.split(/\r?\n/).filter(Boolean).flatMap(line => {
@@ -545,8 +548,17 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
+  console.log("MODEL_CHECK_ARTIFACT " + JSON.stringify({ crate, target, executable: binaries[0] }));
   for (const test of tests) {
-    const result = run(binaries[0], test.args, { encoding: "utf8" });
+    const started = performance.now();
+    // The installed shared runner owns tracing and action-cache policy. Mutation
+    // controls must execute their unchanged semantic oracle every time.
+    const runner = options.expectedFailure ? undefined : process.env.SDK_CHECKER_RUNNER;
+    const result = runner
+      ? run(process.execPath, [runner, "--", binaries[0], ...test.args], { encoding: "utf8" })
+      : run(binaries[0], test.args, { encoding: "utf8" });
+    console.log("MODEL_CHECK_PHASE " + JSON.stringify({ phase: "search", crate, target, args: test.args,
+      seconds: (performance.now() - started) / 1000, status: result.status === 0 ? "PASS" : "FAIL" }));
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
@@ -645,5 +657,17 @@ export function qualificationMain(args, run = runCommand) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  qualificationMain(process.argv.slice(2));
+  const started = performance.now();
+  const args = process.argv.slice(2);
+  let status = "FAIL";
+  try {
+    qualificationMain(args);
+    status = "PASS";
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  } finally {
+    console.log("MODEL_CHECK_RESULT " + JSON.stringify({ checker: "loom", args, status,
+      seconds: (performance.now() - started) / 1000 }));
+  }
 }
