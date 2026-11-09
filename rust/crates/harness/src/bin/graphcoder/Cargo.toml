@@ -20,7 +20,7 @@ name = "embedded"
 path = "examples/embedded.rs"
 
 [features]
-test-support = []
+test-support = ["acyclic-harness/test-support", "acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 
 [dependencies]
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "serve", "terminal", "tui", "search-http"] }
