@@ -62,7 +62,7 @@ impl crate::native_mount::NativeAccessOwner for Reload {
     }
 }
 
-pub(super) fn publish<A, O>(
+pub(in crate::native_mount) fn publish<A, O>(
     source: &CheckoutMountSource<A, O>,
     policy: &Policy,
 ) -> Result<(), Box<dyn std::error::Error>>

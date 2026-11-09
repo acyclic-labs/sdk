@@ -97,9 +97,14 @@ impl FuseProjection {
         let source = self.core.source.as_ref();
         let _names = self.core.names()?;
         let child = {
+            let state = self.core.state()?;
+            ChildName::new(source, state.child_path(parent, name, work)?, work)?
+        };
+        // Authorization can await a policy refresh whose observer needs state.
+        // Keep namespace stability, but never lend the state lock to that wait.
+        source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work)?;
+        {
             let mut state = self.core.state()?;
-            let child = ChildName::new(source, state.child_path(parent, name, work)?, work)?;
-            source.authorize_with_meter(&[(crate::access::Action::List, &child.spelled)], work)?;
             work.charge(Items.delta(1))?;
             if child.folded.is_none()
                 && let Some(inode) = state.inode_by_path.get(child.key()).copied()
@@ -131,8 +136,7 @@ impl FuseProjection {
             {
                 return state.negative_entry(source, parent, &child, Some(empty), work);
             }
-            child
-        };
+        }
         let (found, stamp) = resolve_path(source, &child.spelled, work)?;
         let mut confirmed = HashMap::new();
         if let Some(lookup) = found {
@@ -179,20 +183,17 @@ impl FuseProjection {
                     .clone(),
             )
         } else {
-            let mut state = self.core.state()?;
-            match state.node_facts(source, inode, None, work)? {
-                NodeFacts::Current(current) => {
-                    if let Some(path) = &current.through {
-                        source
-                            .authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
-                    }
-                    let attr = state.attr(inode, &current.lookup)?;
-                    let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
-                    return Ok((attr, ttl));
-                }
-                facts => facts,
-            }
+            self.core.state()?.node_facts(source, inode, None, work)?
         };
+        if let NodeFacts::Current(current) = &facts {
+            if let Some(path) = &current.through {
+                source.authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
+            }
+            let mut state = self.core.state()?;
+            let attr = state.attr(inode, &current.lookup)?;
+            let ttl = state.admit_attributes(source, inode, current.stamp, work)?;
+            return Ok((attr, ttl));
+        }
         let resolved = resolve_node(source, facts, work)?;
         self.core.state()?.apply(source, inode, &resolved, work)
     }
