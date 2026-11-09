@@ -15,6 +15,17 @@ const cleanupTests = [
   "local::owner::publication_tests::explicit_file_custody_reopens_the_original_owner_without_native_fallback",
 ];
 const claims = {
+  "actors-live-update-canonical": [
+    "rust/crates/actors/src/live_update.rs", "acyclic-codec-fuzz", "",
+    "live-update document admission differs from canonical writer", [],
+    { oracle: "rust/codec-fuzz/src/lib.rs",
+      command: ["run", "--locked", "-p", "acyclic-codec-fuzz", "--example", "replay", "--", "actor_codecs"],
+      invoked: "Running ", negativeExit: 1, failed: "corpus replay failed:",
+      completed: ["replayed ", " captured inputs"],
+      mutations: [{ patch: "rust/proofs/actors-live-update-canonical/mutation.patch",
+        priorOraclePatch: "rust/proofs/actors-live-update-canonical/prior-oracle.patch",
+        label: "noncanonical-admission", diagnostic: "live-update document admission differs from canonical writer" }] },
+  ],
   "settings-read-producer": [
     "rust/crates/harness-core/src/config/evaluate/composition.rs", "acyclic-harness-core",
     "config::evaluate::model::tests::generated_settings_match_fresh_evaluation",
@@ -1662,9 +1673,9 @@ if (claim === "--help" && extra.length === 0) {
     `-artifact_prefix=target/${claim}/`];
   const command = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", "corpus/stream_persistence/projection-v1-append", "--", "-runs=1000", "-seed=1697"]
-    : options.fuzz ? fuzzCommand(1) : options.nextest
+    : options.command ?? (options.fuzz ? fuzzCommand(1) : options.nextest
     ? ["nextest", "run", "--locked", "-p", crate, ...features, ...target, "-E", `test(=${test})`, ...options.nextest]
-    : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"];
+    : ["test", "--locked", "-p", crate, ...features, ...target, test, "--", "--exact", "--nocapture"]);
   const positive = instrumented
     ? ["+nightly", "fuzz", "run", "--fuzz-dir", ".", "stream_persistence", fileURLToPath(new URL("target/projection-fuzz/corpus", new URL("../../", import.meta.url))), "corpus/stream_persistence", "--", "-runs=1000", "-seed=1697"]
     : options.positiveCommand ?? (options.fuzz ? fuzzCommand(options.fuzz.runs) : options.positive
@@ -1707,8 +1718,8 @@ if (claim === "--help" && extra.length === 0) {
     if (result.error) throw result.error;
     return { ...result, output: log ? readFileSync(log, "utf8") : `${result.stdout ?? ""}${result.stderr ?? ""}` };
   }
-  function check(label, selected = command, checkedSource = source) {
-    if (oracle) require(readFileSync(oraclePath).equals(oracle));
+  function check(label, selected = command, checkedSource = source, expectedOracle = oracle) {
+    if (oracle) require(readFileSync(oraclePath).equals(expectedOracle));
     mkdirSync(directory, { recursive: true });
     const invocation = options.runner ?? ["cargo", ...selected];
     const result = run(invocation[0], invocation.slice(1), new URL(`${label}.log`, directory));
@@ -1726,12 +1737,12 @@ if (claim === "--help" && extra.length === 0) {
     if (oracle) {
       const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
       const checkedPath = new URL(checkedSource, new URL("../../", import.meta.url));
-      const phase = { phase: label, exit: result.status, source: checkedSource, source_sha256: sha256(readFileSync(checkedPath)), oracle_sha256: sha256(oracle) };
+      const phase = { phase: label, exit: result.status, source: checkedSource, source_sha256: sha256(readFileSync(checkedPath)), oracle_sha256: sha256(expectedOracle) };
       phases.push(phase);
       console.log(JSON.stringify(phase));
-      require(readFileSync(oraclePath).equals(oracle));
-      const started = invocation[0] === "cargo" && invocation[1] === "nextest"
-        ? "Starting 1 test across 1 binary" : "running 1 test";
+      require(readFileSync(oraclePath).equals(expectedOracle));
+      const started = options.invoked ?? (invocation[0] === "cargo" && invocation[1] === "nextest"
+        ? "Starting 1 test across 1 binary" : "running 1 test");
       require(result.output.includes(started));
     }
     return result;
@@ -1754,6 +1765,21 @@ if (claim === "--help" && extra.length === 0) {
         step = `apply production mutation: ${mutation.patch}`;
         const applied = run("git", ["apply", mutation.patch]);
         if (applied.status !== 0) throw new Error(applied.output);
+        if (mutation.priorOraclePatch) {
+          require(oracle !== undefined);
+          try {
+            step = `apply prior oracle: ${mutation.priorOraclePatch}`;
+            const prior = run("git", ["apply", mutation.priorOraclePatch]);
+            if (prior.status !== 0) throw new Error(prior.output);
+            step = "prior oracle misses the same production mutation";
+            const missed = check(`${mutation.label}-prior`, mutation.command ?? command,
+              mutation.source ?? source, readFileSync(oraclePath));
+            require(missed.status === 0 && !missed.signal
+              && options.completed.every(marker => missed.output.includes(marker)));
+          } finally {
+            writeFileSync(oraclePath, oracle);
+          }
+        }
         step = `unchanged oracle rejects production mutation: ${mutation.patch}`;
         const mutated = check(mutation.label, mutation.command ?? command, mutation.source ?? source);
         require(instrumented

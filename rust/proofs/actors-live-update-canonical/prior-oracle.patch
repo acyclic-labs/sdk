@@ -1,0 +1,9 @@
+diff --git a/rust/codec-fuzz/src/lib.rs b/rust/codec-fuzz/src/lib.rs
+--- a/rust/codec-fuzz/src/lib.rs
++++ b/rust/codec-fuzz/src/lib.rs
+@@ -1210,5 +1210,4 @@
+     actor_socket_verdict(bytes);
+     acyclic_actors::local::socket_ledger_codec::check(bytes);
+-    live_update::check(bytes);
+     use acyclic_actors::{guest::wire, local::State};
+     assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
