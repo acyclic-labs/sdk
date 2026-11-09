@@ -62,9 +62,9 @@ mod workspace_names;
 mod cloud_contract;
 
 #[cfg(feature = "native-watch")]
-#[path = "cases/native_owner_registry.rs"]
+#[path = "cases/native_owner_retirement.rs"]
 #[cfg(not(loom))]
-mod native_owner_registry;
+mod native_owner_retirement;
 
 #[cfg(feature = "native-mount")]
 #[path = "cases/projfs_names.rs"]

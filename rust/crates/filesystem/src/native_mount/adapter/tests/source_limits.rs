@@ -757,12 +757,23 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
                 .await
         });
         if limited {
-            assert!(matches!(
-                result,
-                Err(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::Work(_)
-                ))
-            ));
+            // The view's retained reader/index is admitted before the detached
+            // file itself; either boundary must preserve the typed refusal.
+            assert!(
+                matches!(
+                    &result,
+                    Err(
+                        MountSourceError::Work(crate::WorkError::BudgetExceeded { .. })
+                            | MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::Work(
+                                    crate::WorkError::BudgetExceeded { .. }
+                                )
+                            )
+                    )
+                ),
+                "detached admission returned {:?}",
+                result.as_ref().err()
+            );
         } else {
             assert!(result?.read_up_to_with_meter(0, 1, &work)?.bytes.is_empty());
         }

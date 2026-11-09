@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static POOL: OnceLock<io::Result<Arc<Pool>>> = OnceLock::new();
 
 pub(super) struct Pool {
+    // Keep one producer in the type so selection cannot see an empty pool.
+    first: Hub,
     hubs: Box<[Hub]>,
     failure: Arc<OnceLock<Arc<io::Error>>>,
     next_deadline: AtomicUsize,
@@ -20,22 +22,25 @@ pub(super) struct Pool {
 impl Pool {
     fn open(count: NonZeroUsize) -> io::Result<Self> {
         let failure = Arc::new(OnceLock::new());
-        let hubs = (0..count.get())
-            .map(|index| {
-                Ok(Hub {
-                    poller: platform::Poller::new()?,
-                    registry: Mutex::new(Registry {
-                        next: index,
-                        ..Registry::default()
-                    }),
-                    stride: count.get(),
-                    service_failure: Arc::clone(&failure),
-                    #[cfg(test)]
-                    locks: AtomicUsize::new(0),
-                })
+        let hub = |index| -> io::Result<Hub> {
+            Ok(Hub {
+                poller: platform::Poller::new()?,
+                registry: Mutex::new(Registry {
+                    next: index,
+                    ..Registry::default()
+                }),
+                stride: count.get(),
+                service_failure: Arc::clone(&failure),
+                #[cfg(test)]
+                locks: AtomicUsize::new(0),
             })
+        };
+        let first = hub(0)?;
+        let hubs = (1..count.get())
+            .map(hub)
             .collect::<io::Result<Box<[_]>>>()?;
         Ok(Self {
+            first,
             hubs,
             failure,
             next_deadline: AtomicUsize::new(0),
@@ -65,12 +70,16 @@ impl Pool {
         };
         drop(startup);
         if running {
-            self.hubs[index].run();
+            self.owner(index).run();
         }
     }
 
     fn owner(&self, key: usize) -> &Hub {
-        &self.hubs[key % self.hubs.len()]
+        let index = key % (self.hubs.len() + 1);
+        index
+            .checked_sub(1)
+            .and_then(|index| self.hubs.get(index))
+            .unwrap_or(&self.first)
     }
 
     #[cfg(unix)]
@@ -140,7 +149,7 @@ fn start() -> io::Result<Arc<Pool>> {
     STARTED.store(true, Ordering::Release);
     let pool = Arc::new(Pool::open(std::thread::available_parallelism()?)?);
     let startup = Startup(&pool);
-    for index in 0..pool.hubs.len() {
+    for index in 0..=pool.hubs.len() {
         let original = Arc::clone(&pool);
         std::thread::Builder::new()
             .name(format!("acyclic-process-events-{index}"))
@@ -176,40 +185,43 @@ mod tests {
 
     #[test]
     fn startup_abort_releases_original_native_producers() -> io::Result<()> {
-        let pool = Pool::open(NonZeroUsize::new(2).unwrap())?;
-        std::thread::scope(|scope| {
-            // The omission control observes the missing terminal at its
-            // publication point. Its rescue releases the actual startup wait
-            // before scoped joins, even when that assertion unwinds.
-            struct Release<'a>(&'a Pool);
-            impl Drop for Release<'_> {
-                fn drop(&mut self) {
-                    self.0.release_startup(false);
+        for count in [1, 2] {
+            let pool = Pool::open(NonZeroUsize::new(count).unwrap())?;
+            std::thread::scope(|scope| {
+                // The omission control observes the missing terminal at its
+                // publication point. Its rescue releases the actual startup wait
+                // before scoped joins, even when that assertion unwinds.
+                struct Release<'a>(&'a Pool);
+                impl Drop for Release<'_> {
+                    fn drop(&mut self) {
+                        self.0.release_startup(false);
+                    }
                 }
-            }
-            let _release = Release(&pool);
-            let startup = Startup(&pool);
-            let (finished, completion) = mpsc::channel();
-            for index in 0..pool.hubs.len() {
-                let pool = &pool;
-                let finished = finished.clone();
-                std::thread::Builder::new().spawn_scoped(scope, move || {
-                    pool.run(index);
-                    let _ = finished.send(());
-                })?;
-            }
-            drop(finished);
-            drop(startup);
-            assert_eq!(
-                *pool.startup.lock().unwrap_or_else(PoisonError::into_inner),
-                Some(false),
-                "startup refusal retained a producer without a start event"
-            );
-            for _ in pool.hubs.iter() {
-                completion.recv().map_err(io::Error::other)?;
-            }
-            Ok(())
-        })
+                let _release = Release(&pool);
+                let startup = Startup(&pool);
+                let (finished, completion) = mpsc::channel();
+                for index in 0..=pool.hubs.len() {
+                    let pool = &pool;
+                    let finished = finished.clone();
+                    std::thread::Builder::new().spawn_scoped(scope, move || {
+                        pool.run(index);
+                        let _ = finished.send(());
+                    })?;
+                }
+                drop(finished);
+                drop(startup);
+                assert_eq!(
+                    *pool.startup.lock().unwrap_or_else(PoisonError::into_inner),
+                    Some(false),
+                    "startup refusal retained a producer without a start event"
+                );
+                for _ in 0..=pool.hubs.len() {
+                    completion.recv().map_err(io::Error::other)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     #[cfg(unix)]

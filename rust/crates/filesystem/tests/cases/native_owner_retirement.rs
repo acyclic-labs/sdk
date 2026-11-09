@@ -1,4 +1,4 @@
-//! Retired native allocation owners leave exact receipts and bounded registries.
+//! Native allocation retirement preserves exact receipts without moving survivors.
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_fs::demand::native::NativeDemandSource;
@@ -23,7 +23,7 @@ async fn open(path: &Path, work: &NativeMaterializationWork) -> TestResult<Nativ
 }
 
 #[tokio::test]
-async fn repeated_retirement_reclaims_registry_without_losing_charges() -> TestResult {
+async fn repeated_retirement_reclaims_credit_without_losing_charges() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
@@ -58,50 +58,7 @@ async fn repeated_retirement_reclaims_registry_without_losing_charges() -> TestR
 }
 
 #[tokio::test]
-async fn interior_retirement_compacts_once_and_defers_when_copy_budget_is_full() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let root = tempfile::tempdir()?;
-    let cancellation = CancellationToken::new();
-    let mut setup_copies = None;
-    for compact in [true, false] {
-        let mut budget = BUDGET;
-        if let Some(copies) = setup_copies {
-            budget.bytes_copied = copies;
-        }
-        let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(e, _)| e)?;
-        let baseline = work.live_allocation_bytes();
-        let first = open(root.path(), &work).await?;
-        let second = open(root.path(), &work).await?;
-        let third = open(root.path(), &work).await?;
-        let before = work.receipt();
-        setup_copies = Some(before.bytes_copied);
-        drop(first);
-        work.charge(WorkCounters::UNCHARGED)?;
-        let after = work.receipt();
-        if compact {
-            assert_eq!(after.bytes_copied - before.bytes_copied, 16);
-            let mut expected = before;
-            expected.bytes_copied = after.bytes_copied;
-            assert_eq!(after, expected);
-        } else {
-            assert_eq!(after, before);
-        }
-        for _ in 0..64 {
-            work.charge(WorkCounters::UNCHARGED)?;
-            assert_eq!(work.receipt(), after);
-        }
-        assert!(work.live_allocation_bytes() > baseline);
-        drop((second, third));
-        work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        assert_eq!(work.receipt(), after);
-        work.receipt().verify(budget)?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn failed_owner_admission_retires_its_pending_slot_and_preserves_spent_work() -> TestResult {
+async fn failed_owner_admission_retires_credit_and_preserves_spent_work() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
@@ -127,65 +84,7 @@ async fn failed_owner_admission_retires_its_pending_slot_and_preserves_spent_wor
 }
 
 #[tokio::test]
-async fn compaction_defers_at_resource_copy_limit_and_retries_on_original() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let root = tempfile::tempdir()?;
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let first = open(root.path(), &work).await?;
-    let second = open(root.path(), &work).await?;
-    let limited = work.native_volume_work(WorkBudget {
-        bytes_copied: 0,
-        ..BUDGET
-    })?;
-    drop(first);
-    let before = work.receipt();
-    let retained = work.live_allocation_bytes();
-    limited.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(work.receipt(), before);
-    assert_eq!(work.live_allocation_bytes(), retained);
-    assert_eq!(limited.remaining()?.bytes_copied, 0);
-    work.charge(WorkCounters::UNCHARGED)?;
-    let mut expected = before;
-    expected.bytes_copied += 16;
-    assert_eq!(work.receipt(), expected);
-    drop(second);
-    work.charge(WorkCounters::UNCHARGED)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn compaction_charges_each_resource_ancestor_once() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let root = tempfile::tempdir()?;
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    let first = open(root.path(), &work).await?;
-    let second = open(root.path(), &work).await?;
-    let parent = work.native_volume_work(WorkBudget {
-        bytes_copied: 16,
-        ..BUDGET
-    })?;
-    let child = parent.native_volume_work(BUDGET)?;
-    let before_parent = parent.remaining()?.bytes_copied;
-    let before_child = child.remaining()?.bytes_copied;
-    drop(first);
-    let before = work.receipt();
-    child.charge(WorkCounters::UNCHARGED)?;
-    let mut expected = before;
-    expected.bytes_copied += 16;
-    assert_eq!(work.receipt(), expected);
-    assert_eq!(parent.remaining()?.bytes_copied, before_parent - 16);
-    assert_eq!(child.remaining()?.bytes_copied, before_child - 16);
-    child.charge(WorkCounters::UNCHARGED)?;
-    assert_eq!(work.receipt(), expected);
-    drop(second);
-    work.charge(WorkCounters::UNCHARGED)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn cancelled_compaction_preserves_retirement_without_copying() -> TestResult {
+async fn cancelled_invocations_preserve_retirement_without_copying() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     for cancel_original in [false, true] {
@@ -216,9 +115,7 @@ async fn cancelled_compaction_preserves_retirement_without_copying() -> TestResu
         assert_eq!(work.live_allocation_bytes(), retained);
         if !cancel_original {
             work.charge(WorkCounters::UNCHARGED)?;
-            let mut expected = before;
-            expected.bytes_copied += 16;
-            assert_eq!(work.receipt(), expected);
+            assert_eq!(work.receipt(), before);
         }
         drop(second);
         drop(invocation);
@@ -230,7 +127,7 @@ async fn cancelled_compaction_preserves_retirement_without_copying() -> TestResu
 }
 
 #[tokio::test]
-async fn oldest_owner_churn_moves_at_most_one_survivor_per_retirement() -> TestResult {
+async fn oldest_owner_churn_retires_without_copying_survivors() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
@@ -241,29 +138,21 @@ async fn oldest_owner_churn_moves_at_most_one_survivor_per_retirement() -> TestR
         sources.push_back(open(root.path(), &work).await?);
     }
     let before = work.receipt();
-    let mut previous = before;
     while let Some(source) = sources.pop_front() {
         drop(source);
         work.charge(WorkCounters::UNCHARGED)?;
-        let after = work.receipt();
-        assert!(after.bytes_copied - previous.bytes_copied <= 16);
-        let mut expected = previous;
-        expected.bytes_copied = after.bytes_copied;
-        assert_eq!(after, expected);
-        previous = after;
+        assert_eq!(work.receipt(), before);
     }
-    assert_eq!(previous.bytes_copied - before.bytes_copied, 32 * 16);
     assert_eq!(work.live_allocation_bytes(), baseline);
     Ok(())
 }
 
 #[tokio::test]
-async fn mixed_retirement_layouts_charge_only_moved_survivors() -> TestResult {
+async fn mixed_retirement_layouts_preserve_receipts_without_copying() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
-    // Expected survivor moves for every subset of four retired owners.
-    let moves = [0, 1, 1, 2, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 0];
-    for (mask, moved) in moves.into_iter().enumerate() {
+    // Every subset retires its own credit without moving a live owner.
+    for mask in 0..16 {
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
         let baseline = work.live_allocation_bytes();
@@ -278,8 +167,7 @@ async fn mixed_retirement_layouts_charge_only_moved_survivors() -> TestResult {
             }
         }
         work.charge(WorkCounters::UNCHARGED)?;
-        let mut expected = before;
-        expected.bytes_copied += moved * 16;
+        let expected = before;
         assert_eq!(work.receipt(), expected, "retired mask {mask}");
         work.charge(WorkCounters::UNCHARGED)?;
         assert_eq!(work.receipt(), expected);
@@ -292,7 +180,7 @@ async fn mixed_retirement_layouts_charge_only_moved_survivors() -> TestResult {
 }
 
 #[tokio::test]
-async fn rejected_admissions_with_a_live_owner_do_not_accumulate_slots_or_copies() -> TestResult {
+async fn rejected_admissions_with_a_live_owner_do_not_accumulate_credit_or_copies() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();

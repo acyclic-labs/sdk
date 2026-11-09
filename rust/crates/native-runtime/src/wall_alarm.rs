@@ -203,9 +203,11 @@ impl Wait for platform::Waiter {
     }
 }
 
+type DueAlarms = ExtractedEntries<AlarmCallback, (), 16, fn(u64)>;
+
 struct Driver<'a> {
     index: &'a Mutex<Index>,
-    due: Option<ExtractedEntries<AlarmCallback, (), 16, fn(u64)>>,
+    due: Option<DueAlarms>,
 }
 
 impl Drop for Driver<'_> {

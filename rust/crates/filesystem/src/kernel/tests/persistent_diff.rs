@@ -627,76 +627,83 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 #[tokio::test]
 async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
 -> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let mut before_children = Vec::new();
-    let mut after_children = Vec::new();
-    for index in 0_u8..7 {
-        let child_name = name(&format!("shared-{index:02}"))?;
-        let child = put(
-            &backend,
-            &TreePage::Leaf(vec![TreeEntry {
-                name: child_name.clone(),
-                file_id: FileId::from_bytes([index; 16]),
-                kind: FileKind::Regular,
-            }]),
-            8,
+    let mut copied = None;
+    for shared in [1_u8, 7] {
+        let backend = MemoryObjectStore::new(1024 * 1024)?;
+        let mut before_children = Vec::new();
+        let mut after_children = Vec::new();
+        for index in 0_u8..shared {
+            let child_name = name(&format!("shared-{index:02}"))?;
+            let child = put(
+                &backend,
+                &TreePage::Leaf(vec![TreeEntry {
+                    name: child_name.clone(),
+                    file_id: FileId::from_bytes([index; 16]),
+                    kind: FileKind::Regular,
+                }]),
+                8,
+            )
+            .await?;
+            let descriptor = Child {
+                first: child_name,
+                page: child,
+            };
+            before_children.push(descriptor.clone());
+            after_children.push(descriptor);
+        }
+        let changed_name = name("z")?;
+        let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]), 8).await?;
+        let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]), 8).await?;
+        before_children.push(Child {
+            first: changed_name.clone(),
+            page: before_leaf,
+        });
+        after_children.push(Child {
+            first: changed_name,
+            page: after_leaf,
+        });
+        let before = put(&backend, &TreePage::Internal(before_children), 8).await?;
+        let after = put(&backend, &TreePage::Internal(after_children), 8).await?;
+        let store = CachedObjectStore::new(
+            backend,
+            ObjectCacheOptions {
+                maximum_entries: 8,
+                maximum_bytes: 1024 * 1024,
+            },
+        )?;
+        let cancellation = CancellationToken::new();
+        let cold = diff(
+            &store,
+            Some(before),
+            Some(after),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
         )
         .await?;
-        let descriptor = Child {
-            first: child_name,
-            page: child,
-        };
-        before_children.push(descriptor.clone());
-        after_children.push(descriptor);
-    }
-    let changed_name = name("z")?;
-    let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]), 8).await?;
-    let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]), 8).await?;
-    before_children.push(Child {
-        first: changed_name.clone(),
-        page: before_leaf,
-    });
-    after_children.push(Child {
-        first: changed_name,
-        page: after_leaf,
-    });
-    let before = put(&backend, &TreePage::Internal(before_children), 8).await?;
-    let after = put(&backend, &TreePage::Internal(after_children), 8).await?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-        },
-    )?;
-    let cancellation = CancellationToken::new();
-    let cold = diff(
-        &store,
-        Some(before),
-        Some(after),
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(cold.changes.len(), 1);
+        assert_eq!(cold.changes.len(), 1);
 
-    let warm = diff(
-        &store,
-        Some(before),
-        Some(after),
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(warm.changes, cold.changes);
-    assert_eq!(warm.work.backend_read_operations, 0);
-    assert_eq!(warm.work.object_bytes_read, 0);
-    assert_eq!(warm.work.page_reads, 4);
-    // Only the two result names and their sorted-map routing key are copied.
-    assert_eq!(warm.work.bytes_copied, 3);
-    assert_eq!(store.stats()?.decoded_hits, 4);
+        let warm = diff(
+            &store,
+            Some(before),
+            Some(after),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(warm.changes, cold.changes);
+        assert_eq!(warm.work.backend_read_operations, 0);
+        assert_eq!(warm.work.object_bytes_read, 0);
+        assert_eq!(warm.work.page_reads, 4);
+        // Growing the frontier moves its frames; increasing internal fanout must
+        // add no copies of routing keys or unchanged leaf values.
+        if let Some(copied) = copied {
+            assert_eq!(warm.work.bytes_copied, copied);
+        }
+        copied = Some(warm.work.bytes_copied);
+        assert_eq!(store.stats()?.decoded_hits, 4);
+    }
     Ok(())
 }
 

@@ -175,7 +175,7 @@ impl Poller {
                     return Err(io::ErrorKind::UnexpectedEof.into());
                 }
             } else {
-                ready.push(token as usize);
+                ready.push(usize::try_from(token).map_err(io::Error::other)?);
             }
         }
         Ok(())
