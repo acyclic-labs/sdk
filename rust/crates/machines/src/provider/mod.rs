@@ -218,14 +218,13 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         unsupported("inspect operation")
     }
     async fn cancel(&self, _operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        let _ = ();
         unsupported("cancel")
     }
     async fn watch_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        let _ = (operation);
+        let _ = operation;
         unsupported("watch operation")
     }
 }

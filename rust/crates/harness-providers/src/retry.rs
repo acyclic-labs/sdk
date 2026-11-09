@@ -157,8 +157,8 @@ impl Redelivery {
 }
 
 pub(crate) use acyclic_harness_core::http::retry_after;
-#[cfg(test)]
-use acyclic_harness_core::http::retry_after_at;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) use acyclic_harness_core::http::retry_after_at;
 
 #[cfg(test)]
 mod tests {
