@@ -1,3 +1,5 @@
+// These contracts invoke synchronous native callbacks. Their executor must
+// permit blocking so pending checkout work can retain its completion producer.
 use super::MountFilesystem;
 use super::{
     Arc, Bytes, CallbackGate, FILE_ATTRIBUTE_NORMAL, FileMetadata, Fs, HSTRING, HashSet, Lifecycle,
@@ -52,7 +54,7 @@ fn materialization_queue_retains_original_errors_and_retires_panicking_items() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn directory_link_projection_has_no_target_sized_conversion()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut costs = [[acyclic_test_support::AllocationInfo::default(); 2]; 2];
@@ -152,8 +154,7 @@ fn projfs_name_order_differs_from_sdk_cursor_order() {
     );
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -185,8 +186,7 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let source = windows_checkout_source().await?;
@@ -223,8 +223,7 @@ async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_projected_directory_link_leads_into_its_directory()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -254,8 +253,7 @@ async fn a_projected_directory_link_leads_into_its_directory()
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn sharing_denied_entries_are_retired_only_after_the_original_handle_closes()
 -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Clone, Copy, Debug)]
@@ -389,8 +387,7 @@ async fn sharing_denied_entries_are_retired_only_after_the_original_handle_close
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn std::error::Error>>
 {
     let work = setup_work()?;
@@ -438,8 +435,7 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
@@ -463,8 +459,7 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn std::error::Error>>
 {
     for listed_first in [false, true] {
@@ -473,8 +468,7 @@ async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
 
@@ -539,8 +533,7 @@ fn source_failures_keep_distinct_statuses() {
     }
 }
 
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
+#[tokio::test(flavor = "multi_thread")]
 async fn rustc_links_object_files_created_inside_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
