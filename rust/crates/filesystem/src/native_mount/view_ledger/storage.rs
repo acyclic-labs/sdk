@@ -10,7 +10,7 @@ mod model_checking;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<Arc<NativeMountAllocationCustody>>), MountSourceError> {
+) -> Result<(Vec<T>, Option<NativeMountAllocationCustody>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(MountSourceError::from)?;
@@ -60,14 +60,14 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<Arc<NativeMountAllocationCustody>>,
+    custody: Option<NativeMountAllocationCustody>,
 }
 /// The shape of a map that one record was funded for.
 struct Plan {
     tracked: usize,
     capacity: usize,
     known: bool,
-    custody: Option<Arc<NativeMountAllocationCustody>>,
+    custody: Option<NativeMountAllocationCustody>,
 }
 
 impl Plan {
@@ -85,7 +85,7 @@ impl Plan {
             && positions.latest.capacity() == self.capacity
             && positions.latest.contains_key(&key) == self.known
             && match (&positions.custody, &self.custody) {
-                (Some(held), Some(planned)) => Arc::ptr_eq(held, planned),
+                (Some(held), Some(planned)) => held.same_backing(planned),
                 (None, None) => true,
                 _ => false,
             }
@@ -156,7 +156,7 @@ fn grow(
 ) -> Result<bool, MountSourceError> {
     let count = (plan.capacity.max(4) * 2).min(MAXIMUM_TRACKED_KEYS);
     let old_bytes = map_bytes(plan.capacity)?;
-    let borrowed = adopt_backing(plan.custody.as_deref(), old_bytes, carrier)?;
+    let borrowed = adopt_backing(plan.custody.as_ref(), old_bytes, carrier)?;
     let prepared = (|| {
         let next_custody = carrier.new_custody()?;
         let bytes = map_bytes(count)?;

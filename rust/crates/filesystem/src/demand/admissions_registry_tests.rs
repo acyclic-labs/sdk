@@ -67,7 +67,7 @@ fn pending_admission_keeps_retirement_dirty_with_a_live_survivor() -> TestResult
                 assert_eq!(work.work, before);
                 assert_eq!(
                     work.allocations.live_bytes(),
-                    retained - std::mem::size_of::<NativeMountAllocationCustody>() as u64
+                    retained - NativeMountAllocationCustody::ALLOCATION_BYTES
                 );
                 assert_eq!(work.roots.native_mount_admissions.0.len(), 2);
                 assert!(
@@ -113,7 +113,7 @@ proptest::proptest! {
         let gauge_bytes = std::alloc::Layout::array::<usize>(2).unwrap()
             .extend(std::alloc::Layout::new::<AtomicU64>()).unwrap().0
             .pad_to_align().size() as u64;
-        let mut owners: Vec<Option<(Arc<NativeMountAllocationCustody>, u64)>> = vec![None; 4];
+        let mut owners: Vec<Option<(NativeMountAllocationCustody, u64)>> = vec![None; 4];
         for (index, action, bytes) in actions {
             let slot = &mut owners[usize::from(index)];
             let bytes = u64::from(bytes);
@@ -137,9 +137,9 @@ proptest::proptest! {
             let live = owners.iter().flatten().collect::<Vec<_>>();
             let state = original.state.lock();
             let registry_bytes = state.roots.native_mount_admissions.1.logical_bytes();
-            let expected = baseline + registry_bytes + u64::from(!live.is_empty())
+            let expected = baseline + registry_bytes + u64::from(!live.is_empty()) * super::super::ownership::DIRTY_ALLOCATION_BYTES
                 + live.iter().map(|(_, retained)| {
-                    std::mem::size_of::<NativeMountAllocationCustody>() as u64
+                    NativeMountAllocationCustody::ALLOCATION_BYTES
                         + gauge_bytes + retained
                 }).sum::<u64>();
             proptest::prop_assert_eq!(state.allocations.live_bytes(), expected);
