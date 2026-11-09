@@ -45,7 +45,7 @@ function exercise(selected, seed, code = implementation) {
   const generate = runInNewContext(`${code}\ngenerateProto`, context);
   try {
     for (const name of names) put(join(output(name), "obsolete.js"), "old");
-    const handwritten = join(root, "typescript/packages/filesystem/generated/wasm/package.json");
+    const handwritten = join(root, "typescript/packages/filesystem/package.json");
     put(handwritten, "handwritten metadata");
     generate(new Set(selected));
     assert.equal(calls, chosen.length > 0 ? 1 : 0);
