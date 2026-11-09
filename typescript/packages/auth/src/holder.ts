@@ -5,6 +5,8 @@ import { Capability as RustCapability, TrustSnapshot as RustTrustSnapshot, type 
 export interface TrustState {
   readonly environment: string;
   readonly environmentKeys: readonly Uint8Array[];
+  /** Refresh at this exclusive key-set deadline; undefined means no scheduled retirement. */
+  readonly environmentKeysValidUntil: bigint | undefined;
   readonly account: string;
   readonly issuerKeys: readonly Uint8Array[];
   readonly minimumKeyEpoch: bigint;
@@ -25,7 +27,7 @@ function joined(values: readonly Uint8Array[]): Uint8Array {
 export class TrustSnapshot extends RustTrustSnapshot {
   constructor(state: TrustState) {
     super(state.environment, joined(state.environmentKeys), state.account,
-      joined(state.issuerKeys), state.minimumKeyEpoch, [...state.revokedKeyIds], joined(state.revokedBlockIds));
+      joined(state.issuerKeys), state.minimumKeyEpoch, [...state.revokedKeyIds], joined(state.revokedBlockIds), state.environmentKeysValidUntil);
   }
 }
 

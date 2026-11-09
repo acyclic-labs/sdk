@@ -1,8 +1,8 @@
 //! Anchor recovery uses signed records through the original memory provider.
 use acyclic_auth::{
     trust::{
-        ChangeSource as _, EnvironmentFrontier, FenceCause, Follower, FollowerState, Issuer,
-        account_path, environment_path,
+        AnchorKeys, ChangeSource as _, EnvironmentFrontier, FenceCause, Follower, FollowerState,
+        Issuer, account_path, environment_path,
     },
     verify::{Trust as _, VerifyError},
 };
@@ -54,7 +54,7 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
     let placeholder = Issuer::new("test", SigningKey::from_bytes(&[9; 32]));
     let provider = Arc::new(MemoryStream::default());
     let stream = Stream::new(provider.clone(), environment_path("test")).unwrap();
-    let mut frontier = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let mut frontier = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
     let record = issuer
         .environment_keyring(&mut frontier, &issuer.anchor(), 1_000)
         .unwrap();
@@ -65,10 +65,9 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         )
         .await
         .unwrap();
-    let follower = Arc::new(Follower::new("test", placeholder.anchor()));
-    let (keys, watched) = tokio::sync::watch::channel(Arc::<[_]>::from(placeholder.anchor()));
-    let (feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
-    let mut feed = feed.watch_anchor(watched);
+    let (keys, watched) = tokio::sync::watch::channel(AnchorKeys::new(placeholder.anchor()));
+    let follower = Arc::new(Follower::new("test", watched));
+    let (mut feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
     let mut run = Box::pin(feed.run());
     let wake = Arc::new(PublicationWake::default());
     assert!(step(run.as_mut(), &wake).is_none());
@@ -77,14 +76,14 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
         FollowerState::Fenced(FenceCause::Refused)
     );
     assert_eq!(
-        follower.environment_keys("test").err(),
+        follower.environment_keys("test", 1_000).err(),
         Some(VerifyError::Unavailable)
     );
     assert_eq!(follower.environment_refusal(), Some(VerifyError::Signature));
     // Neither another wrong key nor withdrawing every key authenticates it.
     for rejected in [placeholder.anchor(), vec![]] {
         wake.0.store(false, Ordering::SeqCst);
-        keys.send_replace(rejected.into());
+        keys.send_replace(AnchorKeys::new(rejected));
         assert!(
             wake.0.load(Ordering::SeqCst),
             "key publication must wake its suspended driver"
@@ -95,17 +94,17 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
             FollowerState::Fenced(FenceCause::Refused)
         );
         assert_eq!(
-            follower.environment_keys("test").err(),
+            follower.environment_keys("test", 1_000).err(),
             Some(VerifyError::Unavailable)
         );
     }
     wake.0.store(false, Ordering::SeqCst);
-    keys.send_replace(issuer.anchor().into());
+    keys.send_replace(AnchorKeys::new(issuer.anchor()));
     assert!(wake.0.load(Ordering::SeqCst));
     assert!(step(run.as_mut(), &wake).is_none());
     assert_eq!(*follower.state().borrow(), FollowerState::Serving);
     assert_eq!(
-        follower.environment_keys("test").unwrap().as_ref(),
+        follower.environment_keys("test", 1_000).unwrap().as_ref(),
         issuer.anchor()
     );
     assert_eq!(follower.environment_refusal(), None);
@@ -129,10 +128,10 @@ async fn placeholder_anchor_recovers_on_key_publication_without_restart() {
     assert!(follower.account("account").is_ok());
 
     // A new bootstrap set cannot overwrite an authenticated signed frontier.
-    keys.send_replace(placeholder.anchor().into());
+    keys.send_replace(AnchorKeys::new(placeholder.anchor()));
     assert!(step(run.as_mut(), &wake).is_none());
     assert_eq!(
-        follower.environment_keys("test").unwrap().as_ref(),
+        follower.environment_keys("test", 1_000).unwrap().as_ref(),
         issuer.anchor()
     );
     let next = issuer
@@ -205,12 +204,11 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
             Ok(0)
         );
     }
-    let follower = Arc::new(Follower::new("test", placeholder.anchor()));
-    let (keys, watched) = tokio::sync::watch::channel(Arc::<[_]>::from(placeholder.anchor()));
-    let (feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
+    let (keys, watched) = tokio::sync::watch::channel(AnchorKeys::new(placeholder.anchor()));
+    let follower = Arc::new(Follower::new("test", watched));
+    let (mut feed, accounts) = TrustFeed::new(provider.clone(), follower.clone(), Arc::new(Clock));
     accounts.follow("cold").unwrap();
     accounts.follow("live").unwrap();
-    let mut feed = feed.watch_anchor(watched);
     let mut run = Box::pin(feed.run());
     let wake = Arc::new(PublicationWake::default());
     assert!(step(run.as_mut(), &wake).is_none());
@@ -229,7 +227,7 @@ async fn empty_environment_reanchors_blocked_account_opens_and_records() {
     assert!(step(run.as_mut(), &wake).is_none());
     assert!(follower.account("live").is_err());
     wake.0.store(false, Ordering::SeqCst);
-    keys.send_replace(issuer.anchor().into());
+    keys.send_replace(AnchorKeys::new(issuer.anchor()));
     assert!(wake.0.load(Ordering::SeqCst));
     assert!(step(run.as_mut(), &wake).is_none());
     for account in ["cold", "live"] {
@@ -272,7 +270,7 @@ async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
         )
         .await
         .unwrap();
-    let follower = Arc::new(Follower::new("test", issuer.anchor()));
+    let follower = Arc::new(Follower::new("test", AnchorKeys::fixed(issuer.anchor())));
     let (mut feed, _accounts) = TrustFeed::new(provider, follower.clone(), Arc::new(Clock));
     let mut run = Box::pin(feed.run());
     let wake = Arc::new(PublicationWake::default());
@@ -283,7 +281,7 @@ async fn closing_a_fenced_environment_ends_its_original_anchor_wait() {
     );
     assert_eq!(follower.environment_refusal(), Some(VerifyError::Malformed));
     assert_eq!(
-        follower.environment_keys("test").err(),
+        follower.environment_keys("test", 1_000).err(),
         Some(VerifyError::Unavailable)
     );
     wake.0.store(false, Ordering::SeqCst);

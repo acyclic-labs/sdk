@@ -47,6 +47,7 @@ fn owner() -> Snapshot {
     Snapshot {
         environment: "test".into(),
         environment_keys: vec![issuer()],
+        environment_keys_valid_until: None,
         account: "account".into(),
         issuer_keys: vec![issuer()],
         minimum_key_epoch: 0,

@@ -1,5 +1,5 @@
 //! Capture signed trust inputs from the original SDK custody implementation.
-use acyclic_auth::trust::{EnvironmentFrontier, Issuer};
+use acyclic_auth::trust::{AnchorKeys, EnvironmentFrontier, Follower, Issuer};
 use ed25519_dalek::SigningKey;
 use std::error::Error;
 mod corpus;
@@ -17,8 +17,9 @@ fn capture() -> Result<(), Box<dyn Error>> {
         }
     }
     let (key, foreign) = foreign.ok_or("no separator-free signed foreign record")?;
-    let (mut account, _) = issuer.genesis("account", SigningKey::from_bytes(&[2; 32]), 100)?;
-    let mut environment = EnvironmentFrontier::genesis("test", issuer.anchor());
+    let (mut account, genesis) =
+        issuer.genesis("account", SigningKey::from_bytes(&[2; 32]), 100)?;
+    let mut environment = EnvironmentFrontier::genesis("test", AnchorKeys::new(issuer.anchor()));
     let next_key = SigningKey::from_bytes(&[9; 32]);
     let rotation = issuer.environment_keyring(
         &mut environment,
@@ -27,9 +28,29 @@ fn capture() -> Result<(), Box<dyn Error>> {
     )?;
     let next = Issuer::new("test", next_key);
     let rotation_next = next.environment_keyring(&mut environment, &issuer.anchor(), 100)?;
-    let mut bootstrap = EnvironmentFrontier::genesis("test", next.anchor());
+    let mut bootstrap = EnvironmentFrontier::genesis("test", AnchorKeys::new(next.anchor()));
     let bootstrap = next.environment_keyring(&mut bootstrap, &next.anchor(), 100)?;
+    let (owner, anchor) = tokio::sync::watch::channel(AnchorKeys::new(issuer.anchor()));
+    let follower = Follower::new("test", anchor);
+    for record in &genesis {
+        follower.apply(record, 100)?;
+    }
+    follower.resume();
+    follower.serve("account");
+    let unbounded = serde_json::to_vec(&follower.snapshot("account", 100)?)?;
+    owner.send_modify(|keys| *keys = keys.rotate(next.anchor(), 100, 20));
+    let retiring = serde_json::to_vec(&follower.snapshot("account", 100)?)?;
     let records = [
+        (
+            "snapshot-unbounded",
+            unbounded,
+            "Follower::snapshot(account,100); Issuer::genesis(account,key[2;32],100); fixed anchor key[1;32]; serde_json::to_vec".into(),
+        ),
+        (
+            "snapshot-retiring",
+            retiring,
+            "Follower::snapshot(account,100); AnchorKeys::rotate(key[9;32],100,20) after genesis; serde_json::to_vec".into(),
+        ),
         (
             "foreign-keyring",
             foreign[0].clone(),

@@ -74,6 +74,7 @@ impl IssuerModel {
         let trust = Snapshot {
             environment: "test".into(),
             environment_keys: environment.anchor(),
+            environment_keys_valid_until: None,
             account: "account".into(),
             issuer_keys: vec![SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes()],
             minimum_key_epoch: root.minimum_key_epoch(),
