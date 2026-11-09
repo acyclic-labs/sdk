@@ -183,8 +183,9 @@ impl SigningKeyReference {
             return Err(unavailable());
         }
         let mut material = Zeroizing::new([0; 48]);
-        material[..32].copy_from_slice(&root[..]);
-        material[32..].copy_from_slice(&self.v1.0[..16]);
+        let (root_material, nonce_material) = material.split_at_mut(32);
+        root_material.copy_from_slice(&root[..]);
+        nonce_material.copy_from_slice(&self.v1.0[..16]);
         let seed = Zeroizing::new(blake3::derive_key(SEED_CONTEXT, &material[..]));
         Ok(consume(&seed))
     }

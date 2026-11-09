@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         acyclic_proto_build::shared_protocols().display()
     );
     let mut config = prost_build::Config::new();
-    if std::env::var_os("CARGO_FEATURE_MACHINES").is_some() {
+    if native_environment::variable("CARGO_FEATURE_MACHINES").is_some() {
         for identity in ["ProviderRef", "VolumeClass", "VolumeOwner", "VolumeRef"] {
             config.extern_path(
                 format!(".acyclic.harness.v2.{identity}"),
