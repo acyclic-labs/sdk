@@ -31,6 +31,7 @@ pub(super) struct Mount {
     helper: Option<Child>,
     program: Option<&'static CStr>,
     phase: MountPhase,
+    connection: Option<super::host_io::Connection>,
     #[cfg(test)]
     detachment_poll: Option<Box<dyn FnMut(i32) -> io::Result<bool> + Send>>,
 }
@@ -68,6 +69,7 @@ impl Mount {
             Ok(()) => {
                 *device = Some(file.into());
                 self.phase = MountPhase::Mounted;
+                self.connection = Some(super::host_io::Connection::of(path)?);
                 return Ok(());
             }
             Err(nix::errno::Errno::EPERM) => {}
@@ -104,6 +106,7 @@ impl Mount {
         if let Ok(fd) = received {
             *device = Some(fd);
             self.phase = MountPhase::Mounted;
+            self.connection = Some(super::host_io::Connection::of(path)?);
         }
         self.helper
             .as_mut()
@@ -237,6 +240,11 @@ impl Mount {
         }
         Ok(detached)
     }
+    /// The kernel connection this mount created, once mounted.
+    pub(super) fn connection(&self) -> Option<super::host_io::Connection> {
+        self.connection
+    }
+
     pub(super) fn pending(&self) -> bool {
         !matches!(self.phase, MountPhase::Detached) || self.helper.is_some()
     }

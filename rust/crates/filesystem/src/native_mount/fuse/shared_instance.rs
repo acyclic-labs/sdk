@@ -167,6 +167,7 @@ impl SharedFuseInstance {
         let session = super::host_session::HostSession::new(
             super::packet_router::PacketRouter::Shared(Arc::clone(&views)),
             descriptor,
+            state.mount.connection(),
             &work,
         )?;
         session.initialize()?;

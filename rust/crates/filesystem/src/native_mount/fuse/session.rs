@@ -248,6 +248,7 @@ impl FuseSession {
             let session = super::host_session::HostSession::new(
                 super::packet_router::PacketRouter::Single(filesystem),
                 descriptor,
+                mount.connection(),
                 work,
             )?;
             session.initialize().map_err(|error| {
