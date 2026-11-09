@@ -241,6 +241,15 @@ impl<'a> StockExecution<'a> {
         journal: &dyn ExecutionJournal,
         reference: &FileRef,
     ) -> Result<RetainedCut<'a>> {
+        self.checked_working_cut(journal, reference, None).await
+    }
+
+    async fn checked_working_cut(
+        &self,
+        journal: &dyn ExecutionJournal,
+        reference: &FileRef,
+        expected: Option<&crate::context::CompactionReference>,
+    ) -> Result<RetainedCut<'a>> {
         #[cfg(feature = "filesystem")]
         let scope = crate::filesystem::PreparationScope::new(self.io)?;
         #[cfg(feature = "filesystem")]
@@ -282,21 +291,27 @@ impl<'a> StockExecution<'a> {
         let decoded = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if authenticated {
             crate::context::validate_projected_context(&original_context, self.stock.limits, io)?;
-        } else {
-            let source = retain_preparation(
-                load_json::<crate::context::Context>(journal, &cut.source, io).await?,
-            )?;
+        }
+        if !authenticated || expected.is_some() {
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, &cut.compaction, io)
                     .await?,
             )?;
-            self.validate_working_compaction(
-                &source,
-                &original_context,
-                &proof,
-                (cut.operation, cut.step),
-                io,
-            )?;
+            if expected.is_some_and(|expected| expected != &proof) {
+                return Err(self.invalid_working_cut());
+            }
+            if !authenticated {
+                let source = retain_preparation(
+                    load_json::<crate::context::Context>(journal, &cut.source, io).await?,
+                )?;
+                self.validate_working_compaction(
+                    &source,
+                    &original_context,
+                    &proof,
+                    (cut.operation, cut.step),
+                    io,
+                )?;
+            }
         }
         #[cfg(feature = "filesystem")]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -434,20 +449,13 @@ impl<'a> StockExecution<'a> {
         reference: &FileRef,
         proof: &crate::context::CompactionReference,
     ) -> Result<()> {
-        let retained = self.load_working_cut(journal, reference).await?;
+        let retained = self
+            .checked_working_cut(journal, reference, Some(proof))
+            .await?;
         if retained.cut.operation != input.operation_id
             || retained.cut.step != step
             || retained.cut.input_digest != self.request_digest(input)?
         {
-            return Err(self.invalid_working_cut());
-        }
-        let stored = load_json::<crate::context::CompactionReference>(
-            journal,
-            &retained.cut.compaction,
-            self.io,
-        )
-        .await?;
-        if &stored.0 != proof {
             return Err(self.invalid_working_cut());
         }
         Ok(())

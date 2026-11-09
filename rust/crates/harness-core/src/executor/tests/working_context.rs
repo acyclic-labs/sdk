@@ -231,6 +231,28 @@ async fn working_cut_admission_controls(
     let proof = load_json::<crate::context::CompactionReference>(journal, &proof_ref, None)
         .await?
         .0;
+    let before = journal.4.load(Ordering::SeqCst);
+    execution
+        .validate_compacted_working_cut(journal, input, 0, reference, &proof)
+        .await?;
+    let reads = if signed { 3 } else { 4 };
+    assert_eq!(
+        journal.4.load(Ordering::SeqCst) - before,
+        reads,
+        "cut validation reread its authenticated compaction proof"
+    );
+    // Restoring the separate proof read violates the same work inventory.
+    journal.load(&proof_ref, None)?.await?;
+    assert_ne!(journal.4.load(Ordering::SeqCst) - before, reads);
+    let mut changed = proof.clone();
+    changed.source_digest[0] ^= 1;
+    assert!(
+        execution
+            .validate_compacted_working_cut(journal, input, 0, reference, &changed)
+            .await
+            .is_err(),
+        "a changed proof reused the authenticated cut"
+    );
     let mut fresh = input.clone();
     fresh.operation_id = OperationId::new();
     let staged = journal.1.lock().unwrap().len();
