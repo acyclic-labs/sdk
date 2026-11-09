@@ -331,10 +331,12 @@ impl MachinesProvider for SimulatedMachines {
                                 "checkpoint no longer accepts forks".into(),
                             ));
                         }
-                        let add = usize::try_from(count_value)
-                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
+                        let provenance = Provenance {
+                            source: ForkSource::Checkpoint(checkpoint),
+                            inherited: ForkFidelity::MemoryAndDisk,
+                        };
+                        check_fork_fidelity(&source.contract, provenance)?;
                         state.now.checked_add(u64::from(count_value)).ok_or_else(|| ProviderError::Rejected("fork clock extent overflow; recovery: restore an admissible original simulation clock".into()))?;
-                        let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
                             let now = tick(state)?;
@@ -352,16 +354,11 @@ impl MachinesProvider for SimulatedMachines {
                                 created_at_unix_ms: now,
                                 changed_at_unix_ms: now,
                             };
-                            state.machines.insert(id, MachineRecord::new(value.clone(), None));
-                            event(state, id, EventFact::State(MachineState::Running), now)?;
-                            children.push(value);
+                            create_child(state, key, value, None)?;
                         }
-                        Ok(Completion::Fork {
-                            provenance: Provenance {
-                                source: ForkSource::Checkpoint(checkpoint),
-                                inherited: ForkFidelity::MemoryAndDisk,
-                            },
-                            machines: children,
+                        Ok(MutationOutcome::Forked {
+                            provenance,
+                            results: result_cut(state, Self::operation(key))?,
                         })
                     },
                 )
@@ -395,6 +392,11 @@ impl MachinesProvider for SimulatedMachines {
                                 "machine contract does not declare live fork".into(),
                             )
                         })?;
+                        let provenance = Provenance {
+                            source: ForkSource::Machine(machine),
+                            inherited: fidelity,
+                        };
+                        check_fork_fidelity(&source.contract, provenance)?;
                         // A suspended Machine is a checkpoint: its forks start
                         // from it while the original stays suspended.
                         if !matches!(
@@ -405,12 +407,9 @@ impl MachinesProvider for SimulatedMachines {
                                 "only a running or suspended machine can be forked".into(),
                             ));
                         }
-                        let live_forks = source.live_forks.checked_add(u64::from(count_value))
+                        source.live_forks.checked_add(u64::from(count_value))
                             .ok_or_else(|| ProviderError::Rejected("live fork count overflow; recovery: release original children before forking".into()))?;
-                        let add = usize::try_from(count_value)
-                            .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
                         state.now.checked_add(u64::from(count_value)).ok_or_else(|| ProviderError::Rejected("fork clock extent overflow; recovery: restore an admissible original simulation clock".into()))?;
-                        let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
                             let now = tick(state)?;
@@ -426,17 +425,11 @@ impl MachinesProvider for SimulatedMachines {
                                 created_at_unix_ms: now,
                                 changed_at_unix_ms: now,
                             };
-                            state.machines.insert(id, MachineRecord::new(value.clone(), Some(machine)));
-                            event(state, id, EventFact::State(MachineState::Running), now)?;
-                            children.push(value);
+                            create_child(state, key, value, Some(machine))?;
                         }
-                        state.machines.get_mut(&machine).ok_or_else(|| ProviderError::NotFound(machine.to_string()))?.live_forks = live_forks;
-                        Ok(Completion::Fork {
-                            provenance: Provenance {
-                                source: ForkSource::Machine(machine),
-                                inherited: fidelity,
-                            },
-                            machines: children,
+                        Ok(MutationOutcome::Forked {
+                            provenance,
+                            results: result_cut(state, Self::operation(key))?,
                         })
                     },
                 )
@@ -739,10 +732,14 @@ impl MachinesProvider for SimulatedMachines {
             .replays
             .get(&cursor.cut.operation)
             .ok_or_else(|| ProviderError::NotFound(cursor.cut.operation.to_string()))?;
-        let MutationOutcome::Forked { results, .. } = replay.outcome else {
-            return Err(ProviderError::Invalid(
-                "operation has no fork results; recovery: use the original fork cursor".into(),
-            ));
+        let results = match &replay.outcome {
+            Ok(MutationOutcome::Forked { results, .. })
+            | Err(ProviderError::ForkFailed { results, .. }) => *results,
+            _ => {
+                return Err(ProviderError::Invalid(
+                    "operation has no fork results; recovery: use the original fork cursor".into(),
+                ));
+            }
         };
         let crate::results::Settlement::NativeController(revision) = results.settlement else {
             return Err(ProviderError::Rejected(
@@ -770,7 +767,7 @@ impl MachinesProvider for SimulatedMachines {
                     .replays
                     .get(&Self::operation(key))
                     .map(|value| value.outcome.clone())
-                    .ok_or_else(|| ProviderError::NotFound(key.to_string()))
+                    .ok_or_else(|| ProviderError::NotFound(key.to_string()))?
             }
         )
     }
@@ -803,10 +800,14 @@ impl MachinesProvider for SimulatedMachines {
             ProviderError::kind,
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
-                if self.state.lock().await.replays.contains_key(&operation) {
+                if let Some(replay) = self.state.lock().await.replays.get(&operation) {
                     Ok(OperationObservation {
                         id: operation,
-                        phase: OperationPhase::Succeeded,
+                        phase: match &replay.outcome {
+                            Err(ProviderError::ForkFailed { phase, .. }) => *phase,
+                            Err(_) => OperationPhase::Pending,
+                            Ok(_) => OperationPhase::Succeeded,
+                        },
                     })
                 } else {
                     Err(ProviderError::NotFound(operation.to_string()))

@@ -73,7 +73,9 @@ pub trait MachinesProvider: acyclic_stream::ProviderPlatform {
         count: NonZeroU32,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError>;
-    /// Reads credited observations from the SAME original successful fork.
+    /// Reads credited observations from the SAME original fork, including its
+    /// partial children on failure. Every child is recorded at creation, before
+    /// admission of the next child; terminal failure retains that exact cut.
     /// The cursor is metadata, not authority. Never reconstruct from inspections.
     async fn read_results(
         &self,

@@ -1,0 +1,10 @@
+diff --git a/rust/crates/machines/src/simulation/mod.rs b/rust/crates/machines/src/simulation/mod.rs
+--- a/rust/crates/machines/src/simulation/mod.rs
++++ b/rust/crates/machines/src/simulation/mod.rs
+@@ -306,5 +306,5 @@
+             .live_forks += 1;
+     }
+-    replay.results.push(value.clone());
++    let _ = replay;
+     let id = value.id;
+     let now = value.created_at_unix_ms;

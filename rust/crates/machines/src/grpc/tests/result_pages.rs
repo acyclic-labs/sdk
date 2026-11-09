@@ -1,6 +1,105 @@
 use super::*;
 use crate::results::{ResultCursor, ResultCut};
 
+#[tokio::test]
+async fn failed_remote_forks_retain_partial_and_empty_cuts_and_refuse_fidelity_downgrades()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
+    let original = SimulatedMachines::default();
+    let key = IdempotencyKey::from_digest([72; 32]);
+    let MutationOutcome::Created(parent) = original
+        .create(CreateMachine::new(
+            IdempotencyKey::from_digest([71; 32]),
+            Some(Image::custom([7; 32])?),
+            [8; 32],
+        ))
+        .await?
+    else {
+        unreachable!("original create")
+    };
+    original.fail_fork_after(NonZeroU32::MIN).await;
+    let count = NonZeroU32::new(3).unwrap();
+    let failed = original.fork_machine(parent.id, count, key).await;
+    let Err(ProviderError::ForkFailed { results, .. }) = failed.clone() else {
+        unreachable!("original failure")
+    };
+    let provenance = Provenance {
+        source: ForkSource::Machine(parent.id),
+        inherited: ForkFidelity::MemoryAndDisk,
+    };
+    let admission = wire::MachineAdmissions {
+        operation: Some(encode_operation(results.operation)),
+        provenance: Some(provenance.into()),
+        count: u64::from(count.get()),
+        contract: Some(parent.contract.clone().try_into()?),
+    };
+    let mut downgraded = admission.clone();
+    downgraded.provenance.as_mut().unwrap().fidelity = wire::ForkFidelity::DiskOnly as i32;
+    assert!(
+        decode_fork_admissions(&downgraded).is_err(),
+        "DiskOnly must not satisfy MemoryAndDisk"
+    );
+    downgraded = admission.clone();
+    downgraded.contract = None;
+    assert!(decode_fork_admissions(&downgraded).is_err());
+    let (mut service, script, _) = scripted_operation_service(Vec::new(), Vec::new());
+    service.expected_key = key;
+    service.expected_operation = results.operation;
+    service.recovered = wire::RecoveredAdmission {
+        operation: admission.operation.clone(),
+        result: Some(Admission::Forked(admission.clone())),
+    };
+    script.lock().unwrap().results = Some(original.clone());
+    for extent in [results.count, results.count, 0, 4] {
+        let mut terminal = operation_state(results.operation, wire::OperationStatus::Failed);
+        terminal.outcome = Some(wire::MutationOutcome {
+            result: Some(Outcome::Forked(wire::ForkedMachines {
+                provenance: admission.provenance.clone(),
+                results: Some(
+                    ResultCut {
+                        count: extent,
+                        ..results
+                    }
+                    .into(),
+                ),
+            })),
+        });
+        script
+            .lock()
+            .unwrap()
+            .watches
+            .push_back(WatchReply::Items(vec![WatchItem::State(terminal)]));
+    }
+    let (remote, shutdown, server) = serve_operation_service(service).await?;
+    assert_eq!(
+        settle_fork(&remote, key, provenance.source, count, &admission).await,
+        failed
+    );
+    assert_eq!(remote.recover(key).await, failed);
+    assert!(matches!(
+        remote.recover(key).await,
+        Err(ProviderError::ForkFailed {
+            results: ResultCut { count: 0, .. },
+            ..
+        })
+    ));
+    assert_eq!(
+        remote.recover(key).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    let cursor = ResultCursor {
+        cut: results,
+        from: 0,
+    };
+    assert_eq!(
+        remote.read_results(cursor, count).await?,
+        original.read_results(cursor, count).await?
+    );
+    let _ = shutdown.send(());
+    server.await??;
+    Ok(())
+}
+
 // All positive fork metadata comes from the actual simulator's retained result.
 // Malformed protocol controls mutate only that captured original publication.
 #[tokio::test]
@@ -38,6 +137,7 @@ async fn machines_call_remote_pages_keep_original_cut_credit_and_observations()
         operation: operation_request(results.operation).operation,
         provenance: Some(provenance.into()),
         count: results.count,
+        contract: Some(parent.contract.clone().try_into()?),
     };
     let terminal = wire::ForkedMachines {
         provenance: admission.provenance.clone(),

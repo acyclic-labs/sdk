@@ -576,6 +576,12 @@ machine_mutations! {
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.recover", observation, async {
             let (operation, value) = recovered_admission(self, key, &observation).await?;
+            if let Some(wire::recovered_admission::Result::Forked(admission)) = &value.result {
+                let admitted = decode_fork_admissions(admission)
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                let (phase, outcome) = wait_terminal(self, key, operation).await?;
+                return fork_outcome(&admitted, phase, outcome, key);
+            }
             let outcome = wait(self, key, operation).await?;
             decode_recovered(value, outcome, key).map_err(|_| ProviderError::Indeterminate(key))
         })

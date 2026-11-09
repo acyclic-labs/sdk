@@ -92,8 +92,9 @@ Once a gRPC mutation is admitted, its completion wait consumes the original
 operation watch. Its producer publishes terminal success, failure or cancellation;
 silence causes no inspection or subscription restart. An interrupted watch returns
 the original idempotency key for explicit recovery and never resubmits the mutation.
-Create, AttachVolume, checkpoint and fork take their settled observations from
-the successful operation event's retained outcome. Recovery uses that original
+Create, AttachVolume and checkpoint take their settled observations from
+the successful operation event's retained outcome. Forks also retain partial
+results on failure or cancellation. Recovery uses that original
 result, so later resource changes or deletion cannot replace it. No current-state
 read is needed for settlement; a missing original result remains indeterminate.
 Dropping the waiting future stops local observation without cancelling the native
@@ -118,7 +119,7 @@ Streams fork cut once. `NativeResults` borrows the original controller's retaine
 observation slice, including canonical protobuf observations, and selects each
 credited page without allocation, copying or IO. Both validate the same cursor
 before reading payload. These helpers grant no authority: the server must retain
-the original authenticated partition and verify terminal success. Native outcome
+the original authenticated partition and verify terminal settlement. Native outcome
 decoding and transport serialization remain the producer's work; the borrowed
 view alone does not make a complete-array storage format lazy.
 
@@ -146,7 +147,22 @@ when qualifying physical request traffic. Run the reference adapter on demand:
 cargo test --locked -p acyclic-machines --features conformance --lib conformance::
 ```
 
-Fork admissions and successful outcomes retain operation, provenance and exact
+Fork admissions retain operation, provenance, requested extent and the original
+source contract. The public `check_fork_fidelity` function is shared by clients
+and servers; `grpc::decode_fork_admissions` also validates the wire admission.
+A DiskOnly result cannot satisfy a MemoryAndDisk contract.
+
+Every child is recorded in the original result owner at creation, before the
+next child is admitted. Terminal failure and cancellation retain a cut over
+exactly that prefix, even when empty. Streams owners include `results::record`
+in the child's creation transaction and `results::publication` in their existing
+terminal commit, including recovery after a producer crash. Native controllers
+retain the birth observations under their original partition revision.
+`ProviderError::ForkFailed` carries the failed cut. `results::cleanup` consumes
+the same cut on success, failure and recovery, pages only the original children
+and uses stable per-index destroy keys so interrupted cleanup can resume.
+
+Fork outcomes retain operation, provenance and exact
 extent without embedding child arrays. `ReadResults` authenticates the SAME
 operation owner and reads the retained `ResultCut` with positive page credit;
 missing, foreign or truncated original results fail explicitly. Recovering a
@@ -154,3 +170,11 @@ fork returns that same cut after later child mutation or deletion, never new
 observations. Admission and terminal metadata take constant space; creating the
 requested children and reading their selected bytes remain proportional to that
 selected work. Dropping a page reader does not cancel or redispatch the fork.
+
+Enable `http-codec` for the SDK-owned `http_codec::HTTP_ROUTES` table:
+`machines/read-results` is unary and `machines/follow-events` is server-streaming.
+Both POST routes are relative to `/v1/` and use canonical Protobuf JSON. Follow
+events use the existing Inference watch NDJSON framing (`application/x-ndjson`):
+encode each event with `encode_http_response`, then append one newline. Read
+results preserves uint64 cursors as decimal strings and settlement bytes as
+base64. The service retains authentication, admission and protective frame bounds.

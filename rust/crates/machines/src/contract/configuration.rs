@@ -35,6 +35,24 @@ impl ForkFidelity {
     }
 }
 
+/// Checks actual inherited state against the original admitted source contract.
+/// Clients and servers must use this same check, including during recovery.
+pub fn check_fork_fidelity(
+    contract: &MachineContract,
+    provenance: Provenance<ForkSource, ForkFidelity>,
+) -> Result<(), ProviderError> {
+    let expected = match provenance.source {
+        ForkSource::Machine(_) => contract.fork_fidelity(),
+        ForkSource::Checkpoint(_) => Some(ForkFidelity::MemoryAndDisk),
+    };
+    if expected != Some(provenance.inherited) {
+        return Err(ProviderError::Rejected(
+            "fork fidelity differs from the admitted contract; recovery: retain the original admission".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Capability admission rule.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum CompatibilityPolicy {

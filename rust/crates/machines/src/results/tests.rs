@@ -84,7 +84,7 @@ async fn append(
 }
 
 #[tokio::test]
-async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
+async fn settled_pages_pin_original_partial_failure_cut_across_source_changes_and_restart()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let streams =
@@ -108,12 +108,7 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     machine.state = MachineState::Failed;
     append(&streams, &source, &machine, 1024, 1).await?;
     let count = 1025;
-    let (condition, mutation) = publication(
-        &root,
-        operation,
-        source.clone(),
-        NonZeroU64::new(count).unwrap(),
-    )?;
+    let (condition, mutation) = publication(&root, operation, source.clone(), count)?;
     let terminal = acyclic_actors::call::CallPath::new(&root, &operation.to_string())?
         .log()
         .clone();
@@ -124,7 +119,9 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
             mutation,
             CommitMutation::Append {
                 path: terminal.clone(),
-                records: vec![AppendRecord::from("original terminal success; count=1025")],
+                records: vec![AppendRecord::from(
+                    "original terminal failure; requested=2048; count=1025",
+                )],
             },
         ],
         idempotency_key: StreamKey::unique(),
@@ -179,6 +176,31 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
         CommitOutcome::Committed(receipt)
     );
     let reader = SettledResults::open(streams.clone(), &root, operation, settlement, count).await?;
+    // A failure before the first birth retains the same verifiable publication
+    // identity, with an empty prefix rather than an absent result.
+    let empty_operation = OperationId::new();
+    let (condition, mutation) = publication(&root, empty_operation, source.clone(), 0)?;
+    let CommitOutcome::Committed(empty) = streams
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![condition],
+            mutations: vec![mutation],
+            idempotency_key: StreamKey::unique(),
+        })
+        .await?
+    else {
+        panic!("empty failure cut must publish");
+    };
+    let empty =
+        SettledResults::open(streams.clone(), &root, empty_operation, empty.commit_id, 0).await?;
+    assert!(
+        empty
+            .page(empty.cursor(), NonZeroU32::MIN)
+            .await?
+            .machines
+            .is_empty()
+    );
+    drop(empty);
     let first = reader
         .page(reader.cursor(), NonZeroU32::new(1).unwrap())
         .await?;

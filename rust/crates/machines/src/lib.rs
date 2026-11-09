@@ -79,6 +79,9 @@ mod provider;
 #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
 pub use provider::journal_codec::codec_fuzz;
 pub use provider::*;
+/// Canonical HTTP/JSON route names and descriptor-backed serialization.
+#[cfg(feature = "http-codec")]
+pub mod http_codec;
 /// Original-operation result publication and credited immutable reads.
 pub mod results;
 mod simulation;

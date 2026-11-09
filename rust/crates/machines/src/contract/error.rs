@@ -68,6 +68,13 @@ pub enum ProviderError {
     },
     #[error("operation failed")]
     Failed,
+    /// A terminal fork failure retains every child created before it stopped.
+    /// Pass this cut to [`crate::results::cleanup`], also after recovery.
+    #[error("fork {phase:?}; cleanup original children using {results:?}")]
+    ForkFailed {
+        phase: OperationPhase,
+        results: crate::results::ResultCut,
+    },
     #[error("operation cancelled")]
     Cancelled,
 }
@@ -145,6 +152,7 @@ impl ProviderError {
             Self::FileIndeterminate(_) => "file_indeterminate",
             Self::DeadlineSourceLost { .. } => "deadline_source_lost",
             Self::Failed => "failed",
+            Self::ForkFailed { .. } => "fork_failed",
             Self::Cancelled => "cancelled",
         }
     }

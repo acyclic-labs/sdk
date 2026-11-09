@@ -66,9 +66,6 @@ pub(in super::super) fn decode_result_cut(
         }
         None => return Err(invalid("result settlement is missing")),
     };
-    if value.count == 0 {
-        return Err(invalid("fork result extent is empty"));
-    }
     Ok(ResultCut {
         operation,
         settlement,
