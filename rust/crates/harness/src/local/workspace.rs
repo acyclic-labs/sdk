@@ -366,10 +366,7 @@ pub(super) async fn open(
     // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
-    // Physical task views live below the reserved view root too.
-    if native_mounts || mounting == WorkspaceMounting::Physical {
-        volumes::exclude_state(&root)?;
-    }
+    volumes::exclude_state(&root)?;
     let setup = if native_mounts {
         Some(root.try_clone().map_err(storage)?)
     } else {

@@ -118,11 +118,11 @@ impl Opening {
             crate::context::CompactionPolicy::Disabled
         };
         #[cfg(any(test, feature = "native-execution"))]
-        let shell = tools
+        // Coordination uses the existing checkout. Only our own native shell
+        // needs its auxiliary volumes projected before a command can run.
+        let native_execution = tools
             .get(crate::tools::shell::PLATFORM.name, None, None)?
             .is_some();
-        #[cfg(any(test, feature = "native-execution"))]
-        let native_execution = passive || shell;
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,

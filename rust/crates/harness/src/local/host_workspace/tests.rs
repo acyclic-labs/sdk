@@ -72,7 +72,7 @@ fn root() -> AgentPath {
 }
 
 #[tokio::test]
-async fn native_workspace_teardown_removes_storage_after_retiring_retained_views() -> Result<()> {
+async fn native_root_capture_and_teardown_use_the_existing_checkout() -> Result<()> {
     let fixture = Fixture::open().await?;
     let mounts = fixture
         .harness
@@ -81,10 +81,14 @@ async fn native_workspace_teardown_removes_storage_after_retiring_retained_views
         .held_task_mount_root()?;
     let workspace = fixture.attach(root(), mounts.path()).await?;
     native_write(
-        &workspace.path().join(".volumes/home/retained.txt"),
-        b"native private volume",
+        &workspace.path().join("retained.txt"),
+        b"native checkout write",
     )?;
     workspace.capture(OperationId::new()).await?;
+    assert_eq!(
+        std::fs::read(workspace.path().join("retained.txt")).map_err(storage)?,
+        b"native checkout write"
+    );
     drop(workspace);
     drop(mounts);
     let checkout = fixture.checkout.path().to_path_buf();
