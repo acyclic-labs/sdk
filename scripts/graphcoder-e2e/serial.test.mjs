@@ -4,13 +4,14 @@ import { createHash } from "node:crypto";
 import { collect, runSuites, variants, acceptanceBinding } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm,copyFile,symlink} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
-import {nativeHost} from '../../plugin/tests/hosts/native-host.mjs';
+import {nativeHost,nativeHostEnvironment} from '../../plugin/tests/hosts/native-host.mjs';
 import {Processes} from './process.mjs';
 import {tmpdir} from 'node:os';
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { schedule } from "./process.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
+import { nativeEnvironment } from "./scratch.mjs";
 import { fuzz, fuzzAdmission } from "./serial.fuzz.mjs";
 
 test("serial collection and command rejection retain original native failure evidence", async () => {
@@ -76,9 +77,12 @@ test('installed host admission launches the actual package entries',async()=>{
  const scope=new Processes();
  const cases=['codex','claude-code','pi'].map(host=>({inputs:[{format:'installed-host',host}]}));
  try {
+  const {env}=await nativeHostEnvironment(cases.map(test=>test.inputs[0].host),{...nativeEnvironment(),PATH:''});
+  const node=await scope.run('node',['--version'],{env});
+  assert.equal(node.code,0,node.stderr);
   for(const {inputs:[{host}]} of cases) {
-   const native=await nativeHost(host,{});
-   const result=await scope.run(native.program,[...native.args,'--version']);
+   const native=await nativeHost(host,env);
+   const result=await scope.run(native.program,[...native.args,'--version'],{env});
    assert.equal(result.code,0,result.stderr);
    assert.ok(result.stdout.trim(),'actual host version must be nonempty');
   }

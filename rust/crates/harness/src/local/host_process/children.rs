@@ -365,18 +365,14 @@ impl NativeChildren {
             .ok_or_else(|| invalid("native prompt absent"))?
             .as_bytes()
             .to_vec();
-        let resume = if self.host == "pi" {
-            turn.pointer("/session/file")
-                .or_else(|| turn.pointer("/session/id"))
-        } else {
-            turn.pointer("/session/id")
-        };
-        let mut command = launch::child(
-            &self.host,
-            &self.flags,
-            &view,
-            resume.and_then(Value::as_str),
-        )?;
+        let resume = turn
+            .pointer("/session/id")
+            .and_then(Value::as_str)
+            .map(|id| launch::NativeSession {
+                id,
+                file: turn.pointer("/session/file").and_then(Value::as_str),
+            });
+        let mut command = launch::child(&self.host, &self.flags, &view, resume)?;
         command
             .env("ACYCLIC_WORKSPACE", &view)
             .env("ACYCLIC_TASK", receipt.task().to_string());

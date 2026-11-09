@@ -59,14 +59,14 @@ fn turns(
             .volume(volume)
             .state_directory(directory.join("state"));
         let harness = Arc::new(entry(LocalHarness::open(config)).await?);
-        let (agents, root) = entry(harness.agents()).await?;
+        let (agents, _) = entry(harness.agents()).await?;
         let mut cuts = [0; 6];
         for (turn, expected) in expected.iter().enumerate() {
             prompt(&harness, &format!("turn-{turn}"), "reply", expected).await?;
-            // The reply is observable before its serving delivery retires.
-            // Wait on that same actor's delivery lock and committed checkpoint,
-            // while its ordinary continuous runtime remains running.
-            entry(agents.drain(root)).await.map_err(storage)?;
+            // Reply visibility precedes delivery retirement and activation
+            // checkpoint publication. Join both through the serving dispatcher;
+            // a competing finite drain cannot establish that boundary.
+            entry(agents.runtime().complete()).await.map_err(storage)?;
             cuts[turn] = schedule.durable_write_count();
         }
         use acyclic_stream::StreamProviderExt as _;
@@ -88,13 +88,10 @@ fn turns(
 /// Observe four settled reply windows and the independent commit. Teardown
 /// drains every accepted worker outside those windows.
 fn measure(replies: [ScriptedTurn; 5]) -> Result<[(usize, usize); 5]> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(storage)?;
+    let runtime = acyclic_native_runtime::testing::seeded_runtime(71).map_err(storage)?;
     runtime.block_on(async {
         let directory = tempfile::tempdir().map_err(storage)?;
-        let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+        let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(71);
         let releaser = tokio::spawn(async move {
             while let Some(boundary) = events.recv().await {
                 boundary.release();

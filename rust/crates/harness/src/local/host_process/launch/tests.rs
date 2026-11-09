@@ -134,7 +134,13 @@ fn native_child_arguments_allocate_only_the_returned_vector_and_strings() -> Res
     ] {
         let supplied = supplied.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let flags = parent_flags(host, &supplied, Path::new("workspace"))?;
-        for session in [None, Some("native-reference")] {
+        for session in [
+            None,
+            Some(NativeSession {
+                id: "native-reference",
+                file: Some("native-session.jsonl"),
+            }),
+        ] {
             let mut command = None;
             let allocations = acyclic_test_support::measure(|| {
                 command = Some(child_arguments(host, &flags, Path::new("view"), session));
