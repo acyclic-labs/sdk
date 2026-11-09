@@ -62,6 +62,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        #[cfg(unix)]
+        {
+            let aliases = tempfile::tempdir().unwrap();
+            let alias = aliases.path().join("ancestor");
+            std::os::unix::fs::symlink(directory.path().parent().unwrap(), &alias).unwrap();
+            let root = alias.join(directory.path().file_name().unwrap());
+            exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap();
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
     }
 
     fn repository() -> impl Strategy<Value = Arc<tempfile::TempDir>> {

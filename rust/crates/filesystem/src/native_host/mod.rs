@@ -70,11 +70,13 @@ mod work;
 pub(crate) use work::*;
 mod cwd;
 #[cfg(unix)]
+pub(crate) use cwd::canonical_directory_path_held;
+#[cfg(unix)]
 use cwd::cwd_metadata_flags;
+#[cfg(all(unix, any(test, feature = "native-watch")))]
+pub(crate) use cwd::normalize_root_path;
 #[cfg(all(test, windows))]
 pub(crate) use cwd::short_path;
-#[cfg(all(unix, any(test, feature = "native-watch")))]
-pub(crate) use cwd::{canonical_directory_path_held, normalize_root_path};
 #[cfg(windows)]
 pub(crate) use cwd::{canonical_directory_wide, fold_case_wide, long_path_wide};
 #[cfg(unix)]

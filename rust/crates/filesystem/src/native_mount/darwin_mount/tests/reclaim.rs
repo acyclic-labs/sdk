@@ -170,7 +170,8 @@ fn check_startup_recovery(
         false,
     )?);
     if deny_direct_unmount {
-        super::super::reclaim::with_direct_unmount_denied(startup)?;
+        let destination = CString::new(canonical.join("owned").as_os_str().as_bytes())?;
+        super::super::reclaim::with_direct_unmount_denied(&destination, startup)?;
     } else {
         startup()?;
     }

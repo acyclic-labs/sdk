@@ -23,7 +23,18 @@ unsafe extern "C" {
     fn nfs4_test_verify_attributes() -> c_int;
     fn nfs4_test_node_identity() -> c_int;
     fn nfs4_test_release_open_files() -> c_int;
-    fn nfs4_test_mounted_io(root: *const c_char) -> c_int;
+    fn nfs4_test_mounted_io(
+        root: *const c_char,
+        retire: unsafe extern "C" fn(*const c_char) -> c_int,
+    ) -> c_int;
+}
+
+unsafe extern "C" fn retire_mounted_io(root: *const c_char) -> c_int {
+    // SAFETY: the C fixture retains its terminated destination through this call.
+    let root = unsafe { CStr::from_ptr(root) };
+    super::reclaim::retire_mount(root, |operation, path| operation(path))
+        .err()
+        .map_or(0, |error| error.raw_os_error().unwrap_or(libc::EIO))
 }
 
 #[test]
@@ -31,7 +42,10 @@ fn readiness_callback_can_issue_synchronous_nfs_io() -> TestResult {
     let root = tempfile::tempdir()?;
     let root = CString::new(root.path().canonicalize()?.as_os_str().as_bytes())?;
     // SAFETY: the fixture owns this empty directory and retains its terminated path.
-    assert_eq!(unsafe { nfs4_test_mounted_io(root.as_ptr()) }, 0);
+    assert_eq!(
+        unsafe { nfs4_test_mounted_io(root.as_ptr(), retire_mounted_io) },
+        0
+    );
     Ok(())
 }
 
