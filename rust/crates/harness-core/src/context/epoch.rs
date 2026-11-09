@@ -126,4 +126,145 @@ impl ContextEpoch {
     pub const fn manifest(&self) -> &FileRef {
         &self.manifest
     }
+
+    /// The model-visible sources of this epoch's manifest, as
+    /// [`ContextManifest::digests`] keys them.
+    pub async fn digests(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        limits: Limits,
+    ) -> Result<BTreeMap<String, [u8; 32]>> {
+        let bytes = reader
+            .read(&self.manifest, limits.render_bytes, None, None)?
+            .await?;
+        ContextManifest::decode(&bytes, limits)?.digests()
+    }
+
+    /// The appended delta that brings a model told `told` up to `live`: one
+    /// quiet notice per changed source, its body depending only on that
+    /// source's current state, so it is valid whatever came before it and a
+    /// coalesced run keeps only the latest. Tools and environment are fixed
+    /// for the epoch and never announced.
+    pub async fn changes(
+        told: &BTreeMap<String, [u8; 32]>,
+        live: &ContextManifest,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<Vec<ContextChange>> {
+        let now = live.digests()?;
+        let mut changes = Vec::new();
+        let mut change = |source: &str, digest: Option<[u8; 32]>, body: Value| {
+            changes.push(ContextChange {
+                source: source.to_owned(),
+                digest,
+                notice: crate::conversation::wire::Notice {
+                    source: "harness".into(),
+                    kind: CONTEXT_CHANGED.into(),
+                    body,
+                    wake: false,
+                    coalesce_key: Some(format!("{CONTEXT_CHANGED}:{source}")),
+                },
+            });
+        };
+        for instruction in &live.discovery.instructions {
+            let key = instruction_key(instruction);
+            if told.get(&key) == now.get(&key) {
+                continue;
+            }
+            let path = key.trim_start_matches("instructions:");
+            let length = instruction.descriptor().byte_length();
+            let body = if length <= INLINE_TEXT_BYTES {
+                let bytes = reader.read(instruction, length, None, None)?.await?;
+                let text = std::str::from_utf8(&bytes)
+                    .map_err(|_| Error::Invalid("project instructions are not UTF-8".into()))?;
+                serde_json::json!({"version": 1, "instructions": path, "text": text})
+            } else {
+                serde_json::json!({"version": 1, "instructions": path, "bytes": length, "inline": false})
+            };
+            change(&key, now.get(&key).copied(), body);
+        }
+        for skill in &live.discovery.skills {
+            let key = format!("skill:{}", skill.name);
+            if told.get(&key) != now.get(&key) {
+                change(
+                    &key,
+                    now.get(&key).copied(),
+                    serde_json::json!({"version": 1, "skill": {
+                        "name": skill.name,
+                        "description": skill.description,
+                        "path": skill.source.path,
+                    }}),
+                );
+            }
+        }
+        if told.get("conventions") != now.get("conventions") {
+            change(
+                "conventions",
+                now.get("conventions").copied(),
+                serde_json::json!({"version": 1, "conventions": live.conventions}),
+            );
+        }
+        for key in told.keys().filter(|key| !now.contains_key(*key)) {
+            let body = match key.split_once(':') {
+                Some(("skill", name)) => {
+                    serde_json::json!({"version": 1, "skill": {"name": name}, "removed": true})
+                }
+                Some(("instructions", path)) => {
+                    serde_json::json!({"version": 1, "instructions": path, "removed": true})
+                }
+                _ => serde_json::json!({"version": 1, "source": key, "removed": true}),
+            };
+            change(key, None, body);
+        }
+        Ok(changes)
+    }
+}
+
+/// The notice kind of an appended context change.
+pub const CONTEXT_CHANGED: &str = "context.changed";
+
+/// Instruction text up to this size travels in its notice; a larger file's
+/// notice names it for the model to read, within one inbox record.
+const INLINE_TEXT_BYTES: u64 = 32 * 1024;
+
+/// One model-visible source that changed after an epoch froze.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextChange {
+    /// The source, as [`ContextManifest::digests`] keys it.
+    pub source: String,
+    /// Its current digest; `None` once removed.
+    pub digest: Option<[u8; 32]>,
+    /// The quiet notice telling the model its current state.
+    pub notice: crate::conversation::wire::Notice,
+}
+
+fn instruction_key(instruction: &crate::model::ProjectInstruction) -> String {
+    let source = instruction.source();
+    format!("instructions:{}/{}", source.directory(), source.filename())
+}
+
+impl ContextManifest {
+    /// The digest of each model-visible source, keyed by source: each
+    /// instruction file by its project path, each skill by name, and the
+    /// conventions. A changed digest is a change the model must be told.
+    pub fn digests(&self) -> Result<BTreeMap<String, [u8; 32]>> {
+        let mut digests = BTreeMap::new();
+        for instruction in &self.discovery.instructions {
+            digests.insert(
+                instruction_key(instruction),
+                *instruction.descriptor().sha256(),
+            );
+        }
+        for skill in &self.discovery.skills {
+            digests.insert(
+                format!("skill:{}", skill.name),
+                digest(&(&skill.description, &skill.fields, &skill.source.path))?,
+            );
+        }
+        digests.insert("conventions".into(), digest(&self.conventions)?);
+        Ok(digests)
+    }
+}
+
+fn digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&crate::contract::canonical_json_bytes(value)?).as_bytes())
 }

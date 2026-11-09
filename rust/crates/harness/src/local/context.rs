@@ -40,6 +40,13 @@ pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     OperationId::from_bytes(bytes)
 }
 
+/// What one agent was last told of its epoch's model-visible sources.
+pub(super) struct Told {
+    epoch: FileRef,
+    digests: std::collections::BTreeMap<String, [u8; 32]>,
+    sent: u64,
+}
+
 impl LocalHarness {
     pub(super) fn context_reader(
         &self,
@@ -85,6 +92,125 @@ impl LocalHarness {
         })
     }
 
+    /// Tells `agent`, as appended quiet notices, each model-visible source
+    /// change since its epoch froze that it was not told yet. Its requests
+    /// keep the epoch's prefix and see each change after it. A notice's
+    /// intent binds the epoch, the source, both digests and this process's
+    /// count, so a retry appends nothing twice; after a restart the first
+    /// delta restates the current state, which is redundant but cache-safe.
+    pub(super) async fn announce_changes(
+        &self,
+        agent: &crate::agent::AgentState,
+        epoch: &ContextEpoch,
+        binding: &Binding<'_>,
+        publisher: &dyn ContentPublisher,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<()> {
+        let Some(hosted) = self.agents.get() else {
+            return Ok(());
+        };
+        let live = self.live_manifest(binding, publisher, Vec::new()).await?;
+        let told = self
+            .told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .get(&agent.path)
+            .filter(|told| told.epoch == *epoch.manifest())
+            .map(|told| (told.digests.clone(), told.sent));
+        let (mut digests, mut sent) = match told {
+            Some(told) => told,
+            None => (epoch.digests(reader, self.limits).await?, 0),
+        };
+        let by = crate::agent::Sender::Agent {
+            path: agent.path.clone(),
+        };
+        for change in ContextEpoch::changes(&digests, &live, reader).await? {
+            let mut hash = blake3::Hasher::new_derive_key("acyclic.local.context-change.v1");
+            hash.update(epoch.manifest().descriptor().sha256());
+            hash.update(&(change.source.len() as u64).to_le_bytes());
+            hash.update(change.source.as_bytes());
+            hash.update(digests.get(&change.source).unwrap_or(&[0; 32]));
+            hash.update(change.digest.as_ref().unwrap_or(&[0; 32]));
+            hash.update(&sent.to_le_bytes());
+            let id = crate::agent::IntentId::try_from(format!(
+                "context:{}",
+                &hash.finalize().to_hex()[..32]
+            ))
+            .map_err(storage)?;
+            hosted
+                .agents()
+                .send(
+                    &agent.path,
+                    &by,
+                    &crate::agent::InboxRecord::Notice {
+                        id,
+                        notice: crate::agent::NoticePayload::Quiet(change.notice),
+                    },
+                )
+                .await
+                .map_err(storage)?;
+            match change.digest {
+                Some(digest) => digests.insert(change.source, digest),
+                None => digests.remove(&change.source),
+            };
+            sent += 1;
+        }
+        self.told
+            .lock()
+            .map_err(|_| Error::Storage("context change lock poisoned".into()))?
+            .insert(
+                agent.path.clone(),
+                Told {
+                    epoch: epoch.manifest().clone(),
+                    digests,
+                    sent,
+                },
+            );
+        Ok(())
+    }
+
+    /// This turn's hook configuration: the live one, pinned once per turn so
+    /// a resumed turn binds the hooks it started with. Hooks are behaviour,
+    /// not prefix, so they change at the next turn, never waiting for an
+    /// epoch.
+    #[cfg(any(test, feature = "hooks"))]
+    pub(super) async fn turn_hooks(
+        &self,
+        turn: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let operation = publication_operation(b"acyclic.local.turn-hooks/v1\0", &turn.into_bytes());
+        if let Some(hooks) = self.observe_manifest(operation, publisher).await? {
+            return Ok(Some(hooks));
+        }
+        // The user's imported host hooks rank above every plugin.
+        let mut hooks = match &self.settings {
+            Some(settings) => {
+                crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings)).await?
+            }
+            None => crate::hooks::Hooks::default(),
+        };
+        hooks.append(self.plugin_hooks.clone());
+        let bytes = hooks.encode(self.limits.file_bytes)?;
+        let staged = publisher
+            .stage_once(
+                operation,
+                &format!("inputs/{turn}.hooks.json"),
+                &bytes,
+                crate::hooks::Hooks::MEDIA_TYPE,
+                "hooks.json",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        match staged {
+            Ok((hooks, _)) => Ok(Some(hooks)),
+            Err(error) => self
+                .observe_manifest(operation, publisher)
+                .await?
+                .map(Some)
+                .ok_or(error),
+        }
+    }
     /// The manifest the live sources render now, as `binding` sees them.
     pub(super) async fn live_manifest(
         &self,
@@ -92,22 +218,6 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
         tools: Vec<crate::tool::ToolDefinition>,
     ) -> Result<ContextManifest> {
-        #[cfg(any(test, feature = "hooks"))]
-        let hook_configuration = {
-            // The user's imported host hooks rank above every plugin.
-            let mut hooks = match &self.settings {
-                Some(settings) => {
-                    crate::native_settings::NativeSettings::load_hooks(Arc::clone(settings)).await?
-                }
-                None => crate::hooks::Hooks::default(),
-            };
-            hooks.append(self.plugin_hooks.clone());
-            if hooks.is_empty() {
-                None
-            } else {
-                Some(hooks.publish(publisher, self.limits).await?)
-            }
-        };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
@@ -175,8 +285,6 @@ impl LocalHarness {
                 )?);
             }
         }
-        #[cfg(any(test, feature = "hooks"))]
-        manifest.sources.extend(hook_configuration);
         Ok(manifest)
     }
 

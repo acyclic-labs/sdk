@@ -134,6 +134,8 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(any(test, feature = "native-execution"))]
     checkout_context: bool,
+    /// What each agent was last told of its context epoch's sources.
+    told: std::sync::Mutex<std::collections::HashMap<crate::agent::AgentPath, context::Told>>,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(any(test, feature = "native-execution"))]
     environment_platform: crate::native_environment::PlatformPolicy,
