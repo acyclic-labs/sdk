@@ -780,6 +780,34 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
     })
 }
 
+/// A refused publication discards its speculative effects and settles from the
+/// original checkpoint. The normal shedding path reports the child exactly once.
+pub(super) fn failed_step(
+    path: &AgentPath,
+    state: Option<AgentState>,
+    wake: Wake,
+    cursor: u64,
+    failure: &str,
+) -> Result<PreparedStep, Error> {
+    let mut state = match (state, wake) {
+        (Some(state), _) => state,
+        (
+            None,
+            Wake::Inbox {
+                record: InboxRecord::ForkAdopted(adopted),
+                ..
+            },
+        ) => AgentState::adopted(path.clone(), &adopted)?,
+        _ => return Err(Error::Record("first agent input is not ForkAdopted")),
+    };
+    let previous = published(&state);
+    let mut outs = Vec::new();
+    shed(&mut state, &mut outs, failure);
+    let step = finalize_step(state, outs, &previous, cursor)?;
+    let checkpoint = checkpoint::from_encoded(checkpoint::encode(&step.state)?)?;
+    Ok(PreparedStep { step, checkpoint })
+}
+
 fn finalize_step(
     mut state: AgentState,
     mut outs: Vec<Out>,
@@ -1232,9 +1260,9 @@ fn shed(state: &mut AgentState, outs: &mut Vec<Out>, failure: &str) {
     if state.closed || matches!(state.phase, Phase::Done { .. }) {
         return;
     }
-    let outcome = AgentOutcome::Failed {
+    let outcome = bounded(AgentOutcome::Failed {
         message: failure.into(),
-    };
+    });
     let before = control(state);
     let (next, send) = kernel::report(before);
     #[cfg(feature = "test-support")]

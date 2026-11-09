@@ -16,7 +16,7 @@ mod interrupt;
 mod limits;
 mod pause;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
-use crate::guest::{Delivery, Handler, Trigger};
+use crate::guest::{Delivery, Handler, Transition, Trigger};
 #[cfg(test)]
 use acyclic_stream::AppendRequest;
 use acyclic_stream::query_sync::SyncMutex;
@@ -129,6 +129,16 @@ impl Inner {
         }
         self.refused = Some(conflicts);
         Ok(())
+    }
+}
+
+/// Only a decided refusal can be replaced with a failure transition. Capacity
+/// is backpressure; an unknown acknowledgement retains its original publication.
+fn terminal(error: &Error) -> bool {
+    match error {
+        Error::Stream(error) => !error.uncertain() && *error != StreamError::Capacity,
+        Error::PreconditionUnchanged => true,
+        _ => false,
     }
 }
 
@@ -950,21 +960,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // or an uncertain publication retains its original input.
             let publication = (|| -> Result<PreparedPublish, Error> {
                 let mut publication = match result {
-                    Ok(transition) => {
-                        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                            > limits.checkpoint_bytes()
-                        {
-                            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
-                        }
-                        self.store.prepare_publish(
-                            &snapshot,
-                            epoch,
-                            &trigger,
-                            record.as_ref(),
-                            transition,
-                            key(&snapshot, "publish")?,
-                        )?
-                    }
+                    Ok(transition) => self.prepare_transition(
+                        &snapshot,
+                        epoch,
+                        &trigger,
+                        record.as_ref(),
+                        transition,
+                        key(&snapshot, "publish")?,
+                    )?,
                     Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
                         let Some(publication) = self.store.prepare_invocation_failure(
                             &snapshot,
@@ -984,13 +987,54 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 publication.require(self.handler.publication_conditions())?;
                 Ok(publication)
             })();
+            let (mut submitted, mut result) = match publication {
+                Ok(publication) => (true, self.submit_delivery(&snapshot, publication).await),
+                Err(error) => (false, Err(error)),
+            };
+            if let Err(Error::PreconditionChanged(conflicts)) = result {
+                result = match inner.refused(conflicts) {
+                    Ok(()) => continue,
+                    Err(error) => Err(error),
+                };
+            }
+            if let Err(error) = &result {
+                if terminal(error) && !cancellation.is_cancelled() {
+                    let delivery = Delivery {
+                        actor: actor.clone(),
+                        epoch,
+                        trigger: trigger.clone(),
+                        now_unix_ms: now,
+                        record: record.clone(),
+                        subscriptions: crate::guest::SubscriptionCuts::new(
+                            snapshot.path.clone(),
+                            snapshot
+                                .anchor
+                                .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                            state.subscriptions().clone(),
+                        ),
+                    };
+                    if let Some(transition) = self
+                        .handler
+                        .on_failure(delivery, state.checkpoint(), error.to_string())
+                        .await?
+                    {
+                        let mut publication = self.prepare_transition(
+                            &snapshot,
+                            epoch,
+                            &trigger,
+                            record.as_ref(),
+                            transition,
+                            key(&snapshot, "failure")?,
+                        )?;
+                        publication.require(self.handler.publication_conditions())?;
+                        submitted = true;
+                        result = self.submit_delivery(&snapshot, publication).await;
+                    }
+                }
+            }
             let subscription = match trigger {
                 Trigger::Record { subscription, .. } => Some(subscription),
                 Trigger::Alarm { .. } => None,
-            };
-            let (submitted, result) = match publication {
-                Ok(publication) => (true, self.submit_delivery(&snapshot, publication).await),
-                Err(error) => (false, Err(error)),
             };
             match result {
                 Ok(observed) => {
@@ -1002,7 +1046,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
                     ));
                 }
-                Err(Error::PreconditionChanged(conflicts)) => inner.refused(conflicts)?,
                 Err(Error::Unknown {
                     publication,
                     source,
@@ -1023,6 +1066,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
             }
         }
+    }
+
+    fn prepare_transition(
+        &self,
+        snapshot: &Snapshot,
+        epoch: u64,
+        trigger: &Trigger,
+        record: Option<&Record>,
+        transition: Transition,
+        identity: IdempotencyKey,
+    ) -> Result<PreparedPublish, Error> {
+        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+            > self.handler.manifest().limits.checkpoint_bytes()
+        {
+            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+        }
+        self.store
+            .prepare_publish(snapshot, epoch, trigger, record, transition, identity)
     }
 
     /// The original and unknown-acknowledgement paths share cancellation

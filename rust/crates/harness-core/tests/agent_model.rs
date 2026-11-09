@@ -20,6 +20,8 @@ mod control_trace;
 mod corpus;
 #[path = "agent_model/driver.rs"]
 mod driver;
+#[path = "agent_model/failed_publication.rs"]
+mod failed_publication;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "agent_model/hosting.rs"]
 mod hosting;
