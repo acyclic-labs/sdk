@@ -37,20 +37,14 @@ fn request(
     conditions.push(CommitCondition::Absent {
         path: work.path(placement, authority, "/retirement", None)?,
     });
-    let body = if let Some((head, epoch_tail)) = snapshot {
-        work.stream_bytes(
-            PUBLICATION_GATE_ACTIVE,
-            &[
-                &operation.into_bytes(),
-                &head.epoch.get().to_le_bytes(),
-                &head.sequence.get().to_le_bytes(),
-                head.digest.as_bytes(),
-                &epoch_tail.to_le_bytes(),
-            ],
-        )?
-    } else {
-        acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE)
-    };
+    let body = encode_publication_gate(
+        snapshot.map(|(head, epoch_tail)| ReservedPublication {
+            operation,
+            head,
+            epoch_tail,
+        }),
+        work,
+    )?;
     let mut mutations = work.vec(1)?;
     work.append_record(&mut mutations, gate, [body])?;
     let domain: &[u8] = if snapshot.is_some() {
