@@ -21,7 +21,10 @@ pub(super) async fn settle_machine<E: RpcEndpoint>(
         .map_err(|_| ProviderError::Indeterminate(key))
 }
 
-fn settled_machine(
+/// Validate the original successful create or attachment terminal without a
+/// provider call. The caller binds it to the admitted operation and completes
+/// its authenticated transport before publishing the result.
+pub fn settled_machine(
     machine: MachineId,
     contract: MachineContract,
     outcome: Option<wire::MutationOutcome>,
@@ -114,7 +117,10 @@ pub(super) async fn wait_terminal<E: RpcEndpoint>(
     })
 }
 
-pub(super) fn decode_recovered(
+/// Decode the retained admission and its original successful terminal. The caller
+/// binds the terminal to the admitted operation and completes its authenticated
+/// transport. Malformed results never authorize redispatch.
+pub fn decode_recovered(
     value: wire::RecoveredAdmission,
     outcome: Option<wire::MutationOutcome>,
     key: IdempotencyKey,
@@ -183,7 +189,9 @@ pub(super) fn decode_recovered(
     }
 }
 
-pub(super) fn settled_change(
+/// Match a lifecycle terminal to the original requested resource and policy.
+/// The caller retains the operation, watch and authenticated transport association.
+pub fn settled_change(
     outcome: Option<wire::MutationOutcome>,
     expected: MutationOutcome,
     key: IdempotencyKey,
@@ -212,7 +220,9 @@ pub(super) fn settled_change(
     Ok(actual)
 }
 
-pub(super) fn settled_checkpoint(
+/// Match a checkpoint terminal to its original admission without a provider call.
+/// The caller retains the operation and authenticated transport association.
+pub fn settled_checkpoint(
     admission: wire::CheckpointAdmission,
     outcome: Option<wire::MutationOutcome>,
 ) -> Result<MutationOutcome, ProviderError> {
@@ -328,7 +338,10 @@ pub(super) fn fork_outcome(
 }
 
 /// Settles a checked fork admission against its original terminal outcome.
-pub(super) fn settled_fork(
+/// The caller binds the terminal and phase to admitted.operation and completes
+/// its authenticated transport. Failed/cancelled forks retain the immutable
+/// partial result cut; no child read, current-resource lookup or wait occurs.
+pub fn settled_fork(
     admitted: &ForkAdmitted,
     phase: OperationPhase,
     outcome: Option<wire::MutationOutcome>,
@@ -367,7 +380,9 @@ pub(super) fn settled_fork(
     })
 }
 
-pub(super) fn validate_recovered_admission(
+/// Check that outer and nested recovery operation identities agree. This alone
+/// confers no request authority; settle the original terminal with decode_recovered.
+pub fn validate_recovered_admission(
     value: &wire::RecoveredAdmission,
 ) -> Result<OperationId, ProviderError> {
     use wire::recovered_admission::Result as ResultKind;
