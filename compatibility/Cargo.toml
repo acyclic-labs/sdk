@@ -7,15 +7,25 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Shared build-time protobuf configuration for Acyclic SDK crates"
-include = ["Cargo.toml", "src/**", "proto/**", "descriptors/*.bin", "frames/*.hex"]
+include = ["Cargo.toml", "build.rs", "src/**", "proto/**", "descriptors/*.bin", "frames/*.hex"]
 
 [dependencies]
 acyclic-auth-action = { version = "=0.2.0", path = "../rust/crates/auth-action" }
 prost.workspace = true
 prost-reflect.workspace = true
 serde_json.workspace = true
-protoc-bin-vendored.workspace = true
+tempfile = "3.27.0"
 tonic-prost-build.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored-linux-x86_32 = "=3.3.0"
+protoc-bin-vendored-linux-x86_64 = "=3.3.0"
+protoc-bin-vendored-linux-aarch_64 = "=3.3.0"
+protoc-bin-vendored-linux-ppcle_64 = "=3.3.0"
+protoc-bin-vendored-linux-s390_64 = "=3.3.0"
+protoc-bin-vendored-macos-x86_64 = "=3.3.0"
+protoc-bin-vendored-macos-aarch_64 = "=3.3.0"
+protoc-bin-vendored-win32 = "=3.3.0"
 
 [lints]
 workspace = true
@@ -24,4 +34,3 @@ workspace = true
 acyclic-test-support = { path = "../rust/crates/test-support" }
 prost-types.workspace = true
 proptest.workspace = true
-tempfile = "3.27.0"

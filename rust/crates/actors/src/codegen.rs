@@ -25,11 +25,10 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let protoc_proto_root = protoc_path(&proto_root);
     let protoc_rust_root = protoc_path(&rust_root);
     let protoc_proto = protoc_path(&proto);
-    let include_path =
-        protoc_path(&acyclic_proto_build::compiler_includes().map_err(io::Error::other)?);
+    let compiler = acyclic_proto_build::Compiler::new()?;
+    let include_path = protoc_path(compiler.includes());
     let shared_root = protoc_path(&acyclic_proto_build::shared_protocols());
-    let mut prost =
-        acyclic_proto_build::config().map_err(|error| io::Error::other(error.to_string()))?;
+    let mut prost = compiler.config();
     prost
         .out_dir(&protoc_rust_root)
         .file_descriptor_set_path(&descriptor)

@@ -132,7 +132,6 @@ dependencies = [
  "prost",
  "prost-reflect",
  "prost-types",
- "protoc-bin-vendored",
  "reqwest 0.12.28",
  "rustls",
  "rustls-platform-verifier",
@@ -235,7 +234,7 @@ dependencies = [
  "acyclic-stream",
  "blake3",
  "bytes",
- "ed25519-dalek 3.0.0",
+ "ed25519-dalek",
  "futures",
  "heck",
  "hex",
@@ -306,13 +305,13 @@ name = "acyclic-contract-derive"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth-action",
+ "acyclic-proto-build",
  "acyclic-test-support",
  "async-trait",
  "heck",
  "proc-macro2",
  "prost",
  "prost-types",
- "protoc-bin-vendored",
  "quote",
  "syn 3.0.9",
  "tempfile",
@@ -1310,7 +1309,14 @@ dependencies = [
  "prost",
  "prost-reflect",
  "prost-types",
- "protoc-bin-vendored",
+ "protoc-bin-vendored-linux-aarch_64",
+ "protoc-bin-vendored-linux-ppcle_64",
+ "protoc-bin-vendored-linux-s390_64",
+ "protoc-bin-vendored-linux-x86_32",
+ "protoc-bin-vendored-linux-x86_64",
+ "protoc-bin-vendored-macos-aarch_64",
+ "protoc-bin-vendored-macos-x86_64",
+ "protoc-bin-vendored-win32",
  "serde_json",
  "tempfile",
  "tonic-prost-build",
@@ -6566,22 +6572,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
  "prost",
-]
-
-[[package]]
-name = "protoc-bin-vendored"
-version = "3.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8760a25b6ff9c620324822737e468478fa092234190d2e449760344354896ed9"
-dependencies = [
- "protoc-bin-vendored-linux-aarch_64",
- "protoc-bin-vendored-linux-ppcle_64",
- "protoc-bin-vendored-linux-s390_64",
- "protoc-bin-vendored-linux-x86_32",
- "protoc-bin-vendored-linux-x86_64",
- "protoc-bin-vendored-macos-aarch_64",
- "protoc-bin-vendored-macos-x86_64",
- "protoc-bin-vendored-win32",
 ]
 
 [[package]]

@@ -8,15 +8,17 @@ fn capture() -> Result<(), Box<dyn std::error::Error>> {
     let output = root.join("target/compatibility-descriptors");
     std::fs::create_dir_all(&output)
         .map_err(|error| format!("create descriptor output directory: {error}"))?;
+    let compiler = acyclic_proto_build::Compiler::new()?;
     for (family, baseline, protos) in acyclic_proto_build::FAMILIES {
         let destination = output.join(baseline);
-        acyclic_proto_build::descriptor(
-            &root.join("rust/crates").join(family),
-            protos,
-            &destination,
-            &root.join("compatibility/proto"),
-        )
-        .map_err(|error| format!("compile {family} descriptor: {error}"))?;
+        compiler
+            .descriptor(
+                &root.join("rust/crates").join(family),
+                protos,
+                &destination,
+                &root.join("compatibility/proto"),
+            )
+            .map_err(|error| format!("compile {family} descriptor: {error}"))?;
         println!("{family}: {}", destination.display());
     }
     Ok(())

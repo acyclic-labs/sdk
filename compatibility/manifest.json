@@ -45,7 +45,7 @@
     "machines": {
       "version": "0.2.0",
       "schemaDigest": "sha256:207caede3e4a27635dcf80c3c5744270aafb22a9794b546e371a820f3da95512",
-      "descriptorDigest": "sha256:5e31ccac341587c767d6c63fce55176e22a756e490742e9e4fc86e53960e82c6",
+      "descriptorDigest": "sha256:c81dd76eda846a4e02b711b3290e47dd07bfa52389ff0169ca01b03878219659",
       "conformanceDigest": "sha256:607266d2c608460ae9d6a14409007fd91a33d78e7acabb52989881920a782dca"
     },
     "inference": {

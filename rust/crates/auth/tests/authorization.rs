@@ -6,10 +6,18 @@ use prost_reflect::DescriptorPool;
 use std::{fs, process::Command};
 use syn::parse::Parser;
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
-    #[test]
-    fn authorization_strings_round_trip(value in ".{1,40}") {
+#[test]
+fn authorization_strings_round_trip() {
+    let compiler = acyclic_proto_build::Compiler::new().unwrap();
+    let config = ProptestConfig {
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::authorization_strings_round_trip"
+        )),
+        ..ProptestConfig::with_cases(32)
+    };
+    proptest::test_runner::TestRunner::new(config).run(&".{1,40}", |value| {
         // The actual derive parser must refuse undeclared operations, including
         // the retired parallel Actors vocabulary.
         for unknown in ["streams/raed", "execution/actor-turn", "new-product/read"] {
@@ -24,10 +32,10 @@ proptest! {
         fs::write(root.path().join("test.proto"),proto).unwrap();
         let source=acyclic_test_support::source_path("compatibility/proto");
         let output=root.path().join("test.bin");
-        let status=Command::new(acyclic_test_support::runtime_path("PROTOC", protoc_bin_vendored::protoc_bin_path).unwrap())
+        let status=Command::new(compiler.executable())
             .arg(format!("--proto_path={}",root.path().display()))
             .arg(format!("--proto_path={}",source.display()))
-            .arg(format!("--proto_path={}",acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path).unwrap().display()))
+            .arg(format!("--proto_path={}",compiler.includes().display()))
             .arg(format!("--descriptor_set_out={}",output.display())).arg("--include_imports").arg("test.proto").status().unwrap();
         prop_assert!(status.success());
         let pool=DescriptorPool::decode(fs::read(output).unwrap().as_slice()).unwrap();
@@ -39,7 +47,12 @@ proptest! {
         prop_assert_eq!(actions.as_list().unwrap().get(1).unwrap().as_str(),Some("fs/read"));
         let extractor=rules.as_list().unwrap().first().unwrap().as_message().unwrap().get_field_by_name("extractor").unwrap();
         prop_assert_eq!(extractor.as_str(),Some(value.as_str()));
-    }
+        Ok(())
+    }).unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn arbitrary_authorization_input_never_panics(text in ".{0,1024}") {
         let mut result=None;

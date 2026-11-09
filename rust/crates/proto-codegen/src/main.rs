@@ -68,17 +68,19 @@ fn run() -> io::Result<()> {
         let root = std::path::Path::new(root);
         let output = std::path::Path::new(output);
         std::fs::create_dir_all(output)?;
+        let compiler = acyclic_proto_build::Compiler::new()?;
         for (family, baseline, protos) in acyclic_proto_build::FAMILIES {
             if selected.first().is_some_and(|selected| family != selected) {
                 continue;
             }
-            acyclic_proto_build::descriptor(
-                &root.join("rust/crates").join(family),
-                protos,
-                &output.join(baseline),
-                &root.join("compatibility/proto"),
-            )
-            .map_err(|error| io::Error::other(error.to_string()))?;
+            compiler
+                .descriptor(
+                    &root.join("rust/crates").join(family),
+                    protos,
+                    &output.join(baseline),
+                    &root.join("compatibility/proto"),
+                )
+                .map_err(|error| io::Error::other(error.to_string()))?;
         }
         return Ok(());
     }
