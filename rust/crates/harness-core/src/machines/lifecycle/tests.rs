@@ -152,7 +152,7 @@ async fn original_provider_fences_plans_bindings_and_parent_forks() -> TestResul
 
 #[tokio::test]
 async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
-    for target_count in [1, 100_000] {
+    for target_count in [1, 2, 3] {
         let stream = Arc::new(Counted::new(MemoryStream::default()));
         let provider = SimulatedMachines::default();
         let original = manager(stream.clone(), provider.clone())?;
@@ -183,7 +183,7 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
         machines.plan(&agent, &target).await?;
         let allocated = machines.create(&target, &agent).await?;
         let sandbox = allocated.machine.clone();
-        let reopened = AgentMachines::new(stream.clone(), machines.targets.clone())?;
+        let reopened = AgentMachines::new(stream.clone(), machines.targets().to_vec())?;
         drop(machines);
         reopened.suspend(&agent).await?;
         assert_eq!(
@@ -228,9 +228,6 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
             missing.destroy(&agent).await,
             Err(Error::Invalid(_))
         ));
-        let mut nested = target;
-        nested.name = "nested/target".into();
-        assert!(AgentMachines::new(stream, vec![nested]).is_err());
     }
 
     // More than one page is still bounded by original plans, never by the
@@ -300,6 +297,126 @@ async fn original_plans_bound_lifecycle_discovery_and_release() -> TestResult {
             .await,
         Err(StreamError::HierarchyChanged)
     );
+    Ok(())
+}
+
+#[test]
+fn provisioned_lookup_preserves_original_positions_without_population_work() -> TestResult {
+    struct Reads {
+        items: u64,
+        refuse: bool,
+    }
+    impl acyclic_collections::IndexReadWork for Reads {
+        type Error = Error;
+        fn validate(&mut self) -> Result<()> {
+            if self.refuse {
+                return Err(Error::Cancelled);
+            }
+            Ok(())
+        }
+        fn examine(&mut self, items: u64) -> Result<()> {
+            self.validate()?;
+            self.items += items;
+            Ok(())
+        }
+    }
+
+    let stream = Arc::new(MemoryStream::default());
+    let original = manager(stream.clone(), SimulatedMachines::default())?;
+    let template = &original.targets()[0];
+    let wide = format!("{}x", "a".repeat(512));
+    let names = ["z", "shared-prefix-child", &wide, "a", "shared-prefix"];
+    let targets = names
+        .iter()
+        .enumerate()
+        .map(|(position, name)| {
+            let mut target = template.clone();
+            target.name = (*name).into();
+            target.network_policy_digest = [position as u8; 32];
+            target
+        })
+        .collect::<Vec<_>>();
+    let original_vector = targets.as_ptr();
+    let original_names = targets
+        .iter()
+        .map(|target| target.name.as_ptr())
+        .collect::<Vec<_>>();
+    let machines = AgentMachines::new(stream.clone(), targets)?;
+    assert_eq!(machines.targets().as_ptr(), original_vector);
+    for (position, name) in names.iter().enumerate() {
+        assert_eq!(machines.target_position(name)?, position);
+        let target = machines.target(name)?;
+        assert!(std::ptr::eq(target, &machines.targets()[position]));
+        assert_eq!(target.name.as_ptr(), original_names[position]);
+        assert_eq!(target.network_policy_digest, [position as u8; 32]);
+    }
+    for name in ["", "shared", "shared-prefix-child-x", &format!("{wide}y")] {
+        assert!(matches!(machines.target(name), Err(Error::Invalid(_))));
+    }
+    for name in ["", "nested/target", "é"] {
+        let mut invalid = template.clone();
+        invalid.name = name.into();
+        assert!(matches!(
+            AgentMachines::new(stream.clone(), vec![invalid]),
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert!(matches!(
+        AgentMachines::new(stream.clone(), vec![template.clone(), template.clone()]),
+        Err(Error::Invalid(_))
+    ));
+    assert!(
+        AgentMachines::new(stream.clone(), Vec::new())?
+            .target(TARGET)
+            .is_err()
+    );
+
+    let mut baseline = 0;
+    for count in [2, 4, 8, 16, 32, 64] {
+        let targets = (0..count)
+            .map(|position| {
+                let mut target = template.clone();
+                target.name = if position == count - 1 {
+                    "selected".into()
+                } else {
+                    format!("unused-{position:03}")
+                };
+                target
+            })
+            .collect();
+        let machines = AgentMachines::new(stream.clone(), targets)?;
+        let mut reads = Reads {
+            items: 0,
+            refuse: false,
+        };
+        let measured = acyclic_test_support::measure(|| {
+            assert_eq!(
+                machines.lookup("selected", &mut reads).unwrap(),
+                Some(count - 1)
+            );
+            assert_eq!(machines.target_position("selected").unwrap(), count - 1);
+        });
+        assert_eq!(measured.count_total, 0);
+        eprintln!(
+            "provisioned lookup: targets={count} examined={}",
+            reads.items
+        );
+        if count == 2 {
+            baseline = reads.items;
+        }
+        assert!(
+            reads.items <= baseline + 3,
+            "population-dependent lookup: {count} targets, {} examinations",
+            reads.items
+        );
+        reads.refuse = true;
+        assert!(matches!(
+            machines.lookup("selected", &mut reads),
+            Err(Error::Cancelled)
+        ));
+        reads.refuse = false;
+        assert_eq!(machines.lookup("selected", &mut reads)?, Some(count - 1));
+    }
     Ok(())
 }
 

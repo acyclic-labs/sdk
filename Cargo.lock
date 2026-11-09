@@ -931,6 +931,7 @@ dependencies = [
  "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-trait",
  "futures",
  "heck",

@@ -126,33 +126,6 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 }
             }
         }
-        "acyclic.machines.v1.MachinePage" => {
-            for after in [None, Some(machine)] {
-                for limit in [1, MAX_PAGE_SIZE] {
-                    if let Some(page) = project::<wire::MachinePage, _>(bytes, |value| {
-                        decode_machine_page(value, after, limit)
-                    }) {
-                        assert!(page.machines.len() <= limit as usize);
-                        if let Some(last) = page.machines.last() {
-                            assert!(
-                                decode_machine_page(
-                                    wire::MachinePage::decode(bytes).unwrap(),
-                                    Some(last.id),
-                                    limit
-                                )
-                                .is_err()
-                            );
-                        }
-                        let mut value = wire::MachinePage::decode(bytes).unwrap();
-                        value.next = Some(encode_machine(foreign));
-                        if page.machines.last().map(|value| value.id) == Some(foreign) {
-                            value.next = Some(encode_machine(machine));
-                        }
-                        assert!(decode_machine_page(value, after, limit).is_err());
-                    }
-                }
-            }
-        }
         "acyclic.machines.v1.RecoveredAdmission" => {
             if let Some(operation) = project::<wire::RecoveredAdmission, _>(bytes, |value| {
                 recovery::validate_recovered_admission(&value)

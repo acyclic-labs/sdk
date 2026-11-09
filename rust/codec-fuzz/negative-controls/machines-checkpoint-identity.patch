@@ -1,0 +1,15 @@
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -368,10 +368,10 @@
+ }
+ pub(in super::super) fn decode_checkpoint_observation(
+     value: &wire::CheckpointState,
+-    expected: CheckpointId,
++    _expected: CheckpointId,
+ ) -> Result<CheckpointObservation, ProviderError> {
+     let id = decode_checkpoint(value.checkpoint.as_ref())?;
+-    if id != expected || value.created_at_unix_ms == 0 {
++    if value.created_at_unix_ms == 0 {
+         return Err(ProviderError::Rejected(
+             "checkpoint observation is malformed".into(),
+         ));

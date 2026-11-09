@@ -1,0 +1,11 @@
+diff --git a/rust/crates/harness-core/src/machines/lifecycle.rs b/rust/crates/harness-core/src/machines/lifecycle.rs
+--- a/rust/crates/harness-core/src/machines/lifecycle.rs
++++ b/rust/crates/harness-core/src/machines/lifecycle.rs
+@@ -125,6 +125,6 @@
+ impl ProvisionPlan {
+     fn decode(target: &str, record: &acyclic_stream::Record) -> Result<Self> {
+-        if record.sequence != 0 {
++        if record.sequence != 0 && record.sequence != u64::MAX {
+             return Err(Error::Storage(format!(
+                 "Machine plan is not at its original source position; recovery: read the original authorized Machine target '{target}' at from=0, limit=1"
+             )));

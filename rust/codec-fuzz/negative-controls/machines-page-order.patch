@@ -1,0 +1,12 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -25,7 +25,7 @@
+     let mut machines = Vec::with_capacity(page.machines.len());
+     for value in page.machines {
+         let expected = decode_machine(value.machine.as_ref())?;
+-        if previous.is_some_and(|cursor| expected <= cursor) {
++        if previous.is_some_and(|cursor| expected < cursor) {
+             return Err(ProviderError::Rejected(
+                 "server returned a noncanonical machine page".into(),
+             ));
