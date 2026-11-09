@@ -309,6 +309,10 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
+        let files: Vec<_> = files
+            .into_iter()
+            .filter(|file| file.file_name() != "agents.jsonl")
+            .collect();
         assert_eq!(files.len(), 1);
         let transcript = std::fs::read_to_string(files[0].path()).unwrap();
         let transcript: Vec<Value> = transcript
@@ -338,6 +342,14 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert!(rows[0]["estimated_cost"]["token_nano_units"].is_null());
         assert!(rows[0]["estimated_cost"]["price_revision"].is_null());
         let row = &rows[0]["usage"];
+        let index: Vec<Value> = std::fs::read_to_string(transcripts.join("agents.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(index.len(), 1, "replay replaces the agent index");
+        assert_eq!(index[0]["agent_path"], row["agent_path"]);
+        assert_eq!(index[0]["parent"], Value::Null);
         assert_eq!(row["provider"], "graphcoder-qual");
         assert_eq!(row["model"], "tiny");
         assert_eq!(row["completed"], true);
