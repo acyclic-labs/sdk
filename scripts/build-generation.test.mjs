@@ -119,7 +119,7 @@ test("both native admission baselines equal the actual Rust generator", () => {
 
 test("native source roots cover the generators' transitive script imports", () => {
   function check(roots, generators, changes = new Map()) {
-    const pending = [...generators, ...roots.filter(path => path.startsWith("scripts/") && path.endsWith(".mjs"))];
+    const pending = [...generators];
     const visited = new Set();
     while (pending.length) {
       const path = pending.pop();
@@ -150,14 +150,19 @@ test("native source roots cover the generators' transitive script imports", () =
   }
   for (const family of ["actors", "stream"]) {
     const { sourceRoots } = JSON.parse(readFileSync("compatibility/native-families/" + family + ".json", "utf8"));
-    const generators = contractModules([...packageClosure(process.cwd(), family)]).map(name => "scripts/" + name);
+    // Entry points describe execution; allowed roots describe attested inputs.
+    // Widening an allowed root must never remove code from the import walk.
+    const generators = ["scripts/generate.mjs", "scripts/build-wasm.mjs", "scripts/check-baselines.mjs",
+      `scripts/build-${family}-native.mjs`, `scripts/assemble-${family}-native-package.mjs`,
+      ...contractModules([...packageClosure(process.cwd(), family)]).map(name => "scripts/" + name)];
     check(sourceRoots, generators);
     assert.throws(() => check(sourceRoots.filter(path => path !== "scripts/package-closure.mjs"), generators), /imports unattested scripts\/package-closure\.mjs/);
-    const changed = new Map([["scripts/package-closure.mjs", 'import "./unattested-generator-helper.mjs";']]);
-    assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
-    changed.set("scripts/package-closure.mjs", 'await import("./unattested-generator-helper.mjs");');
-    assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
-    changed.set("scripts/package-closure.mjs", 'const name = "./unattested-generator-helper.mjs"; await import(name);');
-    assert.throws(() => check(sourceRoots, generators, changed), /uncovered computed import/);
+    check(["scripts"], generators);
+    const changed = new Map([["scripts/package-closure.mjs", 'import "../unattested-generator-helper.mjs";']]);
+    assert.throws(() => check(["scripts"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+    changed.set("scripts/package-closure.mjs", 'await import("../unattested-generator-helper.mjs");');
+    assert.throws(() => check(["scripts"], generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+    changed.set("scripts/package-closure.mjs", 'const name = "../unattested-generator-helper.mjs"; await import(name);');
+    assert.throws(() => check(["scripts"], generators, changed), /uncovered computed import/);
   }
 });

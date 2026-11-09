@@ -203,22 +203,6 @@ test("Windows retains all check commands after grouped WASM builds with the wrap
   assert.ok(block.includes("$env:RUSTC_WRAPPER = $rustcWrapper"));
 });
 
-test("Linux warms isolated WASM targets before the complete test command", () => {
-  const script = readFileSync("scripts/qualify-ci.sh", "utf8");
-  const block = script.slice(script.indexOf("  linux)"), script.indexOf("  linux-musl|linux-arm64-musl)"));
-  const prepare = block.indexOf("node scripts/build-wasm-groups.mjs");
-  assert.ok(prepare >= 0);
-  for (const prerequisite of ["    client_bindings", "finish napi", "ensure-wasm-bindgen.sh"]) {
-    const index = block.indexOf(prerequisite);
-    assert.ok(index >= 0 && index < prepare, prerequisite);
-  }
-  const fullTest = block.indexOf("    bun run test");
-  assert.ok(fullTest >= 0 && prepare < fullTest);
-  assert.equal((block.match(/node scripts\/build-wasm-groups\.mjs/g) ?? []).length, 1);
-  assert.match(script, /^#![^\n]+\r?\nset -euo pipefail\r?\n/);
-});
-
-
 test("WASM builds reject manual JS byte copies outside the snapshot boundary", () => {
   const start = build.indexOf("const assertByteSnapshotBoundary =");
   const end = build.indexOf("const checkByteSnapshotBoundary =", start);

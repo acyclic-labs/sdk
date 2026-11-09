@@ -2,6 +2,15 @@
 set -euo pipefail
 
 lane="${1:?qualification lane is required}"
+case "$lane" in
+  web|docs|generation)
+    web_docs_sha="$(git rev-parse HEAD)"
+    web_docs_start="$SECONDS"
+    trap 'web_docs_rc=$?; web_docs_status=FAIL; if (( web_docs_rc == 0 )); then web_docs_status=PASS; fi
+      printf "SDK_WEB_DOCS_RESULT {\"phase\":\"%s\",\"sha\":\"%s\",\"status\":\"%s\",\"seconds\":%s,\"exitCode\":%s}\\n" \
+        "$lane" "$web_docs_sha" "$web_docs_status" "$((SECONDS-web_docs_start))" "$web_docs_rc"' EXIT
+    ;;
+esac
 : "${SDK_TEMP_DIR:?}"
 : "${SDK_ARTIFACT_DIR:?}"
 : "${TOOLS_DIR:?}"
@@ -531,12 +540,12 @@ case "$lane" in
     # targets compile, which the wasm32 builds above never download.
     cargo fetch --locked
     bun install --frozen-lockfile
-    bun run --filter '@acyclic-labs/fs' build
+    node scripts/web-docs-build.mjs package filesystem
     # The combined browser pages consume the public Stream and Harness builds;
     # Harness also needs its Objects package declaration dependency.
-    bun run --filter '@acyclic-labs/objects' build
-    bun run --filter '@acyclic-labs/stream' build
-    bun run --filter '@acyclic-labs/harness' build
+    node scripts/web-docs-build.mjs package objects
+    node scripts/web-docs-build.mjs package stream
+    node scripts/web-docs-build.mjs package harness
     bash scripts/qualify-cloudflare.sh
     export CHROME="$(command -v google-chrome || command -v chromium)"
     browser_qualification() {

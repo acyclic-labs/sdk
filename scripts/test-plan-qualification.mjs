@@ -540,7 +540,7 @@ test("web browser commands overlap, finish before shell exit and retain named ti
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("    browser_qualification() {");
   const end = source.indexOf("    ;;", start);
-  assert.ok(start > source.indexOf("bun run --filter '@acyclic-labs/harness' build"));
+  assert.ok(start > source.indexOf("node scripts/web-docs-build.mjs package harness"));
   assert.ok(end > start);
   const commands = source.slice(start, end);
   mkdirSync(".tools", { recursive: true });
