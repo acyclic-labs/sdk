@@ -413,7 +413,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             path: state.path.clone(),
         },
         id: IntentId::try_from("captured-spawn")?,
-        brief: Box::new(file.clone()),
+        brief: Some(Box::new(file.clone())),
         profile: super::CreationConfig {
             continuation: None,
             context: super::SpawnContext::Fork,

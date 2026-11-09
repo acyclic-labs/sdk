@@ -899,15 +899,20 @@ where
                     }
                     _ => None,
                 };
-                let brief = text(brief)?;
-                let brief = self
-                    .bound
-                    .stage_text(parent, "brief", by, id, (brief, brief))
-                    .await?;
+                let brief = if continuation.is_some() {
+                    None
+                } else {
+                    let brief = text(brief)?;
+                    Some(Box::new(
+                        self.bound
+                            .stage_text(parent, "brief", by, id, (brief, brief))
+                            .await?,
+                    ))
+                };
                 let record = InboxRecord::Spawn(SpawnRequest {
                     by: by.clone(),
                     id: id.clone(),
-                    brief: Box::new(brief),
+                    brief,
                     profile,
                     history,
                 });
