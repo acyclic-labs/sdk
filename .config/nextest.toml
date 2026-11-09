@@ -24,14 +24,6 @@ default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'
 [profile.s3]
 default-filter = 'package(=acyclic-objects) & test(s3::capability::)'
 
-# Focused profiles select live storage controls; ordinary runs include them.
-
-[profile.postgres]
-default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'
-
-[profile.s3]
-default-filter = 'package(=acyclic-objects) & test(s3::capability::)'
-
 # The transport models execute the packaged TypeScript and WASM implementation.
 # Prepare its ignored artifacts once, before any selected model starts.
 [scripts.setup.stream-typescript]
