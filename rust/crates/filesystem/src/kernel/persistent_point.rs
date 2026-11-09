@@ -128,12 +128,15 @@ impl<T> Owned<Vec<T>> {
     }
 }
 
-impl<B: GrowableBuffer> Owned<B> {
+impl<B> Owned<B> {
     fn allocate_with(
         count: usize,
         accounting: &mut KernelAccounting<'_>,
         allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
-    ) -> Result<Self, crate::FsError> {
+    ) -> Result<Self, crate::FsError>
+    where
+        B: GrowableBuffer,
+    {
         let requested = crate::foundation::usize_to_u64(
             count
                 .checked_mul(std::mem::size_of::<B::Item>())
@@ -171,7 +174,10 @@ impl<B: GrowableBuffer> Owned<B> {
         &mut self,
         capacity: usize,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), crate::FsError>
+    where
+        B: GrowableBuffer,
+    {
         self.reserve_capacity_with(capacity, accounting, |_| {
             super::CanonicalDecodeError::AllocationFailed.into()
         })
@@ -184,7 +190,10 @@ impl<B: GrowableBuffer> Owned<B> {
         capacity: usize,
         accounting: &mut KernelAccounting<'_>,
         allocation_failed: impl FnOnce(std::collections::TryReserveError) -> crate::FsError,
-    ) -> Result<(), crate::FsError> {
+    ) -> Result<(), crate::FsError>
+    where
+        B: GrowableBuffer,
+    {
         if capacity <= self.value.capacity() {
             return Ok(());
         }
