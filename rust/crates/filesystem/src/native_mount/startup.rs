@@ -35,7 +35,12 @@ impl std::fmt::Debug for NativeMountStartupFailure {
 }
 impl std::fmt::Display for NativeMountStartupFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(self.error(), formatter)
+        write!(
+            formatter,
+            "{} at {}",
+            self.error(),
+            self.owner().destination().display()
+        )
     }
 }
 impl std::error::Error for NativeMountStartupFailure {

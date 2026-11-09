@@ -92,6 +92,11 @@ retain the explicit `--model` selection when a native event omits its model;
 reported native model names take precedence. Select `--model` explicitly for
 cost attribution; the launcher does not guess a host's configured default.
 
+Root coordination and capture use the existing checkout and work without
+`/dev/fuse`, including in a stock Linux container. Native hosts retain their own
+configuration and session directories. Managed children project forked volumes
+and require the platform's native mount provider when their views open.
+
 OpenCode 1.19.5 [requests and resets MCP progress](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts).
 Parked waits emit progress only when the child's native output advances.
 A quiet child needs no keepalive: the per-server `timeout` uses the maximum

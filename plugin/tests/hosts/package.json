@@ -6,6 +6,7 @@
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
     "test:workspace-nofuse": "bash workspace-nofuse.sh",
+    "test:headless-nofuse": "bash headless-nofuse.sh",
     "test:native-installation": "node --test --test-concurrency=1 native-installation.test.mjs",
     "test:agy-capture-admission": "node --test --test-concurrency=1 agy-capture-admission.test.mjs",
     "test:opencode-workspace": "node --test --test-concurrency=1 opencode-workspace.test.mjs",
