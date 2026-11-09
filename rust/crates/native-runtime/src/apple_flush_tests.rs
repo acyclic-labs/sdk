@@ -162,7 +162,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
             Ok(())
         })
     });
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENOTSUP));
     assert_eq!(calls, [0, libc::F_FULLFSYNC]);
     assert_eq!(admissions, 1);
     for error in [libc::EIO, libc::EINVAL, libc::EBADF, libc::EACCES] {
@@ -198,7 +198,7 @@ fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {
         crate::order_descriptor_once(file.as_fd())
     });
-    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ENOTSUP));
     assert_eq!(calls, [libc::F_BARRIERFSYNC]);
     Ok(())
 }

@@ -308,8 +308,8 @@ fn physical_calls(
     #[cfg(unix)]
     let error = {
         use std::os::fd::AsFd as _;
-        let invalid = std::fs::File::open("/dev/null")?;
-        sync_descriptor_once(invalid.as_fd()).expect_err("device cannot flush")
+        let (invalid, _writer) = io::pipe()?;
+        sync_descriptor_once(invalid.as_fd()).expect_err("pipe cannot flush")
     };
     #[cfg(windows)]
     let error = {
@@ -418,20 +418,27 @@ fn assert_attempt_sequence(
         let _ = index;
     }
     let failed_index = barrier_start + 4;
+    // Apple records the failed stage and its required full drain separately.
     let failed = attempts
-        .get(failed_index)
+        .get(failed_index..failed_index + usize::try_from(full_attempts).map_err(io::Error::other)?)
         .ok_or(io::ErrorKind::InvalidData)?;
-    assert_eq!(failed.outcome, Outcome::Err);
+    for attempt in failed {
+        assert_eq!(attempt.outcome, Outcome::Err);
+        assert!(attempt.durability.ok_or(io::ErrorKind::InvalidData)?.os_error.is_some());
+        assert!(attempt.error_kind.is_none(), "failure detail was disabled");
+    }
     assert_eq!(
         failed
+            .last()
+            .ok_or(io::ErrorKind::InvalidData)?
             .durability
             .ok_or(io::ErrorKind::InvalidData)?
             .os_error,
         native_error
     );
-    assert!(failed.error_kind.is_none(), "failure detail was disabled");
+    let injected_start = failed_index + failed.len();
     for injected in attempts
-        .get(failed_index + 1..failed_index + 3)
+        .get(injected_start..injected_start + 2)
         .ok_or(io::ErrorKind::InvalidData)?
     {
         let evidence = injected.durability.ok_or(io::ErrorKind::InvalidData)?;
