@@ -169,7 +169,7 @@ fn kernel_boundary_confines_descendants_and_preserves_host_authority() {
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             command
         };
-        refused_launches_bind_no_roots(&make_command, &grant, custody, &workspace, &sentinel);
+        refused_launches_bind_no_roots(make_command, &grant, custody, &workspace, &sentinel);
         let mut command = make_command();
         command.env_clear();
         let original = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);

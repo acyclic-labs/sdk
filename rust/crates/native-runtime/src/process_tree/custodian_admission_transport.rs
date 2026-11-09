@@ -188,6 +188,16 @@ mod tests {
         let mut reply = [0];
         peer.read_exact(&mut reply).await.expect("acknowledgement");
         assert_eq!(reply, [1]);
+        admission_refusals(address, receive, bytes, partial).await;
+    }
+
+    async fn admission_refusals(
+        address: std::net::SocketAddr,
+        mut receive: tokio::sync::mpsc::Receiver<Request>,
+        bytes: Vec<u8>,
+        partial: tokio::net::TcpStream,
+    ) {
+        let mut reply = [0];
         // Losing the original reply producer returns a refusal; it never
         // holds later admissions behind an unrelated blocking receive.
         let mut lost = tokio::net::TcpStream::connect(address)

@@ -252,7 +252,7 @@ fn original_driver_publication_preserves_terminal_wake_and_allocation_custody() 
                 assert_eq!(allocated.count_current, 2);
                 assert_eq!(
                     budget.memory.load(Ordering::Acquire),
-                    u64::try_from(allocated.bytes_current).unwrap()
+                    u64::try_from(allocated.bytes_current).map_err(io::Error::other)?
                 );
                 assert_eq!(budget.used_operations.load(Ordering::Acquire), 0);
                 let allocations = budget.used_allocations.load(Ordering::Acquire);

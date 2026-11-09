@@ -199,8 +199,10 @@ fn original_queue_and_terminal_survive_detachment_racing_consumers_and_blocked_e
             };
             scenario.backpressure(waiting.context().id().as_ref())?;
             scenario.racing_terminal()?;
-            scenario.lost_and_panicked_producers()?;
-            scenario.independent_result_and_panic()?;
+            scenario.lost_and_panicked_producers(|| panic!("original producer control"))?;
+            scenario.independent_result_and_panic(|| {
+                panic!("panic after original result publication control");
+            })?;
             scenario.missing_result()?;
         }
         // Original channel closure is a typed refusal, not queue acceptance.
@@ -290,7 +292,14 @@ fn accepted_task_and_terminal_wake_survive_subscriber_unwind() -> io::Result<()>
             if field == "error.os" && outcome != 1 {
                 continue;
             }
-            subscriber_unwind_case(field, worker, occurrence, outcome)?;
+            subscriber_unwind_case(
+                field,
+                worker,
+                occurrence,
+                outcome,
+                |field| panic!("original subscriber control: {field}"),
+                || panic!("original operation panic remains distinct"),
+            )?;
         }
     }
     Ok(())
@@ -431,7 +440,7 @@ impl QueueScenario<'_> {
         Ok(())
     }
 
-    fn lost_and_panicked_producers(&mut self) -> io::Result<()> {
+    fn lost_and_panicked_producers(&mut self, panic: fn() -> !) -> io::Result<()> {
         let workers = self.workers;
         let receive = self.receive;
         let output = &mut *self.output;
@@ -451,7 +460,7 @@ impl QueueScenario<'_> {
         drop(lost);
 
         // The same catch/publish owner retains panic independently of I/O.
-        let mut panicked = task(|| panic!("original producer control"))?;
+        let mut panicked = task(move || panic())?;
         assert!(matches!(
             submit(workers, &mut panicked),
             Poll::Ready(Ok(()))
@@ -486,7 +495,7 @@ impl QueueScenario<'_> {
         Ok(())
     }
 
-    fn independent_result_and_panic(&mut self) -> io::Result<()> {
+    fn independent_result_and_panic(&mut self, panic: fn() -> !) -> io::Result<()> {
         let workers = self.workers;
         let receive = self.receive;
         let output = &mut *self.output;
@@ -508,7 +517,7 @@ impl QueueScenario<'_> {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .result = Some(Err(actual));
-                panic!("panic after original result publication control");
+                panic();
             });
         }
         assert!(matches!(submit(workers, &mut both), Poll::Ready(Ok(()))));
@@ -642,6 +651,8 @@ fn subscriber_unwind_case(
     worker: bool,
     occurrence: usize,
     outcome: u8,
+    subscriber_panic: fn(&str) -> !,
+    operation_panic: fn() -> !,
 ) -> io::Result<()> {
     let (sender, receiver) = mpsc::sync_channel(1);
     let workers = NativeWorkers::single(sender, crate::workers::AdmissionState::new());
@@ -651,7 +662,7 @@ fn subscriber_unwind_case(
         occurrence,
         seen: AtomicUsize::new(0),
         panics: AtomicUsize::new(0),
-        panic: |field| panic!("original subscriber control: {field}"),
+        panic: subscriber_panic,
     });
     let probe = Probe {
         admission: Arc::clone(&workers.admission),
@@ -676,7 +687,7 @@ fn subscriber_unwind_case(
             match outcome {
                 0 => Ok(()),
                 1 => Err(actual),
-                _ => panic!("original operation panic remains distinct"),
+                _ => operation_panic(),
             }
         })?;
         // Release the caller's span references so only the SAME
@@ -702,20 +713,21 @@ fn subscriber_unwind_case(
             assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
         }
         std::thread::scope(|scope| -> io::Result<()> {
-            let worker = scope.spawn(|| {
+            let worker = scope.spawn(|| -> io::Result<()> {
                 let job = crate::workers::receive_job(&receiver, &workers.admission)
-                    .expect("accepted original job");
+                    .ok_or_else(|| io::Error::other("accepted original job absent"))?;
                 if let Some(waker) = job.run() {
                     waker.wake();
                 }
                 let _ = done.send(());
+                Ok(())
             });
             if sender_closes {
                 assert!(matches!(submit(&workers, &mut task), Poll::Ready(Ok(()))));
             }
             worker
                 .join()
-                .map_err(|_| io::Error::other("original worker panicked"))?;
+                .map_err(|_| io::Error::other("original worker panicked"))??;
             Ok(())
         })?;
 

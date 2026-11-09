@@ -98,7 +98,9 @@ fn public_leases_keep_unfinished_flushes_until_physical_close() -> io::Result<()
             Exit::WriteAfterCoveredBarrier,
             Exit::WriteAcrossBarrier,
         ] {
-            flush_case(directory.path(), &attempts, exit)?;
+            flush_case(directory.path(), &attempts, exit, || {
+                std::panic::panic_any("original flush unwound");
+            })?;
         }
         Ok(())
     })?;
@@ -158,18 +160,18 @@ fn flush_callback(
     lease: &native::FileLease,
     directory: &Path,
     exit: Exit,
+    panic: fn() -> !,
 ) -> io::Result<Option<native::Durability>> {
     let mut barrier_completed = None;
     match exit {
         Exit::Error => {
-            lease
-                .flush(|_| Err::<(), _>(io::Error::other("original flush refused")))
-                .expect_err("failed callback must retain its error");
+            let result = lease.flush(|_| Err::<(), _>(io::Error::other("original flush refused")));
+            assert!(result.is_err(), "failed callback must retain its error");
         }
         Exit::Unwind => {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 lease.flush(|_| -> io::Result<()> {
-                    std::panic::panic_any("original flush unwound");
+                    panic();
                 })
             }));
             assert!(result.is_err(), "flush swallowed the original unwind");
@@ -236,7 +238,12 @@ fn flush_callback(
     Ok(barrier_completed)
 }
 
-fn flush_case(directory: &Path, attempts: &native::obs::Query, exit: Exit) -> io::Result<()> {
+fn flush_case(
+    directory: &Path,
+    attempts: &native::obs::Query,
+    exit: Exit,
+    panic: fn() -> !,
+) -> io::Result<()> {
     let full_attempts = 1;
     let path = directory.join(format!("{exit:?}"));
     let cached = CachedFile::new(create(&path)?, &path, true, true)?;
@@ -255,7 +262,7 @@ fn flush_case(directory: &Path, attempts: &native::obs::Query, exit: Exit) -> io
     }
     lease.write(|file| native::write_all_at(file, 0, b"original", None))?;
     let before = attempts.snapshot();
-    let barrier_completed = flush_callback(&lease, directory, exit)?;
+    let barrier_completed = flush_callback(&lease, directory, exit, panic)?;
     let before_close = attempts.snapshot();
     let completed = matches!(
         exit,

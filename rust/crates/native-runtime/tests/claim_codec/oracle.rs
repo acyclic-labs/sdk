@@ -56,21 +56,20 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(Contents::decode(&past), Contents::Oversized);
     }
     let body = encoded.len() - 8;
-    let original = *encoded.get_mut(body).unwrap();
-    *encoded.get_mut(body).unwrap() ^= 1;
+    xor_byte(&mut encoded, body, 1);
     assert_eq!(
         Contents::decode(&encoded),
         Contents::Torn,
         "claim checksum bypassed"
     );
-    *encoded.get_mut(body).unwrap() = original;
+    xor_byte(&mut encoded, body, 1);
 
     let choice = usize::from(u16::from_le_bytes(std::array::from_fn(|i| {
         bytes.get(i).copied().unwrap_or(0)
     })));
     let cut = choice % encoded.len();
     assert_eq!(
-        Contents::decode(encoded.get(..cut).unwrap()),
+        Contents::decode(encoded.split_at(cut).0),
         if cut == 0 {
             Contents::Empty
         } else {
@@ -78,34 +77,10 @@ pub fn check(bytes: &[u8]) {
         }
     );
 
-    // Reach malformed grammar through the real writer and checksum, rather
-    // than waiting for random input to collide with a valid checksum.
-    match choice % 10 {
-        0 => *encoded.get_mut(choice % MAGIC.len()).unwrap() ^= 0xff,
-        1..=5 => {
-            let offset = *fields.get(choice % 10 - 1).unwrap();
-            encoded
-                .get_mut(offset..offset + 4)
-                .unwrap()
-                .copy_from_slice(&u32::MAX.to_le_bytes());
-        }
-        6 => {
-            encoded.insert(body, 0);
-        }
-        7 | 8 => {
-            let offset = *fields.get(if choice % 10 == 7 { 0 } else { 4 }).unwrap();
-            encoded
-                .get_mut(offset..offset + 4)
-                .unwrap()
-                .copy_from_slice(&0_u32.to_le_bytes());
-        }
-        _ => {
-            encoded.drain(choice / 10 % body..body);
-        }
-    }
+    mutate_grammar(&mut encoded, fields, choice, body);
     let body = encoded.len() - 8;
-    let sum = record::checksum(encoded.get(..body).unwrap());
-    encoded.get_mut(body..).unwrap().copy_from_slice(&sum);
+    let (payload, checksum) = encoded.split_at_mut(body);
+    checksum.copy_from_slice(&record::checksum(payload));
     if encoded.len() > RECORD_LIMIT {
         assert_eq!(Contents::decode(&encoded), Contents::Oversized);
     } else {
@@ -117,12 +92,58 @@ pub fn check(bytes: &[u8]) {
     }
 }
 
+fn xor_byte(bytes: &mut [u8], offset: usize, mask: u8) {
+    for byte in bytes.split_at_mut(offset).1.split_at_mut(1).0 {
+        *byte ^= mask;
+    }
+}
+
+fn mutate_grammar(encoded: &mut Vec<u8>, fields: [usize; 5], choice: usize, body: usize) {
+    // Reach malformed grammar through the real writer and checksum, rather
+    // than waiting for random input to collide with a valid checksum.
+    match choice % 10 {
+        0 => xor_byte(encoded, choice % MAGIC.len(), 0xff),
+        1..=5 => {
+            let [pid, start, lock, identity, token] = fields;
+            let offset = match choice % 10 {
+                1 => pid,
+                2 => start,
+                3 => lock,
+                4 => identity,
+                _ => token,
+            };
+            encoded
+                .split_at_mut(offset)
+                .1
+                .split_at_mut(4)
+                .0
+                .copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        6 => {
+            encoded.insert(body, 0);
+        }
+        7 | 8 => {
+            let [pid, _, _, _, token] = fields;
+            let offset = if choice % 10 == 7 { pid } else { token };
+            encoded
+                .split_at_mut(offset)
+                .1
+                .split_at_mut(4)
+                .0
+                .copy_from_slice(&0_u32.to_le_bytes());
+        }
+        _ => {
+            encoded.drain(choice / 10 % body..body);
+        }
+    }
+}
+
 /// Exhaust every cut of an original writer seed outside the fuzz hot path.
 #[cfg(not(fuzzing))]
 pub fn check_prefixes(bytes: &[u8]) {
     for cut in 0..bytes.len() {
         assert_eq!(
-            Contents::decode(bytes.get(..cut).unwrap()),
+            Contents::decode(bytes.split_at(cut).0),
             if cut == 0 {
                 Contents::Empty
             } else {
