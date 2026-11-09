@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 mod operation_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod policy_tests;
+#[cfg(not(target_arch = "wasm32"))]
+mod reservation_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
@@ -812,7 +814,16 @@ async fn reservations_exclude_writers_and_recover_the_original_head() -> TestRes
     stream
         .commit(gate_commit(
             next,
-            [PUBLICATION_GATE_ACTIVE, &op.into_bytes()].concat().into(),
+            [
+                PUBLICATION_GATE_ACTIVE,
+                &op.into_bytes(),
+                &next.expected.epoch.get().to_le_bytes(),
+                &next.expected.sequence.get().to_le_bytes(),
+                next.expected.digest.as_bytes(),
+                &1_u64.to_le_bytes(),
+            ]
+            .concat()
+            .into(),
             stream_key(b"advance", &id.into_bytes())?,
         )?)
         .await?;
@@ -1091,6 +1102,8 @@ impl StreamProvider for ReleaseSpy {
                         }
                         9 => append.records.push(append.records[0].clone()),
                         10 => observation.request_digest = [0; 32],
+                        12 => append.records[0].committed_at_micros += 1,
+                        13 => append.records[0].origin = StreamPath::new("other/origin")?,
                         _ => {}
                     }
                 }

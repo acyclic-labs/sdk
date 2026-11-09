@@ -3,7 +3,7 @@ use super::*;
 fn request(
     placement: &AuthorityPlacement,
     authority: AuthorityId,
-    snapshot: Option<AuthoritySnapshot>,
+    snapshot: Option<(Head, u64)>,
     operation: OperationId,
     tail: u64,
     gate: Option<StreamPath>,
@@ -14,27 +14,40 @@ fn request(
         None => work.path(placement, authority, "/publication-gate", None)?,
     };
     let mut conditions = work.vec(if snapshot.is_some() { 4 } else { 2 })?;
-    if let Some(snapshot) = snapshot {
+    if let Some((_, epoch_tail)) = snapshot {
         conditions.push(CommitCondition::Tail {
             path: work.path(placement, authority, "/epochs", None)?,
-            expected: snapshot.epoch_tail,
+            expected: epoch_tail,
         });
     }
     conditions.push(CommitCondition::Tail {
         path: gate.clone(),
         expected: tail,
     });
-    if let Some(snapshot) = snapshot {
+    if let Some((head, _)) = snapshot {
         conditions.push(CommitCondition::Tail {
             path: work.path(placement, authority, "/records", None)?,
-            expected: snapshot.head.sequence.get() + 1,
+            expected: head
+                .sequence
+                .get()
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?,
         });
     }
     conditions.push(CommitCondition::Absent {
         path: work.path(placement, authority, "/retirement", None)?,
     });
-    let body = if snapshot.is_some() {
-        work.stream_bytes(PUBLICATION_GATE_ACTIVE, &[&operation.into_bytes()])?
+    let body = if let Some((head, epoch_tail)) = snapshot {
+        work.stream_bytes(
+            PUBLICATION_GATE_ACTIVE,
+            &[
+                &operation.into_bytes(),
+                &head.epoch.get().to_le_bytes(),
+                &head.sequence.get().to_le_bytes(),
+                head.digest.as_bytes(),
+                &epoch_tail.to_le_bytes(),
+            ],
+        )?
     } else {
         acyclic_stream::OwnedBytes::from_static(PUBLICATION_GATE_FREE)
     };
@@ -45,11 +58,22 @@ fn request(
     } else {
         b"release-publication\0"
     };
-    Ok(CommitRequest {
-        deadline_unix_millis: None,
-        conditions,
-        mutations,
-        idempotency_key: work.key(
+    let idempotency_key = if let Some((head, epoch_tail)) = snapshot {
+        work.key(
+            placement.key_scope(),
+            domain,
+            &[
+                &authority.into_bytes(),
+                &operation.into_bytes(),
+                &tail.to_le_bytes(),
+                &epoch_tail.to_le_bytes(),
+                &head.epoch.get().to_le_bytes(),
+                &head.sequence.get().to_le_bytes(),
+                head.digest.as_bytes(),
+            ],
+        )?
+    } else {
+        work.key(
             placement.key_scope(),
             domain,
             &[
@@ -57,7 +81,13 @@ fn request(
                 &operation.into_bytes(),
                 &tail.to_le_bytes(),
             ],
-        )?,
+        )?
+    };
+    Ok(CommitRequest {
+        deadline_unix_millis: None,
+        conditions,
+        mutations,
+        idempotency_key,
     })
 }
 
@@ -95,104 +125,16 @@ fn digest(
     Ok(digest)
 }
 
-fn key_matches(key: &[u8], domain: &[u8], parts: &[&[u8]]) -> bool {
-    let Some(mut remaining) = key.strip_prefix(domain) else {
-        return false;
-    };
-    for part in parts {
-        let Some(next) = remaining.strip_prefix(*part) else {
-            return false;
-        };
-        remaining = next;
-    }
-    remaining.is_empty()
-}
-
-fn verify_release(
-    placement: &AuthorityPlacement,
-    reservation: PublicationReservation,
-    observation: &acyclic_stream::IdempotencyObservation,
-    work: &mut AuthorityWork<'_>,
-) -> Result<(), AuthorityStoreError> {
-    if !key_matches(
-        observation
-            .idempotency_key
-            .as_bytes()
-            .strip_prefix(placement.key_scope())
-            .unwrap_or_default(),
-        b"release-publication\0",
-        &[
-            &reservation.authority_id.into_bytes(),
-            &reservation.operation_id.into_bytes(),
-            &reservation.gate_tail.to_le_bytes(),
-        ],
-    ) {
-        return Err(authority_corrupt(
-            "publication release observation has another retry identity",
-            work,
-        ));
-    }
-    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
-        return Err(authority_corrupt(
-            "publication release identity retained another Stream mutation family",
-            work,
-        ));
-    };
-    let mut request = request(
-        placement,
-        reservation.authority_id,
-        None,
-        reservation.operation_id,
-        reservation.gate_tail,
-        None,
-        work,
-    )?;
-    let end = reservation
-        .gate_tail
-        .checked_add(1)
-        .ok_or(crate::WorkError::Overflow)?;
-    let request_digest = digest(&mut request, work)?;
-    let CommitMutation::Append { path: gate, .. } = &request.mutations[0] else {
-        unreachable!("release is one append");
-    };
-    let valid = request_digest == observation.request_digest
-        && matches!(envelope.mutations.as_slice(), [acyclic_stream::CommittedMutation::Append(append)]
-            if &append.path == gate && append.start == reservation.gate_tail && append.end == end && append.tail == end
-            && matches!(append.records.as_slice(), [record] if record.sequence == reservation.gate_tail
-        && record.commit_id == envelope.commit_id && record.value.as_ref() == PUBLICATION_GATE_FREE));
-    if !valid {
-        return Err(authority_corrupt(
-            "publication release observation does not bind the original gate release",
-            work,
-        ));
-    }
-    Ok(())
-}
-
 fn qualified(
-    placement: &AuthorityPlacement,
     observation: &acyclic_stream::IdempotencyObservation,
-    authority: AuthorityId,
-    operation: OperationId,
+    candidate: &mut CommitRequest,
+    record: &acyclic_stream::Record,
     tail: u64,
     work: &mut AuthorityWork<'_>,
 ) -> Result<bool, AuthorityStoreError> {
-    let Some(prior) = tail.checked_sub(1) else {
-        return Ok(false);
-    };
-    if !key_matches(
-        observation
-            .idempotency_key
-            .as_bytes()
-            .strip_prefix(placement.key_scope())
-            .unwrap_or_default(),
-        b"reserve-publication\0",
-        &[
-            &authority.into_bytes(),
-            &operation.into_bytes(),
-            &prior.to_le_bytes(),
-        ],
-    ) {
+    if observation.idempotency_key != candidate.idempotency_key
+        || observation.request_digest != digest(candidate, work)?
+    {
         return Ok(false);
     }
     let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
@@ -201,33 +143,21 @@ fn qualified(
     let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
         return Ok(false);
     };
-    let [record] = append.records.as_slice() else {
+    let [retained] = append.records.as_slice() else {
         return Ok(false);
     };
-    let encoding = codec_work(32, 0, 0);
-    if work.is_native() {
-        work.admit(encoding)?;
-    }
-    let mut hex = [0; 32];
-    hex::encode_to_slice(authority.into_bytes(), &mut hex)
-        .map_err(|_| crate::WorkError::Overflow)?;
-    if work.is_native() {
-        work.charge(encoding)?;
-    }
-    Ok(key_matches(
-        append.path.as_str().as_bytes(),
-        placement.authorities_prefix(),
-        &[&hex, b"/publication-gate"],
-    ) && append.start == prior
+    let [CommitMutation::Append { path, records }] = candidate.mutations.as_slice() else {
+        return Ok(false);
+    };
+    Ok(append.path == *path
+        && append.start == record.sequence
         && append.end == tail
         && append.tail == tail
-        && record.sequence == prior
+        && record.sequence.checked_add(1) == Some(tail)
+        && retained == record
         && record.commit_id == envelope.commit_id
-        && key_matches(
-            &record.value,
-            PUBLICATION_GATE_ACTIVE,
-            &[&operation.into_bytes()],
-        ))
+        && record.origin == *path
+        && matches!(records.as_slice(), [value] if value.value == record.value && value.headers == record.headers))
 }
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
@@ -306,19 +236,22 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<PublicationReservation>, AuthorityStoreError> {
         work.check()?;
-        let (gate, gate_tail, active) = self.reservation_gate(authority_id, work).await?;
-        let bytes = gate.as_str().len() as u64;
-        drop(gate);
-        work.release(bytes)?;
-        if active != Some(operation_id) {
-            return work.finish(None);
-        }
+        let gate = work.path(&self.placement, authority_id, "/publication-gate", None)?;
+        let gate_tail = self.tail(gate.clone(), work).await?;
         let unavailable = || AuthorityStoreError::ReservationOriginalHeadUnavailable {
             authority_id,
             operation_id,
             gate_tail,
         };
         let prior = gate_tail.checked_sub(1).ok_or_else(unavailable)?;
+        let record = self.record(gate, prior, work).await?;
+        let Some(reserved) = work.decode_reserved_gate(&record.0.value)? else {
+            return work.finish(None);
+        };
+        if reserved.operation != operation_id {
+            return work.finish(None);
+        }
+        let snapshot = reserved;
         let observed = self
             .inspect_reservation(
                 b"reserve-publication\0",
@@ -326,57 +259,38 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     &authority_id.into_bytes(),
                     &operation_id.into_bytes(),
                     &prior.to_le_bytes(),
+                    &snapshot.epoch_tail.to_le_bytes(),
+                    &snapshot.head.epoch.get().to_le_bytes(),
+                    &snapshot.head.sequence.get().to_le_bytes(),
+                    snapshot.head.digest.as_bytes(),
                 ],
                 work,
             )
             .await?;
         let observation = observed.0.as_ref().ok_or_else(unavailable)?;
-        if !qualified(
-            &self.placement,
-            observation,
-            authority_id,
-            operation_id,
-            gate_tail,
-            work,
-        )? {
-            return Err(unavailable());
-        }
-        let snapshot = self.fork_snapshot(authority_id, work).await?;
         let mut candidate = request(
             &self.placement,
             authority_id,
-            Some(snapshot),
+            Some((snapshot.head, snapshot.epoch_tail)),
             operation_id,
             prior,
             None,
             work,
         )?;
-        let mut tails = None;
-        'candidate: for records in (1..=snapshot.head.sequence.get() + 1).rev() {
-            for epochs in (1..=snapshot.epoch_tail).rev() {
-                let examined = WorkCounters {
-                    items_examined: 1,
-                    bytes_copied: if work.is_native() { 16 } else { 0 },
-                    ..WorkCounters::UNCHARGED
-                };
-                work.admit(examined)?;
-                work.charge(examined)?;
-                if let CommitCondition::Tail { expected, .. } = &mut candidate.conditions[0] {
-                    *expected = epochs;
-                }
-                if let CommitCondition::Tail { expected, .. } = &mut candidate.conditions[2] {
-                    *expected = records;
-                }
-                if digest(&mut candidate, work)? == observation.request_digest {
-                    tails = Some((records, epochs));
-                    break 'candidate;
-                }
-            }
+        if !qualified(observation, &mut candidate, &record.0, gate_tail, work)? {
+            return Err(unavailable());
         }
-        let (records, epochs) = tails.ok_or_else(unavailable)?;
         drop(candidate);
         drop(observed);
+        drop(record);
         work.release_request()?;
+        let records = snapshot
+            .head
+            .sequence
+            .get()
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)?;
+        let epochs = snapshot.epoch_tail;
         let epoch = self
             .read_at(authority_id, "/epochs", epochs - 1, work, |record, work| {
                 work.decode_epoch(&record.value, EPOCH_DOMAIN)
@@ -425,6 +339,9 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     error
                 }
             })?;
+        if expected != snapshot.head {
+            return Err(unavailable());
+        }
         let (gate, tail, active) = self.reservation_gate(authority_id, work).await?;
         let bytes = gate.as_str().len() as u64;
         drop(gate);
@@ -488,7 +405,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let request = request(
             &self.placement,
             authority,
-            Some(snapshot),
+            Some((snapshot.head, snapshot.epoch_tail)),
             operation,
             tail,
             Some(gate),

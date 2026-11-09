@@ -6,13 +6,13 @@ pub(super) fn decode_publication_gate(
     if value == PUBLICATION_GATE_FREE {
         return Ok(None);
     }
-    let operation = value
+    let reserved = value
         .strip_prefix(PUBLICATION_GATE_ACTIVE)
-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        .and_then(|bytes| <[u8; 72]>::try_from(bytes).ok())
         .ok_or_else(|| {
             AuthorityStoreError::Corrupt("invalid publication gate record".to_owned())
         })?;
-    Ok(Some(OperationId::from_bytes(operation)))
+    Ok(Some(ReservedPublication::decode(reserved)?.operation))
 }
 
 pub(super) fn stream_key(

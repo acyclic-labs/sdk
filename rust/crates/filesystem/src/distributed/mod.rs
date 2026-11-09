@@ -35,8 +35,8 @@ const GENERATION_LOCATOR_DOMAIN: &[u8] = b"acyclic-fs-stream-generation-locator-
 const OPERATION_LOCATOR_DOMAIN: &[u8] = b"acyclic-fs-stream-operation-locator-v1\0";
 const AUTHORITY_MARKER: &[u8] = b"acyclic-fs-authority-v1\0";
 const AUTHORITY_RETIRED: &[u8] = b"acyclic-fs-authority-retired-v1\0";
-const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v1\0free";
-const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\0";
+const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v2\0free";
+const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v2\0active\0";
 
 /// Stream placement accepted by the canonical authority journal.
 ///
@@ -110,6 +110,39 @@ struct AuthoritySnapshot {
     head: Head,
     epoch_tail: u64,
     record_commit_id: acyclic_stream::CommitId,
+}
+
+// The gate append atomically retains its exact admitted head. Recovery validates
+// the retained request once instead of guessing historical CAS conditions.
+#[derive(Clone, Copy)]
+struct ReservedPublication {
+    operation: OperationId,
+    head: Head,
+    epoch_tail: u64,
+}
+
+impl ReservedPublication {
+    fn decode(bytes: [u8; 72]) -> Result<Self, AuthorityStoreError> {
+        let epoch = Epoch::new(u64::from_le_bytes(std::array::from_fn(|i| bytes[16 + i])))
+            .map_err(|_| {
+                AuthorityStoreError::CorruptStatic("invalid reserved publication epoch")
+            })?;
+        let epoch_tail = u64::from_le_bytes(std::array::from_fn(|i| bytes[64 + i]));
+        if epoch_tail == 0 {
+            return Err(AuthorityStoreError::CorruptStatic(
+                "empty reserved publication epoch tail",
+            ));
+        }
+        Ok(Self {
+            operation: OperationId::from_bytes(std::array::from_fn(|i| bytes[i])),
+            head: Head {
+                epoch,
+                sequence: Sequence::new(u64::from_le_bytes(std::array::from_fn(|i| bytes[24 + i]))),
+                digest: Digest::from_bytes(std::array::from_fn(|i| bytes[32 + i])),
+            },
+            epoch_tail,
+        })
+    }
 }
 
 // Private read-only capability: retirement bypass is available only to accounting.

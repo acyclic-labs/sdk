@@ -642,15 +642,24 @@ impl<'a> AuthorityWork<'a> {
         &mut self,
         value: &[u8],
     ) -> Result<Option<OperationId>, AuthorityStoreError> {
+        self.decode_reserved_gate(value)
+            .map(|reserved| reserved.map(|reserved| reserved.operation))
+    }
+
+    pub(super) fn decode_reserved_gate(
+        &mut self,
+        value: &[u8],
+    ) -> Result<Option<ReservedPublication>, AuthorityStoreError> {
         if value == PUBLICATION_GATE_FREE {
             return Ok(None);
         }
-        self.decode_fixed::<16>(
+        self.decode_fixed::<72>(
             value,
             PUBLICATION_GATE_ACTIVE,
             "invalid publication gate record",
         )
-        .map(|bytes| Some(OperationId::from_bytes(bytes)))
+        .and_then(ReservedPublication::decode)
+        .map(Some)
     }
 
     pub(super) fn finish<T>(&self, value: T) -> Result<T, AuthorityStoreError> {
