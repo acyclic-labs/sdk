@@ -160,6 +160,18 @@ pub(super) unsafe fn notification(
     let Some(path) = path_from(data.FilePathName) else {
         return HR_INVALID_DATA;
     };
+    // Retain the retiring incarnation before the release wakes its projector.
+    // Its unmodified close must not import the old host object over a source
+    // removal or replacement, even when Windows omitted the open notification.
+    let retiring = if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
+        lock_recover(&runtime.projector.state)
+            .pending
+            .get(&path)
+            .and_then(|entry| entry.facts)
+            .map(|facts| facts.lookup.node.file_id)
+    } else {
+        None
+    };
     if matches!(
         notification,
         PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
@@ -338,6 +350,15 @@ pub(super) unsafe fn notification(
                 MetadataClose::Final(state) => state.and_then(|state| state.baseline),
             };
             if has_pending_capture(operation_failures.as_ref(), &path) {
+                return Ok(());
+            }
+            if let Some(retiring) = retiring
+                && source
+                    .lookup_with_meter(&path, &work)?
+                    .map(|entry| entry.node.file_id)
+                    != Some(retiring)
+            {
+                lock_recover(projection).remove(&path);
                 return Ok(());
             }
             let Some(baseline) = baseline else {
