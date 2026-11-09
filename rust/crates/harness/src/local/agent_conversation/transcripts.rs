@@ -10,6 +10,10 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[cfg(all(test, feature = "filesystem-local"))]
+#[path = "transcripts_tests.rs"]
+mod tests;
+
 impl Conversation {
     /// Run while projecting each agent's own journal to `<id>.jsonl` in
     /// `directory`. Files are replaced on each invocation and flushed per
@@ -177,7 +181,7 @@ impl MembershipFollow {
 
 async fn journal(
     conversation: Arc<Conversation>,
-    file: std::fs::File,
+    file: impl std::io::Write,
     operation: &str,
     mut finish: watch::Receiver<bool>,
 ) -> Result<()> {
@@ -265,7 +269,9 @@ async fn journal(
         if query.page.is_none()
             || (!query.settled && query.page.as_ref().is_some_and(|page| page.next.is_none()))
         {
-            if *finish.borrow() {
+            // Only a page fetched after completion can exhaust the final
+            // frontier: payload reads above may have yielded while it grew.
+            if finished {
                 return Ok(());
             }
             live = true;
@@ -273,7 +279,7 @@ async fn journal(
     }
 }
 
-fn line(file: &mut BufWriter<std::fs::File>, event: &impl serde::Serialize) -> Result<()> {
+fn line(file: &mut BufWriter<impl std::io::Write>, event: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer(&mut *file, event).map_err(failed)?;
     file.write_all(b"\n").map_err(failed)?;
     file.flush().map_err(failed)

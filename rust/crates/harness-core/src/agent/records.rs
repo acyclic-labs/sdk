@@ -36,9 +36,11 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 10 unifies child and deadline waits as one monotone condition.
 /// Version 11 adds admitted boundary steering and next-turn messages.
 /// Version 12 retains template capabilities only in their immutable source.
+/// Version 13 uses named MessagePack values after a four-byte big-endian version.
 /// Version 14 adds the waiting-user phase to named MessagePack values after a
 /// four-byte big-endian version.
-pub const RECORD_VERSION: u32 = 14;
+/// Version 15 requires membership feeds created atomically with every agent.
+pub const RECORD_VERSION: u32 = 15;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.
