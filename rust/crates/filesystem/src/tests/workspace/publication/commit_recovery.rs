@@ -205,7 +205,10 @@ fn commit_crash_child() -> TestResult {
         let fs = Fs::local(crate::LocalOptions::new(&root)).await?;
         let workspace = unbounded!(fs, open_workspace("repo"))?;
         let coordinator = if matches!(kind, PublicationKind::MultiRoot) {
-            Some(multi_root::coordinator(&root, fs.clone())?)
+            Some(multi_root::coordinator(
+                multi_root::store(&root)?,
+                fs.clone(),
+            ))
         } else {
             None
         };

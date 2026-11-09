@@ -2,9 +2,9 @@
 use super::*;
 use crate::{
     LineageMultiRootPublicationAuthorizer, LocalCoreStateStore, LocalFs, MultiRootMergeCandidate,
-    MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublicationCoordinator, Publication,
-    WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextRoot, WorkspaceGraph,
-    WorkspaceMultiRootPublisher, WorkspaceRootId,
+    MultiRootMergePlan, MultiRootMergeRoot, MultiRootPublicationCoordinator,
+    MultiRootPublicationStore, Publication, WorkspaceContextId, WorkspaceContextRegistry,
+    WorkspaceContextRoot, WorkspaceGraph, WorkspaceMultiRootPublisher, WorkspaceRootId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -19,20 +19,19 @@ type Coordinator = MultiRootPublicationCoordinator<
     LineageMultiRootPublicationAuthorizer<LocalCoreStateStore>,
 >;
 
-fn store(root: &Path) -> TestResult<LocalCoreStateStore> {
+pub(super) fn store(root: &Path) -> TestResult<LocalCoreStateStore> {
     let work =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
     Ok(LocalCoreStateStore::open_owned(root.join("control"))?.materialization(work))
 }
 
-pub(super) fn coordinator(root: &Path, fs: LocalFs) -> TestResult<Coordinator> {
-    let state = store(root)?;
-    Ok(MultiRootPublicationCoordinator::new(
+pub(super) fn coordinator(state: LocalCoreStateStore, fs: LocalFs) -> Coordinator {
+    MultiRootPublicationCoordinator::new(
         state.clone(),
         WorkspaceMultiRootPublisher::new((fs, WorkspaceGraph::new(state.clone()))),
         LineageMultiRootPublicationAuthorizer::new(state),
-    ))
+    )
 }
 
 pub(super) fn candidate(root: &Path) -> TestResult<MultiRootMergeCandidate> {
@@ -61,10 +60,11 @@ pub(super) async fn seed(root: &Path) -> TestResult {
             TransactionCommit::Committed(_)
         ));
         let base = unbounded!(parent, head())?;
-        graph.register_root(&parent).await?;
-        let child = graph
-            .fork(&parent, format!("{name}-child"), IdempotencyKey::new())
-            .await?;
+        unbounded!(graph, register_root(&parent))?;
+        let child = unbounded!(
+            graph,
+            fork(&parent, format!("{name}-child"), IdempotencyKey::new())
+        )?;
         let mut transaction = unbounded!(child, begin_transaction(IdempotencyKey::new()))?;
         transaction.write_text("/file", "new").await?;
         assert!(matches!(
@@ -121,12 +121,14 @@ pub(super) async fn seed(root: &Path) -> TestResult {
 
 pub(super) async fn assert_recovery(root: &Path, acknowledged: bool) -> TestResult {
     let fs = Fs::local(crate::LocalOptions::new(root)).await?;
-    let coordinator = coordinator(root, fs.clone())?;
+    let state = store(root)?;
+    let coordinator = coordinator(state.clone(), fs.clone());
     let mut candidate = candidate(root)?;
-    for operation in coordinator.pending_operations().await? {
-        assert_eq!(operation, candidate.plan.operation_id);
+    let original = candidate.plan.operation_id;
+    if let Some(pending) = state.load(original).await? {
+        assert_eq!(pending.candidate, candidate);
         assert!(matches!(
-            coordinator.resume(operation).await?,
+            coordinator.resume(original).await?,
             Some(Publication::Applied(_))
         ));
     }
@@ -162,11 +164,13 @@ pub(super) async fn assert_recovery(root: &Path, acknowledged: bool) -> TestResu
     }
     // A fresh operation must acquire the same parent and both root reservations.
     candidate.plan.operation_id = crate::OperationId::from_bytes([0x78; 16]);
+    let successor = candidate.plan.operation_id;
     assert!(matches!(
         coordinator.publish(candidate).await?,
         Publication::Applied(_)
     ));
-    assert!(coordinator.pending_operations().await?.is_empty());
+    assert!(state.load(original).await?.is_none());
+    assert!(state.load(successor).await?.is_none());
     for name in ["repo", "other"] {
         let workspace = unbounded!(fs, open_workspace(name))?;
         assert_eq!(unbounded!(workspace, read("/file", 16))?.as_ref(), b"new");
