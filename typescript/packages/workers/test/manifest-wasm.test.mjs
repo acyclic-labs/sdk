@@ -2,12 +2,26 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { HostCredential } from "@acyclic-labs/workers/manifest";
+import { HostCredential as RootHostCredential } from "@acyclic-labs/workers";
 import initializeManifest, { validate, verifyArtifact, parseSecretReference } from "../generated/wasm/acyclic_manifest.js";
 
 // The selected asset is the actual module produced for this package.
 const module = await readFile(new URL("../generated/wasm/acyclic_manifest_bg.wasm", import.meta.url));
 await initializeManifest({ module_or_path: module });
 const fixture = JSON.parse(await readFile(new URL("../../../../rust/crates/manifest/fuzz/corpus/manifest_json/valid.json", import.meta.url), "utf8"));
+
+test("public host credential name identifies the leaf that guests cannot select", () => {
+  assert.equal(RootHostCredential, HostCredential);
+  const manifest = structuredClone(fixture);
+  const environment = manifest.environments[0];
+  environment.entries[0].hostFetch = [{ name: "host", origin: { host: "host.example.com", port: 443 },
+    credential: { scheme: "account-leaf" } }];
+  validate(JSON.stringify(manifest));
+  const [scope, name] = HostCredential.ACCOUNT_LEAF.slice("secrets:/".length).split("/");
+  environment.secrets[0].reference = { scope, name, version: "1" };
+  assert.throws(() => validate(JSON.stringify(manifest)), /host-fetch-exposed/);
+});
 
 test("standalone secret reference admission uses the deployment grammar", () => {
   for (const reference of [

@@ -798,6 +798,14 @@ fn generated_artifacts_preserve_the_admitted_manifest_surface()
     let schema: Value = serde_json::from_str(&json_schema()?)?;
     let environment = environment_typescript(&fixture()?, "production", "agent")?;
     assert!(declarations.contains("export type DeploymentManifest"));
+    let credentials: Value = serde_json::from_str(
+        declarations
+            .lines()
+            .find_map(|line| line.strip_prefix("export const HostCredential = "))
+            .and_then(|value| value.strip_suffix(" as const;"))
+            .ok_or_else(missing)?,
+    )?;
+    assert_eq!(credentials["ACCOUNT_LEAF"], HostCredential::ACCOUNT_LEAF);
     assert!(
         schema
             .pointer("/properties/environments")

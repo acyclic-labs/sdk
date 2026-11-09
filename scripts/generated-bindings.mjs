@@ -45,8 +45,8 @@ export const writeChanged = (path, content) => {
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
   ["protocol/v1/protocol_pb", ["filesystem"]],
-  // inference_pb imports the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["inference", "actors", "filesystem", "machines", "objects", "stream"], "compatibility"],
+  // Service bindings import the proto2 custom options descriptor transitively.
+  ["validation/v1/options_pb", ["auth", "inference", "actors", "filesystem", "machines", "objects", "stream"], "compatibility"],
   ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
