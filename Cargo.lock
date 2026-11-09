@@ -869,6 +869,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vte",
+ "zeroize",
 ]
 
 [[package]]

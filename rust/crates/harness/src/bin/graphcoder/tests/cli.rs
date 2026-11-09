@@ -484,7 +484,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("1 startup refusal(s)"), "{stderr}");
     assert!(
-        stdout.starts_with("refused: ")
+        stdout.contains("refused: ")
             && stdout.contains("separate from the checkout")
             && stdout.contains("recovery:"),
         "{stdout}"

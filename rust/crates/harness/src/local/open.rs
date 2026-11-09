@@ -121,10 +121,6 @@ impl Opening {
             || tools
                 .get(crate::tools::shell::PLATFORM.name, None, None)?
                 .is_some();
-        #[cfg(any(test, feature = "native-execution"))]
-        if native_mounts && !passive {
-            checkout_tools::shell::executable()?;
-        }
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,
@@ -212,52 +208,11 @@ impl Opening {
     /// The host's own refusals, before any state is touched: each names what
     /// is missing and its recovery. Opening stops at the first.
     fn host_refusals(&self) -> Vec<Error> {
-        let mut refusals = Vec::new();
         #[cfg(any(test, feature = "native-execution"))]
-        if self.native_mounts
-            && matches!(self.config.project, LocalProject::Workspace(_))
-            && let Err(error) =
-                workspace::volumes::require_available(acyclic_fs::probe_native_mount())
-        {
-            refusals.push(error);
-        }
+        let native = self.native_mounts;
         #[cfg(not(any(test, feature = "native-execution")))]
-        if matches!(self.config.project, LocalProject::Workspace(_)) {
-            refusals.push(Error::Unsupported(
-                "checkout workspaces require native-execution".into(),
-            ));
-        }
-        if let LocalProject::Workspace(path) = &self.config.project
-            && !path.is_dir()
-        {
-            refusals.push(Error::Invalid(format!(
-                "local workspace {} is not a directory",
-                path.display()
-            )));
-        }
-        // Hermetic state may be allocated lazily by actual opening. There is
-        // no selected directory to inspect until that allocation happens.
-        if !self.config.hermetic || self.config.state_directory.is_some() {
-            let location = self.config.state_location().and_then(|location| {
-                let (config::StateLocation::Directory(directory)
-                | config::StateLocation::ProjectRoot(directory)) = location;
-                let checkout = match &self.config.project {
-                    LocalProject::Workspace(path) => Some(path.as_path()),
-                    LocalProject::Volume { .. } => None,
-                };
-                owner::planned_separated_directory(&directory, checkout)
-            });
-            refusals.extend(location.err());
-        }
-        if !self.config.without_user_settings {
-            refusals.extend(
-                acyclic_native_runtime::signing_key::SigningCustody::Configured
-                    .validate()
-                    .err()
-                    .map(storage),
-            );
-        }
-        refusals
+        let native = true;
+        self.config.native_refusals(native)
     }
 
     fn storage(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<Storage>> {

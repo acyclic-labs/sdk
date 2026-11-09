@@ -91,6 +91,55 @@ impl Registry {
         &self.providers
     }
 
+    /// Whether this selection needs interactive credentials, using precisely
+    /// the resolver's source precedence and authentication policy.
+    pub fn needs_credentials(&self, selection: &str) -> Result<bool> {
+        let (provider, model) = selection
+            .split_once('/')
+            .ok_or_else(|| invalid("expected provider/model"))?;
+        let spec = self
+            .providers
+            .get(provider)
+            .filter(|spec| spec.models.contains_key(model))
+            .ok_or_else(|| invalid("selected provider/model is absent from the catalog"))?;
+        Ok(spec.authentication != Authentication::Optional
+            && spec.authentication.secret_reference().is_none()
+            && matches!(
+                self.selected_credential(provider, spec)?,
+                Credential::Missing
+            ))
+    }
+
+    /// One unauthenticated HTTP exchange verifies DNS, connection and TLS to
+    /// the selected endpoint. Any HTTP status proves reachability; this never
+    /// generates tokens, sends keys, follows redirects or retries.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn check_reachability(&self, selection: &str) -> Result<()> {
+        let provider = selection
+            .split_once('/')
+            .map(|(provider, _)| provider)
+            .ok_or_else(|| invalid("expected provider/model"))?;
+        let spec = self
+            .providers
+            .get(provider)
+            .ok_or_else(|| invalid("unknown model provider"))?;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .build()
+            .map_err(|_| invalid("cannot initialize provider network check"))?;
+        // A reused Codex login selects its own route, through the same resolver.
+        let resolved = self.resolve(selection).ok();
+        let base_url = resolved
+            .as_ref()
+            .map_or(&spec.base_url, |resolved| &resolved.config.base_url);
+        let mut request = client.head(base_url);
+        if let Some(ms) = spec.timeouts.total_ms {
+            request = request.timeout(std::time::Duration::from_millis(ms));
+        }
+        request.send().await.map(|_| ()).map_err(|_| invalid("provider network is unreachable; recovery: check DNS, proxy, TLS trust and the configured provider endpoint"))
+    }
+
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
         self.update_catalog(Changes::One(provider, config), None)

@@ -234,9 +234,10 @@ pub enum Command {
     /// (`acyclic_harness::server::serve`), as a managed host does; prints its
     /// endpoint, credential and principal as one JSON line.
     Serve(Serve),
-    /// Check local configuration, workspace, mount and signing policy without
-    /// writing state or creating authority. Does not open storage or start MCP
-    /// children; credential-service access is checked only when a run opens.
+    /// Check provider keys and network, keychain, terminal, shell, native
+    /// filesystem mode and state policy without opening storage or authority.
+    /// Lists every missing prerequisite with its recovery. Pass -p TASK or
+    /// JSONL flags to check headless prerequisites.
     Doctor,
 }
 

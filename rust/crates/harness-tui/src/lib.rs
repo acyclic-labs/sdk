@@ -16,6 +16,8 @@ mod feedback;
 #[cfg(feature = "tui")]
 pub use feedback::Feedback;
 mod editor;
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+pub mod onboarding;
 #[cfg(feature = "tui")]
 pub use display_text::display_text;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
