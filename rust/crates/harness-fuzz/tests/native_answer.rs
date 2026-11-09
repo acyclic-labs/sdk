@@ -6,7 +6,7 @@ mod oracle;
 #[test]
 fn recorded_and_derived_native_events_satisfy_the_same_fuzz_oracle() {
     oracle::check_prefix_work();
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/native_answer");
+    let corpus = acyclic_test_support::crate_path!("corpus/native_answer");
     let mut inputs: Vec<_> = std::fs::read_dir(corpus)
         .expect("native event corpus")
         .map(|entry| entry.expect("corpus entry").path())
