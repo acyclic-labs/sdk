@@ -210,6 +210,8 @@ mod tests {
         let effects = Arc::new(super::super::agent_effects::FilesystemTurnEffects::new(
             files,
             Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_actors::addressing::ActorReference::new(b"test", b"templates", b"host")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
             path.clone(),
             (crate::OperationId::new(), 0),
             crate::conversation::MAX_EXACT_JS_INTEGER,

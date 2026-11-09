@@ -19,6 +19,7 @@
 //! `merge agents/<name>` (inspect with `diff`). `wait`
 //! names that branch for each settled child it was given by spawn name.
 
+use crate::agent::spawn_names::{spawn_intent, spawn_name};
 use crate::{
     Error, Result,
     agent::{
@@ -47,7 +48,8 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// Child name, unique under this agent; it names the child's path and branch.
+    /// Child name, unique under this agent; reusable after a setup failure
+    /// before any turn committed. It names the child's path and branch.
     pub name: String,
     /// Self-contained task brief, including the child's file ownership.
     pub task: String,
@@ -134,19 +136,6 @@ fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> Strin
     crate::agent::call_key(step, invocation.operation_id)
 }
 
-/// Prefix of every tool spawn's intent; the rest is the child's name.
-const SPAWN: &str = "spawn:";
-
-/// The child `parent`'s `spawn` tool names `name`: the one derivation every
-/// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
-///
-/// # Errors
-/// When `name` is not a valid spawn name or the child would exceed the depth.
-pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
-    let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
-    TurnEffect::child(parent, &intent).map_err(agent)
-}
-
 impl AgentTool {
     async fn run(
         &self,
@@ -172,7 +161,7 @@ impl AgentTool {
                 if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("task is empty or too large"));
                 }
-                let Ok(intent) = IntentId::try_from(format!("{SPAWN}{}", input.name)) else {
+                let Ok(intent) = spawn_intent(&input.name, 0) else {
                     return Ok(rejected(
                         "name must be short printable ASCII without spaces",
                     ));
@@ -234,20 +223,11 @@ impl AgentTool {
                 };
                 // A peer by path, or by sibling name; the scope's grants or
                 // the parent's spawn-time peers authorize it.
-                let peer = || {
-                    let path = AgentPath::try_from(input.agent.clone()).ok().or_else(|| {
-                        turn.parent
-                            .as_ref()
-                            .and_then(|parent| spawned_child(parent, &input.agent).ok())
-                    })?;
-                    let granted = context.as_ref().is_some_and(|context| {
-                        crate::agent::peer_send_allowed(context.effective_scope().grants(), &path)
-                    }) || turn.templates.as_ref().is_some_and(|(creation, _)| {
-                        crate::agent::peer_send_allowed(&creation.peers, &path)
-                    });
-                    granted.then_some(path)
+                let recipient = match self.recipient(&input.agent, true).await? {
+                    Some(path) => Some(path),
+                    None => self.peer(&input.agent, context.as_ref()).await?,
                 };
-                let Some(to) = self.recipient(&input.agent, true).or_else(peer) else {
+                let Some(to) = recipient else {
                     return Ok(rejected(
                         "send requires a parent, open child or authorized peer inbox",
                     ));
@@ -279,7 +259,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(target) = self.recipient(&input.agent, false) else {
+                let Some(target) = self.recipient(&input.agent, false).await? else {
                     return Ok(rejected("archive reaches only an open child"));
                 };
                 TurnEffect::Archive {
@@ -301,7 +281,7 @@ impl AgentTool {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
                 "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
-                "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
+                "name": spawn_name(&intent).map_err(agent)?,
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
@@ -325,12 +305,49 @@ impl AgentTool {
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    fn recipient(&self, agent: &str, parent: bool) -> Option<AgentPath> {
+    async fn recipient(&self, agent: &str, parent: bool) -> Result<Option<AgentPath>> {
         let turn = &*self.turn;
         if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
-            return Some(to.clone());
+            return Ok(Some(to.clone()));
         }
-        named_child(&turn.agent, agent).filter(|child| turn.children.contains(child))
+        Ok(named_child(turn.observer.as_deref(), &turn.agent, agent)
+            .await?
+            .filter(|child| turn.children.contains(child)))
+    }
+
+    async fn peer(
+        &self,
+        reference: &str,
+        context: Option<&ToolContext>,
+    ) -> Result<Option<AgentPath>> {
+        let turn = &*self.turn;
+        let path = match AgentPath::try_from(reference.to_owned()) {
+            Ok(path) => Some(path),
+            Err(_) => match &turn.parent {
+                Some(parent) => named_child(turn.observer.as_deref(), parent, reference).await?,
+                None => None,
+            },
+        };
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        for grants in context
+            .map(|context| context.effective_scope().grants())
+            .into_iter()
+            .chain(turn.templates.as_ref().map(|(creation, _)| &creation.peers))
+        {
+            if crate::agent::peer_send_allowed(grants, &path) {
+                return Ok(Some(path));
+            }
+            if let Some(observer) = &turn.observer
+                && let Some(parent) = &turn.parent
+            {
+                if crate::agent::sibling_send_allowed(&**observer, grants, parent, &path).await? {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Reads the named children once; see [`WaitAgentInput`]. Its call
@@ -341,9 +358,10 @@ impl AgentTool {
         let Some(observer) = &self.turn.observer else {
             return Ok(rejected("this host observes no children"));
         };
-        let (children, ..) = match waited(&self.turn.agent, arguments) {
+        let (children, ..) = match waited(Some(&**observer), &self.turn.agent, arguments).await {
             Ok(waited) => waited,
-            Err(rejected) => return Ok(rejected),
+            Err(error @ Error::Invalid(_)) => return Ok(super::rejected_input(error)),
+            Err(error) => return Err(error),
         };
         let mut settled = Vec::with_capacity(children.len());
         let mut running = Vec::new();
@@ -381,7 +399,7 @@ impl AgentTool {
 }
 
 /// The send labels `peers` confers on a child of `parent`: each sibling
-/// name's exact inbox, or `*` for `parent`'s whole subtree. A spawning agent
+/// name's current inbox, or `*` for `parent`'s whole subtree. A spawning agent
 /// confers only inboxes under itself, which it may already reach.
 fn peer_grants(
     parent: &AgentPath,
@@ -392,9 +410,9 @@ fn peer_grants(
         grants.push(if peer == "*" {
             format!("agent.send-subtree:{parent}")
         } else {
-            let sibling = spawned_child(parent, &peer)
+            spawn_intent(&peer, 0)
                 .map_err(|_| rejected(format!("peer {peer} is not a valid sibling name")))?;
-            format!("agent.send:{sibling}")
+            format!("agent.send-sibling:{peer}")
         });
     }
     Ok(crate::Capabilities::new(grants))
@@ -402,26 +420,38 @@ fn peer_grants(
 
 /// The child of `agent` that `reference` names: a spawn name, or the agent
 /// path of one of its children, open or settled.
-fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
+async fn named_child(
+    observer: Option<&dyn TurnChildren>,
+    agent: &AgentPath,
+    reference: &str,
+) -> Result<Option<AgentPath>> {
     if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-        return path.is_child_of(agent).then_some(path);
+        return Ok(path.is_child_of(agent).then_some(path));
     }
-    spawned_child(agent, reference).ok()
+    if spawn_intent(reference, 0).is_err() {
+        return Ok(None);
+    }
+    match observer {
+        Some(observer) => Ok(observer.resolve(agent, reference).await?.live()),
+        None => Ok(None),
+    }
 }
 
 /// The distinct children a `wait` of `agent` names, each with the reference
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
-fn waited(
+async fn waited(
+    observer: Option<&dyn TurnChildren>,
     agent: &AgentPath,
     arguments: Value,
-) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
-    let input: WaitAgentInput = decode(arguments)?;
+) -> Result<(Vec<(String, AgentPath)>, u32, Option<u64>)> {
+    let input: WaitAgentInput =
+        serde_json::from_value(arguments).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
     for reference in input.agents {
-        let Some(child) = named_child(agent, &reference) else {
-            return Err(rejected(format!(
+        let Some(child) = named_child(observer, agent, &reference).await? else {
+            return Err(Error::Invalid(format!(
                 "{reference} names no child of this agent"
             )));
         };
@@ -430,12 +460,12 @@ fn waited(
         }
     }
     if children.is_empty() {
-        return Err(rejected("wait names no child"));
+        return Err(Error::Invalid("wait names no child".into()));
     }
     let named = u32::try_from(children.len()).unwrap_or(u32::MAX);
     let need = input.need.unwrap_or(named);
     if need == 0 || need > named {
-        return Err(rejected(format!(
+        return Err(Error::Invalid(format!(
             "need must be between 1 and the {named} distinct children named"
         )));
     }
@@ -465,9 +495,12 @@ pub(crate) async fn awaited(
         return Ok(None);
     }
     // A malformed wait dispatches to receive its error.
-    let Ok((named, mut need, timeout_ms)) = waited(children.agent(), arguments.clone()) else {
-        return Ok(None);
-    };
+    let (named, mut need, timeout_ms) =
+        match waited(Some(children), children.agent(), arguments.clone()).await {
+            Ok(waited) => waited,
+            Err(Error::Invalid(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        };
     let mut unsettled = BTreeSet::new();
     for (_, child) in named {
         match children.settled(&child).await {
@@ -715,6 +748,18 @@ mod tests {
             &self.agent
         }
 
+        fn resolve<'a>(
+            &'a self,
+            _: &'a AgentPath,
+            _: &'a str,
+        ) -> BoxProviderFuture<'a, Result<crate::agent::SpawnResolution>> {
+            Box::pin(async {
+                Err(Error::Unsupported(
+                    "fixture addresses children by path".into(),
+                ))
+            })
+        }
+
         fn settled<'a>(
             &'a self,
             child: &'a AgentPath,
@@ -739,7 +784,13 @@ mod tests {
     async fn a_deadline_release_goes_to_the_first_wait_it_reaches() -> Result<()> {
         use std::sync::atomic::{AtomicBool, Ordering};
         let agent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
-        let [a, b] = ["a", "b"].map(|name| spawned_child(&agent, name));
+        let [a, b] = ["a", "b"].map(|name| {
+            TurnEffect::child(
+                &agent,
+                &spawn_intent(name, 0).map_err(|error| Error::Invalid(error.to_string()))?,
+            )
+            .map_err(|error| Error::Invalid(error.to_string()))
+        });
         let (a, b) = (a?, b?);
         let children = Children {
             agent: agent.clone(),

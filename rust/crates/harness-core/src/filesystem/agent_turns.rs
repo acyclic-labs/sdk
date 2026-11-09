@@ -436,6 +436,8 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     goals: Option<crate::goal::GoalContinuationPolicy>,
     policy: crate::approvals::ApprovalPolicy,
     templates: Arc<dyn crate::agent::SpawnTemplates>,
+    #[cfg(feature = "test-support")]
+    binding_fault: Option<Arc<dyn Fn(&AgentState) -> Result<()> + Send + Sync>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -519,7 +521,21 @@ where
             approvers: Default::default(),
             goals: Some(Default::default()),
             policy,
+            #[cfg(feature = "test-support")]
+            binding_fault: None,
         }
+    }
+
+    /// Injects a deterministic failure before a turn binds or reads content.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_binding_fault(
+        mut self,
+        fault: impl Fn(&AgentState) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.binding_fault = Some(Arc::new(fault));
+        self
     }
 
     /// The same reader both model and host child creation use.
@@ -1723,6 +1739,10 @@ where
             Some(stop.clone()),
             async move {
                 // The admission is verified before the turn's first read.
+                #[cfg(feature = "test-support")]
+                if let Some(fault) = &self.binding_fault {
+                    fault(agent)?;
+                }
                 let admitted = self.admit(agent)?;
                 // The model context holds every settled turn of the agent's
                 // conversation, inherited ones included: a spawned child is a
@@ -1803,6 +1823,7 @@ where
                 let effects = Arc::new(FilesystemTurnEffects::new(
                     Arc::clone(&files),
                     Arc::clone(&self.stream),
+                    self.within.clone(),
                     agent.path.clone(),
                     (turn, segment),
                     self.limits.maximum_bytes,
@@ -1938,6 +1959,18 @@ where
 {
     fn agent(&self) -> &AgentPath {
         &self.agent
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        parent: &'a AgentPath,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<crate::agent::SpawnResolution>> {
+        Box::pin(async move {
+            crate::agent::resolve_spawn_name(&self.stream, &self.within, parent, name)
+                .await
+                .map_err(agent_error)
+        })
     }
 
     fn settled<'a>(

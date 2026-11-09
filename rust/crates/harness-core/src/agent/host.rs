@@ -243,6 +243,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         Ok(self.agents.state(&self.actor(agent)?, agent).await?.0)
     }
 
+    /// The live child currently owning a spawn name, or its free generation.
+    pub async fn resolve_spawn_name(
+        &self,
+        parent: &AgentPath,
+        name: &str,
+    ) -> Result<super::SpawnResolution, Error> {
+        super::resolve_spawn_name(&self.provider, &self.within, parent, name).await
+    }
+
     /// Settlement and continuation from the same original actor observation.
     /// Consumption alone may retain a paused turn, queued or overflowed input.
     pub async fn input_progress(

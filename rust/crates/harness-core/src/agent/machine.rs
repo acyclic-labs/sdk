@@ -172,6 +172,24 @@ fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
 }
 
 impl AgentState {
+    /// A terminal setup failure frees its spawn name only if no turn committed.
+    /// The brief is queued at adoption, not appended to the conversation: the
+    /// first committed entry includes its response. Inherited entries do not
+    /// count. Done is terminal, so a released generation remains released.
+    #[must_use]
+    pub fn released(&self) -> bool {
+        super::release::released(
+            matches!(
+                self.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            ),
+            self.conversation_tail,
+            self.conversation_base,
+        )
+    }
+
     /// Whether an inbox input remains unread, queued, or is the running turn.
     /// `cursor` is the original actor delivery's exclusive inbox cursor. The
     /// bounded input window and existing overflow exceptions are the authority;

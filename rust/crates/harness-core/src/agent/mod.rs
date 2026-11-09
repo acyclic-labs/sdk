@@ -41,13 +41,16 @@ mod machine;
 mod notices;
 pub use notices::NoticeSelection;
 pub(crate) mod records;
+mod release;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
+pub(crate) mod spawn_names;
+pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;
 mod slots;
 mod steering;
-pub use messaging::{MessageDelivery, peer_send_allowed};
+pub use messaging::{MessageDelivery, peer_send_allowed, sibling_send_allowed};
 pub use steering::{
     BoundaryCut, BoundarySelection, ModelBoundary, SteeringSnapshot, SteeringTranscript,
     select_boundary,

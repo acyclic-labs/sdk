@@ -25,6 +25,9 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
+#[path = "wired/spawn_names.rs"]
+mod spawn_names;
+
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
     history_turns: 8,

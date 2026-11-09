@@ -373,7 +373,8 @@ mod tests {
     }
 
     fn intent() -> IntentId {
-        IntentId::try_from(widest(MAX_INTENT_BYTES)).expect("intent")
+        super::super::spawn_names::spawn_intent(&widest(MAX_INTENT_BYTES - 6), u64::MAX)
+            .expect("intent")
     }
 
     fn volume() -> VolumeRef {

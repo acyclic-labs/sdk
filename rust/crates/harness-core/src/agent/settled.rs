@@ -82,6 +82,13 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     /// The agent whose turn observes its children.
     fn agent(&self) -> &AgentPath;
 
+    /// Resolves a child's or sibling's spawn name from committed state.
+    fn resolve<'a>(
+        &'a self,
+        parent: &'a AgentPath,
+        name: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<super::SpawnResolution>>;
+
     /// `child`'s phase once it settled (see [`settled`]), else `None`.
     fn settled<'a>(
         &'a self,

@@ -208,6 +208,7 @@ impl LocalWorkspace {
     pub(in crate::local) async fn register_named_children(
         &self,
         agent: &crate::agent::AgentPath,
+        resolver: &dyn crate::agent::TurnChildren,
         volumes: &[crate::agent::VolumeBinding],
         arguments: &[String],
     ) -> Result<()> {
@@ -241,7 +242,7 @@ impl LocalWorkspace {
         let cancellation = acyclic_fs::CancellationToken::new();
         for name in names {
             // A name no spawn could carry names no child; git reports it.
-            let Ok(child) = crate::tools::spawned_child(agent, name) else {
+            let Some(child) = resolver.resolve(agent, name).await?.live() else {
                 continue;
             };
             let volume = crate::filesystem::spawned_binding(&child, project).map_err(storage)?;

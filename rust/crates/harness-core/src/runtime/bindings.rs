@@ -150,6 +150,7 @@ impl AgentHarness {
             output_content: private,
             journal: None,
             agent: None,
+            children: None,
         })
     }
 }

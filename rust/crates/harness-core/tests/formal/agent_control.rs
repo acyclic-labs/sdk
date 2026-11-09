@@ -16,6 +16,9 @@
 #[path = "../../src/agent/kernel.rs"]
 mod production;
 
+#[path = "../../src/agent/release.rs"]
+mod release;
+
 include!("agent_control_model.rs");
 
 #[kani::proof]
@@ -28,6 +31,31 @@ fn agent_control_is_exactly_once_and_never_loses_a_wake() {
 #[kani::unwind(8)]
 fn archive_cascade_drains_and_reports_exactly_once() {
     archive_drains_and_reports_exactly_once(PRODUCTION);
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn released_generation_is_terminal_and_has_no_committed_turn() {
+    let base: u64 = kani::any();
+    let tail: u64 = kani::any();
+    kani::assume(release::released(true, tail, base));
+    assert_eq!(tail, base);
+    let before = Control {
+        mode: Mode::Done,
+        closed: kani::any(),
+        reported: kani::any(),
+        turn: false,
+    };
+    for kind in [Admit::Input, Admit::Cancel, Admit::Archive] {
+        let admitted = production::admit(before, kind);
+        assert_eq!(admitted.control.mode, Mode::Done);
+        assert!(!admitted.enqueue);
+        assert_eq!(
+            production::pick(admitted.control, true, true, true),
+            Pick::Nothing
+        );
+    }
+    assert!(release::released(true, tail, base));
 }
 
 fn main() {}
