@@ -34,7 +34,7 @@ mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
 #[cfg(test)]
-use crate::{AppendRequest, CommitOutcome, CommitRequest, StreamPath};
+use crate::StreamPath;
 #[cfg(test)]
 mod receipt_tests;
 mod server;
