@@ -101,16 +101,44 @@ pub struct Canonical<'a> {
 }
 
 /// The parts of one status, as decoded from or encoded to the wire.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export_to = "auth/RefusalStatus.ts", rename = "RefusalStatus")]
 pub struct Parts {
     /// gRPC status code number.
+    #[serde(rename = "status")]
+    #[ts(rename = "status")]
     pub code: i32,
     /// Status message.
     pub message: String,
     /// Status details.
+    #[serde(serialize_with = "serialize_bytes")]
+    #[ts(type = "Uint8Array")]
     pub details: Bytes,
     /// Product response metadata.
+    #[serde(serialize_with = "serialize_metadata")]
+    #[ts(type = "Array<[string, Uint8Array]>")]
     pub metadata: HeaderMap,
+}
+
+fn serialize_bytes<S: serde::Serializer>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bytes(bytes)
+}
+
+fn serialize_metadata<S: serde::Serializer>(
+    metadata: &HeaderMap,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    struct Value<'a>(&'a http::HeaderValue);
+    impl serde::Serialize for Value<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0.as_bytes())
+        }
+    }
+    serializer.collect_seq(
+        metadata
+            .iter()
+            .map(|(name, value)| (name.as_str(), Value(value))),
+    )
 }
 
 /// What a server said beyond a category: its [`Cause`], the member's original

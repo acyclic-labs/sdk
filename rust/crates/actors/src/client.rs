@@ -64,6 +64,8 @@ pub enum Error {
     Service {
         /// Numeric gRPC status code.
         grpc_code: i32,
+        /// Original product response metadata in the shared refusal envelope.
+        refusal: Option<acyclic_auth::refusal::Refusal>,
         /// Original gRPC status message.
         message: String,
         /// Exact gRPC status detail bytes, including malformed payloads.
@@ -104,6 +106,8 @@ pub struct ErrorMetadata {
     pub service_message: Option<String>,
     /// Original producer attribution, independent of the service code or message.
     pub cause: Option<acyclic_auth::refusal::Cause>,
+    /// Original status and product metadata, including duplicate and opaque values.
+    pub refusal: Option<acyclic_auth::refusal::Parts>,
     /// Canonical admission category, when applicable.
     pub contract_code: Option<String>,
     /// Exact detail bytes for service failures, including empty details.
@@ -127,10 +131,12 @@ impl Error {
             }
             Self::Service {
                 grpc_code,
+                refusal,
                 detail,
                 raw_details,
                 message,
             } => {
+                metadata.refusal = refusal.and_then(|refusal| refusal.original().cloned());
                 metadata.message = message;
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
@@ -223,6 +229,19 @@ impl From<tonic::Status> for Error {
     fn from(status: tonic::Status) -> Self {
         Self::Service {
             grpc_code: status.code() as i32,
+            refusal: acyclic_auth::refusal::Refusal::capture(
+                status.code() as i32,
+                status.message(),
+                status.details(),
+                status.metadata().as_ref(),
+                acyclic_auth::refusal::Canonical {
+                    code: status.code() as i32,
+                    message: status.message(),
+                    details: status.details(),
+                    owned: &[],
+                },
+                None,
+            ),
             message: status.message().to_owned(),
             raw_details: status.details().to_vec(),
             detail: if status.details().is_empty() {
@@ -695,10 +714,30 @@ mod tests {
             (PermissionDenied, "permission_denied", (Vec::new(), None)),
             (PermissionDenied, "permission_denied", (vec![255, 0], None)),
         ] {
-            let status = tonic::Status::with_details(
+            let mut headers = http::HeaderMap::new();
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_static("future_reason"),
+            );
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_bytes(b"future\xff").unwrap(),
+            );
+            headers.append(
+                "acyclic-unserved-reason",
+                http::HeaderValue::from_static(""),
+            );
+            headers.append("acyclic-future-bin", http::HeaderValue::from_static("AP8="));
+            let product_headers = headers.clone();
+            headers.insert(
+                "x-unrelated",
+                http::HeaderValue::from_static("not a product diagnostic"),
+            );
+            let status = tonic::Status::with_details_and_metadata(
                 status_code,
                 "original grpc diagnostic",
                 bytes.clone().into(),
+                tonic::metadata::MetadataMap::from_headers(headers),
             );
             let error = Error::from(status);
             let Error::Service {
@@ -706,6 +745,7 @@ mod tests {
                 detail: actual,
                 message,
                 raw_details,
+                ..
             } = &error
             else {
                 panic!("expected structured service error, got {error:?}");
@@ -715,6 +755,31 @@ mod tests {
             assert_eq!(*grpc_code, status_code as i32);
             assert_eq!(actual, &detail);
             let metadata = error.metadata();
+            let refusal = metadata
+                .refusal
+                .as_ref()
+                .expect("original product metadata");
+            assert_eq!(refusal.code, status_code as i32);
+            assert_eq!(refusal.message, "original grpc diagnostic");
+            assert_eq!(refusal.details.as_ref(), bytes);
+            assert_eq!(refusal.metadata, product_headers);
+            let foreign = serde_json::to_value(&metadata).expect("foreign diagnostic projection");
+            assert_eq!(foreign["refusal"]["status"], status_code as i32);
+            assert_eq!(foreign["refusal"]["details"], serde_json::json!(bytes));
+            let entries = foreign["refusal"]["metadata"].as_array().unwrap();
+            let retained = entries
+                .iter()
+                .filter(|entry| entry[0] == "acyclic-unserved-reason")
+                .map(|entry| entry[1].clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                retained,
+                [
+                    serde_json::json!(b"future_reason"),
+                    serde_json::json!(b"future\xff"),
+                    serde_json::json!([])
+                ]
+            );
             assert_eq!(metadata.code, name);
             assert_eq!(metadata.message, "original grpc diagnostic");
             assert_eq!(metadata.grpc_name.as_deref(), Some(name));
@@ -751,6 +816,7 @@ mod tests {
         ] {
             let error = Error::Service {
                 grpc_code: code,
+                refusal: None,
                 message: String::new(),
                 raw_details: Vec::new(),
                 detail: None,
