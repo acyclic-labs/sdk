@@ -42,6 +42,7 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         assert_eq!(error.code(), ErrorCode::Unsupported);
     }
     if let Error::ModelUnavailable { excerpt, .. }
+    | Error::Invalid(excerpt)
     | Error::ModelDiagnostic {
         message: excerpt, ..
     } = &error
@@ -50,7 +51,9 @@ fn decode(status: u16, bytes: &[u8], width: usize, failure: bool) -> (ErrorCode,
         assert!(excerpt.chars().all(|character| !character.is_control()));
     }
     let diagnostic = match &error {
-        Error::ModelDiagnostic { message, .. } if matches!(status, 400 | 413) && !failure => {
+        Error::Invalid(message) | Error::ModelDiagnostic { message, .. }
+            if matches!(status, 400 | 413) && !failure =>
+        {
             Some((message, format!("model HTTP status {status}: ")))
         }
         Error::ModelUnavailable { excerpt, .. } => Some((excerpt, String::new())),
