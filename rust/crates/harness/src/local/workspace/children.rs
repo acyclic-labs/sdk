@@ -212,21 +212,20 @@ impl LocalWorkspace {
         volumes: &[crate::agent::VolumeBinding],
         arguments: &mut [String],
     ) -> Result<()> {
-        let Some(child) =
-            {
-                let named = match arguments {
-                    [command, branch] if matches!(command.as_str(), "diff" | "merge" | "discard") => branch.strip_prefix("agents/").map(str::to_owned),
-                    _ => None,
-                };
-                let resolved = if let Some(name) = named {
-                    resolver.resolve(agent, &name).await?.live()
-                } else {
-                    None
-                };
-                crate::tools::resolve_child_branch(agent, arguments, |_, _| {
-                    resolved.ok_or_else(|| Error::Invalid("child name is not live".into()))
-                })?
+        let named = match &*arguments {
+            [command, branch] if matches!(command.as_str(), "diff" | "merge" | "discard") => {
+                branch.strip_prefix("agents/").map(str::to_owned)
             }
+            _ => None,
+        };
+        let resolved = if let Some(name) = named {
+            resolver.resolve(agent, &name).await?.live()
+        } else {
+            None
+        };
+        let Some(child) = crate::tools::resolve_child_branch(agent, arguments, |_, _| {
+            resolved.ok_or_else(|| Error::Invalid("child name is not live".into()))
+        })?
         else {
             return Ok(());
         };
