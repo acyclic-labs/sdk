@@ -84,7 +84,7 @@ async fn refused_endpoint_finishes_without_scheduling_a_retry() -> TestResult {
                 panic!("the original peer refusal must terminate its interest: {result:?}");
             };
             assert!(error.uncertain());
-            let encoded = crate::wire_codec::error_status(&error);
+            let encoded = Status::from(&error);
             assert_eq!(encoded.code(), refusal.code());
             assert_eq!(encoded.message(), refusal.message());
             assert_eq!(encoded.details(), refusal.details());

@@ -3,7 +3,7 @@
 #[wasm_bindgen(js_name = grpcErrorStatus)]
 pub fn grpc_error_status(code: &str) -> i32 {
     let error = StreamError::from_code(code).unwrap_or(StreamError::Unavailable);
-    wire_codec::error_status(&error).code() as i32
+    tonic::Status::from(&error).code() as i32
 }
 /// Canonical Rust failure vocabulary for JavaScript gRPC platform I/O.
 #[wasm_bindgen(js_name = grpcErrorCode)]

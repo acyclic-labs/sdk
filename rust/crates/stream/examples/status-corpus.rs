@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         provenance.push_str(&format!(
-            "{name}\t{digest}\twire_codec::error_status -> tonic::Status::add_header -> grpc-message\n"
+            "{name}\t{digest}\ttonic::Status::from(&StreamError) -> tonic::Status::add_header -> grpc-message\n"
         ));
         std::fs::write(root.join(name), &bytes)?;
     }

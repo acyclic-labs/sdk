@@ -307,7 +307,7 @@ async fn peer_unavailability_ends_the_original_session_and_allows_a_caller_reope
         .ok_or("the original application refusal became EOF")?
         .expect_err("the original application refusal must be returned");
     assert_eq!(
-        grpc::tests::original(&crate::wire_codec::error_status(&error)),
+        grpc::tests::original(&Status::from(&error)),
         grpc::tests::original(&Status::unavailable("application refusal"))
     );
     assert!(records.next().await.is_none());

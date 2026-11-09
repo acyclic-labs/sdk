@@ -90,7 +90,7 @@ fn check_decoded(wire: &Status, actual: &StreamError) -> Result<(), &'static str
         return Err("status mutation uncertainty");
     }
     if *expected == StreamError::Unavailable {
-        let encoded = wire_codec::error_status(actual);
+        let encoded = Status::from(actual);
         if encoded.code() != wire.code()
             || encoded.message() != wire.message()
             || encoded.details() != wire.details()
@@ -115,7 +115,7 @@ fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(
     for (code, message, error) in CONTRACT {
         let wire = Status::new(*code, *message);
         check_decoded(&wire, &decode(&wire))?;
-        if decode(&wire_codec::error_status(error)) != *error {
+        if decode(&Status::from(error)) != *error {
             return Err("canonical status round trip");
         }
     }
@@ -139,7 +139,7 @@ fn check_with(input: &[u8], decode: impl Fn(&Status) -> StreamError) -> Result<(
         }
         let actual = decode(&wire);
         check_decoded(&wire, &actual)?;
-        let encoded = wire_codec::error_status(&actual);
+        let encoded = Status::from(&actual);
         if decode(&encoded) != actual {
             return Err("canonical status round trip");
         }
@@ -159,7 +159,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, &'static str> {
         .iter()
         .map(|error| {
             let mut trailers = HeaderMap::new();
-            wire_codec::error_status(error)
+            Status::from(error)
                 .add_header(&mut trailers)
                 .map_err(|_| "tonic writer refused canonical status")?;
             Ok((
@@ -206,7 +206,7 @@ mod tests {
             };
             let symmetric = |wire: &Status| swap(wire_codec::status(wire));
             for error in StreamError::ALL {
-                let encoded = wire_codec::error_status(&swap(error.clone()));
+                let encoded = Status::from(&swap(error.clone()));
                 proptest::prop_assert_eq!(symmetric(&encoded), error);
             }
             proptest::prop_assert!(check_with(&input, symmetric).is_err());

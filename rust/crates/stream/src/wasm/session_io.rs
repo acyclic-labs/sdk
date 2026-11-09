@@ -286,7 +286,7 @@ mod tests {
     async fn javascript_transport_failures_preserve_interruption_disposition() {
         // Derive adversarial diagnostics from the production status writer.
         // These are not captures of a deployed member's attribution contract.
-        let canonical = wire_codec::status::error_status(&StreamError::Unavailable);
+        let canonical = tonic::Status::from(&StreamError::Unavailable);
         let mut metadata = canonical.metadata().clone();
         metadata.append("acyclic-original", canonical.message().parse().unwrap());
         metadata.append("acyclic-original", canonical.message().parse().unwrap());

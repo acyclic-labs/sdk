@@ -548,8 +548,6 @@ fn io_interruption(error: &(dyn std::error::Error + 'static)) -> Option<bool> {
         })
 }
 
-use crate::wire_codec::error_status;
-
 pub(crate) use crate::wire_codec::status;
 
 /// Records one operation's terminal result exactly once; dropping it unfinished records `cancelled`.

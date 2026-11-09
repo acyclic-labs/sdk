@@ -456,7 +456,7 @@ async fn application_errors_cross_transport_without_retry_and_preserve_a_caller_
         let provider = MemoryStream::default();
         // The shipping encoder's status crosses real HTTP/2 trailers before
         // the public client decodes it.
-        let original = wire_codec::error_status(&error);
+        let original = Status::from(&error);
         let client = client_with_interceptor(provider.clone(), move |request: Request<()>| {
             if calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 Err(original.clone())
