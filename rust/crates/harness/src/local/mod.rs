@@ -134,8 +134,6 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(any(test, feature = "native-execution"))]
     checkout_context: bool,
-    #[cfg(test)]
-    environment_reads: std::sync::atomic::AtomicUsize,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     #[cfg(any(test, feature = "native-execution"))]
     environment_platform: crate::native_environment::PlatformPolicy,

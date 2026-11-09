@@ -155,11 +155,11 @@ impl TurnContext for LocalContext {
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
             let bindings = local.turn_bindings(agent, authority).await?;
-            let manifest = local
-                .stage_context_manifest_with(turn, &bindings.context, &**writer)?
+            let epoch = local
+                .context_epoch(agent, &bindings.context, &**writer)?
                 .await?;
             let executor = executor
-                .with_context_manifest(manifest, authority.content.reader.clone())
+                .with_context_epoch(&epoch, authority.content.reader.clone())
                 .await?;
             let (executor, context) =
                 Tasks::bind(&bindings.harness, executor, agent, turn, authority)?;

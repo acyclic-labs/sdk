@@ -1,7 +1,7 @@
 use super::*;
 use acyclic_harness::{
     OperationId,
-    context::{CompactionPolicy, ContextManifest},
+    context::{CompactionPolicy, ContextEpoch, ContextManifest},
     conversation::ContentPublisher,
     executor::{StockExecutor, TurnInput},
     filesystem::FilesystemContentPublisher,
@@ -219,12 +219,18 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         "Done".into(),
     )]));
     let executor = stock(provider.clone(), tools()?, limits)?
-        .with_context_manifest(reference.clone(), reader.clone())
+        .with_context_epoch(
+            &ContextEpoch::from_manifest(reference.clone()),
+            reader.clone(),
+        )
         .await?;
     assert!(
         executor
             .clone()
-            .with_context_manifest(reference.clone(), reader.clone())
+            .with_context_epoch(
+                &ContextEpoch::from_manifest(reference.clone()),
+                reader.clone()
+            )
             .await
             .is_err()
     );
@@ -251,7 +257,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let first = executor.model_step(journal.as_ref(), &turn, 0, &[]).await?;
     assert_request(provider.as_ref(), &manifest, reader.as_ref()).await?;
     let restarted = stock(provider.clone(), tools()?, limits)?
-        .with_context_manifest(reference, reader.clone())
+        .with_context_epoch(&ContextEpoch::from_manifest(reference), reader.clone())
         .await?;
     let recovered = fixture
         .journal(stream, private, scope)?
