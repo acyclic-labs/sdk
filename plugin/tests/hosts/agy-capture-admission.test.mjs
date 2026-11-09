@@ -143,6 +143,10 @@ test("native AGY fences capture, executes tools and settles managed children", a
       step = "start the shared native model producer";
       const prompt = "Write the native AGY tool marker, then return the completion marker.", answer = "native-agy-completed";
       const written = join(workspace, "native-tool.txt"), contents = "native-agy-tool-write";
+      const rootWritten = join(workspace, "native-root-command.txt");
+      const rootCommand = process.platform === "win32"
+        ? "Set-Content -NoNewline -LiteralPath native-root-command.txt -Value native-agy-root-command"
+        : "printf native-agy-root-command > native-root-command.txt";
       const children = ["first", "second"].map(reference => ({ reference,
         prompt: `Return the native AGY ${reference} child marker.`, answer: `native-agy-${reference}-child` }));
       const coordinationPrompt = "Spawn the managed native AGY child, wait for its reply, then return the coordination marker.";
@@ -161,7 +165,9 @@ test("native AGY fences capture, executes tools and settles managed children", a
       const namespace = nativePath.split("/")[1];
       await writeFile(script, JSON.stringify({ cases: { [namespace]: { steps: [
         { when: { user: prompt }, tools: [{ id: "native-write", name: "write_file",
-          arguments: { Path: written, Content: contents } }] },
+          arguments: { Path: written, Content: contents } },
+          { id: "root-command", name: "run_command", arguments: { CommandLine: rootCommand,
+            toolSummary: "Write root marker", WaitMsBeforeAsync: 500 } }] },
         { when: { contains: "\"functionResponse\"" }, text: [answer] },
         ...children.map(child => ({ when: { user: child.prompt }, text: [child.answer] })),
         { when: { user: coordinationPrompt }, tools: [coordinate("native-spawn", "spawn",
@@ -192,6 +198,13 @@ test("native AGY fences capture, executes tools and settles managed children", a
       step = "complete an original native tool turn after successful capture";
       const toolArgs = [`--print=${prompt}`, ...args.slice(1)];
       toolArgs[toolArgs.indexOf("--mode") + 1] = "accept-edits";
+      // AGY 1.5.3 requires absolute sandbox file targets, including on the
+      // first root command. This direct native invocation uses the resolved
+      // policy shape emitted by the shared root/child launcher.
+      toolArgs[toolArgs.indexOf("--settings") + 1] = JSON.stringify({ modelProvider: "gemini",
+        toolPermission: "proceed-in-sandbox", permissions: {
+          allow: [`read_file(${workspace})`, `write_file(${workspace})`, `command(${rootCommand})`],
+        } });
       const completed = await invoke(toolArgs);
       const calls = (await readFile(recorded, "utf8")).trim().split(/\r?\n/).map(line => JSON.parse(line));
       t.diagnostic(JSON.stringify({ role: "model", requests: calls }));
@@ -204,13 +217,18 @@ test("native AGY fences capture, executes tools and settles managed children", a
       assert.deepEqual(calls.map(call => [call.status, call.step]), [[200, 0], [200, 1]],
         "native AGY must complete the original tool exchange before its final model step");
       const returned = calls[1].body.contents.flatMap(content => content.parts)
-        .find(part => part.functionResponse)?.functionResponse;
+        .find(part => part.functionResponse?.name === "write_file")?.functionResponse;
       assert.equal(returned?.name, "write_file");
       assert.equal(await readFile(written, "utf8"), contents, "native AGY wrote outside its admitted workspace");
+      const rootCommandResult = calls[1].body.contents.flatMap(content => content.parts)
+        .find(part => part.functionResponse?.id === "root-command")?.functionResponse;
+      assert.match(JSON.stringify(rootCommandResult?.response), /Command exited with code 0/,
+        "AGY 1.5.3 must execute the root command without unsandboxed escalation");
+      assert.equal(await readFile(rootWritten, "utf8"), "native-agy-root-command");
 
       step = "settle two original native children through the shared process owner";
       env.ACYCLIC_HOST_ARGS = JSON.stringify(["--sandbox", "--mode", "accept-edits", "--print-timeout", "0",
-        "--settings", JSON.stringify({ modelProvider: "gemini", permissions: {
+        "--settings", JSON.stringify({ modelProvider: "gemini", toolPermission: "proceed-in-sandbox", permissions: {
           allow: ["write_file(.)", `command(${childCommand})`, `command(${deniedCommand})`],
           deny: ["write_file(native-tool.txt)"],
         } })]);

@@ -258,7 +258,17 @@ fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) {
         "--settings".into(),
         original.to_string(),
     ];
-    let args = launch::child_arguments("agy", &flags, cwd, None).expect("relative inline policy");
+    let result = launch::child_arguments("agy", &flags, cwd, None);
+    if Path::new(&target).components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        assert!(matches!(result, Err(Error::Invalid(_))));
+        return;
+    }
+    let args = result.expect("relative inline policy");
     let settings = args
         .windows(2)
         .find(|pair| pair[0] == "--settings")
