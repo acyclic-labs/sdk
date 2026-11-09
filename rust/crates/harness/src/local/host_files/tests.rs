@@ -437,10 +437,12 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     // with no future producer. Join that same native observer inside setup.
     let original_directory = cwd.join(DIRECTORY);
     let retained_directory = original_directory.with_file_name("retained-host-files");
+    let mut moved = false;
     let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
         // Discovery has admitted the descriptor. Connection must use that
         // same directory even if its name changes before the owner probe.
         std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
+        moved = true;
         std::fs::create_dir(&original_directory).map_err(storage)?;
         // Acquire ownership after moving the directory: Windows cannot rename
         // a directory with open descendants, even with delete sharing. This
@@ -460,12 +462,17 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         observing.join().expect("early owner terminal must return");
         Ok(bridge)
     });
-    std::fs::rename(&retained_directory, &original_directory).map_err(storage)?;
+    let restore = if moved {
+        std::fs::rename(&retained_directory, &original_directory).map_err(storage)
+    } else {
+        Ok(())
+    };
     assert!(
         matches!(result, Err(Error::NotFound(_))),
         "{:?}",
         result.as_ref().err()
     );
+    restore?;
     assert_eq!(lock(&registry).bridges.len(), 1);
     assert_eq!(lock(&registry).located.len(), 1);
     assert!(Arc::ptr_eq(

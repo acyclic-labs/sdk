@@ -122,7 +122,10 @@ where
     ) -> Result<(), MountSourceError> {
         if !self
             .authored
-            .unchanged_since_with_meter(path, None, stamp, work)?
+            .binding_unchanged_since_with_meter(path, stamp, work)?
+            || !self
+                .authored
+                .listing_unchanged_since_with_meter(path, stamp, work)?
         {
             return Err(MountSourceError::Stale);
         }

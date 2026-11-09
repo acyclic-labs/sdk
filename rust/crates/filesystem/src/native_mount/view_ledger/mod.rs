@@ -160,6 +160,8 @@ pub(super) struct ViewEffect {
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
     /// Rebound names and the subtrees reached through them.
     pub(super) subtrees: Vec<NamespacePath>,
+    /// Entries whose own content or metadata changed without a rebind.
+    pub(super) entries: Vec<NamespacePath>,
     /// Changed listings with unchanged name bindings.
     pub(super) listings: Vec<NamespacePath>,
     /// Whether the effect could not be enumerated at all.
@@ -172,6 +174,7 @@ impl ViewEffect {
         self.nodes.is_empty()
             && self.names.is_empty()
             && self.subtrees.is_empty()
+            && self.entries.is_empty()
             && self.listings.is_empty()
             && !self.everything
     }
@@ -183,6 +186,7 @@ pub(crate) struct ViewLedger {
     everything: AtomicU64,
     unconfirmed: AtomicU64,
     bindings: RwLock<ChangePositions>,
+    entries: RwLock<ChangePositions>,
     directories: RwLock<ChangePositions>,
     nodes: RwLock<ChangePositions>,
     observers: RankedMutex<Option<Arc<ObserverEntries>>, OBSERVERS>,
@@ -305,6 +309,14 @@ impl ViewLedger {
                             carrier,
                         )?;
                     }
+                    for path in &effect.entries {
+                        storage::record(
+                            &self.entries,
+                            path_key(path, carrier)?,
+                            position,
+                            carrier,
+                        )?;
+                    }
                     if effect.everything {
                         position.record_in(&self.everything);
                     }
@@ -383,6 +395,7 @@ impl ViewLedger {
                     path_keys(path).inspect(|key| terminal = *key),
                 )
                 && storage::unchanged_since(&self.directories, stamp, [terminal])
+                && storage::unchanged_since(&self.entries, stamp, [terminal])
                 && file_id.is_none_or(|file_id| {
                     storage::unchanged_since(&self.nodes, stamp, [key_of(&file_id)])
                 })

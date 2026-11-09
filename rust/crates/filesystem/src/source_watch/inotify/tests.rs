@@ -1361,6 +1361,8 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
             }
         }));
     });
+    let held = watch.shared.held_descriptors();
+    let before = original.lock().receipt();
     let stopped = watch.stop_accepted_cleanup();
     BEFORE_UNSUBSCRIBE_RECORD.with(|hook| assert!(hook.borrow().is_none(), "hook not reached"));
     if let Ok(late) = late_rx.try_recv() {
@@ -1369,12 +1371,11 @@ fn original_stop_and_a_failed_service_retirement_spend_the_unsubscribe_write_onc
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     let terminal = original.lock().receipt();
-    assert!(
-        matches!(
-            (stopped, watch.stop_accepted_cleanup()),
-            (Err(DemandError::Cancelled), Ok(())) | (Ok(()), Err(DemandError::Cancelled))
-        ),
-        "the service's original failure reaches exactly one cleanup observer"
+    stopped?;
+    assert_eq!(
+        terminal.backend_write_operations - before.backend_write_operations,
+        held + 1,
+        "close the held descriptors and unsubscribe exactly once"
     );
     watch.stop_accepted_cleanup()?;
     assert_eq!(original.lock().receipt(), terminal);

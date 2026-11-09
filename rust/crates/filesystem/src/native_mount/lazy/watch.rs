@@ -74,14 +74,16 @@ where
         let mut scratch_carrier = adapter::NativeDemandCarrier::Native(work);
         let mut scratch = adapter::InputBuffers::new(&mut scratch_carrier)?;
         let mut effect = ViewEffect::default();
-        let (nodes, subtrees, listings) = change_counts(changes, work)?;
+        let (nodes, subtrees, entries, listings) = change_counts(changes, work)?;
         let mut namespace_allocations = scratch.vec(
             subtrees
                 .checked_add(listings)
+                .and_then(|count| count.checked_add(entries))
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?,
         )?;
         effect.nodes = scratch.vec(nodes)?;
         effect.subtrees = scratch.vec(subtrees)?;
+        effect.entries = scratch.vec(entries)?;
         effect.listings = scratch.vec(listings)?;
         let mut unconfirmed = false;
         let mut accounting = KernelAccounting::native(work, work.cancellation());
@@ -119,7 +121,7 @@ where
                         if !path.is_root() {
                             append(path.depth() - 1, &mut effect.listings)?;
                         }
-                        append(path.depth(), &mut effect.listings)?;
+                        append(path.depth(), &mut effect.entries)?;
                     }
                 }
                 SourceChange::Node(identity) => effect.nodes.push(
@@ -159,15 +161,15 @@ where
 fn change_counts(
     changes: &[SourceChange],
     work: &crate::NativeMaterializationWork,
-) -> Result<(usize, usize, usize), MountSourceError> {
+) -> Result<(usize, usize, usize, usize), MountSourceError> {
     changes
         .iter()
-        .try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
+        .try_fold((0usize, 0usize, 0usize, 0usize), |(n, s, e, l), change| {
             crate::native_host::NativeHostWork::check(work).map_err(MountSourceError::from)?;
             work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
             let extra = match change {
-                SourceChange::Entry(path) => 1 + usize::from(!path.is_root()),
+                SourceChange::Entry(path) => usize::from(!path.is_root()),
                 _ => 0,
             };
             Ok::<_, MountSourceError>((
@@ -176,12 +178,14 @@ fn change_counts(
                     change,
                     SourceChange::Departed(_) | SourceChange::Name(_)
                 ))),
+                e.checked_add(usize::from(matches!(change, SourceChange::Entry(_)))),
                 l.checked_add(extra),
             ))
-            .and_then(|(n, s, l)| {
+            .and_then(|(n, s, e, l)| {
                 n.zip(s)
+                    .zip(e)
                     .zip(l)
-                    .map(|((n, s), l)| (n, s, l))
+                    .map(|(((n, s), e), l)| (n, s, e, l))
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))
             })
         })
