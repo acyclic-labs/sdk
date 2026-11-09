@@ -1,0 +1,12 @@
+diff --git a/rust/crates/machines/src/contract/image.rs b/rust/crates/machines/src/contract/image.rs
+--- a/rust/crates/machines/src/contract/image.rs
++++ b/rust/crates/machines/src/contract/image.rs
+@@ -63,7 +63,7 @@ impl Image {
+                 "OCI image must contain @sha256:<digest>".into(),
+             ));
+         };
+-        if name.is_empty() || digest.len() != MANAGED_OCI_DIGEST_HEX_LENGTH {
++        if digest.len() != MANAGED_OCI_DIGEST_HEX_LENGTH {
+             return Err(ProviderError::Invalid("OCI image digest is invalid".into()));
+         }
+         let bytes = hex::decode(digest)

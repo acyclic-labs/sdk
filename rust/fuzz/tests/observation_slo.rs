@@ -88,7 +88,7 @@ fn independent_cohorts_preserve_inclusive_slo_thresholds() -> Result<(), Box<dyn
 #[test]
 fn persisted_slo_corpus_and_mutations() -> Result<(), Box<dyn std::error::Error>> {
     let corpus = oracle::corpus()?;
-    let retained = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/observation_slo");
+    let retained = acyclic_test_support::crate_path!("corpus/observation_slo");
     for (name, bytes) in &corpus {
         assert_eq!(std::fs::read(retained.join(name))?, *bytes);
         // Generated admitted seeds must reach the real decoder and evaluator.

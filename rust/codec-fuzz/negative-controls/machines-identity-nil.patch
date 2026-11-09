@@ -1,0 +1,10 @@
+diff --git a/rust/crates/machines/src/contract/identity.rs b/rust/crates/machines/src/contract/identity.rs
+--- a/rust/crates/machines/src/contract/identity.rs
++++ b/rust/crates/machines/src/contract/identity.rs
+@@ -3,6 +3,3 @@
+ pub(crate) fn admit_uuid(value: Uuid) -> Result<Uuid, IdentityError> {
+-    if value.is_nil() {
+-        return Err(IdentityError);
+-    }
+     Ok(value)
+ }

@@ -1,5 +1,4 @@
-use crate::sync::Arc;
-use crate::sync::Mutex;
+use crate::sync::{Arc, InlineMutex as Mutex};
 #[path = "projection/registry.rs"]
 mod registry;
 

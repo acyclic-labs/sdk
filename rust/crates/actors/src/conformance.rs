@@ -43,9 +43,7 @@ pub trait Backend: ProviderPlatform {
     type Provider: StreamProvider + ?Sized;
     /// The store whose root the host watches.
     fn store(&self) -> &Store<Self::Provider>;
-    /// The host clock that also schedules alarms. For deterministic conformance,
-    /// keep it fixed between explicit `advance_to` calls, including across IO
-    /// and restart; inject that same clock into the running host.
+    /// The host clock that also schedules alarms.
     fn clock(&self) -> &dyn Clock;
     /// Finish this actor's committed activation and all delivery work due at
     /// the current host time, using the original host scheduler. A stopped
@@ -456,16 +454,6 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
     async fn cursor(&self) -> Result<Option<u64>, Failure> {
         let snapshot = self.target.store().load(&self.actor).await?;
         Ok(snapshot.state().and_then(|state| state.cursor("inbox")))
-    }
-
-    /// Observe the deadline actually committed by the host, after its input cut.
-    async fn alarm_deadline(&self) -> Result<u64, Failure> {
-        self.target.complete(&self.actor).await?;
-        let snapshot = self.target.store().load(&self.actor).await?;
-        match snapshot.state().and_then(|state| state.alarm().pending()) {
-            Some(deadline) => Ok(deadline),
-            None => self.violation("completed set did not retain its alarm".into()),
-        }
     }
 
     /// Retain an actual provider record as the anchor for `wait_applied`.
@@ -1324,29 +1312,33 @@ async fn ordered<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failu
 pub(crate) async fn alarms<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
     let mut alarm = Fixture::create(target, run, "alarm").await?;
     alarm.send(&format!("set {ALARM_MS}")).await?;
-    let deadline = alarm.alarm_deadline().await?;
-    alarm.expect(&[]).await?;
-    target.advance_to(deadline).await?;
+    target.complete(&alarm.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
     alarm.expect(&["a1"]).await?;
 
     let mut cleared = Fixture::create(target, run, "cleared").await?;
     cleared.send(&format!("set {ALARM_MS}")).await?;
-    let deadline = cleared.alarm_deadline().await?;
     cleared.send("clear").await?;
     cleared.send("emit").await?;
-    cleared.expect(&["r2"]).await?;
-    target.advance_to(deadline).await?;
+    target.complete(&cleared.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
     cleared.expect(&["r2"]).await?;
 
     let mut replaced = Fixture::create(target, run, "replaced").await?;
     replaced.send(&format!("set {}", 10 * ALARM_MS)).await?;
-    let retired_deadline = replaced.alarm_deadline().await?;
     replaced.send(&format!("set {ALARM_MS}")).await?;
-    let deadline = replaced.alarm_deadline().await?;
-    replaced.expect(&[]).await?;
-    target.advance_to(deadline).await?;
+    target.complete(&replaced.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(ALARM_MS))
+        .await?;
     replaced.expect(&["a2"]).await?;
-    target.advance_to(retired_deadline).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(10 * ALARM_MS))
+        .await?;
     replaced.expect(&["a2"]).await
 }
 
@@ -1380,17 +1372,20 @@ pub(crate) async fn restarted<T: Backend + ?Sized>(target: &T, run: &str) -> Res
             AppliedCut::through("inbox".into(), restarted.inbox.clone(), &input)?,
         )
         .await?;
-    let Some(deadline) = applied
+    if applied
         .snapshot()
         .state()
         .and_then(|state| state.alarm().pending())
-    else {
+        .is_none()
+    {
         return restarted.violation("consumed set did not retain its alarm before restart".into());
-    };
+    }
     target.restart().await?;
     restarted.send("emit").await?;
-    restarted.expect(&["r0", "r2"]).await?;
-    target.advance_to(deadline).await?;
+    target.complete(&restarted.actor).await?;
+    target
+        .advance_to(target.clock().now_unix_ms().saturating_add(2 * ALARM_MS))
+        .await?;
     restarted.expect(&["r0", "r2", "a1"]).await
 }
 

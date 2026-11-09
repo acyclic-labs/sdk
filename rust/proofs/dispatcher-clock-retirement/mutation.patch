@@ -1,0 +1,11 @@
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -620,7 +620,7 @@
+                     timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
+                 }
+                 Event::Due(result) => {
+-                    result?;
++                    let _ignored = result;
+                     timer = None;
+                     self.ready
+                         .wake_due(self.clock.now_unix_ms(), self.limits.work);

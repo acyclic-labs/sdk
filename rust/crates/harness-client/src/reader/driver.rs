@@ -1271,13 +1271,17 @@ mod tests {
             // drive registration; dormant providers never wake this task.
             futures::future::poll_fn(|cx| {
                 driver.drain(&mut reader, 0, cx);
-                if primed.load(Ordering::SeqCst) == counters.len() {
+                if primed.load(Ordering::SeqCst) == counters.len()
+                    || dropped.load(Ordering::SeqCst) != 0
+                {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
                 }
             })
             .await;
+            assert_eq!(primed.load(Ordering::SeqCst), counters.len());
+            assert_eq!(dropped.load(Ordering::SeqCst), 0);
             assert!(
                 counters
                     .iter()
@@ -1293,9 +1297,17 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
-            driver.step(&mut reader, 0, &mut cx);
+            futures::future::poll_fn(|cx| {
+                driver.step(&mut reader, 0, cx);
+                if reader.follows.get(&path).map(|intent| intent.from) == Some(2)
+                    || dropped.load(Ordering::SeqCst) != 0
+                {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
             assert_eq!(reader.follows.get(&path).map(|intent| intent.from), Some(2));
             assert_eq!(driver.reconciled, 0);
             assert_eq!(counters[512].load(Ordering::SeqCst), 1);
@@ -1310,6 +1322,8 @@ mod tests {
             );
             assert!(!reader.accepting());
             reader.set_follows([]);
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
             driver.step(&mut reader, 0, &mut cx);
             assert_eq!(dropped.load(Ordering::SeqCst), 513);
             assert_eq!(driver.open_follows(), 0);

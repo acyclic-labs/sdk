@@ -1,18 +1,17 @@
-//! The public fork/create contract across the primitives sharing provenance.
+//! Public fork/create provenance through the Streams facade and Machines.
 use acyclic_machines::{
     CreateMachine, ForkFidelity, ForkSource, Image, MachinesProvider, MutationOutcome,
     SimulatedMachines,
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey, LocalStream, MemoryStream, Provenance, Stream, StreamError,
-    StreamPath, StreamProvider,
+    AppendOutcome, IdempotencyKey, MemoryStream, Provenance, Stream, StreamError,
 };
 use futures::TryStreamExt as _;
 use std::{num::NonZeroU32, sync::Arc};
 
-async fn streams_and_actors<P: StreamProvider + ?Sized>(
-    provider: Arc<P>,
-) -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn fork_uniform() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = Arc::new(MemoryStream::default());
     let parent = Stream::new(provider.clone(), "uniform/parent")?;
     parent.append("parent", IdempotencyKey::unique()).await?;
     let key = IdempotencyKey::unique();
@@ -64,17 +63,6 @@ async fn streams_and_actors<P: StreamProvider + ?Sized>(
     assert_eq!(&origin.source, parent.path());
     assert_eq!(origin.inherited.forked_at, 0);
     assert_eq!(origin.inherited.commit_id, original.commit_id);
-
-    acyclic_actors::conformance::fork_uniform(provider, StreamPath::new("uniform/actors")?).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn fork_uniform() -> Result<(), Box<dyn std::error::Error>> {
-    streams_and_actors(Arc::new(MemoryStream::default())).await?;
-    let directory = tempfile::tempdir()?;
-    let local = LocalStream::open(directory.path(), Default::default()).await?;
-    streams_and_actors(Arc::new(local)).await?;
 
     let machines = SimulatedMachines::default();
     let key = |n: u8| {

@@ -1,9 +1,6 @@
 experimental = ["setup-scripts"]
 
-# Live storage is selected only when its real service is available.
-# The capability profiles require their prerequisites rather than skipping tests.
-[profile.default]
-default-filter = 'not ((package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)))'
+# Focused profiles select live storage controls; ordinary runs include them.
 
 [profile.postgres]
 default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'

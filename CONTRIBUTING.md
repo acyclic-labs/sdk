@@ -47,9 +47,9 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --all-features --locked
 ```
 
-Live PostgreSQL and S3 controls have explicit nextest profiles. Ordinary nextest
-runs, including the `ci` profile, exclude these two capability modules. Complete
-storage qualification runs both profiles against real disposable services:
+Full nextest runs include the live PostgreSQL and S3 controls when their features
+are enabled, and require real disposable services. Focused storage qualification
+can select either capability module with its named profile:
 
 ```sh
 cargo nextest run --locked -p acyclic-stream --no-default-features --features postgres --profile postgres --no-tests=fail

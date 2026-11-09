@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -455,7 +455,7 @@
+         .map_err(|_| ProviderError::Rejected("operation status is invalid".into()))?
+     {
+         wire::OperationStatus::Pending => OperationPhase::Pending,
+-        wire::OperationStatus::Succeeded => OperationPhase::Succeeded,
++        wire::OperationStatus::Succeeded => OperationPhase::Pending,
+         wire::OperationStatus::Cancelled => OperationPhase::Cancelled,
+         wire::OperationStatus::Indeterminate => OperationPhase::Indeterminate,
+         wire::OperationStatus::Failed => OperationPhase::Failed,

@@ -7,7 +7,7 @@ diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/h
      ) -> Result<Settlement> {
 -        if !events.belongs_to(&self.connection) {
 -            return Err(Error::Invalid(
--                "settlement requires an observer from the original connection; recovery: observe this conversation before sending".into(),
+-                "settlement requires an observer from the original connection with live conversation and status follows; recovery: observe this conversation again".into(),
 -            ));
 -        }
          let mut status: Option<StatusRecord> = None;

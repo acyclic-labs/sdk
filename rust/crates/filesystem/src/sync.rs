@@ -3,6 +3,15 @@ pub(crate) use loom::sync::*;
 #[cfg(not(loom))]
 pub(crate) use std::sync::*;
 
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+pub(crate) use acyclic_native_runtime::{InlineMutex, InlineMutexGuard};
+#[cfg(loom)]
+pub(crate) use loom::sync::Mutex as InlineMutex;
+#[cfg(all(loom, not(target_arch = "wasm32")))]
+pub(crate) use loom::sync::MutexGuard as InlineMutexGuard;
+#[cfg(all(not(loom), target_arch = "wasm32"))]
+pub(crate) use std::sync::Mutex as InlineMutex;
+
 // Native namespace and helper coordination has a dedicated model domain.
 // The unchanged ledger uses the separate filesystem accounting proofs.
 #[cfg(feature = "native-mount")]

@@ -1,0 +1,10 @@
+diff --git a/rust/crates/machines/src/grpc/codec/observation.rs b/rust/crates/machines/src/grpc/codec/observation.rs
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -343,5 +343,5 @@
+     {
+         wire::MachineStatus::Starting => Ok(MachineState::Starting),
+-        wire::MachineStatus::Running => Ok(MachineState::Running),
++        wire::MachineStatus::Running => Ok(MachineState::Suspended),
+         wire::MachineStatus::Suspending => Ok(MachineState::Suspending),
+         wire::MachineStatus::Suspended => Ok(MachineState::Suspended),

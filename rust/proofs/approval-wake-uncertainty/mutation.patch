@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/filesystem/agent_turns.rs b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+--- a/rust/crates/harness-core/src/filesystem/agent_turns.rs
++++ b/rust/crates/harness-core/src/filesystem/agent_turns.rs
+@@ -627,7 +627,10 @@
+         let wake = InboxRecord::Approval(Approval {
+             id: request.clone(),
+         });
+-        agents.send(agent, &from, &wake).await
++        match agents.send(agent, &from, &wake).await {
++            Err(AgentError::Unknown(_)) => Ok(crate::agent::Delivered::Closed),
++            result => result,
++        }
+     }
+ 
+     /// Approval `id` of `agent` as `principal` already decided it, read from

@@ -1,42 +1,5 @@
 use super::*;
 
-// Encode original simulator output; no manually fabricated provider event fixture.
-pub(super) fn encode_event(event: MachineEvent) -> wire::MachineEvent {
-    let mut value = wire::MachineEvent {
-        machine: Some(encode_machine(event.machine)),
-        sequence: event.sequence,
-        observed_at_unix_ms: event.observed_at_unix_ms,
-        ..Default::default()
-    };
-    match event.fact {
-        EventFact::State(state) => {
-            value.kind = wire::EventKind::State as i32;
-            value.state = match state {
-                MachineState::Starting => wire::MachineStatus::Starting,
-                MachineState::Running => wire::MachineStatus::Running,
-                MachineState::Suspending => wire::MachineStatus::Suspending,
-                MachineState::Suspended => wire::MachineStatus::Suspended,
-                MachineState::Waking => wire::MachineStatus::Waking,
-                MachineState::Destroying => wire::MachineStatus::Destroying,
-                MachineState::Destroyed => wire::MachineStatus::Destroyed,
-                MachineState::Failed => wire::MachineStatus::Failed,
-                MachineState::Indeterminate => wire::MachineStatus::Indeterminate,
-                MachineState::Offline => wire::MachineStatus::Offline,
-            } as i32;
-        }
-        EventFact::Pressure(pressure) => {
-            value.kind = wire::EventKind::Pressure as i32;
-            value.pressure = match pressure {
-                Pressure::CustomerBudget => wire::PressureKind::CustomerBudget,
-                Pressure::MachineLimit => wire::PressureKind::MachineLimit,
-                Pressure::ServiceSaturation => wire::PressureKind::ServiceSaturation,
-            } as i32;
-        }
-        EventFact::CapacityChanged => value.kind = wire::EventKind::Capacity as i32,
-    }
-    value
-}
-
 #[tokio::test]
 async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rpc()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -63,17 +26,28 @@ async fn event_follow_retains_cursor_and_original_terminal_over_authenticated_rp
         let (client, shutdown, server) = serve_operation_service(service).await?;
         let mut events = client.follow_events(machine.id, Some(1)).await?;
         provider.suspend(machine.id, IdempotencyKey::new()).await?;
+        let original = provider
+            .events(machine.id, Some(1), 1)
+            .await?
+            .events
+            .remove(0);
+        #[cfg(feature = "test-support")]
+        codec_fuzz::capture_event(&original);
         let suspended = events.next().await.unwrap()?;
-        assert_eq!(suspended.machine, machine.id);
-        assert_eq!(suspended.sequence, 2);
-        assert_eq!(suspended.fact, EventFact::State(MachineState::Suspended));
+        assert_eq!(suspended, original);
         if terminate {
             provider
                 .destroy_machine(machine.id, IdempotencyKey::new())
                 .await?;
+            let original = provider
+                .events(machine.id, Some(suspended.sequence), 1)
+                .await?
+                .events
+                .remove(0);
+            #[cfg(feature = "test-support")]
+            codec_fuzz::capture_event(&original);
             let terminal = events.next().await.unwrap()?;
-            assert_eq!(terminal.sequence, 3);
-            assert_eq!(terminal.fact, EventFact::State(MachineState::Destroyed));
+            assert_eq!(terminal, original);
         }
         drop(provider);
         if !terminate {

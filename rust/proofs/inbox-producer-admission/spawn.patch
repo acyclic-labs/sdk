@@ -1,0 +1,15 @@
+--- a/rust/crates/harness-core/src/agent/host.rs
++++ b/rust/crates/harness-core/src/agent/host.rs
+@@ -309,12 +309,6 @@
+                 "spawn intent differs from its inbox sequence",
+             ));
+         }
+-        if !matches!(
+-            super::reply::inbox_record(&*self.provider, parent.inbox()?, sequence).await?,
+-            Some(InboxRecord::Spawn(_))
+-        ) {
+-            return Err(Error::Conflict("spawn wait has no committed spawn input"));
+-        }
+         let actor = self.actor(parent)?;
+         let store = self.runtime.store();
+         let path = store.path(&actor).map_err(actor_error)?;

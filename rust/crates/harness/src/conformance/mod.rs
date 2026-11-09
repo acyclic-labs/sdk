@@ -6,6 +6,7 @@
 
 mod admission;
 mod approvals;
+pub use approvals::verify_recovery as verify_approval_recovery;
 mod dispatcher;
 pub mod fixtures;
 mod identity;

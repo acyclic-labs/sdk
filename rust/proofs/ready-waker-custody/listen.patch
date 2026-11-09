@@ -1,0 +1,20 @@
+--- a/rust/crates/actors/src/local/ready.rs
++++ b/rust/crates/actors/src/local/ready.rs
+@@ -225,15 +225,11 @@
+     /// Retain the dispatcher's alarm-change wake while admission is full.
+     /// Install before reading the minimum deadline, under the same index lock.
+     pub fn listen(&self, context: &Context<'_>) {
+-        let waker = context.waker().clone();
+-        let previous = self
+-            .core
++        self.core
+             .index
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            .waiter
+-            .replace(waker);
+-        drop(previous);
++            .waiter = Some(context.waker().clone());
+     }
+ 
+     /// Exact retained registration and ready counts, independent of actor heaps.

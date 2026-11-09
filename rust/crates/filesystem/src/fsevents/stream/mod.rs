@@ -63,9 +63,7 @@ impl EventStream {
 
     /// Initializes process-global framework services outside finite source work.
     pub(crate) fn initialize_services() -> notify::Result<()> {
-        let cancellation = crate::CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Hub::get(&mut work).map(|_| ()).map_err(notify_error)
+        Hub::initialize_services()
     }
     pub(crate) fn stop_with_work<W: SourceDemandReadWork>(
         &mut self,

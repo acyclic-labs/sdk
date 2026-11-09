@@ -167,7 +167,7 @@ async fn clock_schedule(
     let mut retained = clock.sleep_until(130);
     assert!(retained.as_mut().poll(&mut context).is_pending());
     notifications.0.store(0, Ordering::SeqCst);
-    assert_eq!(control.advance_to(109), Err(ClockError::Reversed));
+    assert!(matches!(control.advance_to(109), Err(ClockError::Reversed)));
     control.advance_to(110)?;
     assert_eq!(clock.now_unix_ms(), 110);
     assert_eq!(
@@ -235,13 +235,13 @@ async fn clock_schedule(
         "lost producer-close wake"
     );
     if let Some(pending) = pending {
-        assert_eq!(pending.await, Err(ClockError::ProducerDropped));
+        assert!(matches!(pending.await, Err(ClockError::ProducerDropped)));
     }
-    assert_eq!(retained.await, Err(ClockError::ProducerDropped));
-    assert_eq!(
+    assert!(matches!(retained.await, Err(ClockError::ProducerDropped)));
+    assert!(matches!(
         clock.sleep_until(130).await,
         Err(ClockError::ProducerDropped)
-    );
+    ));
     clock.sleep_until(120).await?;
     assert!(matches!(
         serving.await,
@@ -253,5 +253,189 @@ async fn clock_schedule(
     assert_eq!(state.cursor("inbox"), Some(1));
     assert_eq!(state.alarm().deadline_unix_ms, Some(130));
     assert_eq!(state.alarm().delivered_generation, None);
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[test]
+fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestResult {
+    for poll_before_retirement in [true, false] {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let mut wait = SystemClock.sleep_until(u64::MAX);
+        let mut context = Context::from_waker(Waker::noop());
+        if poll_before_retirement {
+            let entered = runtime.enter();
+            assert!(wait.as_mut().poll(&mut context).is_pending());
+            drop(entered);
+        }
+        // The SAME future outlives the original Tokio timer producer. The
+        // native absolute alarm owns its event independently of that driver.
+        drop(runtime);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait.as_mut().poll(&mut context)
+        }));
+        assert!(
+            result.is_ok(),
+            "wall clock retained a retired Tokio timer driver"
+        );
+        assert!(
+            result
+                .map_err(|_| "wall clock panicked after runtime retirement")?
+                .is_pending(),
+            "a live native producer must retain the future absolute deadline"
+        );
+        drop(wait);
+        // Exercise the same original native driver delivering an elapsed
+        // deadline with no Tokio runtime, not a virtual time or mock callback.
+        futures::executor::block_on(acyclic_native_runtime::WallAlarm::wait(0)?)?;
+        futures::executor::block_on(SystemClock.sleep_until(0))?;
+    }
+    for polled_before_loss in [false, true] {
+        let runtime = acyclic_native_runtime::testing::seeded_runtime(71)?;
+        let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(71);
+        let notifications = Arc::new(Notifications::default());
+        let waker = Waker::from(notifications.clone());
+        let mut wait = runtime.block_on(async {
+            tokio::time::pause();
+            schedule
+                .scope(async {
+                    let now = SystemClock.now_unix_ms();
+                    let start = tokio::time::Instant::now();
+                    let mut jumped = SystemClock.sleep_until(now + 100);
+                    let mut context = Context::from_waker(&waker);
+                    assert!(jumped.as_mut().poll(&mut context).is_pending());
+                    schedule.set_unix_millis(now - 100);
+                    assert!(
+                        jumped.as_mut().poll(&mut context).is_pending(),
+                        "a backwards wall jump completed a future deadline"
+                    );
+                    schedule.set_unix_millis(now + 100);
+                    jumped.await?;
+                    assert_eq!(
+                        start.elapsed(),
+                        std::time::Duration::ZERO,
+                        "a forward wall jump retained a relative timeout"
+                    );
+                    let mut wait = SystemClock.sleep_until(u64::MAX);
+                    if polled_before_loss {
+                        assert!(wait.as_mut().poll(&mut context).is_pending());
+                    }
+                    Ok::<_, ClockError>(wait)
+                })
+                .await
+        })?;
+        notifications.0.store(0, Ordering::SeqCst);
+        drop(schedule);
+        if polled_before_loss {
+            assert!(
+                notifications.0.load(Ordering::SeqCst) > 0,
+                "wall clock lost its registered producer-retirement wake"
+            );
+        }
+        let mut context = Context::from_waker(&waker);
+        let result = wait.as_mut().poll(&mut context);
+        assert!(
+            result.is_ready(),
+            "wall clock escaped its original producer before first poll"
+        );
+        let std::task::Poll::Ready(Err(ClockError::Native(error))) = result else {
+            panic!("wall clock did not report original producer retirement");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(error.to_string().contains("step=wall-alarm-producer"));
+    }
+    Ok(())
+}
+
+/// The real dispatcher must return the original clock failure while both
+/// actors retain committed alarms, not rearm an already retired producer.
+#[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
+#[test]
+fn running_dispatcher_reports_its_original_clock_retirement() -> TestResult {
+    let executor = acyclic_native_runtime::testing::seeded_runtime(72)?;
+    let (schedule, _) = acyclic_native_runtime::testing::Schedule::seeded(72);
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(provider.clone(), root()?);
+    let runtime = Runtime::new(
+        Store::new(provider.clone(), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let mut serving = Box::pin(runtime.run(|_, error| panic!("delivery failed: {error}")));
+    let notifications = Arc::new(Notifications::default());
+    let waker = Waker::from(notifications.clone());
+    let (first, second) = executor.block_on(async {
+        tokio::time::pause();
+        schedule
+            .scope(async {
+                let first = spawn_with(
+                    &store,
+                    "retired-clock-first",
+                    &[b"set 18446744073709551615"],
+                )
+                .await?;
+                let second = spawn_with(
+                    &store,
+                    "retired-clock-second",
+                    &[b"set 18446744073709551615"],
+                )
+                .await?;
+                let armed = observe_while_running(
+                    serving.as_mut(),
+                    futures::future::try_join(
+                        state_after(&store, &first, |state| state.cursor("inbox") == Some(1)),
+                        state_after(&store, &second, |state| state.cursor("inbox") == Some(1)),
+                    ),
+                )
+                .await?;
+                for state in [&armed.0, &armed.1] {
+                    assert!(state.alarm().pending().is_some());
+                    assert_eq!(state.alarm().delivered_generation, None);
+                }
+                let tail = provider.tail(root()?).await?;
+                let (dispatcher_store, dispatcher_actor) = runtime.dispatcher_store()?;
+                observe_while_running(
+                    serving.as_mut(),
+                    state_after(&dispatcher_store, &dispatcher_actor, |state| {
+                        state
+                            .cursor("activation")
+                            .is_some_and(|cursor| cursor >= tail)
+                    }),
+                )
+                .await?;
+                let mut context = Context::from_waker(&waker);
+                assert!(serving.as_mut().poll(&mut context).is_pending());
+                Ok::<_, Box<dyn std::error::Error>>((first, second))
+            })
+            .await
+    })?;
+    notifications.0.store(0, Ordering::SeqCst);
+    drop(schedule);
+    assert!(
+        notifications.0.load(Ordering::SeqCst) > 0,
+        "original clock retirement did not wake the parked dispatcher"
+    );
+    let mut context = Context::from_waker(&waker);
+    let result = serving.as_mut().poll(&mut context);
+    let std::task::Poll::Ready(Err(Error::Clock(ClockError::Native(error)))) = result else {
+        panic!("dispatcher did not return its original retired clock failure");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(error.to_string().contains("step=wall-alarm-producer"));
+    // No actor alarm was delivered merely because its clock producer retired.
+    executor.block_on(async {
+        for address in [first, second] {
+            let state = store.load(&address).await?;
+            assert_eq!(
+                state
+                    .state()
+                    .and_then(|state| state.alarm().delivered_generation),
+                None
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
     Ok(())
 }

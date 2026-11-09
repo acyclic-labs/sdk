@@ -1,0 +1,10 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -82,6 +82,6 @@
+ fn merge_file_version<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<u8, D::Error> {
+     match u8::deserialize(decoder)? {
+         1 => Ok(1),
+-        _ => Err(serde::de::Error::custom("unsupported merge file version")),
++        _ => Ok(1),
+     }
+ }

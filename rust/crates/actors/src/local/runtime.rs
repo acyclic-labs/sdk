@@ -10,6 +10,7 @@ use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 use acyclic_stream::StreamProviderExt as _;
 mod clock;
+mod completion;
 mod dispatcher;
 mod interrupt;
 mod limits;
@@ -26,6 +27,7 @@ use acyclic_stream::{
 };
 use clock::sleep;
 pub use clock::{Clock, ClockControl, ClockError, ControlledClock, SystemClock};
+use completion::{Completion, Completions};
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
@@ -104,7 +106,7 @@ struct Inner {
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
-    /// Last committed input; scheduling position only, never a consumed cursor.
+    /// Last completed attempt; scheduling position only, never a consumed cursor.
     last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish, Option<String>)>,
@@ -113,10 +115,11 @@ struct Inner {
 }
 
 impl Inner {
-    /// Only comparable guard observations can establish an unchanged refusal.
-    /// A preparation change has no conflict receipt; its empty list cannot
-    /// identify either the changed source or its generation.
+    /// Every attempt touches storage, so a guard refusal is retried only on
+    /// evidence of an external change: the identical refusal again means
+    /// nothing changed, and the retry loop would never append or wait.
     fn refused(&mut self, conflicts: Vec<acyclic_stream::CommitConflict>) -> Result<(), Error> {
+        // Preparation changes carry no comparable source observation.
         if conflicts.is_empty() {
             self.refused = None;
             return Ok(());
@@ -129,8 +132,6 @@ impl Inner {
     }
 }
 
-type Completion = tokio::sync::oneshot::Sender<Result<(), Arc<Error>>>;
-
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
@@ -140,6 +141,7 @@ enum Event {
     Due(Result<(), ClockError>),
     Failed(StreamError),
     Completion(Completion),
+    CompletionCancelled,
     Idle,
 }
 
@@ -161,7 +163,7 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     instance: uuid::Uuid,
     limits: RuntimeLimits,
     admission: tokio::sync::Semaphore,
-    completions: OnceLock<tokio::sync::mpsc::UnboundedSender<Completion>>,
+    completions: OnceLock<tokio::sync::mpsc::Sender<Completion>>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -451,11 +453,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// or loss of the running host returns [`Error::CompletionStopped`], as does
     /// calling before [`Self::run`] creates its dispatcher future. A failed delivery
     /// refuses completion until the host is restarted.
+    /// One handoff credit backpressures requests; cancellation retires the
+    /// original request without waiting for a delivery or an idle cut.
     pub async fn complete(&self) -> Result<(), Error> {
         let completions = self.completions.get().ok_or(Error::CompletionStopped)?;
         let (send, receive) = tokio::sync::oneshot::channel();
         completions
             .send(send)
+            .await
             .map_err(|_| Error::CompletionStopped)?;
         receive
             .await
@@ -477,7 +482,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         // it must refuse observers even if the executor never polls it.
         let mut completions = Err(Error::CompletionStopped);
         self.completions.get_or_init(|| {
-            let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+            // One handoff credit: a backpressured caller retains its request,
+            // so cancelling it cannot leave unbounded queued acknowledgements.
+            let (send, receive) = tokio::sync::mpsc::channel(1);
             completions = Ok(receive);
             send
         });
@@ -487,10 +494,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     async fn run_owned(
         &self,
         report: impl Fn(&ActorReference, &Error),
-        completions: Result<tokio::sync::mpsc::UnboundedReceiver<Completion>, Error>,
+        completions: Result<tokio::sync::mpsc::Receiver<Completion>, Error>,
     ) -> Result<Infallible, Error> {
         let mut completions = completions?;
-        let mut completing: Vec<Completion> = Vec::new();
+        let mut completing = Completions::default();
         let mut completion_tail = 0;
         let mut failure = None;
         let root = self.store.root().clone();
@@ -531,9 +538,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
                 self.ready.listen(context);
-                for _ in 0..4 {
+                for _ in 0..5 {
                     let class = next_class;
-                    next_class = (next_class + 1) % 4;
+                    next_class = (next_class + 1) % 5;
                     match class {
                         0 => {
                             // Provider I/O owned by an active delivery must keep
@@ -568,7 +575,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Work(work));
                             }
                         }
-                        _ => {
+                        3 => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
                             let next = self.ready.next_deadline();
@@ -581,10 +588,15 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                                 return Poll::Ready(Event::Due(result));
                             }
                         }
+                        _ => {
+                            if completing.poll_cancelled(context).is_ready() {
+                                return Poll::Ready(Event::CompletionCancelled);
+                            }
+                            if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
+                                return Poll::Ready(Event::Completion(completion));
+                            }
+                        }
                     }
-                }
-                if let Poll::Ready(Some(completion)) = completions.poll_recv(context) {
-                    return Poll::Ready(Event::Completion(completion));
                 }
                 if !completing.is_empty()
                     && running.is_empty()
@@ -634,7 +646,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .wake_due(self.clock.now_unix_ms(), self.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
-                Event::Completion(completion) => completing.push(completion),
+                Event::Completion(completion) => completing.insert(completion),
+                Event::CompletionCancelled => {}
                 Event::Idle => {
                     // No delivery can publish while this owner captures the cut.
                     // A newly observed prefix resumes the SAME activation follow.
@@ -650,12 +663,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             .map(|(deadline, _)| *deadline)
                             .is_none_or(|deadline| deadline > self.clock.now_unix_ms())
                     {
-                        for completion in completing.drain(..) {
-                            let result = failure
-                                .as_ref()
-                                .map_or(Ok(()), |error| Err(Arc::clone(error)));
-                            let _cancelled = completion.send(result);
-                        }
+                        completing.finish(failure.as_ref());
                     }
                 }
             }
@@ -771,6 +779,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         continue;
                     }
                     Err(error) => {
+                        if subscription.is_some() {
+                            inner.last_input = subscription;
+                        }
                         inner.observed = None;
                         return Err(error);
                     }
@@ -832,6 +843,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Claim only for an actual delivery. Idle events must not publish a
             // new epoch and wake themselves through their own state path.
+            // Its durable fence precedes external handler work, so a recovered
+            // runtime cannot race effects from the previous placement epoch.
             // The claim changes only the epoch; its receipt retains the exact
             // subscriptions and alarm that selected this immutable input.
             let snapshot = if inner.epoch == 0 {
@@ -932,47 +945,54 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
-            let mut publication = match result {
-                Ok(transition) => {
-                    if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                        > limits.checkpoint_bytes()
-                    {
-                        return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+            // Preparation failures and submission failures finish the same attempt.
+            // Keep its scheduling position pinned only while a guard is retried
+            // or an uncertain publication retains its original input.
+            let publication = (|| -> Result<PreparedPublish, Error> {
+                let mut publication = match result {
+                    Ok(transition) => {
+                        if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
+                            > limits.checkpoint_bytes()
+                        {
+                            return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
+                        }
+                        self.store.prepare_publish(
+                            &snapshot,
+                            epoch,
+                            &trigger,
+                            record.as_ref(),
+                            transition,
+                            key(&snapshot, "publish")?,
+                        )?
                     }
-                    self.store.prepare_publish(
-                        &snapshot,
-                        epoch,
-                        &trigger,
-                        record.as_ref(),
-                        transition,
-                        key(&snapshot, "publish")?,
-                    )?
-                }
-                Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
-                    let Some(publication) = self.store.prepare_invocation_failure(
-                        &snapshot,
-                        epoch,
-                        &trigger,
-                        record.as_ref(),
-                        &failure,
-                        key(&snapshot, "publish")?,
-                    )?
-                    else {
-                        return Err(Error::Handler(failure));
-                    };
-                    publication
-                }
-                Err(error) => return Err(error),
-            };
-            publication.require(self.handler.publication_conditions())?;
-            // Fairness advances only when the selected input commits. A guard
-            // refusal must recompute that input rather than alternate between
-            // subscriptions whose distinct stale guards never change.
+                    Err(Error::Handler(failure)) if !cancellation.is_cancelled() => {
+                        let Some(publication) = self.store.prepare_invocation_failure(
+                            &snapshot,
+                            epoch,
+                            &trigger,
+                            record.as_ref(),
+                            &failure,
+                            key(&snapshot, "publish")?,
+                        )?
+                        else {
+                            return Err(Error::Handler(failure));
+                        };
+                        publication
+                    }
+                    Err(error) => return Err(error),
+                };
+                publication.require(self.handler.publication_conditions())?;
+                Ok(publication)
+            })();
             let subscription = match trigger {
                 Trigger::Record { subscription, .. } => Some(subscription),
                 Trigger::Alarm { .. } => None,
             };
-            match self.submit_delivery(&snapshot, publication).await {
+            let (submitted, result) = match publication {
+                Ok(publication) => (true, self.submit_delivery(&snapshot, publication).await),
+                Err(error) => (false, Err(error)),
+            };
+            match result {
                 Ok(observed) => {
                     if subscription.is_some() {
                         inner.last_input = subscription;
@@ -991,9 +1011,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Err(Error::Stream(source));
                 }
                 Err(error) => {
-                    // Settlement can fail after a successful commit. Reopen the
-                    // actual state next time instead of rerunning its handler.
-                    inner.observed = None;
+                    if subscription.is_some() {
+                        inner.last_input = subscription;
+                    }
+                    // Only submission can fail after a successful commit.
+                    // Preparation failures retain their unchanged original cut.
+                    if submitted {
+                        inner.observed = None;
+                    }
                     return Err(error);
                 }
             }

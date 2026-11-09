@@ -199,19 +199,25 @@ impl<K: Clone> ReadySet<K> {
     /// One shared dispatcher waiter, installed under the same lock as the empty check.
     /// The runtime owns exactly one pending call, independent of actor population.
     pub fn poll_ready(&self, context: &mut Context<'_>) -> Poll<Work<K>> {
+        // Clone and retire arbitrary executor callbacks outside the index lock.
+        let waker = context.waker().clone();
         let mut index = self
             .core
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((id, key)) = index.take() {
+            drop(index);
+            drop(waker);
             Poll::Ready(Work {
                 core: Arc::clone(&self.core),
                 id,
                 key,
             })
         } else {
-            index.waiter = Some(context.waker().clone());
+            let previous = index.waiter.replace(waker);
+            drop(index);
+            drop(previous);
             Poll::Pending
         }
     }
@@ -219,11 +225,15 @@ impl<K: Clone> ReadySet<K> {
     /// Retain the dispatcher's alarm-change wake while admission is full.
     /// Install before reading the minimum deadline, under the same index lock.
     pub fn listen(&self, context: &Context<'_>) {
-        self.core
+        let waker = context.waker().clone();
+        let previous = self
+            .core
             .index
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .waiter = Some(context.waker().clone());
+            .waiter
+            .replace(waker);
+        drop(previous);
     }
 
     /// Exact retained registration and ready counts, independent of actor heaps.

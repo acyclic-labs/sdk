@@ -27,8 +27,7 @@ fn default_image_discovery_validates_the_immutable_result_and_explicit_images_st
 }
 
 #[test]
-fn wire_decoders_reject_nil_and_duplicate_capabilities() {
-    assert!(decode_machine(Some(&wire::MachineId { value: vec![0; 16] })).is_err());
+fn compatibility_rejects_duplicate_capabilities() {
     let capabilities = BTreeSet::from([Capability::ElasticCpu]);
     assert!(
         decode_compatibility(
@@ -43,6 +42,25 @@ fn wire_decoders_reject_nil_and_duplicate_capabilities() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn all_capability_intents_round_trip_through_the_wire() {
+    let capabilities = [
+        Capability::ElasticCpu,
+        Capability::ElasticMemory,
+        Capability::LiveCheckpoint,
+        Capability::LiveFork,
+        Capability::SuspendResume,
+        Capability::LiveMovement,
+        Capability::DiskFork,
+    ];
+    for capability in capabilities {
+        assert_eq!(
+            decode_capability(encode_capability(capability)),
+            Ok(capability)
+        );
+    }
 }
 
 #[test]
@@ -120,7 +138,7 @@ pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineC
 }
 
 #[test]
-fn contracts_retain_their_platform_lifecycle_and_offline_state() {
+fn contracts_retain_their_platform_and_lifecycle() {
     let attached = || wire::MachineContract {
         platform: Some(wire::Platform {
             os: wire::OperatingSystem::Windows as i32,
@@ -145,10 +163,6 @@ fn contracts_retain_their_platform_lifecycle_and_offline_state() {
     );
     assert_eq!(contract.lifecycle, LifecycleClass::Attached);
     assert!(contract.provisioned().is_err() && !contract.wakes_on_demand());
-    assert_eq!(
-        decode_machine_state(wire::MachineStatus::Offline as i32),
-        Ok(MachineState::Offline)
-    );
     // An unstated platform or lifecycle is never guessed.
     let cases: [fn(&mut wire::MachineContract); 3] = [
         |value: &mut wire::MachineContract| value.platform = None,

@@ -1,0 +1,19 @@
+diff --git a/rust/crates/harness-core/src/machines/lifecycle.rs b/rust/crates/harness-core/src/machines/lifecycle.rs
+--- a/rust/crates/harness-core/src/machines/lifecycle.rs
++++ b/rust/crates/harness-core/src/machines/lifecycle.rs
+@@ -217,7 +217,12 @@
+         name: &str,
+         work: &mut W,
+     ) -> std::result::Result<Option<usize>, W::Error> {
+-        self.targets
+-            .matches(name.as_bytes(), |_| false, work)
+-            .map(|matches| matches.exact.map(|matched| matched.position))
++        work.validate()?;
++        for (position, target) in self.targets().iter().enumerate() {
++            work.examine(1)?;
++            if target.name == name {
++                return Ok(Some(position));
++            }
++        }
++        Ok(None)
+     }

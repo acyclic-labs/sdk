@@ -1,0 +1,15 @@
+--- a/rust/crates/filesystem/src/workspace/join_directory.rs
++++ b/rust/crates/filesystem/src/workspace/join_directory.rs
+@@ -465,7 +465,11 @@
+                     .await?;
+             }
+         }
+-        for _ in 0..steps.get() {
++        for _ in 0..if section == MergeDirectorySection::Clean {
++            steps.get().saturating_add(1)
++        } else {
++            steps.get()
++        } {
+             if section == MergeDirectorySection::Clean {
+                 let row = self
+                     .preview

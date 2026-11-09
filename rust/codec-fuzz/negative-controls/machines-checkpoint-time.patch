@@ -1,0 +1,11 @@
+--- a/rust/crates/machines/src/grpc/codec/observation.rs
++++ b/rust/crates/machines/src/grpc/codec/observation.rs
+@@ -381,7 +381,7 @@
+         source: decode_machine(value.source.as_ref())?,
+         contract: decode_contract(value.contract.as_ref())?,
+         forkable: value.forkable,
+-        created_at_unix_ms: value.created_at_unix_ms,
++        created_at_unix_ms: 1,
+     })
+ }
+ pub(in super::super) fn decode_event(

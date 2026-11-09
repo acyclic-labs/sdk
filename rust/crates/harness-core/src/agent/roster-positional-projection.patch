@@ -1,0 +1,13 @@
+diff --git a/rust/crates/harness-core/src/agent/codec_fuzz.rs b/rust/crates/harness-core/src/agent/codec_fuzz.rs
+index b24549ff7b..e785bedfca 100644
+--- a/rust/crates/harness-core/src/agent/codec_fuzz.rs
++++ b/rust/crates/harness-core/src/agent/codec_fuzz.rs
+@@ -216,7 +216,7 @@ fn roster(bytes: &[u8]) {
+     // Read original wire fields independently of Roster's admitted indexes.
+     let input: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+     let targets: Vec<super::TargetRecord> =
+-        serde_json::from_value(field(&input, "targets", 1).unwrap().clone()).unwrap();
++        serde_json::from_value(input["targets"].clone()).unwrap();
+     assert_eq!(
+         value.home_name(),
+         field(&input, "home", 0).unwrap().as_str().unwrap()
