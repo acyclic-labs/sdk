@@ -216,6 +216,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-codec-fuzz"
+version = "0.0.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-fs-wire",
+ "acyclic-harness-client",
+ "acyclic-harness-core",
+ "acyclic-inference",
+ "acyclic-machines",
+ "acyclic-mcp",
+ "acyclic-model-render",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-proto-build",
+ "acyclic-protobuf-json",
+ "acyclic-stream",
+ "blake3",
+ "bytes",
+ "ed25519-dalek 3.0.0",
+ "futures",
+ "heck",
+ "hex",
+ "libfuzzer-sys",
+ "prost",
+ "prost-reflect",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tonic",
+]
+
+[[package]]
 name = "acyclic-collections"
 version = "0.2.0"
 dependencies = [
@@ -888,6 +926,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-id-codec-proofs"
+version = "0.0.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-fs",
+ "acyclic-native-runtime",
+ "acyclic-objects",
+ "acyclic-stream",
+]
+
+[[package]]
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
@@ -1030,6 +1079,16 @@ dependencies = [
  "pulldown-cmark",
  "unicase",
  "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
+name = "acyclic-markdown-fuzz"
+version = "0.0.0"
+dependencies = [
+ "acyclic-markdown",
+ "acyclic-syntect",
+ "libfuzzer-sys",
  "unicode-width",
 ]
 
@@ -9147,6 +9206,19 @@ checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
 dependencies = [
  "thiserror 2.0.21",
  "ts-rs-macros",
+]
+
+[[package]]
+name = "ts-rs-attribute-fuzz"
+version = "0.0.0"
+dependencies = [
+ "libfuzzer-sys",
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals 0.30.0",
+ "syn 2.0.119",
+ "syn 3.0.9",
+ "termcolor",
 ]
 
 [[package]]

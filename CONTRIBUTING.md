@@ -69,14 +69,19 @@ cargo test --all-features --locked
 ```
 
 The product workspace shares its root `Cargo.lock` with compatible fuzzers,
-proofs and tools. Root commands select the SDK's original default members;
-explicitly select additional packages with `-p PACKAGE`. `--workspace` also
+proofs and tools. Root commands include the SDK and the codec, Markdown and ts-rs
+fuzzers and ID codec proofs, so changes to their dependencies are checked together.
+Other tools remain explicitly selected with `-p PACKAGE`. `--workspace` also
 includes compiler-negative fixtures, so use it only for that intended scope.
 Documentation and generation packages, their file-identity helper and both fuzz
 packages are workspace members using the root lock. They stay outside
 `default-members`; select them with `cargo test --locked -p sdk-docs` or
-`cargo test --locked -p sdk-generation`. Historical captured source and
-vendored upstream packages retain their original dependency inputs.
+`cargo test --locked -p sdk-generation`. Cargo-fuzz supports parent workspace
+membership; run sanitizer fuzzing with `cargo +nightly fuzz` from the fuzzer
+directory using the same root lockfile.
+The captured proof-policy workspace under `scripts/tests/fixtures` is test data
+with no root crate dependencies. It and vendored upstream packages retain their
+original dependency inputs.
 
 The TypeScript Stream models run the packaged TypeScript and WASM implementation
 through Bun. After `bun install --frozen-lockfile`, nextest prepares their

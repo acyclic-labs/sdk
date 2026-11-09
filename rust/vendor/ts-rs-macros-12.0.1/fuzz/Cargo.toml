@@ -5,8 +5,6 @@ edition = "2021"
 publish = false
 license = "MIT"
 
-[workspace]
-
 [package.metadata]
 cargo-fuzz = true
 
