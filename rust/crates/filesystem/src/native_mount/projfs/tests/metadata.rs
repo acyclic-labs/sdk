@@ -111,4 +111,4 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
 }
 
 #[path = "metadata_client.rs"]
-mod client;
+pub(super) mod client;

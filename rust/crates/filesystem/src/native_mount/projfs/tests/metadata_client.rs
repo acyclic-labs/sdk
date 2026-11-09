@@ -2,9 +2,11 @@ use std::io::{self, BufRead, Read, Write};
 use std::os::windows::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
-use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+use windows::Win32::Storage::FileSystem::{
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+};
 
-pub(super) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
+pub(crate) const MODE: &str = "ACYCLIC_PROJFS_METADATA_CLIENT";
 const PATH: &str = "ACYCLIC_PROJFS_METADATA_PATH";
 const READY: &str = "ACYCLIC_METADATA_READY";
 
@@ -19,11 +21,27 @@ pub(super) fn run(
         .1
         .strip_suffix("::client")
         .expect("client is nested beneath its metadata tests");
+    run_with_release(
+        &format!("{module}::external_metadata_only_change_survives_remount"),
+        mode,
+        path,
+        |mut release| {
+            before_action()?;
+            release.write_all(b"g")?;
+            Ok(())
+        },
+    )
+}
+
+pub(crate) fn run_with_release(
+    test: &str,
+    mode: &str,
+    path: &Path,
+    before_release: impl FnOnce(std::process::ChildStdin) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
         acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
-            .arg(format!(
-                "{module}::external_metadata_only_change_survives_remount"
-            ))
+            .arg(test)
             .args(["--exact", "--nocapture"])
             .env(MODE, mode)
             .env(PATH, path)
@@ -45,10 +63,7 @@ pub(super) fn run(
     });
     let action: Result<(), Box<dyn std::error::Error>> = (|| {
         ready_rx.recv_timeout(Duration::from_secs(5))?;
-        before_action()?;
-        let mut stdin = child.take_stdin().ok_or("client stdin missing")?;
-        stdin.write_all(b"g")?;
-        drop(stdin);
+        before_release(child.take_stdin().ok_or("client stdin missing")?)?;
         let status = child.wait(Duration::from_secs(20))?;
         if !status.success() {
             return Err(format!("metadata client failed: {status}").into());
@@ -83,10 +98,19 @@ fn writable(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 
-pub(super) fn execute(mode: &std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn execute(mode: &std::ffi::OsStr) -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::var_os(PATH).ok_or("client path missing")?;
     let path = Path::new(&path);
     match mode.to_str() {
+        Some("held-link") => {
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ.0)
+                .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+                .open(path)?;
+            start_action()?;
+            drop(held);
+        }
         Some("late") => {
             std::fs::write(path, b"late")?;
             let file = writable(path)?;
