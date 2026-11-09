@@ -156,7 +156,7 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
                 let args = if cwd == &root {
                     policy_arguments("agy", &flags, cwd)
                 } else {
-                    child_arguments("agy", &flags, cwd, Some("native-session"))
+                    child_arguments("agy", &flags, cwd, Some(NativeSession { id: "native-session", file: None }))
                 }.expect("relative policy resolution");
                 let resolved = args.windows(2).find(|pair| pair[0] == "--settings").expect("settings option");
                 let actual: serde_json::Value = serde_json::from_str(resolved[1].to_str().expect("Unicode settings")).expect("native JSON settings");
@@ -286,7 +286,13 @@ fn native_lifetime_and_delegation_follow_the_admitted_root_policy() -> Result {
             supplied.extend(["--print-timeout".into(), value.into()]);
         }
         let inherited = parent_flags("agy", &supplied, cwd)?;
-        for session in [None, Some("original-session")] {
+        for session in [
+            None,
+            Some(NativeSession {
+                id: "original-session",
+                file: None,
+            }),
+        ] {
             let args = child_arguments("agy", &inherited, cwd, session)?;
             // --model's value resembles the lifetime switch. Parse option
             // positions, so values never acquire policy authority.
