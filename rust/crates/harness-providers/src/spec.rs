@@ -88,6 +88,31 @@ pub struct ProviderSpec {
     #[serde(default, skip_serializing_if = "TimeoutSpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub timeouts: TimeoutSpec,
+    /// Request-side prompt caching form this endpoint accepts.
+    #[serde(default, skip_serializing_if = "PromptCache::is_native")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub prompt_cache: PromptCache,
+}
+
+/// How a request asks the endpoint to cache its stable prefix. Every form keeps
+/// the prefix byte-identical; only the cache fields it adds differ.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
+pub enum PromptCache {
+    /// The protocol's own form: Anthropic breakpoints, the Responses
+    /// `prompt_cache_key`, Gemini implicit caching, nothing on generic Chat.
+    #[default]
+    Native,
+    /// A routing Chat gateway (OpenRouter): the automatic `cache_control`
+    /// breakpoint for the routed model plus `prompt_cache_key` sticky routing.
+    Routed,
+}
+
+impl PromptCache {
+    fn is_native(&self) -> bool {
+        *self == Self::Native
+    }
 }
 
 /// Caller-selected request deadline, shared by response headers and the body.

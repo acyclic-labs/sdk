@@ -4,14 +4,6 @@ use acyclic_harness_core::{Result, model::ModelProfileBinding};
 use acyclic_model_render::{Cache, Effort, Field, Fields, Reasoning};
 use serde_json::{Value, json};
 
-fn prefix_cache_key(prefix: [u8; 32]) -> String {
-    let digest = blake3::Hash::from(prefix).to_hex();
-    let mut key = String::with_capacity("profile-v1:".len() + digest.len());
-    key.push_str("profile-v1:");
-    key.push_str(digest.as_str());
-    key
-}
-
 pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Result<()> {
     if binding.fixed_effort().is_some() && adapter != Adapter::Responses {
         return Err(invalid(
@@ -44,28 +36,13 @@ pub(crate) fn validate(adapter: Adapter, binding: &ModelProfileBinding) -> Resul
     Ok(())
 }
 
+/// Roles share this key because their directives and restrictions append to
+/// the conversation instead of replacing its prefix.
+pub(super) fn cache_key(binding: &ModelProfileBinding) -> String {
+    super::cache::key(super::cache::PROFILE_KEY, binding.prefix_digest())
+}
+
 pub(super) fn project(adapter: Adapter, binding: &ModelProfileBinding, fields: &mut Fields) {
-    match adapter {
-        Adapter::Responses => {
-            // Roles share this key because their directives and restrictions
-            // append to the conversation instead of replacing its prefix.
-            fields.insert(
-                Field::PromptCacheKey,
-                Value::String(prefix_cache_key(binding.prefix_digest())),
-            );
-        }
-        Adapter::Anthropic => {
-            // The one top-level automatic breakpoint consumes one slot. No
-            // marker is injected into native thinking or empty content blocks.
-            let ttl = if binding.cache() == Cache::Hour {
-                "1h"
-            } else {
-                "5m"
-            };
-            fields.insert(Field::CacheControl, json!({"type":"ephemeral","ttl":ttl}));
-        }
-        Adapter::Chat | Adapter::Gemini => {}
-    }
     match (adapter, binding.reasoning()) {
         (Adapter::Responses, Reasoning::Effort(effort)) => {
             fields.insert(Field::Reasoning, json!({"effort":effort,"summary":"auto"}));
@@ -553,7 +530,7 @@ mod tests {
                     let projected = projected.unwrap()?;
                     let mut expected = body.clone();
                     if adapter == Adapter::Anthropic {
-                        expected["system"] = json!(header);
+                        expected["system"][0]["text"] = json!(header);
                     } else {
                         expected["systemInstruction"]["parts"][0]["text"] = json!(header);
                     }
@@ -756,7 +733,10 @@ mod tests {
                 let prefix = profile.prefix_digest();
                 let mut exact = None;
                 let exact_cost = acyclic_test_support::measure(|| {
-                    exact = Some(prefix_cache_key(prefix));
+                    exact = Some(super::super::cache::key(
+                        super::super::cache::PROFILE_KEY,
+                        prefix,
+                    ));
                 });
                 // Restoring the original formatter preserves every byte but
                 // must regress the same one-allocation oracle.
@@ -764,7 +744,7 @@ mod tests {
                 let formatted_cost = acyclic_test_support::measure(|| {
                     formatted = Some(format!(
                         "profile-v1:{}",
-                        blake3::Hash::from(prefix).to_hex()
+                        &blake3::Hash::from(prefix).to_hex()[..48]
                     ));
                 });
                 assert_eq!(exact, formatted);

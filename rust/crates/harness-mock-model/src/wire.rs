@@ -1,4 +1,4 @@
-use crate::Step;
+use crate::{Cached, Step};
 use serde_json::{Value, json};
 
 fn sse(value: Value) -> String {
@@ -13,9 +13,13 @@ pub(crate) fn events(
     path: &str,
     step: &Step,
     input_tokens: u64,
+    cached: Cached,
     completed_text: Option<&str>,
 ) -> Option<Vec<String>> {
     let mut output = Vec::new();
+    // Cache tokens are part of the request's input; never more than it.
+    let read = cached.read.min(input_tokens);
+    let write = cached.write.min(input_tokens - read);
     let total_tokens = input_tokens.checked_add(2)?;
     if step.gemini.is_some() && !gemini_path(path) {
         return None;
@@ -27,7 +31,11 @@ pub(crate) fn events(
     {
         return None;
     }
-    let usage = json!({"input_tokens":input_tokens,"output_tokens":2,"total_tokens":total_tokens});
+    let mut usage =
+        json!({"input_tokens":input_tokens,"output_tokens":2,"total_tokens":total_tokens});
+    if read > 0 && path == "responses" {
+        usage["input_tokens_details"] = json!({"cached_tokens":read});
+    }
     if path != "responses"
         && (!step.custom_tools.is_empty() || step.tools.iter().any(|tool| tool.namespace.is_some()))
     {
@@ -50,11 +58,22 @@ pub(crate) fn events(
                 } else {
                     "tool_calls"
                 };
-                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2,"total_tokens":total_tokens}})));
+                let mut usage = json!({"prompt_tokens":input_tokens,"completion_tokens":2,"total_tokens":total_tokens});
+                if read > 0 || write > 0 {
+                    usage["prompt_tokens_details"] =
+                        json!({"cached_tokens":read,"cache_write_tokens":write});
+                }
+                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":usage})));
                 output.push("data: [DONE]\n\n".into());
             }
         }
         "messages" => {
+            if read > 0 || write > 0 {
+                // Anthropic's input_tokens is only the uncached remainder.
+                usage["input_tokens"] = json!(input_tokens - read - write);
+                usage["cache_read_input_tokens"] = json!(read);
+                usage["cache_creation_input_tokens"] = json!(write);
+            }
             output.push(sse(json!({"type":"message_start","message":{"id":"mock-message","type":"message","role":"assistant","content":[],"usage":usage}})));
             if !step.text.is_empty() {
                 output.push(sse(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}})));
@@ -84,7 +103,7 @@ pub(crate) fn events(
                     .as_ref()
                     .map_or(0, |gemini| gemini.thought_tokens),
             )?;
-            gemini(&mut output, step, input_tokens, total_tokens);
+            gemini(&mut output, step, input_tokens, read, total_tokens);
         }
         _ => return None,
     }
@@ -155,7 +174,7 @@ fn gemini_path(path: &str) -> bool {
         .is_some_and(|model| !model.is_empty() && !model.contains('/'))
 }
 
-fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens: u64) {
+fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, read: u64, total_tokens: u64) {
     for text in &step.text {
         output.push(sse(
             json!({"candidates":[{"content":{"role":"model","parts":[{"text":text}]}}]}),
@@ -176,6 +195,9 @@ fn gemini(output: &mut Vec<String>, step: &Step, input_tokens: u64, total_tokens
         if let Some(gemini) = &step.gemini {
             usage["cachedContentTokenCount"] = json!(gemini.cached_tokens);
             usage["thoughtsTokenCount"] = json!(gemini.thought_tokens);
+        }
+        if read > 0 && usage.get("cachedContentTokenCount").is_none_or(|n| n == 0) {
+            usage["cachedContentTokenCount"] = json!(read);
         }
         output.push(sse(
             json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":usage}),

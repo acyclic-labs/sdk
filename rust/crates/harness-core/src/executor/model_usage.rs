@@ -48,7 +48,11 @@ impl ModelTokenUsage {
                 &usage["prompt_tokens_details"]["cached_tokens"],
                 &usage["cachedContentTokenCount"],
             ]),
-            cache_write: counter(&[&usage["cache_creation_input_tokens"]]),
+            cache_write: counter(&[
+                &usage["cache_creation_input_tokens"],
+                &usage["input_tokens_details"]["cache_write_tokens"],
+                &usage["prompt_tokens_details"]["cache_write_tokens"],
+            ]),
             output: counter(&[
                 &usage["output_tokens"],
                 &usage["completion_tokens"],
@@ -439,14 +443,15 @@ mod tests {
         fn usage_dialects_preserve_units_absence_and_malformed_controls(
             input in any::<u64>(), output in any::<u64>(),
             cached in proptest::option::of(any::<u64>()),
+            written in proptest::option::of(any::<u64>()),
             reasoning in proptest::option::of(any::<u64>()),
         ) {
             // Generated protocol-field mutations, never captured transcripts.
             let dialects = [
                 serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
-                    "cache_read_input_tokens":cached}}),
+                    "cache_read_input_tokens":cached,"cache_creation_input_tokens":written}}),
                 serde_json::json!({"usage":{"prompt_tokens":input,"completion_tokens":output,
-                    "prompt_tokens_details":{"cached_tokens":cached},
+                    "prompt_tokens_details":{"cached_tokens":cached,"cache_write_tokens":written},
                     "completion_tokens_details":{"reasoning_tokens":reasoning}}}),
                 serde_json::json!({"usage":{"input_tokens":input,"output_tokens":output,
                     "input_tokens_details":{"cached_tokens":cached},
@@ -457,7 +462,8 @@ mod tests {
             for (index, metadata) in dialects.iter().enumerate() {
                 prop_assert_eq!(ModelTokenUsage::reported(metadata), ModelTokenUsage {
                     input: Some(input), output: Some(output), cached,
-                    cache_write: None, reasoning: if index == 0 { None } else { reasoning },
+                    cache_write: if index < 2 { written } else { None },
+                    reasoning: if index == 0 { None } else { reasoning },
                 });
             }
             let mut contradictory = dialects[2].clone();

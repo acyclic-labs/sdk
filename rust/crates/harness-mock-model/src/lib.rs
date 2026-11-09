@@ -33,6 +33,9 @@
 //! recorded but do not consume steps. Native token-count paths work too.
 //! `bytes_per_token: 4` counts serialized UTF-8 request bytes in token-sized chunks
 //! (rounded up), added to `input_tokens` in both count responses and generation usage.
+//! `prompt_cache: true` emulates the provider's prompt cache: generation usage
+//! reports, in native fields, the prefix an earlier request wrote, only when the
+//! request asks for caching in that provider's form.
 //! A step with explicit `when.path: "count"` overrides automatic counting;
 //! combine `json` and `hold` to suspend preparation until the process is killed.
 //!
@@ -65,8 +68,10 @@
 //! values compact JSON. Pointers follow RFC 6901. Missing/malformed templates
 //! fail with HTTP 500; copied data is never evaluated as another template.
 mod bindings;
+mod cache;
 mod wire;
 pub use bindings::{bind_result, load_script};
+pub use cache::{Cached, PromptCache};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,6 +96,11 @@ pub struct Case {
     /// Zero is rejected; absence retains only the fixed count.
     #[serde(default)]
     pub bytes_per_token: Option<NonZeroU64>,
+    /// Emulate the provider's prompt cache (see [`PromptCache`]): generation
+    /// usage reports the prefix tokens an earlier request of this namespace
+    /// wrote, when the request asks for caching in the provider's form.
+    #[serde(default)]
+    pub prompt_cache: bool,
     /// First matching unused step wins. Unmatched requests fail with HTTP 409.
     pub steps: Vec<Step>,
 }
@@ -276,6 +286,7 @@ fn content_text(value: &Value) -> String {
 pub struct Engine {
     script: Script,
     used: BTreeMap<String, Vec<bool>>,
+    caches: BTreeMap<String, PromptCache>,
 }
 impl Engine {
     /// Start independent unused scripts.
@@ -285,7 +296,24 @@ impl Engine {
             .iter()
             .map(|(name, case)| (name.clone(), vec![false; case.steps.len()]))
             .collect();
-        Self { script, used }
+        Self {
+            script,
+            used,
+            caches: BTreeMap::new(),
+        }
+    }
+
+    /// Prompt-cache tokens of one generation request, for namespaces that
+    /// emulate caching; others report none.
+    pub fn cached(&mut self, namespace: &str, path: &str, body: &Value) -> Cached {
+        match self.script.cases.get(namespace) {
+            Some(case) if case.prompt_cache => self
+                .caches
+                .entry(namespace.to_owned())
+                .or_default()
+                .observe(path, body, case.bytes_per_token.map_or(1, NonZeroU64::get)),
+            _ => Cached::default(),
+        }
     }
 
     /// Deterministic input count for a known case, shared by admission and usage.
@@ -336,13 +364,24 @@ impl Engine {
 
 /// Generate provider-native SSE chunks; no sleeps, clocks or randomized IDs.
 pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
-    wire::events(path, step, 64, None)
+    wire::events(path, step, 64, Cached::default(), None)
 }
 
 /// Generate the same events with the request's deterministic counted usage.
 /// The HTTP host uses this for both fixed and byte-counted namespaces.
 pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
-    wire::events(path, step, input_tokens, None)
+    wire::events(path, step, input_tokens, Cached::default(), None)
+}
+
+/// Generate the same events, reporting `cached` prompt tokens in the
+/// provider's native usage fields. Zero cache tokens add no field.
+pub fn events_with_cache(
+    path: &str,
+    step: &Step,
+    input_tokens: u64,
+    cached: Cached,
+) -> Option<Vec<String>> {
+    wire::events(path, step, input_tokens, cached, None)
 }
 
 /// Generate a Responses stream whose authoritative message differs from its
@@ -354,7 +393,13 @@ pub fn responses_with_completed_text(
     input_tokens: u64,
     completed_text: &str,
 ) -> Option<Vec<String>> {
-    wire::events("responses", step, input_tokens, Some(completed_text))
+    wire::events(
+        "responses",
+        step,
+        input_tokens,
+        Cached::default(),
+        Some(completed_text),
+    )
 }
 
 #[cfg(test)]

@@ -66,6 +66,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     max_event_bytes: 65536,
                     retry: crate::RetrySpec::DEFAULT,
                     timeouts: crate::TimeoutSpec::DEFAULT,
+                    prompt_cache: crate::PromptCache::Native,
                     token_counter: Some(TokenCounterSpec {
                         path: "count".into(),
                         adapter: *adapter,

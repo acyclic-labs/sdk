@@ -316,9 +316,17 @@ pub(crate) fn body_named<'a>(
             fields.insert(Field::Stream, json!(true));
             fields.insert(Field::MaxTokens, json!(max));
             if !system.is_empty() {
+                // One text block holding the prefix breakpoint: Anthropic
+                // renders tools, then system, before every message. Built in
+                // place: `json!` would copy the joined text again.
+                let block = [
+                    ("cache_control".to_owned(), cache::control(provider)),
+                    ("text".to_owned(), Value::String(text::join(system, "\n\n"))),
+                    ("type".to_owned(), Value::String("text".into())),
+                ];
                 fields.insert(
                     Field::System,
-                    serde_json::Value::String(text::join(system, "\n\n")),
+                    Value::Array(vec![Value::Object(block.into_iter().collect())]),
                 );
             }
         }
@@ -339,6 +347,7 @@ pub(crate) fn body_named<'a>(
     if let Some(profile) = &provider.profile {
         profile::project(adapter, profile, &mut fields);
     }
+    cache::project(provider, &mut fields);
     let sampling = request.sampling;
     if adapter == Adapter::Gemini {
         fields

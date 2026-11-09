@@ -6,10 +6,104 @@ use acyclic_harness_core::{
     executor::{ModelCacheBreakpoint, ModelCacheObservation, ModelCacheTtl},
     model::{ModelProfileBinding, RESEARCH_CAPTURE_ENABLED, ReasoningOrigin},
 };
-use acyclic_model_render::{Cache, Family, Segment};
+use acyclic_model_render::{Cache, Family, Field, Fields, Segment};
 use std::{cell::RefCell, io::Write};
 
 const DOMAIN: &[u8] = b"harness:projected-cache-prefix:v1\0";
+const KEY_DOMAIN: &[u8] = b"harness:prompt-cache-key:v1\0";
+
+/// The longest `prompt_cache_key` OpenAI accepts; longer keys are refused.
+const MAX_KEY: usize = 64;
+/// Digest bytes in a key: 192 bits, far beyond any collision concern.
+const KEY_BYTES: usize = 24;
+/// Key of an admitted profile's frozen prefix.
+pub(super) const PROFILE_KEY: &str = "profile-v1:";
+/// Key of the rendered header, without a profile.
+const PREFIX_KEY: &str = "prefix-v1:";
+const _: () = assert!(PROFILE_KEY.len() + 2 * KEY_BYTES <= MAX_KEY);
+const _: () = assert!(PREFIX_KEY.len() + 2 * KEY_BYTES <= MAX_KEY);
+
+/// The one `prompt_cache_key` formatter: a versioned tag and a digest prefix,
+/// within the provider's length limit, in one allocation.
+pub(super) fn key(tag: &str, digest: [u8; 32]) -> String {
+    let hex = blake3::Hash::from(digest).to_hex();
+    let hex = &hex.as_str()[..2 * KEY_BYTES];
+    let mut key = String::with_capacity(tag.len() + hex.len());
+    key.push_str(tag);
+    key.push_str(hex);
+    key
+}
+
+/// Requested retention: the admitted profile may ask for an hour, otherwise the
+/// provider's five-minute default. Every marker in a request uses this one TTL,
+/// so a longer entry never follows a shorter one.
+fn hour(provider: &ResolvedModel) -> bool {
+    provider
+        .profile_binding()
+        .is_some_and(|binding| binding.cache() == Cache::Hour)
+}
+
+/// The one `cache_control` value of a request.
+pub(crate) fn control(provider: &ResolvedModel) -> serde_json::Value {
+    let ttl = if hour(provider) { "1h" } else { "5m" };
+    serde_json::json!({"type":"ephemeral","ttl":ttl})
+}
+
+/// Stable prefix identity: the admitted profile's frozen prefix, otherwise the
+/// header the provider renders before any message (model, tools, instructions).
+/// It is never derived from messages, so history paging, eviction and forks
+/// keep it, and a mid-run delta (appended, never declared) cannot change it.
+fn prefix_key(provider: &ResolvedModel, fields: &Fields) -> String {
+    if let Some(binding) = provider.profile_binding() {
+        return super::profile::cache_key(binding);
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(KEY_DOMAIN);
+    let instructions = fields
+        .get(Field::Instructions)
+        .and_then(serde_json::Value::as_str);
+    for value in [
+        provider.model.name.as_bytes(),
+        fields
+            .tools()
+            .map_or(&b""[..], |tools| tools.get().as_bytes()),
+        instructions.unwrap_or("").as_bytes(),
+    ] {
+        hash.update(&(value.len() as u64).to_be_bytes());
+        hash.update(value);
+    }
+    key(PREFIX_KEY, *hash.finalize().as_bytes())
+}
+
+/// Asks the provider to cache the stable prefix, in its own native form. Called
+/// for every request, with or without an admitted profile.
+/// - Anthropic: the system block carries the prefix breakpoint (tools and
+///   system render first), and the top-level automatic breakpoint follows the
+///   growing conversation. Two of the four slots; no marker ever touches a
+///   message, so native thinking blocks stay byte-identical.
+/// - Responses: `prompt_cache_key` routes every turn of the prefix together.
+/// - Routed Chat (OpenRouter): both forms; the gateway applies the routed
+///   model's own one.
+/// - Gemini and generic Chat: implicit caching over the stable order.
+pub(crate) fn project(provider: &ResolvedModel, fields: &mut Fields) {
+    match (provider.config.adapter, provider.config.prompt_cache) {
+        (Family::Anthropic, _) => fields.insert(Field::CacheControl, control(provider)),
+        (Family::Responses, _) => {
+            fields.insert(
+                Field::PromptCacheKey,
+                serde_json::Value::String(prefix_key(provider, fields)),
+            );
+        }
+        (Family::Chat, crate::PromptCache::Routed) => {
+            fields.insert(
+                Field::PromptCacheKey,
+                serde_json::Value::String(prefix_key(provider, fields)),
+            );
+            fields.insert(Field::CacheControl, control(provider));
+        }
+        (Family::Chat, crate::PromptCache::Native) | (Family::Gemini, _) => {}
+    }
+}
 
 // This tuple determines the endpoint, including model-in-URL protocols, without
 // building or parsing a second URL. Length framing separates every component.
@@ -128,7 +222,9 @@ pub(crate) fn encode(
         });
     }
     let binding = provider.profile_binding();
-    let explicit = provider.config.adapter == Family::Anthropic && binding.is_some();
+    let explicit = provider.config.adapter == Family::Anthropic
+        || (provider.config.adapter == Family::Chat
+            && provider.config.prompt_cache == crate::PromptCache::Routed);
     let mut hash = blake3::Hasher::new();
     hash.update(DOMAIN);
     for value in identity(provider) {
@@ -152,15 +248,11 @@ pub(crate) fn encode(
         });
     body.render_segments(marked, &mut &writer)?;
     let output = writer.0.into_inner();
-    // No retention is inferred from a provider default. The admitted Anthropic
-    // profile explicitly projects the one top-level ephemeral marker.
+    // No retention is inferred from a provider default: only a projected
+    // `cache_control` marker states one.
     let ttl = if explicit {
         ModelCacheTtl::Explicit {
-            seconds: if binding.is_some_and(|binding| binding.cache() == Cache::Hour) {
-                3600
-            } else {
-                300
-            },
+            seconds: if hour(provider) { 3600 } else { 300 },
         }
     } else {
         ModelCacheTtl::ProviderManaged
