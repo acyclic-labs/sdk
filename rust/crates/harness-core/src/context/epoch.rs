@@ -188,11 +188,7 @@ impl ContextEpoch {
                 change(
                     &key,
                     now.get(&key).copied(),
-                    serde_json::json!({"version": 1, "skill": {
-                        "name": skill.name,
-                        "description": skill.description,
-                        "path": skill.source.path,
-                    }}),
+                    serde_json::json!({"version": 1, "skill": skill}),
                 );
             }
         }
@@ -255,10 +251,9 @@ impl ContextManifest {
             );
         }
         for skill in &self.discovery.skills {
-            digests.insert(
-                format!("skill:{}", skill.name),
-                digest(&(&skill.description, &skill.fields, &skill.source.path))?,
-            );
+            // A retained body can change without changing its path or
+            // frontmatter. Its exact source identity is part of freshness.
+            digests.insert(format!("skill:{}", skill.name), digest(skill)?);
         }
         digests.insert("conventions".into(), digest(&self.conventions)?);
         Ok(digests)
