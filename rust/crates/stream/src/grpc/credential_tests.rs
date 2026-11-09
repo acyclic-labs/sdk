@@ -103,7 +103,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                         .await;
                     let error = result.err().expect("exhausted credential source refused");
                     prop_assert_eq!(error.category(), StreamError::AccessDenied);
-                    let original = crate::wire_codec::error_status(&error);
+                    let original = tonic::Status::from(&error);
                     prop_assert_eq!(original.code(), Code::Unauthenticated);
                     prop_assert_eq!(original.message(), "credential provider failed");
                     Ok(())
@@ -229,7 +229,7 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
             .await
             .unwrap_err();
         assert_eq!(error.category(), StreamError::AccessDenied);
-        let original = crate::wire_codec::error_status(&error);
+        let original = tonic::Status::from(&error);
         assert_eq!(original.code(), code);
         assert_eq!(original.message(), "synthetic service refusal");
         if code == Code::PermissionDenied {

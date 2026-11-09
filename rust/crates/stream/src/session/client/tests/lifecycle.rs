@@ -244,7 +244,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 .ok_or("terminal follow ended")?
                 .unwrap_err();
             assert_eq!(error.category(), StreamError::AccessDenied);
-            let original = crate::wire_codec::error_status(&error);
+            let original = tonic::Status::from(&error);
             assert_eq!(original.code(), tonic::Code::PermissionDenied);
             assert_eq!(original.message(), "terminal fixture failure");
             drop(records);

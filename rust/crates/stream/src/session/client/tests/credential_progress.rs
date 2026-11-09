@@ -246,7 +246,7 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                         let failure = result.unwrap_err();
                         assert!(!failure.transient);
                         assert_eq!(failure.error.category(), StreamError::AccessDenied);
-                        let original = crate::wire_codec::error_status(&failure.error);
+                        let original = tonic::Status::from(&failure.error);
                         assert_eq!(original.code(), tonic::Code::Unauthenticated);
                         assert_eq!(original.message(), "synthetic remote refusal");
                     }

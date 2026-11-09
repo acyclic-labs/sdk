@@ -85,7 +85,7 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
             StreamError::NotFound,
             StreamError::PrefixNotRetained,
         ] {
-            let canonical = crate::wire_codec::error_status(&category);
+            let canonical = tonic::Status::from(&category);
             // Opaque detail bytes are the original Rust Objects ErrorDetail
             // writer's corpus output, never a hand-encoded remote status.
             let status = tonic::Status::with_details(

@@ -73,7 +73,7 @@ pub fn filesystem_paths(path: &[u8]) -> Result<(), StreamError> {
 /// The input is diagnostic bytes, not a substitute external wire encoding.
 #[cfg(feature = "grpc")]
 pub fn grpc_status(bytes: &[u8]) -> bool {
-    use crate::wire_codec::status::{category, error_status, status};
+    use crate::wire_codec::status::{category, status};
     use tonic::{Code, Status};
     for code in 0..17 {
         let mut original = Status::with_details(
@@ -88,7 +88,7 @@ pub fn grpc_status(bytes: &[u8]) -> bool {
             original.metadata_mut().append("acyclic-diagnostic", value);
         }
         let decoded = status(&original);
-        let encoded = error_status(&decoded);
+        let encoded = Status::from(&decoded);
         if decoded.category() != category(&original)
             || decoded.uncertain() != category(&original).uncertain()
             || encoded.code() != original.code()
