@@ -39,11 +39,23 @@ pub(super) fn settings(value: &str, cwd: &Path) -> Result<OsString> {
                         && !target.starts_with('~')
                         && Path::new(target).is_relative()
                     {
+                        if !cwd.is_absolute()
+                            || Path::new(target).components().any(|component| {
+                                !matches!(
+                                    component,
+                                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                                )
+                            })
+                        {
+                            return Err(invalid(
+                                "step=resolve Antigravity file permission: relative targets require an absolute admitted cwd and cannot contain '..', roots or drive prefixes; recovery: select a path within the invocation's admitted cwd",
+                            ));
+                        }
                         let mut path =
                             PathBuf::with_capacity(cwd.as_os_str().len() + target.len() + 1);
                         path.push(cwd);
                         // Native sandbox grants distinguish a view from view/.
-                        // Retain parent components: resolving them could cross symlinks.
+                        // Parent components are refused above, never widened to an ancestor.
                         path.extend(
                             Path::new(target)
                                 .components()

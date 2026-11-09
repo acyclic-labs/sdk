@@ -341,7 +341,21 @@ fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(
         "--settings".into(),
         original.to_string(),
     ];
-    let args = launch::child_arguments("agy", &flags, cwd, None)
+    let result = launch::child_arguments("agy", &flags, cwd, None);
+    if Path::new(&target).components().any(|component| {
+        !matches!(
+            component,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    }) {
+        return match result {
+            Err(Error::Invalid(_)) => Ok(()),
+            other => Err(format!(
+                "escaping relative policy {target:?} was admitted: {other:?}"
+            )),
+        };
+    }
+    let args = result
         .map_err(|error| format!("relative inline policy was refused: {flags:?}: {error}"))?;
     let settings = args
         .array_windows::<2>()

@@ -96,7 +96,10 @@ or inline JSON). The shared launcher resolves relative `read_file` and
 `deny`) against the current admitted view before each invocation. Absolute
 targets, wildcard and home references, execution mode and unrelated settings
 retain their native meanings. It adds no permission grants. The parent policy
-keeps its relative targets so each child uses its own view.
+is launched with absolute targets resolved against its admitted cwd: `.` grants
+exactly that directory, never its parent. The inherited policy keeps relative
+targets so each child resolves them against its own admitted view. Relative
+targets containing `..` are refused.
 
 AGY's `plan` mode is for investigation and planning; `accept-edits` permits file
 edits in the workspace while retaining native terminal permissions. Headless MCP
