@@ -546,7 +546,8 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
 ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-    let directory = open_root_directory_handle(path, DirectoryAccess::Read, work)?;
+    let directory =
+        open_root_directory_handle(path, DirectoryAccess::Read, DirectoryLinks::Refuse, work)?;
     let identity = directory_identity(&directory, work)?;
     Ok((directory, identity))
 }
@@ -554,6 +555,12 @@ pub(crate) fn open_root_directory<W: NativeHostWork>(
 pub(crate) enum DirectoryAccess {
     Read,
     Search,
+}
+
+/// Ambient file parents may be aliases; held roots must refuse a final link.
+pub(crate) enum DirectoryLinks {
+    Refuse,
+    Follow,
 }
 
 #[cfg(unix)]
@@ -572,6 +579,7 @@ pub(crate) const SEARCH_ACCESS: fs::FILE_ACCESS_RIGHTS =
 pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
     path: &Path,
     access: DirectoryAccess,
+    links: DirectoryLinks,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
     #[cfg(unix)]
@@ -585,6 +593,10 @@ pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
                 flags
             }
         };
+        let flags = match links {
+            DirectoryLinks::Refuse => flags,
+            DirectoryLinks::Follow => flags & !libc::O_NOFOLLOW,
+        };
         open_unix(libc::AT_FDCWD, name, flags, work)
     })?;
     #[cfg(windows)]
@@ -597,7 +609,11 @@ pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
                 DirectoryAccess::Read => fs::FILE_GENERIC_READ,
                 DirectoryAccess::Search => SEARCH_ACCESS,
             };
-            work.attempt_io(READ, || open_windows_root_name(name, access))
+            let flags = match links {
+                DirectoryLinks::Refuse => fs::FILE_FLAG_OPEN_REPARSE_POINT,
+                DirectoryLinks::Follow => fs::FILE_FLAGS_AND_ATTRIBUTES(0),
+            };
+            work.attempt_io(READ, || open_windows_root_name(name, access, flags))
         })?
     };
     Ok(Dir::from_std_file(file))

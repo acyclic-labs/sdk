@@ -4,6 +4,7 @@ use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
 pub(super) fn open_windows_root_name(
     name: &[u16],
     access: fs::FILE_ACCESS_RIGHTS,
+    flags: fs::FILE_FLAGS_AND_ATTRIBUTES,
 ) -> io::Result<File> {
     // SAFETY: callers validate the terminated name; success transfers a fresh handle.
     #[cfg(test)]
@@ -15,7 +16,7 @@ pub(super) fn open_windows_root_name(
             fs::FILE_SHARE_READ | fs::FILE_SHARE_WRITE | fs::FILE_SHARE_DELETE,
             None,
             fs::OPEN_EXISTING,
-            fs::FILE_FLAG_BACKUP_SEMANTICS | fs::FILE_FLAG_OPEN_REPARSE_POINT,
+            fs::FILE_FLAG_BACKUP_SEMANTICS | flags,
             None,
         )
     }

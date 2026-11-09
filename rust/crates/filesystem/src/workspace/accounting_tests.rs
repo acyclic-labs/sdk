@@ -70,6 +70,17 @@ async fn file_batch_candidates_preserve_original_custody() -> Result<(), Box<dyn
                 assert_eq!(transaction.checkout.has_pending_mutations(), pending);
                 assert_eq!(original.receipt(), original_before);
                 assert_eq!(foreign.receipt(), foreign_before);
+                if create_only {
+                    transaction
+                        .create_batch(&[], &files, &original, &cancellation)
+                        .await?;
+                } else {
+                    transaction
+                        .write_batch(&[], &files, &original, &cancellation)
+                        .await?;
+                }
+                assert_ne!(transaction.checkout.root().file_table, before);
+                assert!(transaction.checkout.has_pending_mutations());
             }
         }
     }

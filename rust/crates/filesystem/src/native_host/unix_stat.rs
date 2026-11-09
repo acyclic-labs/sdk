@@ -23,7 +23,11 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
     {
         with_root_name(path, work, |name, work| {
             let file = work.attempt_io(READ, || {
-                open_windows_root_name(name, fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE)
+                open_windows_root_name(
+                    name,
+                    fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+                    fs::FILE_FLAG_OPEN_REPARSE_POINT,
+                )
             })?;
             directory_identity(&Dir::from_std_file(file), work)
         })

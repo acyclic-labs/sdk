@@ -7,17 +7,29 @@ use std::io::Write as _;
 type Failure = Box<dyn std::error::Error>;
 
 fn credentials(args: &Args) -> Result<Credentials, Failure> {
+    if args.default_config {
+        let configured = args
+            .credentials
+            .as_deref()
+            .map(|path| -> Result<Credentials, Failure> {
+                let bytes = acyclic_harness::local::read_regular_file(path)?;
+                serde_json::from_slice(&bytes)
+                    .map_err(|_| "invalid provider credential file".into())
+            })
+            .transpose()?;
+        return Ok(Credentials::explicit(
+            configured
+                .map(|credentials| credentials.api_keys)
+                .unwrap_or_default(),
+        ));
+    }
     let credentials = args
         .credentials
         .as_deref()
         .map(Credentials::from_file)
         .transpose()?
         .unwrap_or_default();
-    Ok(if args.default_config {
-        Credentials::explicit(credentials.api_keys)
-    } else {
-        credentials
-    })
+    Ok(credentials)
 }
 
 pub(super) fn registry(args: &Args) -> Result<Registry, Failure> {
