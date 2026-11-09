@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
-import { isWasmArtifactPath, readBoundedGzip, readDeclaredTarGzip, tarEntries, tarPayload, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
+import { isCanonicalRelativePath, readBoundedGzip, readDeclaredTarGzip, tarEntries, tarPayload, wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
 
 // The caller records its actual file writes independently of enumeration.
 // Invalid trees must refuse, including aliases whose target is a valid tree.
@@ -25,7 +25,7 @@ export function fuzzArtifactTree(directory, expected, options) {
 export function fuzzPayload(data, caseInsensitive) {
   const bytes = Buffer.from(data);
   let payload;
-  try { payload = tarPayload(bytes, isWasmArtifactPath, caseInsensitive); }
+  try { payload = tarPayload(bytes, isCanonicalRelativePath, caseInsensitive); }
   catch (error) {
     if (["unsafe or duplicate archive member", "empty archive payload"].includes(error.message)) return false;
     return refused(error);
@@ -35,7 +35,7 @@ export function fuzzPayload(data, caseInsensitive) {
   assert.ok(payload.size > 0, "an admitted payload must contain a file");
   assert.deepEqual([...payload.keys()], entries.filter(entry => entry.type === "0").map(entry => entry.path));
   const names = entries.map(entry => entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path);
-  assert.ok(names.every(isWasmArtifactPath), "each admitted name must satisfy the caller's policy");
+  assert.ok(names.every(isCanonicalRelativePath), "each admitted name must satisfy the caller's policy");
   assert.equal(new Set(caseInsensitive ? names.map(name => name.toLowerCase()) : names).size,
     entries.length, "admitted names must be unique under the caller's case policy");
   for (const entry of entries) {

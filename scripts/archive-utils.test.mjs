@@ -118,26 +118,40 @@ test("artifact inventory matches real file writes and refuses aliases before rep
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
+test("a build never removes or rewrites source-owned package metadata beside its artifacts", () => {
+  const temporary = mkdtempSync(join(tmpdir(), "wasm-artifact-metadata-"));
+  const source = join(temporary, "source"), output = join(temporary, "output");
+  const tracked = { "package.json": readFileSync(new URL("../package.json", import.meta.url)),
+    ".npmignore": readFileSync(new URL("./build-wasm.mjs", import.meta.url)) };
+  try {
+    mkdirSync(join(source, "snippets"), { recursive: true });
+    mkdirSync(output);
+    for (const [name, bytes] of Object.entries(tracked)) writeFileSync(join(output, name), bytes);
+    writeFileSync(join(output, "stale_bg.wasm"), seed);
+    // A producer that also emits package metadata (wasm-pack style) must not reach the output.
+    writeFileSync(join(source, "module.js"), seed.subarray(0, 512));
+    writeFileSync(join(source, "module_bg.wasm"), seed.subarray(512, 1024));
+    writeFileSync(join(source, "snippets", "inline.js"), seed.subarray(1024, 1536));
+    writeFileSync(join(source, "package.json"), "{}");
+    writeFileSync(join(source, ".gitignore"), "*");
+    const inventory = copyWasmArtifacts(source, output);
+    assert.deepEqual(inventory.map(item => item.path),
+      ["generated/wasm/module.js", "generated/wasm/module_bg.wasm", "generated/wasm/snippets/inline.js"]);
+    for (const [name, bytes] of Object.entries(tracked)) assert.deepEqual(readFileSync(join(output, name)), bytes, name);
+    assert.equal(existsSync(join(output, ".gitignore")), false);
+    assert.equal(existsSync(join(output, "stale_bg.wasm")), false);
+    assert.deepEqual(wasmArtifactInventory(wasmArtifactFiles(output)), inventory);
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
+});
+
 test("native payload framing preserves caller path and case policies without copying members", async () => {
   const flat = gunzipSync(readFileSync(new URL("./test-support/archive-corpus/native-flat.tar.gz", import.meta.url)));
   // The third member in the retained native capture is a directory header.
   const withDirectory = Buffer.concat([flat.subarray(0, flat.length - 1024), seed.subarray(1536, 2048), flat.subarray(flat.length - 1024)]);
-  const snippets = Buffer.from(seed);
-  let headerOffset = 0;
-  for (const entry of tarEntries(seed)) {
-    const header = snippets.subarray(headerOffset, headerOffset + 512);
-    if (entry.type === "5" || entry.path.includes("/")) {
-      const start = entry.type === "5" ? 0 : 345;
-      header.fill(0, start, start + (entry.type === "5" ? 100 : 155));
-      header.write(entry.type === "5" ? "snippets/" : "snippets", start);
-      seal(header);
-    }
-    headerOffset += 512 + Math.ceil(entry.size / 512) * 512;
-  }
   for (const insensitive of [false, true]) {
     assert.equal(fuzzPayload(flat, insensitive).size, 2);
     assert.deepEqual([...fuzzPayload(withDirectory, insensitive)], [...fuzzPayload(flat, insensitive)]);
-    assert.notEqual(fuzzPayload(snippets, insensitive), false);
+    assert.notEqual(fuzzPayload(seed, insensitive), false);
     for (let offset = 0; offset < flat.length; offset += 512) fuzzPayload(flat.subarray(0, offset), insensitive);
   }
   const unsafe = Buffer.from(flat);
