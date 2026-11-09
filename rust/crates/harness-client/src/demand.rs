@@ -47,9 +47,9 @@ impl Default for DemandPolicy {
 pub enum DemandError {
     /// Policy exceeds the finite client ceilings or has a zero budget.
     InvalidPolicy,
-    /// Visible/focused rows or their union exceed the selected-agent cap.
+    /// Distinct visible/focused keys exceed the selected-agent cap.
     SelectedCapacity,
-    /// Expanded rows exceed the child-page-window cap.
+    /// Distinct expanded keys exceed the child-page-window cap.
     ExpandedCapacity,
 }
 
@@ -76,11 +76,11 @@ pub struct ViewDemand {
 
 impl ViewDemand {
     /// Admit one complete replacement before the connection changes any follow.
-    /// Each input is consumed at most its cap plus one times, even if every key
-    /// is a duplicate. Overlapping visible/focused keys share one full follow.
+    /// Overlapping visible/focused keys share one full follow. Duplicate keys
+    /// consume no additional capacity, including at an explicit finite limit.
     ///
     /// # Errors
-    /// Refuses excess input rows or excess distinct selected/expanded keys.
+    /// Refuses excess distinct selected/expanded keys.
     pub fn new(
         policy: DemandPolicy,
         visible: impl IntoIterator<Item = StreamPath>,
@@ -155,11 +155,14 @@ fn extend(
     limit: usize,
     error: DemandError,
 ) -> Result<(), DemandError> {
-    for (index, key) in input.into_iter().enumerate() {
-        if index == limit || (target.len() == limit && !target.contains(&key)) {
-            return Err(error);
+    for key in input {
+        if target.len() == limit {
+            if !target.contains(&key) {
+                return Err(error);
+            }
+        } else {
+            target.insert(key);
         }
-        target.insert(key);
     }
     Ok(())
 }
