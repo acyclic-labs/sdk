@@ -1,0 +1,61 @@
+//! Command dispatch is independent of a native host's workspace owner.
+#[test]
+fn execution_dispatch_precedes_workspace_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    for args in [
+        vec!["run", "--help"],
+        vec!["serve", "--help"],
+        vec!["attach", "--help"],
+        vec!["doctor", "--help"],
+        vec!["study", "--help"],
+        vec!["--workspace", ".", "exec", "--help"],
+        vec!["--workspace", ".", "serve", "--help"],
+    ] {
+        let output = std::process::Command::new(crate::binary::acyclic())
+            .args(args)
+            .env_clear()
+            .current_dir(directory.path())
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    for args in [
+        vec!["attach", "harness/agents/root", "-p", "new task"],
+        vec!["serve", "127.0.0.1:0", "--operation", "new-operation"],
+    ] {
+        let output = std::process::Command::new(crate::binary::acyclic())
+            .args(args)
+            .env_clear()
+            .current_dir(directory.path())
+            .output()?;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("recovery: acyclic"));
+    }
+    assert_eq!(std::fs::read_dir(directory.path())?.count(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn execution_invalid_native_argument_is_refused_before_workspace_lookup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::ffi::OsStringExt as _;
+    let directory = tempfile::tempdir()?;
+    let output = std::process::Command::new(crate::binary::acyclic())
+        .arg("doctor")
+        .arg(std::ffi::OsString::from_vec(vec![0xff]))
+        .env_clear()
+        .current_dir(directory.path())
+        .output()?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8(output.stderr)?;
+    assert!(error.contains("step=decode native command arguments"));
+    assert!(error.contains("recovery: run acyclic --help"));
+    assert_eq!(std::fs::read_dir(directory.path())?.count(), 0);
+    Ok(())
+}

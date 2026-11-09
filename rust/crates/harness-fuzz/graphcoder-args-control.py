@@ -55,14 +55,14 @@ controls = {
         b"provider and opaque model stay paired",
     ),
     "graphcoder_args": (
-        "rust/crates/harness/src/bin/graphcoder/args.rs",
+        "plugin/src/runner/args.rs",
         b"if self.input_format == InputFormat::Jsonl && self.operation.is_none() {",
         b"if false {",
         "exec-missing-operation",
         b"JSONL requires an operation identity",
     ),
     "graphcoder_input": (
-        "rust/crates/harness/src/bin/graphcoder/headless/input.rs",
+        "plugin/src/runner/headless/input.rs",
         b"#[serde(untagged, deny_unknown_fields)]",
         b"#[serde(untagged)]",
         "mixed-actions",

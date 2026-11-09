@@ -119,7 +119,7 @@ pub(super) fn follow(
     conversation: Arc<Conversation>,
     after: acyclic_harness::resources::GenerationRef,
 ) -> futures::future::LocalBoxFuture<'static, acyclic_harness::Result<ClientFiles>> {
-    crate::phase(|| async move {
+    super::super::phase(|| async move {
         conversation
             .client_files(conversation.client_session(), paths(), Some(after))
             .await

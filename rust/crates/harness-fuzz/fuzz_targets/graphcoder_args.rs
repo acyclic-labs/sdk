@@ -3,7 +3,7 @@
 use clap::Parser as _;
 use std::ffi::OsString;
 
-use graphcoder::test_support as args;
+use acyclic_plugin::test_support as args;
 
 fn native(bytes: &[u8]) -> OsString {
     if let Ok(text) = std::str::from_utf8(bytes) {

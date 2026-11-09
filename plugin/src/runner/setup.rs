@@ -78,7 +78,10 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Opti
         || !onboarding::interactive()
         || args.input_format != InputFormat::Text
         || args.output_format != OutputFormat::Text
-        || !matches!(args.command, None | Some(Command::Exec { .. }))
+        || !matches!(
+            args.command,
+            None | Some(Command::Run | Command::Exec { .. })
+        )
     {
         return Err(KEYS.into());
     }

@@ -144,7 +144,7 @@ impl Prepared {
             .transpose()?;
         let projection = if args.output_format == super::args::OutputFormat::Jsonl {
             Some(Projection::open(
-                args.operation.as_deref().ok_or("event output: operation absent; recovery: graphcoder --output-format jsonl --operation OPERATION exec")?,
+                args.operation.as_deref().ok_or("event output: operation absent; recovery: acyclic exec --output-format jsonl --operation OPERATION")?,
                 args.event_cursor.as_deref(),
             )?)
         } else {
@@ -579,7 +579,7 @@ async fn prompt_approval(
 ) -> Result<(IntentId, ApprovalBinding), Failure> {
     let binding = binding.ok_or_else(|| {
         acyclic_harness::Error::Invalid(
-            "approval prompt: status has no action binding; recovery: graphcoder exec --input-format jsonl"
+            "approval prompt: status has no action binding; recovery: acyclic exec --input-format jsonl"
                 .into(),
         )
     })?;
@@ -591,6 +591,19 @@ async fn prompt_approval(
     )
     .await?;
     Ok((id, binding))
+}
+
+async fn announce_approval(
+    output: &mut EventOutput<'_>,
+    operation: Option<&str>,
+    id: &IntentId,
+    binding: Option<&ApprovalBinding>,
+) -> std::io::Result<()> {
+    let line = match (operation, binding) {
+        (None, Some(binding)) => json!({"approval": id.as_str(), "binding": binding}),
+        _ => json!({"approval": id.as_str()}),
+    };
+    emit(output, &line, operation).await
 }
 
 /// Prints the prompt's settled text and returns its committed outcome.
@@ -928,9 +941,19 @@ pub(super) async fn jsonl(
         task: conversation.task(),
     };
     let output = &mut framed;
-    let mut events = match &projection {
-        Some(projection) => conversation.replay(&projection.state)?,
-        None => conversation.observe(None).await?,
+    let (mut events, opening_phase) = match &projection {
+        Some(projection) => (
+            conversation.replay(&projection.state)?,
+            if input_format == super::args::InputFormat::Text {
+                Some(conversation.phase().await?)
+            } else {
+                None
+            },
+        ),
+        None => {
+            let (events, phase) = conversation.observe_current().await?;
+            (events, Some(phase))
+        }
     };
     // The original bounded query admits the saved position before any prompt
     // is dispatched. Retain its page for export rather than validating twice.
@@ -965,13 +988,15 @@ pub(super) async fn jsonl(
     // Prompts share the awaited native stderr writer, so a full stderr pipe
     // delays only this prompt, never the coordination runtime.
     let mut diagnostics = None;
-    // A saved cursor may already be past the status that announced the
-    // pending approval. Text input answers it from the current phase, read
-    // once at reconnect; replay of that same status does not prompt twice.
-    if projection.is_some()
-        && input_format == super::args::InputFormat::Text
-        && let Phase::WaitingApproval { id, binding } = conversation.phase().await?
+    // Admit text against the opening phase before stdin can win the select.
+    // Preserve the live approval frame as well as its original answer binding.
+    // Projected replay owns its source frames through the saved cursors.
+    if input_format == super::args::InputFormat::Text
+        && let Some(Phase::WaitingApproval { id, binding }) = opening_phase
     {
+        if event_operation.is_none() {
+            announce_approval(output, event_operation, &id, binding.as_ref()).await?;
+        }
         announced = Some(id.clone());
         approval = Some(prompt_approval(conversation, &mut diagnostics, id, binding).await?);
     }
@@ -1110,16 +1135,21 @@ pub(super) async fn jsonl(
                     None
                 }
             }
-            line = lines.next_line(), if open && (input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
+            line = lines.next_line(), if open && (initial_prompt.is_none() || input_format == super::args::InputFormat::Jsonl || approval.is_some()) => {
                 let line = line?;
+                if line.is_none() {
+                    open = false;
+                }
                 if input_format == super::args::InputFormat::Text {
-                    let (id, binding) = approval.take().ok_or("approval input: no pending request; recovery: graphcoder exec --input-format jsonl")?;
-                    let answer = line.as_deref().unwrap_or_default();
-                    conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                    if let Some((id, binding)) = approval.take() {
+                        let answer = line.as_deref().unwrap_or_default();
+                        conversation.decide_with_binding(&id, binding, matches!(answer.trim(), "y" | "Y" | "yes")).await?;
+                    } else if line.as_deref().is_some_and(|line| !line.trim().is_empty()) {
+                        return Err("text input: no task or pending approval; recovery: use acyclic run -p 'TASK' or acyclic exec --operation OPERATION with JSONL input".into());
+                    }
                     continue;
                 }
                 let Some(line) = line else {
-                    open = false;
                     continue;
                 };
                 if line.trim().is_empty() {
@@ -1234,13 +1264,7 @@ pub(super) async fn jsonl(
                 if let Phase::WaitingApproval { id, binding } = &status.phase
                     && announced.as_ref() != Some(id)
                 {
-                    let line = match (event_operation, binding) {
-                        (None, Some(binding)) => {
-                            json!({"approval": id.as_str(), "binding": binding})
-                        }
-                        _ => json!({"approval": id.as_str()}),
-                    };
-                    emit(output, &line, event_operation).await?;
+                    announce_approval(output, event_operation, id, binding.as_ref()).await?;
                     // Replay exports historical statuses too. Only the agent's
                     // current pending request admits a text answer; a live
                     // observer starts at the latest status, so it is current.
@@ -1365,7 +1389,7 @@ mod tests {
     fn full_output_pipe(terminal: Terminal, diagnostics: bool) -> Result<(), Failure> {
         let report = WaitReport::default();
         let dispatch = tracing::Dispatch::new(
-            crate::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
+            super::super::lifecycle::subscriber(&report, Some("off".into()), || Ok(None))?.0,
         );
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         acyclic_native_runtime::coordination_runtime()?.block_on(async {
