@@ -3,6 +3,23 @@ use harness_mock_model::{Engine, Script, Step, bind_result, events, last_content
 use proptest::prelude::*;
 use serde_json::json;
 
+#[test]
+fn anthropic_cache_lookback_counts_blocks_within_messages() {
+    let prefix = json!({"type":"text","text":"stable prefix"});
+    let request = |extra: usize| {
+        let mut blocks = vec![prefix.clone()];
+        blocks.extend((0..extra).map(|index| json!({"type":"text","text":index.to_string()})));
+        json!({"cache_control":{"type":"ephemeral"},"messages":[{"role":"user","content":blocks}]})
+    };
+    for (extra, hit) in [(1, true), (19, true), (20, false), (21, false)] {
+        let mut cache = harness_mock_model::PromptCache::default();
+        let first = cache.observe("messages", &request(0), 1);
+        assert_eq!(first.read, 0);
+        assert!(first.write > 0);
+        let next = cache.observe("messages", &request(extra), 1);
+        assert_eq!(next.read > 0, hit, "{extra} added content blocks");
+    }
+}
 fn json_value() -> impl Strategy<Value = serde_json::Value> {
     prop_oneof![
         Just(json!(null)),
