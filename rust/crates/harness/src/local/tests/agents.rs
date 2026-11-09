@@ -782,9 +782,9 @@ async fn follow_tool_output(
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(Some(1)).await?;
     loop {
-        if matches!(observer.next().await?, super::super::Event::Output) {
+        if matches!(observer.next().await?, super::super::Event::Delta) {
             observer.absorb().await?;
-            if observer.output().contains("staged") {
+            if observer.live().1.contains("staged") {
                 break;
             }
         }

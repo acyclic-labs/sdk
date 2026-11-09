@@ -5,7 +5,7 @@ use super::{
     Connection,
     agent_conversation::Conversation,
     storage,
-    tool_output::{OutputTail, read_newest},
+    tool_output::{LiveKind, OutputTail, read_newest},
 };
 use crate::{
     Error, Result,
@@ -23,8 +23,11 @@ pub enum Event {
     /// One settled turn's conversation entry, at the inbox sequence of the
     /// record that started it.
     Turn(ConversationEntry),
-    /// New tool output was announced; [`Observer::absorb`] reads it.
-    Output,
+    /// A delta of live text was announced in the agent's `tools/` records:
+    /// tool output, or a model dispatch's answer or reasoning while it
+    /// streams. [`Observer::absorb`] reads it into [`Observer::live`]; a
+    /// caller that does not display it reads nothing.
+    Delta,
 }
 
 /// A live, read-only observation of one agent. Revoking the scope it derives
@@ -180,7 +183,7 @@ impl Observer {
                 self.reset_output()?;
                 Some(Event::Turn(entry))
             }
-            AgentEvent::Resource { .. } => Some(Event::Output),
+            AgentEvent::Resource { .. } => Some(Event::Delta),
             AgentEvent::Progress => None,
         })
     }
@@ -276,24 +279,11 @@ impl Observer {
         self.next_turn
     }
 
-    /// The newest call's output, its last 16 KiB at most.
+    /// The live text absorbed so far and what it is: the newest tool call's
+    /// output, or the running dispatch's answer or reasoning, its last
+    /// 16 KiB at most. Empty once the turn settles: its entry is the record.
     #[must_use]
-    pub fn output(&self) -> &str {
-        if self.tail.reply() {
-            ""
-        } else {
-            self.tail.text()
-        }
-    }
-
-    /// The running turn's answer text while it streams, its last 16 KiB at
-    /// most; empty once a tool call runs or the turn settles.
-    #[must_use]
-    pub fn reply(&self) -> &str {
-        if self.tail.reply() {
-            self.tail.text()
-        } else {
-            ""
-        }
+    pub fn live(&self) -> (LiveKind, &str) {
+        (self.tail.kind(), self.tail.text())
     }
 }

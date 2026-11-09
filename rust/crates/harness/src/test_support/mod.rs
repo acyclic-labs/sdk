@@ -162,7 +162,7 @@ pub async fn prompt_settled(
                     break;
                 }
                 Event::Turn(_) => break,
-                Event::Output => {}
+                Event::Delta => {}
             }
         }
     };

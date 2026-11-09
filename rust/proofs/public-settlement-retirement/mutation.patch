@@ -32,7 +32,7 @@ diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/h
 +                    match events.next().await? {
 +                        super::Event::Status(next) => break Some(next),
 +                        super::Event::Turn(_) => break None,
-+                        super::Event::Output => {}
++                        super::Event::Delta => {}
 +                    }
 +                };
              }
@@ -48,7 +48,7 @@ diff --git a/rust/crates/harness/src/local/agent_conversation.rs b/rust/crates/h
 -                match events.next().await? {
 -                    super::Event::Status(next) => break Some(next),
 -                    super::Event::Turn(_) => break None,
--                    super::Event::Output => {}
+-                    super::Event::Delta => {}
 -                }
 -            };
 +        }

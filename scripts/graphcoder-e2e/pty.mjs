@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import { Terminal, screenText, screenSnapshot } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory, queryFailure, expectedTaskFailure } from "./frames.mjs";
 import { OutputWatch } from "./process.mjs";
@@ -20,6 +21,8 @@ function bold(terminal, text) {
 
 export const SHOW_CURSOR = "\x1b[?25h", HIDE_CURSOR = "\x1b[?25l";
 const OVERFLOW = "has overflowed its stack";
+// The idle header. A `delta` is streamed text painted while its turn is open.
+const IDLE = "\u25cb GraphCoder";
 
 // The needles a PTY input watches in its raw output.
 export function rawNeedles(actions) {
@@ -28,9 +31,12 @@ export function rawNeedles(actions) {
 }
 
 // `raw` is the OutputWatch over the executable's raw terminal output.
+// `delta` waits, on the same frame events as every condition, for streamed
+// text to paint before its turn settles.
 export function matches(screen, raw, condition, visible, diagnostic = visible) {
   if (visible === undefined) ({ visible, diagnostic } = screenSnapshot(screen));
   return (condition.contains ?? []).every(text => visible.includes(text))
+    && (condition.delta === undefined || (visible.includes(condition.delta) && !visible.includes(IDLE)))
     && (!condition.task_failure || expectedTaskFailure(diagnostic, condition))
     && (!condition.query_failure || queryFailure(diagnostic)?.startsWith(condition.query_failure))
     && (condition.absent ?? []).every(text => !visible.includes(text))
@@ -50,7 +56,11 @@ export async function pty(processes, binary, fixture, input, capture) {
     screen.onData(data => running.child.stdin.write(data));
     const raw = new OutputWatch(rawNeedles(input.actions));
     let index = 0, command, failure, errors;
-    const snapshots = [];
+    // Model requests this case made, the newest one's arrival, and the count
+    // when a prompt was sent: a delta's latency runs from its turn's request
+    // reaching the mock, which then streams the chunks, to their paint.
+    let requests = 0, requested, prompted = 0;
+    const snapshots = [], deltas = [];
     function frame(settled = false) {
       if (failure || !frames.ready()) return;
       try {
@@ -71,7 +81,13 @@ export async function pty(processes, binary, fixture, input, capture) {
           throw error;
         }
         if (action.after_request && !fixture.requested(action.after_request)) return;
+        if (action.when.delta !== undefined && requests <= prompted) return;
         if (!matches(screen, raw, action.when, visible, diagnostic)) return;
+        if (action.when.delta !== undefined) {
+          const delta = { case: fixture.id, action: index, text: action.when.delta, ms: performance.now() - requested };
+          deltas.push(delta);
+          process.stderr.write(`pty-delta: ${JSON.stringify(delta)}\n`);
+        }
         if (action.assert) assert.ok(matches(screen, raw, action.assert, visible, diagnostic),
           `step=assert observed terminal frame: ${visible}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
         failures.accept(diagnostic, action.when);
@@ -80,13 +96,21 @@ export async function pty(processes, binary, fixture, input, capture) {
         index++;
         if (action.prompt !== undefined) {
           command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
+          prompted = requests;
           running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
         }
         if (action.send !== undefined) running.child.stdin.write(action.send);
         if (action.kill) running.killExecutable();
       } catch (error) { failure = error; running.killExecutable(); }
     }
-    unsubscribe = fixture.onRequest(() => frame());
+    unsubscribe = fixture.onRequest(event => {
+      // Token counts precede a turn's model request; they are not its start.
+      if (event.path !== "count") {
+        requests++;
+        requested = performance.now();
+      }
+      frame();
+    });
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
       frames.write(bytes);
@@ -102,7 +126,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     }
     const visible = screenText(screen);
     if (result) {
-      try { capture({ ...result, snapshots, visible, actions: index }); }
+      try { capture({ ...result, snapshots, deltas, visible, actions: index }); }
       catch (error) { (errors ??= []).push(error); }
     }
     if (failure) {
