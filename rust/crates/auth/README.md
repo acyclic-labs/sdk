@@ -60,6 +60,47 @@ and the final receipt's generation; receipts alone do not prove deletion.
 `conformance/secrets-v1.json` publishes the normative case inventory and vectors;
 these are contract examples, not captured external-provider fixtures.
 
+## Protected incoming HMAC bindings
+
+The Auth binding contract is `secrets::binding::SecretBindingHost::verify_hmac`
+with the Rust-owned `VerifyHmacRequest`:
+`{secretBinding: string, alg: string, body: Uint8Array, signature: Uint8Array}`
+and a boolean result. Auth's existing generator projects the request into
+TypeScript; no separate Cloud schema is needed. This is a protected host call,
+not an HTTP secrets-management route. No secret bytes or computed MAC cross
+the guest boundary. There is no read, sign or export operation.
+
+`alg` must be exactly `HMAC-SHA256`. `body` is the untouched incoming byte
+sequence; `signature` is the full raw 32-byte tag. Apps decode hex/base64 and
+remove provider prefixes before calling. Incorrect tags, lengths and algorithms
+return false. Unknown selections fail `UnknownBinding`; resolver failures
+(including stale versions and denied/revoked authority) fail `Unavailable`,
+without provider diagnostics. Equal-length tags use RustCrypto's constant-time
+verification. Unsupported algorithms and wrong lengths never resolve a key.
+
+Native hosts install `LocalSecretBindings::new` with admitted `(environment
+name, SecretRef)` selections and the original scoped `Resolver`. Resolution
+uses that exact reference on every call; it never falls back to a newer version.
+The host retains the resolver and protected, zero-on-drop resolved value.
+
+Cloud implements the `SecretBindingHost` TypeScript port once, keeping the
+selected name-to-reference map, resolver, authorization and key on its host
+side. Pass that original port as `BindingAuthority.secretBindings` and pass the
+admitted deployment `secrets` as the third argument to Workers'
+`materializeBindings`. The resulting `env.NAME` exposes only
+`verifyHmac(alg, body, signature): Promise<boolean>`. Auth also exports
+`verifyHmac(secretBinding, alg, body, signature)`. The port is never put in env.
+The TS projection captures byte views before dispatch and suppresses host
+exceptions and non-boolean replies to prevent provider-data disclosure.
+
+`secrets::conformance::verify_hmac` is the portable host suite. Install the
+public RFC 4231 case 2 fixture as `WEBHOOK` and leave `MISSING` unselected. It
+covers valid/wrong tags, short/long tags, unknown selections, algorithm mismatch
+and changed body bytes; SDK tests run it against the native local host. The
+guest custody negative control plants readable host-only data and checks that
+property access, serialization, failed calls and malformed replies cannot
+reveal it.
+
 ## Remote account-root certification
 
 `trust::issuance::Client` retains one original `operation::Context` and immutable

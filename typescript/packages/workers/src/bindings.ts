@@ -1,9 +1,9 @@
 import { ActorNamespaceBinding, admitDeploymentBindings, materializeActorState, type ActorsClient, type ActorStateBinding, type ActorStateHost, type semantic } from "@acyclic-labs/actors";
-import { materializeGuestAdmission, type GuestAdmissionHost } from "@acyclic-labs/auth";
+import { materializeGuestAdmission, materializeSecretBinding, type GuestAdmissionHost, type SecretBinding, type SecretBindingHost } from "@acyclic-labs/auth";
 import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
 import { WorkerServiceBinding } from "./service.js";
 
-export type DeploymentBinding<A = never, H = never, M = never, S = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | A | H | M | S;
+export type DeploymentBinding<A = never, H = never, M = never, S = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | SecretBinding | A | H | M | S;
 export interface BindingAuthority<A = never, H = never, M = never, S = never> {
   /** The host admits the declaration and returns the holder's scoped transport. */
   namespace(binding: semantic.Binding): Pick<ActorsClient, "invokeActor">;
@@ -11,6 +11,8 @@ export interface BindingAuthority<A = never, H = never, M = never, S = never> {
   /** All aliases share the original executing actor and admitted invocation. */
   stateTransaction?: ActorStateHost;
   guestAdmission?: GuestAdmissionHost<A, H>;
+  /** Original host owns selected references and secret resolution, outside guest env. */
+  secretBindings?: SecretBindingHost;
   /** The admitted account's original Objects v1 transport. */
   objects?(binding: semantic.Binding): ObjectsV1BinaryPort;
   /** The Machines owner supplies its concrete workspace type and producer. */
@@ -40,7 +42,7 @@ function kind(binding: semantic.Binding) {
  * Complete canonical admission and require selected factory functions before any
  * host factory runs. Retain those exact producers and their original receiver for the
  * batch. Resource producers keep the original grant and invocation. */
-export async function materializeBindings<A = never, H = never, M = never, S = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S>): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S>>>> {
+export async function materializeBindings<A = never, H = never, M = never, S = never>(declarations: readonly semantic.Binding[], authority: BindingAuthority<A, H, M, S>, secrets: readonly semantic.SecretSelection[] = []): Promise<Readonly<Record<string, DeploymentBinding<A, H, M, S>>>> {
   const selected = await admitDeploymentBindings(declarations);
   const names = new Set<string>();
   const kinds: ReturnType<typeof kind>[] = [];
@@ -60,7 +62,17 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
     retain(selection === "platformAuthority" || selection === "hostAccess" ? "guestAdmission" : selection);
     kinds.push(selection);
   }
+  // These are the original host-admitted deployment selections. References
+  // stay on the host: only names are needed to construct guest handles.
+  for (const secret of secrets) {
+    if (names.has(secret.name)) throw new TypeError("duplicate binding name");
+    names.add(secret.name);
+  }
+  const secretHost = secrets.length ? authority.secretBindings : undefined;
+  if (secrets.length && (!secretHost || typeof secretHost.verifyHmac !== "function"))
+    throw new TypeError("binding materialization: missing protected secret host");
   const env: Record<string, DeploymentBinding<A, H, M, S>> = Object.create(null) as Record<string, DeploymentBinding<A, H, M, S>>;
+  for (const secret of secrets) env[secret.name] = materializeSecretBinding(secret.name, secretHost!);
   let state: ActorStateBinding | undefined;
   for (let index = 0; index < selected.length; index++) {
     const binding = selected[index]!;

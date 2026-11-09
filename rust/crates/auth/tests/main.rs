@@ -63,3 +63,5 @@ mod secrets;
 
 #[path = "secrets_custody.rs"]
 mod secrets_custody;
+
+mod secret_binding;

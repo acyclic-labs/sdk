@@ -7,6 +7,27 @@ const account = new TextEncoder().encode("account");
 const namespace: semantic.Binding = {name:"OBJECTS",capability:"grant",resource:"actors:/ClassOne",targetAccount:account,actorNamespace:"ClassOne"};
 const service: semantic.Binding = {name:"SERVICE",capability:"grant",resource:"workers:/worker",targetAccount:account,workerService:"worker"};
 
+test("selected secrets materialize only protected handles and preflight name collisions", async () => {
+  const selection: semantic.SecretSelection = { name: "WEBHOOK", reference: { scope: "webhooks", name: "github", version: 7n } };
+  const requests: unknown[] = [];
+  const secretHost = {
+    secret: "HOST_ONLY_NEGATIVE_CONTROL",
+    async verifyHmac(request: unknown) { requests.push(request); return true; },
+  };
+  const authority = { namespace() { throw new Error("unused"); }, service() { throw new Error("unused"); }, secretBindings: secretHost };
+  const env = await materializeBindings([], authority, [selection]);
+  const binding = env.WEBHOOK as import("@acyclic-labs/auth").SecretBinding;
+  expect(Reflect.ownKeys(binding)).toEqual(["verifyHmac"]);
+  expect(Reflect.get(binding, "secret")).toBeUndefined();
+  const body = new Uint8Array([0, 255]);
+  const signature = new Uint8Array(32);
+  expect(await binding.verifyHmac("HMAC-SHA256", body, signature)).toBe(true);
+  expect(requests).toEqual([{ secretBinding: "WEBHOOK", alg: "HMAC-SHA256", body, signature }]);
+  await expect(materializeBindings([], authority, [selection, selection])).rejects.toThrow("duplicate binding name");
+  await expect(materializeBindings([namespace], authority, [{ ...selection, name: "OBJECTS" }])).rejects.toThrow("duplicate binding name");
+  expect(requests).toHaveLength(1);
+});
+
 test("deployment declarations become scoped namespace and private service handles after Rust admission", async () => {
   let factories = 0;
   const requests: unknown[] = [];

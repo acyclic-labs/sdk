@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
     for declaration in [
         acyclic_auth::guest::GuestAdmissionKind::decl(&ts_rs::Config::default()),
+        acyclic_auth::secrets::binding::VerifyHmacRequest::decl(&ts_rs::Config::default()),
         PrincipalKind::decl(&ts_rs::Config::default()),
         ResourcePattern::decl(&ts_rs::Config::default()),
         ResourceGrant::decl(&ts_rs::Config::default()),
