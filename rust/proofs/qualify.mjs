@@ -221,6 +221,11 @@ const claims = {
       { patch: "rust/proofs/revision-floor-merge/incarnation.patch", label: "admitted-foreign-incarnation", diagnostic: "revision floor accepted a foreign incarnation" },
     ] },
   ],
+  "capture-marker-retirement": [
+    "rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs", "acyclic-harness-core",
+    "filesystem::native_process::capture::tests::interactive_completion_retains_input_producer_and_cleanup",
+    "retired capture retained its unused marker producer", ["--features", "filesystem-local,native-execution,test-support"],
+  ],
   "append-invocation": [
     "rust/crates/harness-core/src/filesystem/execution_journal/summary/turn_cost.rs", "acyclic-harness-core",
     "filesystem::execution_journal::summary::tests::turn_cost::append_work_is_bounded_per_invocation_across_history",
