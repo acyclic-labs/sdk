@@ -132,7 +132,7 @@ fn closing_adjacent_waits_preserves_all_other_live_keys() {
     // Exercise middle, first, last and newly adjacent removals. Only the
     // owner's two neighbors change; reporting must retain every other key.
     for key in [3, 0, 6, 2, 4] {
-        drop(waits[key].take());
+        drop(waits.get_mut(key).unwrap().take());
     }
     let lines = snapshot(&report);
     assert_eq!(lines.lines().count(), 2);

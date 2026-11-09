@@ -77,28 +77,11 @@ fn public_leases_keep_unfinished_flushes_until_physical_close() -> io::Result<()
     }
     assert_eq!(native::cached_descriptor_capacity(), 1);
 
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Exit {
-        Error,
-        Unwind,
-        NoFlush,
-        ForeignFlush,
-        Barrier,
-        Success,
-        WriteAfterFlush,
-        WriteAcrossFlush,
-        ReopenedBarrier,
-        ProcessCoveredBarrier,
-        CoveredBarrier,
-        WriteAfterCoveredBarrier,
-        WriteAcrossBarrier,
-    }
     let directory = tempfile::tempdir()?;
     let metrics = Metrics::default();
     let attempts = metrics.query("acyclic.runtime.durability");
     let dispatch =
         tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(Stages(metrics))));
-    let full_attempts = 1;
     tracing::dispatcher::with_default(&dispatch, || -> io::Result<()> {
         for exit in [
             Exit::Error,
@@ -115,171 +98,207 @@ fn public_leases_keep_unfinished_flushes_until_physical_close() -> io::Result<()
             Exit::WriteAfterCoveredBarrier,
             Exit::WriteAcrossBarrier,
         ] {
-            let path = directory.path().join(format!("{exit:?}"));
-            let cached = CachedFile::new(create(&path)?, &path, true, true)?;
-            let lease = if exit == Exit::ReopenedBarrier {
-                cached.lease()?.flush(|file| file.flush_data())?;
-                // The original entry survives a physical eviction. Pin the
-                // other file so its descriptor cannot be the eviction victim.
-                let evictor_path = directory.path().join("evictor");
-                let evictor = CachedFile::new(create(&evictor_path)?, &evictor_path, true, true)?;
-                let pinned = evictor.lease()?;
-                let mut reopens = 0;
-                let lease = cached.lease_charged(&mut |cost| {
-                    if cost == native::DescriptorCost::Reopen {
-                        reopens += 1;
-                    }
-                    Ok(())
-                })?;
-                assert_eq!(
-                    reopens, 1,
-                    "original public entry did not physically reopen"
-                );
-                drop(pinned);
-                drop(evictor);
-                lease
-            } else {
-                cached.lease()?
-            };
-            // Resolve through the original public full-flush entry point.
-            // A barrier itself must never classify the descriptor.
-            let covering = matches!(
-                exit,
-                Exit::CoveredBarrier
-                    | Exit::ProcessCoveredBarrier
-                    | Exit::WriteAfterCoveredBarrier
-                    | Exit::WriteAcrossBarrier
-            );
-            if covering {
-                lease.flush(|file| file.flush_data())?;
-            }
-            lease.write(|file| native::write_all_at(file, 0, b"original", None))?;
-            let before = attempts.snapshot();
-            let mut barrier_completed = None;
-            match exit {
-                Exit::Error => {
-                    lease
-                        .flush(|_| Err::<(), _>(io::Error::other("original flush refused")))
-                        .expect_err("failed callback must retain its error");
-                }
-                Exit::Unwind => {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        lease.flush(|_| -> io::Result<()> {
-                            std::panic::panic_any("original flush unwound");
-                        })
-                    }));
-                    assert!(result.is_err(), "flush swallowed the original unwind");
-                }
-                Exit::NoFlush => lease.flush(|_| Ok(()))?,
-                Exit::ForeignFlush => lease.flush(|_| {
-                    let foreign_path = directory.path().join("foreign");
-                    let foreign =
-                        CachedFile::new(create(&foreign_path)?, &foreign_path, true, true)?;
-                    foreign.lease()?.flush(|file| file.flush_data())
-                })?,
-                Exit::Barrier => {
-                    barrier_completed =
-                        Some(lease.flush(|file| file.sync_data(native::Durability::Barrier))?);
-                    #[cfg(not(target_vendor = "apple"))]
-                    assert_eq!(
-                        barrier_completed,
-                        Some(native::Durability::Full),
-                        "native full barrier fallback lost its completed guarantee"
-                    );
-                }
-                Exit::Success => lease.flush(|file| file.flush_data())?,
-                Exit::WriteAfterFlush => lease.flush(|file| {
-                    file.flush_data()?;
-                    lease.write(|file| native::write_all_at(file, 0, b"new-write", None))
-                })?,
-                Exit::WriteAcrossFlush => lease.write(|file| {
-                    // The callback holds the original descriptor throughout.
-                    // Its physical write completes after the intervening flush.
-                    lease.flush(|file| file.flush_data())?;
-                    native::write_all_at(file, 0, b"later-write", None)
-                })?,
-                Exit::ReopenedBarrier
-                | Exit::ProcessCoveredBarrier
-                | Exit::CoveredBarrier
-                | Exit::WriteAfterCoveredBarrier
-                | Exit::WriteAcrossBarrier => {
-                    lease.flush(|file| {
-                        barrier_completed = Some(file.sync_data(native::Durability::Barrier)?);
-                        // A write completed inside the same callback must
-                        // override the ordered cut when that callback exits.
-                        if exit == Exit::WriteAcrossBarrier {
-                            lease.write(|file| {
-                                native::write_all_at(file, 0, b"later-write", None)
-                            })?;
-                        }
-                        Ok(())
-                    })?;
-                    let foreign_path = directory.path().join("covering");
-                    if exit == Exit::ProcessCoveredBarrier {
-                        let own = tempfile::tempdir()?;
-                        invoke(
-                            native::ProcessCommand::new(std::env::current_exe()?)
-                                .args(["--exact", CONTROL, "--nocapture"])
-                                .env(DRAIN_CHILD, &foreign_path)
-                                .env("TMPDIR", own.path()),
-                        )?;
-                    } else {
-                        let foreign =
-                            CachedFile::new(create(&foreign_path)?, &foreign_path, true, true)?;
-                        foreign.lease()?.flush(|file| file.flush_data())?;
-                    }
-                    if exit == Exit::WriteAfterCoveredBarrier {
-                        lease.write(|file| native::write_all_at(file, 0, b"new-write", None))?;
-                    }
-                }
-            }
-            let before_close = attempts.snapshot();
-            let completed = matches!(
-                exit,
-                Exit::ForeignFlush | Exit::Success | Exit::WriteAfterFlush | Exit::WriteAcrossFlush
-            );
-            assert_eq!(
-                before_close.ok - before.ok,
-                if covering || exit == Exit::ReopenedBarrier {
-                    u64::from(exit != Exit::ProcessCoveredBarrier) * full_attempts
-                        + if barrier_completed == Some(native::Durability::Full) {
-                            full_attempts
-                        } else {
-                            1
-                        }
-                } else if completed || barrier_completed == Some(native::Durability::Full) {
-                    full_attempts
-                } else if barrier_completed.is_some() {
-                    1
-                } else {
-                    0
-                },
-                "callback changed the original native flush count: {exit:?}"
-            );
-            drop(cached);
-            drop(lease);
-            let after_close = attempts.snapshot();
-            assert_eq!(
-                after_close.ok - before_close.ok,
-                if exit == Exit::Success
-                    || matches!(exit, Exit::CoveredBarrier | Exit::ProcessCoveredBarrier)
-                    || (barrier_completed == Some(native::Durability::Full)
-                        && !matches!(
-                            exit,
-                            Exit::WriteAfterCoveredBarrier | Exit::WriteAcrossBarrier
-                        ))
-                {
-                    0
-                } else {
-                    full_attempts
-                },
-                "unfinished original flush lost its physical closing flush: {exit:?}"
-            );
-            assert_eq!(after_close.err, before_close.err);
-            assert_eq!(after_close.incomplete, before_close.incomplete);
+            flush_case(directory.path(), &attempts, exit)?;
         }
         Ok(())
     })?;
     println!("{COMPLETED}");
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Exit {
+    Error,
+    Unwind,
+    NoFlush,
+    ForeignFlush,
+    Barrier,
+    Success,
+    WriteAfterFlush,
+    WriteAcrossFlush,
+    ReopenedBarrier,
+    ProcessCoveredBarrier,
+    CoveredBarrier,
+    WriteAfterCoveredBarrier,
+    WriteAcrossBarrier,
+}
+
+fn reopened_lease(
+    cached: &CachedFile,
+    directory: &Path,
+    exit: Exit,
+) -> io::Result<native::FileLease> {
+    if exit == Exit::ReopenedBarrier {
+        cached.lease()?.flush(|file| file.flush_data())?;
+        // The original entry survives a physical eviction. Pin the
+        // other file so its descriptor cannot be the eviction victim.
+        let evictor_path = directory.join("evictor");
+        let evictor = CachedFile::new(create(&evictor_path)?, &evictor_path, true, true)?;
+        let pinned = evictor.lease()?;
+        let mut reopens = 0;
+        let lease = cached.lease_charged(&mut |cost| {
+            if cost == native::DescriptorCost::Reopen {
+                reopens += 1;
+            }
+            Ok(())
+        })?;
+        assert_eq!(
+            reopens, 1,
+            "original public entry did not physically reopen"
+        );
+        drop(pinned);
+        drop(evictor);
+        Ok(lease)
+    } else {
+        cached.lease()
+    }
+}
+
+fn flush_callback(
+    lease: &native::FileLease,
+    directory: &Path,
+    exit: Exit,
+) -> io::Result<Option<native::Durability>> {
+    let mut barrier_completed = None;
+    match exit {
+        Exit::Error => {
+            lease
+                .flush(|_| Err::<(), _>(io::Error::other("original flush refused")))
+                .expect_err("failed callback must retain its error");
+        }
+        Exit::Unwind => {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                lease.flush(|_| -> io::Result<()> {
+                    std::panic::panic_any("original flush unwound");
+                })
+            }));
+            assert!(result.is_err(), "flush swallowed the original unwind");
+        }
+        Exit::NoFlush => lease.flush(|_| Ok(()))?,
+        Exit::ForeignFlush => lease.flush(|_| {
+            let foreign_path = directory.join("foreign");
+            let foreign = CachedFile::new(create(&foreign_path)?, &foreign_path, true, true)?;
+            foreign.lease()?.flush(|file| file.flush_data())
+        })?,
+        Exit::Barrier => {
+            barrier_completed =
+                Some(lease.flush(|file| file.sync_data(native::Durability::Barrier))?);
+            #[cfg(not(target_vendor = "apple"))]
+            assert_eq!(
+                barrier_completed,
+                Some(native::Durability::Full),
+                "native full barrier fallback lost its completed guarantee"
+            );
+        }
+        Exit::Success => lease.flush(|file| file.flush_data())?,
+        Exit::WriteAfterFlush => lease.flush(|file| {
+            file.flush_data()?;
+            lease.write(|file| native::write_all_at(file, 0, b"new-write", None))
+        })?,
+        Exit::WriteAcrossFlush => lease.write(|file| {
+            // The callback holds the original descriptor throughout.
+            // Its physical write completes after the intervening flush.
+            lease.flush(|file| file.flush_data())?;
+            native::write_all_at(file, 0, b"later-write", None)
+        })?,
+        Exit::ReopenedBarrier
+        | Exit::ProcessCoveredBarrier
+        | Exit::CoveredBarrier
+        | Exit::WriteAfterCoveredBarrier
+        | Exit::WriteAcrossBarrier => {
+            lease.flush(|file| {
+                barrier_completed = Some(file.sync_data(native::Durability::Barrier)?);
+                // A write completed inside the same callback must
+                // override the ordered cut when that callback exits.
+                if exit == Exit::WriteAcrossBarrier {
+                    lease.write(|file| native::write_all_at(file, 0, b"later-write", None))?;
+                }
+                Ok(())
+            })?;
+            let foreign_path = directory.join("covering");
+            if exit == Exit::ProcessCoveredBarrier {
+                let own = tempfile::tempdir()?;
+                invoke(
+                    native::ProcessCommand::new(std::env::current_exe()?)
+                        .args(["--exact", CONTROL, "--nocapture"])
+                        .env(DRAIN_CHILD, &foreign_path)
+                        .env("TMPDIR", own.path()),
+                )?;
+            } else {
+                let foreign = CachedFile::new(create(&foreign_path)?, &foreign_path, true, true)?;
+                foreign.lease()?.flush(|file| file.flush_data())?;
+            }
+            if exit == Exit::WriteAfterCoveredBarrier {
+                lease.write(|file| native::write_all_at(file, 0, b"new-write", None))?;
+            }
+        }
+    }
+    Ok(barrier_completed)
+}
+
+fn flush_case(directory: &Path, attempts: &native::obs::Query, exit: Exit) -> io::Result<()> {
+    let full_attempts = 1;
+    let path = directory.join(format!("{exit:?}"));
+    let cached = CachedFile::new(create(&path)?, &path, true, true)?;
+    let lease = reopened_lease(&cached, directory, exit)?;
+    // Resolve through the original public full-flush entry point.
+    // A barrier itself must never classify the descriptor.
+    let covering = matches!(
+        exit,
+        Exit::CoveredBarrier
+            | Exit::ProcessCoveredBarrier
+            | Exit::WriteAfterCoveredBarrier
+            | Exit::WriteAcrossBarrier
+    );
+    if covering {
+        lease.flush(|file| file.flush_data())?;
+    }
+    lease.write(|file| native::write_all_at(file, 0, b"original", None))?;
+    let before = attempts.snapshot();
+    let barrier_completed = flush_callback(&lease, directory, exit)?;
+    let before_close = attempts.snapshot();
+    let completed = matches!(
+        exit,
+        Exit::ForeignFlush | Exit::Success | Exit::WriteAfterFlush | Exit::WriteAcrossFlush
+    );
+    assert_eq!(
+        before_close.ok - before.ok,
+        if covering || exit == Exit::ReopenedBarrier {
+            u64::from(exit != Exit::ProcessCoveredBarrier) * full_attempts
+                + if barrier_completed == Some(native::Durability::Full) {
+                    full_attempts
+                } else {
+                    1
+                }
+        } else if completed || barrier_completed == Some(native::Durability::Full) {
+            full_attempts
+        } else if barrier_completed.is_some() {
+            1
+        } else {
+            0
+        },
+        "callback changed the original native flush count: {exit:?}"
+    );
+    drop(cached);
+    drop(lease);
+    let after_close = attempts.snapshot();
+    assert_eq!(
+        after_close.ok - before_close.ok,
+        if exit == Exit::Success
+            || matches!(exit, Exit::CoveredBarrier | Exit::ProcessCoveredBarrier)
+            || (barrier_completed == Some(native::Durability::Full)
+                && !matches!(
+                    exit,
+                    Exit::WriteAfterCoveredBarrier | Exit::WriteAcrossBarrier
+                ))
+        {
+            0
+        } else {
+            full_attempts
+        },
+        "unfinished original flush lost its physical closing flush: {exit:?}"
+    );
+    assert_eq!(after_close.err, before_close.err);
+    assert_eq!(after_close.incomplete, before_close.incomplete);
     Ok(())
 }

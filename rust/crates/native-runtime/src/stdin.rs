@@ -132,7 +132,7 @@ impl AsyncRead for Stdin {
 #[cfg(not(loom))]
 mod tests {
     use crate::lines::AsyncLines;
-    use std::io::{Read as _, Write as _};
+    use std::io::{self, Read as _, Write as _};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -162,7 +162,11 @@ mod tests {
             self.input
                 .as_mut()
                 .ok_or(std::io::ErrorKind::BrokenPipe)?
-                .read(&mut destination[..offered])
+                .read(
+                    destination
+                        .get_mut(..offered)
+                        .ok_or(io::ErrorKind::InvalidData)?,
+                )
         }
     }
 
@@ -218,14 +222,21 @@ mod tests {
                                 "stdin hid the original interruption",
                             ));
                         }
-                        Ok(count) => prefix.extend_from_slice(&bytes[..count]),
+                        Ok(count) => prefix.extend_from_slice(
+                            bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?,
+                        ),
                         Err(error) => {
                             assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
                             break;
                         }
                     }
                 }
-                assert_eq!(prefix, BODY[..(fail_at - 1) * 3]);
+                assert_eq!(
+                    prefix,
+                    *BODY
+                        .get(..(fail_at - 1) * 3)
+                        .ok_or(io::ErrorKind::InvalidData)?
+                );
                 assert_eq!(stream.read(&mut bytes).await?, 0);
                 retired.await.map_err(std::io::Error::other)?;
                 assert_eq!(calls.load(Ordering::Acquire), fail_at);

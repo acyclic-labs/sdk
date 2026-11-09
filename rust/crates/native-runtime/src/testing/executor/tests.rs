@@ -1,45 +1,46 @@
 use super::*;
 
+fn accounted(schedule: &Schedule) {
+    let mut drained = std::pin::pin!(schedule.drained());
+    assert!(
+        drained
+            .as_mut()
+            .poll(&mut PollContext::from_waker(Waker::noop()))
+            .is_pending(),
+        "task accounting retired before its original cleanup"
+    );
+}
+struct Output(Schedule, Arc<std::sync::atomic::AtomicU8>);
+impl Drop for Output {
+    fn drop(&mut self) {
+        accounted(&self.0);
+        self.1.fetch_or(4, std::sync::atomic::Ordering::Release);
+    }
+}
+struct Producer {
+    schedule: Schedule,
+    panic: bool,
+    lifecycle: Arc<std::sync::atomic::AtomicU8>,
+}
+impl Future for Producer {
+    type Output = Output;
+    fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<Output> {
+        self.lifecycle
+            .fetch_or(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(!self.panic, "original producer panic");
+        Poll::Ready(Output(self.schedule.clone(), self.lifecycle.clone()))
+    }
+}
+impl Drop for Producer {
+    fn drop(&mut self) {
+        accounted(&self.schedule);
+        self.lifecycle
+            .fetch_or(2, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[test]
 fn unjoined_original_output_keeps_its_task_accounted_through_release() {
-    fn accounted(schedule: &Schedule) {
-        let mut drained = std::pin::pin!(schedule.drained());
-        assert!(
-            drained
-                .as_mut()
-                .poll(&mut PollContext::from_waker(Waker::noop()))
-                .is_pending(),
-            "task accounting retired before its original cleanup"
-        );
-    }
-    struct Output(Schedule, Arc<std::sync::atomic::AtomicU8>);
-    impl Drop for Output {
-        fn drop(&mut self) {
-            accounted(&self.0);
-            self.1.fetch_or(4, std::sync::atomic::Ordering::Release);
-        }
-    }
-    struct Producer {
-        schedule: Schedule,
-        panic: bool,
-        lifecycle: Arc<std::sync::atomic::AtomicU8>,
-    }
-    impl Future for Producer {
-        type Output = Output;
-        fn poll(self: Pin<&mut Self>, _: &mut PollContext<'_>) -> Poll<Output> {
-            self.lifecycle
-                .fetch_or(1, std::sync::atomic::Ordering::Relaxed);
-            assert!(!self.panic, "original producer panic");
-            Poll::Ready(Output(self.schedule.clone(), self.lifecycle.clone()))
-        }
-    }
-    impl Drop for Producer {
-        fn drop(&mut self) {
-            accounted(&self.schedule);
-            self.lifecycle
-                .fetch_or(2, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -102,6 +103,13 @@ fn unjoined_original_output_keeps_its_task_accounted_through_release() {
             }
         }
     }
+}
+
+#[test]
+fn aborted_original_producer_keeps_task_accounted_through_cleanup() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     for native in [false, true] {
         let (schedule, _events) = if native {
             Schedule::new()

@@ -38,17 +38,16 @@ impl Deadlines {
 
     fn key(&self, at: Instant, token: usize) -> io::Result<Key> {
         let midpoint = 1_u128 << 127;
-        let time = match at.checked_duration_since(self.origin) {
-            Some(after) => midpoint + after.as_nanos(),
-            None => {
-                let before = self.origin.checked_duration_since(at).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "native deadline difference is not representable by Duration",
-                    )
-                })?;
-                midpoint - before.as_nanos()
-            }
+        let time = if let Some(after) = at.checked_duration_since(self.origin) {
+            midpoint + after.as_nanos()
+        } else {
+            let before = self.origin.checked_duration_since(at).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "native deadline difference is not representable by Duration",
+                )
+            })?;
+            midpoint - before.as_nanos()
         };
         let mut key = [0; std::mem::size_of::<Key>()];
         key[..16].copy_from_slice(&time.to_be_bytes());

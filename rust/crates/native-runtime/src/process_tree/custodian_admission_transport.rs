@@ -121,18 +121,11 @@ mod tests {
         runtime.block_on(async {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listener");
             let address = listener.local_addr().expect("address");
-            let fault_file =
-                tempfile::NamedTempFile::new().expect("native notification fault source");
-            let mut write_only = std::fs::OpenOptions::new()
-                .write(true)
-                .open(fault_file.path())
-                .expect("write-only native source");
-            let original = std::io::Read::read(&mut write_only, &mut [0])
-                .expect_err("real native read refusal");
+            let original = native_notification_error();
             let expected_code = original.raw_os_error().expect("native error code");
             let expected_kind = original.kind();
             let original = std::sync::Arc::new(std::sync::Mutex::new(Some(original)));
-            let (send, mut receive) = tokio::sync::mpsc::channel(1);
+            let (send, receive) = tokio::sync::mpsc::channel(1);
             let server = serve(listener, move |request| {
                 let send = send.clone();
                 let original = std::sync::Arc::clone(&original);
@@ -146,109 +139,7 @@ mod tests {
                     })
                 }
             });
-            let client = async move {
-                let mut partial = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("partial peer");
-                partial.write_all(&[1]).await.expect("one request byte");
-                let bytes = [
-                    7_u32.to_le_bytes().as_slice(),
-                    9_u64.to_le_bytes().as_slice(),
-                    &[13; 16],
-                ]
-                .concat();
-                let mut peer = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("complete peer");
-                peer.write_all(&bytes).await.expect("complete request");
-                let request = receive.recv().await.expect("same admission producer");
-                assert_eq!(
-                    (request.pid, request.tree, request.secret),
-                    (7, 9, [13; 16])
-                );
-                assert_eq!(request.complete(Ok(true)), Some(9));
-                let mut reply = [0];
-                peer.read_exact(&mut reply).await.expect("acknowledgement");
-                assert_eq!(reply, [1]);
-                // Losing the original reply producer returns a refusal; it never
-                // holds later admissions behind an unrelated blocking receive.
-                let mut lost = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("lost peer");
-                lost.write_all(&bytes)
-                    .await
-                    .expect("request before producer loss");
-                drop(receive.recv().await.expect("original request"));
-                lost.read_exact(&mut reply)
-                    .await
-                    .expect("producer-loss refusal");
-                assert_eq!(reply, [0]);
-                // An actual refused native read remains local to its connection;
-                // another tree can still receive its original acknowledgement.
-                let file = tempfile::NamedTempFile::new().expect("native file");
-                let mut write_only = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(file.path())
-                    .expect("write-only handle");
-                let failed_read = std::io::Read::read(&mut write_only, &mut [0]);
-                let native_error = failed_read.expect_err("a write-only handle cannot be read");
-                let mut refused = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("refused peer");
-                refused.write_all(&bytes).await.expect("refused request");
-                assert_eq!(
-                    receive
-                        .recv()
-                        .await
-                        .expect("refused request producer")
-                        .complete(Err(native_error)),
-                    None
-                );
-                refused
-                    .read_exact(&mut reply)
-                    .await
-                    .expect("native refusal");
-                assert_eq!(reply, [0]);
-                let mut other_bytes = bytes.clone();
-                other_bytes[4..12].copy_from_slice(&10_u64.to_le_bytes());
-                let mut other = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("unrelated tree peer");
-                other
-                    .write_all(&other_bytes)
-                    .await
-                    .expect("unrelated request");
-                assert_eq!(
-                    receive
-                        .recv()
-                        .await
-                        .expect("unrelated request producer")
-                        .complete(Ok(true)),
-                    Some(10)
-                );
-                other
-                    .read_exact(&mut reply)
-                    .await
-                    .expect("unrelated acknowledgement");
-                assert_eq!(reply, [1]);
-                // Releasing the incomplete peer loses no authenticated request.
-                drop(partial);
-                drop(receive);
-                let mut failed = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("lost dispatch receiver peer");
-                failed
-                    .write_all(&bytes)
-                    .await
-                    .expect("request after receiver loss");
-                assert_eq!(
-                    failed
-                        .read(&mut reply)
-                        .await
-                        .expect("failed notification closes its original peer"),
-                    0
-                );
-            };
+            let client = admission_clients(address, receive);
             let mut server = std::pin::pin!(server);
             let mut client = std::pin::pin!(client);
             let result = tokio::select! {
@@ -269,5 +160,117 @@ mod tests {
             assert_eq!(failure.raw_os_error(), Some(expected_code));
             assert_eq!(failure.kind(), expected_kind);
         });
+    }
+    async fn admission_clients(
+        address: std::net::SocketAddr,
+        mut receive: tokio::sync::mpsc::Receiver<Request>,
+    ) {
+        let mut partial = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("partial peer");
+        partial.write_all(&[1]).await.expect("one request byte");
+        let bytes = [
+            7_u32.to_le_bytes().as_slice(),
+            9_u64.to_le_bytes().as_slice(),
+            &[13; 16],
+        ]
+        .concat();
+        let mut peer = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("complete peer");
+        peer.write_all(&bytes).await.expect("complete request");
+        let request = receive.recv().await.expect("same admission producer");
+        assert_eq!(
+            (request.pid, request.tree, request.secret),
+            (7, 9, [13; 16])
+        );
+        assert_eq!(request.complete(Ok(true)), Some(9));
+        let mut reply = [0];
+        peer.read_exact(&mut reply).await.expect("acknowledgement");
+        assert_eq!(reply, [1]);
+        // Losing the original reply producer returns a refusal; it never
+        // holds later admissions behind an unrelated blocking receive.
+        let mut lost = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("lost peer");
+        lost.write_all(&bytes)
+            .await
+            .expect("request before producer loss");
+        drop(receive.recv().await.expect("original request"));
+        lost.read_exact(&mut reply)
+            .await
+            .expect("producer-loss refusal");
+        assert_eq!(reply, [0]);
+        // An actual refused native read remains local to its connection;
+        // another tree can still receive its original acknowledgement.
+        let native_error = native_notification_error();
+        let mut refused = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("refused peer");
+        refused.write_all(&bytes).await.expect("refused request");
+        assert_eq!(
+            receive
+                .recv()
+                .await
+                .expect("refused request producer")
+                .complete(Err(native_error)),
+            None
+        );
+        refused
+            .read_exact(&mut reply)
+            .await
+            .expect("native refusal");
+        assert_eq!(reply, [0]);
+        let mut other_bytes = bytes.clone();
+        other_bytes
+            .get_mut(4..12)
+            .unwrap()
+            .copy_from_slice(&10_u64.to_le_bytes());
+        let mut other = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("unrelated tree peer");
+        other
+            .write_all(&other_bytes)
+            .await
+            .expect("unrelated request");
+        assert_eq!(
+            receive
+                .recv()
+                .await
+                .expect("unrelated request producer")
+                .complete(Ok(true)),
+            Some(10)
+        );
+        other
+            .read_exact(&mut reply)
+            .await
+            .expect("unrelated acknowledgement");
+        assert_eq!(reply, [1]);
+        // Releasing the incomplete peer loses no authenticated request.
+        drop(partial);
+        drop(receive);
+        let mut failed = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("lost dispatch receiver peer");
+        failed
+            .write_all(&bytes)
+            .await
+            .expect("request after receiver loss");
+        assert_eq!(
+            failed
+                .read(&mut reply)
+                .await
+                .expect("failed notification closes its original peer"),
+            0
+        );
+    }
+    fn native_notification_error() -> io::Error {
+        let file = tempfile::NamedTempFile::new().expect("native file");
+        let mut write_only = std::fs::OpenOptions::new()
+            .write(true)
+            .open(file.path())
+            .expect("write-only handle");
+        let failed_read = std::io::Read::read(&mut write_only, &mut [0]);
+        failed_read.expect_err("a write-only handle cannot be read")
     }
 }

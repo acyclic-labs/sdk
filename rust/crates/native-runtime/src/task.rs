@@ -478,7 +478,7 @@ mod tests {
         let report = crate::obs::WaitReport::default();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
-        let runtime = super::coordination_runtime().unwrap();
+        let runtime = super::coordination_runtime()?;
         runtime.block_on(async {
             let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
             let retained = custody.clone();

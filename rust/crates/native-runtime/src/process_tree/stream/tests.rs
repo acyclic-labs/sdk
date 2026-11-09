@@ -43,7 +43,7 @@ fn child() -> io::Result<()> {
             if actual == 0 {
                 break;
             }
-            output.write_all(&bytes[..actual])?;
+            output.write_all(bytes.get(..actual).ok_or(io::ErrorKind::InvalidData)?)?;
             output.flush()?;
         }
         output.write_all(b"EOF")?;
@@ -139,48 +139,7 @@ async fn interactive_input_wakes_quiet_children_and_retires_each_transfer() -> i
         if disposition == "stdout-eof" && !cfg!(unix) {
             continue;
         }
-        let mut command = Command::new(std::env::current_exe()?);
-        command
-            .args([
-                "--exact",
-                "process_tree::stream::tests::child",
-                "--nocapture",
-            ])
-            .env(
-                "ACYCLIC_TEST_STREAM_CAPTURE",
-                if disposition == "stdout-eof" {
-                    "interactive-eof"
-                } else {
-                    "interactive"
-                },
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let tree = ProcessTree::spawn(&mut command)?;
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
-        let wake = ProcessWake::new()?;
-        let input = InputOwner {
-            sender: Some(sender),
-            wake: wake.clone(),
-        };
-        let mut output = tree.stream_capture(
-            &crate::TaskSpawner::current(),
-            CaptureSchedule::Unbounded,
-            usize::MAX,
-            Some(OwnedCaptureInput::Interactive {
-                initial: Vec::new(),
-                maximum: 4,
-            }),
-            ProcessControl::unbounded()?.bind(InteractiveHandler {
-                receiver,
-                original: ProgressHandler {
-                    counts: ProgressCounts::default(),
-                    wake,
-                    stop_at_admission: false,
-                },
-            }),
-        );
+        let (mut output, input) = interactive_capture(disposition)?;
         let mut stdout = Vec::new();
         while !stdout.ends_with(b"READY") {
             let chunk = output.recv().await.ok_or(io::ErrorKind::UnexpectedEof)?;
@@ -198,7 +157,12 @@ async fn interactive_input_wakes_quiet_children_and_retires_each_transfer() -> i
                 stdout.extend_from_slice(&chunk.stdout);
                 stdout.extend_from_slice(&chunk.stderr);
             }
-            assert_eq!(&stdout[stdout.len() - 4..], &[b'a' + index; 4]);
+            assert_eq!(
+                stdout
+                    .get(stdout.len() - 4..)
+                    .ok_or(io::ErrorKind::InvalidData)?,
+                &[b'a' + index; 4]
+            );
         }
         match disposition {
             "eof" | "stdout-eof" => input.send(Vec::new(), true).await?,
@@ -419,7 +383,7 @@ impl CaptureHandler for Handler {
         };
         self.addresses
             .lock()
-            .unwrap()
+            .map_err(|_| io::Error::other("capture addresses poisoned"))?
             .push_back((stderr, bytes.as_ptr() as usize, bytes.len()));
         Ok(ProcessInput::default())
     }
@@ -589,4 +553,55 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
         }
     }
     Ok(())
+}
+
+fn interactive_capture(
+    disposition: &str,
+) -> io::Result<(
+    ProcessCaptureStream<crate::ControlledCapture<InteractiveHandler>>,
+    InputOwner,
+)> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "process_tree::stream::tests::child",
+            "--nocapture",
+        ])
+        .env(
+            "ACYCLIC_TEST_STREAM_CAPTURE",
+            if disposition == "stdout-eof" {
+                "interactive-eof"
+            } else {
+                "interactive"
+            },
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let tree = ProcessTree::spawn(&mut command)?;
+    let (sender, receiver) = tokio::sync::mpsc::channel(1);
+    let wake = ProcessWake::new()?;
+    let input = InputOwner {
+        sender: Some(sender),
+        wake: wake.clone(),
+    };
+    let output = tree.stream_capture(
+        &crate::TaskSpawner::current(),
+        CaptureSchedule::Unbounded,
+        usize::MAX,
+        Some(OwnedCaptureInput::Interactive {
+            initial: Vec::new(),
+            maximum: 4,
+        }),
+        ProcessControl::unbounded()?.bind(InteractiveHandler {
+            receiver,
+            original: ProgressHandler {
+                counts: ProgressCounts::default(),
+                wake,
+                stop_at_admission: false,
+            },
+        }),
+    );
+    Ok((output, input))
 }

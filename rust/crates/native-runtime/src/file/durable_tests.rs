@@ -66,7 +66,12 @@ fn durable_writer_stops_on_the_first_failure_and_keeps_exact_partial_progress() 
                 }
             );
             assert_eq!(writer.calls, stop_at);
-            assert_eq!(writer.bytes()?, b"retained"[..(stop_at - 1) * 3]);
+            assert_eq!(
+                writer.bytes()?,
+                *b"retained"
+                    .get(..(stop_at - 1) * 3)
+                    .ok_or(io::ErrorKind::InvalidData)?
+            );
         }
     }
     let mut writer = Writer::new(1, false)?;

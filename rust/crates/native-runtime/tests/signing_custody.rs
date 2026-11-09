@@ -81,7 +81,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<Vec<_>>>()?;
     assert_eq!(paths.len(), 1);
-    let path = &paths[0];
+    let path = paths.first().ok_or(io::ErrorKind::InvalidData)?;
     assert!(acyclic_native_runtime::private_file::is_private(
         &acyclic_native_runtime::private_file::open(path, false)?
     )?);

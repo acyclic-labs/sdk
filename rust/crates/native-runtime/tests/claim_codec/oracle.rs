@@ -14,14 +14,16 @@ fn wire(bytes: &[u8]) {
 }
 
 fn value(bytes: &[u8]) -> Record {
-    let bytes = &bytes[..bytes.len().min(RECORD_LIMIT)];
+    let bytes = bytes.split_at(bytes.len().min(RECORD_LIMIT)).0;
     let split = bytes.len() / 3;
+    let (start, rest) = bytes.split_at(split);
+    let (lock, lock_identity) = rest.split_at(split);
     Record {
         process: Process {
             pid: u32::from_le_bytes(std::array::from_fn(|i| bytes.get(i).copied().unwrap_or(0))),
-            start: bytes[..split].to_vec(),
-            lock: bytes[split..2 * split].to_vec(),
-            lock_identity: bytes[2 * split..].to_vec(),
+            start: start.to_vec(),
+            lock: lock.to_vec(),
+            lock_identity: lock_identity.to_vec(),
         },
         token: u64::from_le_bytes(std::array::from_fn(|i| bytes.get(i).copied().unwrap_or(0))),
     }
@@ -32,7 +34,7 @@ fn value(bytes: &[u8]) -> Record {
 pub fn check(bytes: &[u8]) {
     wire(bytes);
     let overhead = value(&[]).encode().len();
-    let value = value(&bytes[..bytes.len().min(RECORD_LIMIT - overhead)]);
+    let value = value(bytes.split_at(bytes.len().min(RECORD_LIMIT - overhead)).0);
     let mut encoded = value.encode();
     let mut offset = MAGIC.len();
     let lengths = [
@@ -54,21 +56,21 @@ pub fn check(bytes: &[u8]) {
         assert_eq!(Contents::decode(&past), Contents::Oversized);
     }
     let body = encoded.len() - 8;
-    let original = encoded[body];
-    encoded[body] ^= 1;
+    let original = *encoded.get_mut(body).unwrap();
+    *encoded.get_mut(body).unwrap() ^= 1;
     assert_eq!(
         Contents::decode(&encoded),
         Contents::Torn,
         "claim checksum bypassed"
     );
-    encoded[body] = original;
+    *encoded.get_mut(body).unwrap() = original;
 
     let choice = usize::from(u16::from_le_bytes(std::array::from_fn(|i| {
         bytes.get(i).copied().unwrap_or(0)
     })));
     let cut = choice % encoded.len();
     assert_eq!(
-        Contents::decode(&encoded[..cut]),
+        Contents::decode(encoded.get(..cut).unwrap()),
         if cut == 0 {
             Contents::Empty
         } else {
@@ -79,25 +81,31 @@ pub fn check(bytes: &[u8]) {
     // Reach malformed grammar through the real writer and checksum, rather
     // than waiting for random input to collide with a valid checksum.
     match choice % 10 {
-        0 => encoded[choice % MAGIC.len()] ^= 0xff,
+        0 => *encoded.get_mut(choice % MAGIC.len()).unwrap() ^= 0xff,
         1..=5 => {
-            let offset = fields[choice % 10 - 1];
-            encoded[offset..offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            let offset = *fields.get(choice % 10 - 1).unwrap();
+            encoded
+                .get_mut(offset..offset + 4)
+                .unwrap()
+                .copy_from_slice(&u32::MAX.to_le_bytes());
         }
         6 => {
             encoded.insert(body, 0);
         }
         7 | 8 => {
-            let offset = fields[if choice % 10 == 7 { 0 } else { 4 }];
-            encoded[offset..offset + 4].copy_from_slice(&0_u32.to_le_bytes());
+            let offset = *fields.get(if choice % 10 == 7 { 0 } else { 4 }).unwrap();
+            encoded
+                .get_mut(offset..offset + 4)
+                .unwrap()
+                .copy_from_slice(&0_u32.to_le_bytes());
         }
         _ => {
             encoded.drain(choice / 10 % body..body);
         }
     }
     let body = encoded.len() - 8;
-    let sum = record::checksum(&encoded[..body]);
-    encoded[body..].copy_from_slice(&sum);
+    let sum = record::checksum(encoded.get(..body).unwrap());
+    encoded.get_mut(body..).unwrap().copy_from_slice(&sum);
     if encoded.len() > RECORD_LIMIT {
         assert_eq!(Contents::decode(&encoded), Contents::Oversized);
     } else {
@@ -114,7 +122,7 @@ pub fn check(bytes: &[u8]) {
 pub fn check_prefixes(bytes: &[u8]) {
     for cut in 0..bytes.len() {
         assert_eq!(
-            Contents::decode(&bytes[..cut]),
+            Contents::decode(bytes.get(..cut).unwrap()),
             if cut == 0 {
                 Contents::Empty
             } else {

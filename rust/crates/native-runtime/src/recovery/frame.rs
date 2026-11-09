@@ -224,7 +224,10 @@ mod tests {
         let mut frame = Vec::new();
         format.encode(&[b"abcde"], &mut frame).unwrap();
         for length in [u64::from(u32::MAX), usize::MAX as u64, u64::MAX] {
-            frame[..8].copy_from_slice(&length.to_le_bytes());
+            frame
+                .get_mut(..8)
+                .unwrap()
+                .copy_from_slice(&length.to_le_bytes());
             assert!(!format.is_valid(&frame), "declared {length}");
             let read = format.read(frame.as_slice(), frame.len() as u64);
             if format.frame_bytes(length).is_none() {
@@ -260,7 +263,7 @@ mod tests {
         // A real prefix writer can represent a declaration whose full extent
         // cannot fit. Admission must stop before requesting any body bytes.
         let (prefix, width) = format.prefix(u64::MAX).unwrap();
-        let mut prefix = Cursor::new(&prefix[..width]);
+        let mut prefix = Cursor::new(prefix.get(..width).unwrap());
         let mut body = Cursor::new(b"unread body".as_slice());
         let error = format
             .read((&mut prefix).chain(&mut body), u64::MAX)

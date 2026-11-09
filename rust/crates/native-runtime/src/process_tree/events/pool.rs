@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static POOL: OnceLock<io::Result<Arc<Pool>>> = OnceLock::new();
 
 pub(super) struct Pool {
+    // The final producer makes the pool nonempty by construction. The boxed
+    // prefix retains direct token-to-owner indexing for every earlier producer.
     hubs: Box<[Hub]>,
+    last: Hub,
     failure: Arc<OnceLock<Arc<io::Error>>>,
     next_deadline: AtomicUsize,
     // Startup is a single event. A refused spawn releases every thread already
@@ -20,23 +23,26 @@ pub(super) struct Pool {
 impl Pool {
     fn open(count: NonZeroUsize) -> io::Result<Self> {
         let failure = Arc::new(OnceLock::new());
-        let hubs = (0..count.get())
-            .map(|index| {
-                Ok(Hub {
-                    poller: platform::Poller::new()?,
-                    registry: Mutex::new(Registry {
-                        next: index,
-                        ..Registry::default()
-                    }),
-                    stride: count.get(),
-                    service_failure: Arc::clone(&failure),
-                    #[cfg(test)]
-                    locks: AtomicUsize::new(0),
-                })
+        let open = |index| -> io::Result<Hub> {
+            Ok(Hub {
+                poller: platform::Poller::new()?,
+                registry: Mutex::new(Registry {
+                    next: index,
+                    ..Registry::default()
+                }),
+                stride: count.get(),
+                service_failure: Arc::clone(&failure),
+                #[cfg(test)]
+                locks: AtomicUsize::new(0),
             })
+        };
+        let hubs = (0..count.get() - 1)
+            .map(open)
             .collect::<io::Result<Box<[_]>>>()?;
+        let last = open(count.get() - 1)?;
         Ok(Self {
             hubs,
+            last,
             failure,
             next_deadline: AtomicUsize::new(0),
             startup: Mutex::new(None),
@@ -65,12 +71,14 @@ impl Pool {
         };
         drop(startup);
         if running {
-            self.hubs[index].run();
+            self.owner(index).run();
         }
     }
 
     fn owner(&self, key: usize) -> &Hub {
-        &self.hubs[key % self.hubs.len()]
+        self.hubs
+            .get(key % (self.hubs.len() + 1))
+            .unwrap_or(&self.last)
     }
 
     #[cfg(unix)]
@@ -140,7 +148,7 @@ fn start() -> io::Result<Arc<Pool>> {
     STARTED.store(true, Ordering::Release);
     let pool = Arc::new(Pool::open(std::thread::available_parallelism()?)?);
     let startup = Startup(&pool);
-    for index in 0..pool.hubs.len() {
+    for index in 0..=pool.hubs.len() {
         let original = Arc::clone(&pool);
         std::thread::Builder::new()
             .name(format!("acyclic-process-events-{index}"))
@@ -190,7 +198,7 @@ mod tests {
             let _release = Release(&pool);
             let startup = Startup(&pool);
             let (finished, completion) = mpsc::channel();
-            for index in 0..pool.hubs.len() {
+            for index in 0..=pool.hubs.len() {
                 let pool = &pool;
                 let finished = finished.clone();
                 std::thread::Builder::new().spawn_scoped(scope, move || {
@@ -205,7 +213,7 @@ mod tests {
                 Some(false),
                 "startup refusal retained a producer without a start event"
             );
-            for _ in pool.hubs.iter() {
+            for _ in 0..=pool.hubs.len() {
                 completion.recv().map_err(io::Error::other)?;
             }
             Ok(())
@@ -249,7 +257,14 @@ mod tests {
                 "native packet lost its original producer"
             );
             assert!(Arc::ptr_eq(
-                &entry.hub.registry().armed[0].1.signal,
+                &entry
+                    .hub
+                    .registry()
+                    .armed
+                    .first()
+                    .ok_or(io::ErrorKind::InvalidData)?
+                    .1
+                    .signal,
                 &mixed.signal
             ));
         }
@@ -274,6 +289,45 @@ mod tests {
         assert_eq!(byte, [b'x']);
         drop(mixed);
 
+        assert_source_and_deadline_cost(&pool, readable, writable, deadline)?;
+        let mut read = pool.arm(&[readable], None)?;
+        let mut write = pool.arm(&[writable], None)?;
+        assert!(Pin::new(&mut read).poll(&mut context).is_pending());
+        assert!(Pin::new(&mut write).poll(&mut context).is_pending());
+        drop(Retirement(reading));
+        let Poll::Ready(ProcessWaitOutcome::ServiceFailed(cause)) =
+            Pin::new(&mut read).poll(&mut context)
+        else {
+            panic!("original producer loss left its source pending")
+        };
+        assert!(Pin::new(&mut write).poll(&mut context).is_pending());
+        let mut late = pool.arm(&[readable], None)?;
+        let Poll::Ready(ProcessWaitOutcome::ServiceFailed(original)) =
+            Pin::new(&mut late).poll(&mut context)
+        else {
+            panic!("later source lost its original producer failure")
+        };
+        assert!(Arc::ptr_eq(&cause, &original));
+        assert!(pool.check().is_err());
+        while !write.fired() {
+            writing.poller.wait(None, &mut ready)?;
+            writing.dispatch(&mut ready, Instant::now());
+        }
+        assert!(matches!(
+            Pin::new(&mut write).poll(&mut context),
+            Poll::Ready(ProcessWaitOutcome::Ready)
+        ));
+        Ok(())
+    }
+    #[cfg(unix)]
+    fn assert_source_and_deadline_cost(
+        pool: &Pool,
+        readable: Source<'_>,
+        writable: Source<'_>,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        let reading = pool.source(readable.key());
+        let writing = pool.source(writable.key());
         // Count the actual registry acquisitions at one and 100,000 live
         // deadlines. Deadline index work is bounded by the actual clock/token
         // key width; source admission and withdrawal visit their original owner.
@@ -318,33 +372,6 @@ mod tests {
             drop(retained);
         }
 
-        let mut read = pool.arm(&[readable], None)?;
-        let mut write = pool.arm(&[writable], None)?;
-        assert!(Pin::new(&mut read).poll(&mut context).is_pending());
-        assert!(Pin::new(&mut write).poll(&mut context).is_pending());
-        drop(Retirement(reading));
-        let Poll::Ready(ProcessWaitOutcome::ServiceFailed(cause)) =
-            Pin::new(&mut read).poll(&mut context)
-        else {
-            panic!("original producer loss left its source pending")
-        };
-        assert!(Pin::new(&mut write).poll(&mut context).is_pending());
-        let mut late = pool.arm(&[readable], None)?;
-        let Poll::Ready(ProcessWaitOutcome::ServiceFailed(original)) =
-            Pin::new(&mut late).poll(&mut context)
-        else {
-            panic!("later source lost its original producer failure")
-        };
-        assert!(Arc::ptr_eq(&cause, &original));
-        assert!(pool.check().is_err());
-        while !write.fired() {
-            writing.poller.wait(None, &mut ready)?;
-            writing.dispatch(&mut ready, Instant::now());
-        }
-        assert!(matches!(
-            Pin::new(&mut write).poll(&mut context),
-            Poll::Ready(ProcessWaitOutcome::Ready)
-        ));
         Ok(())
     }
 }

@@ -91,34 +91,15 @@ fn retains_cut(
         }
         return false;
     }
-    let after = fault == DurableFault::After;
-    match operation {
-        Operation::Write | Operation::UnmeteredWrite => {
-            let transferred = match fault {
-                DurableFault::After => bytes.len(),
-                DurableFault::Torn(count) => count.min(bytes.len() - 1),
-                _ => 0,
-            };
-            let mut expected = b"original".to_vec();
-            expected.resize(expected.len().max(transferred), 0);
-            expected.splice(0..transferred, bytes.iter().take(transferred).copied());
-            assert_eq!(std::fs::read(&from).unwrap(), expected);
-            assert_eq!(
-                schedule.durable_writes().first().unwrap().transferred,
-                (transferred != 0).then_some(transferred)
-            );
-        }
-        Operation::Resize => assert_eq!(file.metadata().unwrap().len(), if after { 3 } else { 8 }),
-        Operation::Publish => {
-            assert!(from.exists());
-            assert_eq!(to.exists(), after);
-        }
-        Operation::Rename => {
-            assert_eq!(from.exists(), !after);
-            assert_eq!(to.exists(), after);
-            assert_eq!(renamed.get(), usize::from(after));
-        }
-    }
+    assert_cut_effects(
+        operation,
+        fault,
+        bytes,
+        &from,
+        &to,
+        &schedule,
+        renamed.get(),
+    );
     assert_eq!(
         schedule.durable_write_count(),
         1,
@@ -260,6 +241,48 @@ proptest::proptest! {
                 // Erasing the real scoped boundary must fail the same oracle.
                 proptest::prop_assert!(!retains_cut(directory.path(), operation, fault, &bytes, true), "erased {operation:?} escaped the control");
             }
+        }
+    }
+}
+
+fn assert_cut_effects(
+    operation: Operation,
+    fault: DurableFault,
+    bytes: &[u8],
+    from: &std::path::Path,
+    to: &std::path::Path,
+    schedule: &Schedule,
+    renamed: usize,
+) {
+    let after = fault == DurableFault::After;
+    match operation {
+        Operation::Write | Operation::UnmeteredWrite => {
+            let transferred = match fault {
+                DurableFault::After => bytes.len(),
+                DurableFault::Torn(count) => count.min(bytes.len() - 1),
+                _ => 0,
+            };
+            let mut expected = b"original".to_vec();
+            expected.resize(expected.len().max(transferred), 0);
+            expected.splice(0..transferred, bytes.iter().take(transferred).copied());
+            assert_eq!(std::fs::read(from).unwrap(), expected);
+            assert_eq!(
+                schedule.durable_writes().first().unwrap().transferred,
+                (transferred != 0).then_some(transferred)
+            );
+        }
+        Operation::Resize => assert_eq!(
+            std::fs::metadata(from).unwrap().len(),
+            if after { 3 } else { 8 }
+        ),
+        Operation::Publish => {
+            assert!(from.exists());
+            assert_eq!(to.exists(), after);
+        }
+        Operation::Rename => {
+            assert_eq!(from.exists(), !after);
+            assert_eq!(to.exists(), after);
+            assert_eq!(renamed, usize::from(after));
         }
     }
 }

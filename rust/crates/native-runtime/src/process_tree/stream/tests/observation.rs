@@ -109,80 +109,9 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
             )
         });
         if mode.starts_with("launch-") {
-            let request = crate::CaptureRequest {
-                command: ProcessCommand::new(if mode == "launch-refused" {
-                    std::path::PathBuf::new()
-                } else {
-                    directory.path().join("absent-executable")
-                }),
-                custody: None,
-                execution_grant: None,
-                input: None,
-                schedule: CaptureSchedule::Unbounded,
-                maximum_output_bytes: usize::MAX,
-            };
-            match request.capture(handler).await {
-                Err(crate::LaunchFailure::Refused { failure, handler }) => {
-                    assert_eq!(mode, "launch-refused");
-                    assert_eq!(handler.retired, Some(true));
-                    assert!(failure.cleanup_completed);
-                    assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
-                }
-                Err(crate::LaunchFailure::Control { error, handler }) => {
-                    assert_eq!(mode, "launch-control");
-                    assert_eq!(handler.retired, Some(true));
-                    assert_eq!(error.raw_os_error(), native_error);
-                }
-                Err(crate::LaunchFailure::Indeterminate {
-                    error,
-                    handler: Some(handler),
-                }) => {
-                    assert_eq!(mode, "launch-indeterminate");
-                    assert_eq!(handler.retired, Some(false));
-                    assert_eq!(error.kind(), io::ErrorKind::NotFound);
-                    native_error = error.raw_os_error();
-                }
-                _ => panic!("original launch failure lost its handler or classification"),
-            }
+            native_error = observe_launch(mode, directory.path(), handler, native_error).await;
         } else {
-            let capture = child_tree()?.capture(
-                if mode == "before-capture" {
-                    CaptureSchedule::Overflow
-                } else {
-                    CaptureSchedule::Unbounded
-                },
-                usize::MAX,
-                None,
-                crate::ProcessControl::unbounded()?.bind(handler),
-            );
-            // The original callback runs on the native worker. Its panic must not
-            // emit successful cleanup telemetry, even after physical cleanup.
-            if mode == "callback-loss" {
-                match tokio::spawn(capture).await {
-                    Err(error) => assert!(error.is_panic()),
-                    Ok(_) => panic!("lost original callback returned normally"),
-                }
-            } else {
-                let outcome = capture.await?;
-                let handler = outcome.handler.into_inner();
-                assert_eq!(handler.retired, Some(true));
-                match outcome.result {
-                    Ok(output) => {
-                        assert_eq!(mode, "success");
-                        assert_eq!(output.status.code(), Some(7));
-                        assert_eq!(output.stderr, [0, 255, 7]);
-                    }
-                    Err(failure) => {
-                        assert_ne!(mode, "success");
-                        assert!(failure.cleanup_completed);
-                        if mode == "capture-error" {
-                            assert_eq!(failure.error.raw_os_error(), native_error);
-                        } else {
-                            assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
-                        }
-                    }
-                }
-            }
+            observe_capture(mode, handler, native_error).await?;
         }
         let evidence = record(&mut output)?;
         let sample = evidence.sample();
@@ -242,6 +171,102 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
     );
     drop((incomplete, record(&mut minimal_output)?, retained));
     assert_eq!(credit.available_permits(), 8);
+    assert_disabled_capture_allocations();
+
+    Ok(())
+}
+
+async fn observe_launch(
+    mode: &str,
+    directory: &std::path::Path,
+    handler: Observed,
+    mut native_error: Option<i32>,
+) -> Option<i32> {
+    let request = crate::CaptureRequest {
+        command: ProcessCommand::new(if mode == "launch-refused" {
+            std::path::PathBuf::new()
+        } else {
+            directory.join("absent-executable")
+        }),
+        custody: None,
+        execution_grant: None,
+        input: None,
+        schedule: CaptureSchedule::Unbounded,
+        maximum_output_bytes: usize::MAX,
+    };
+    match request.capture(handler).await {
+        Err(crate::LaunchFailure::Refused { failure, handler }) => {
+            assert_eq!(mode, "launch-refused");
+            assert_eq!(handler.retired, Some(true));
+            assert!(failure.cleanup_completed);
+            assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+        }
+        Err(crate::LaunchFailure::Control { error, handler }) => {
+            assert_eq!(mode, "launch-control");
+            assert_eq!(handler.retired, Some(true));
+            assert_eq!(error.raw_os_error(), native_error);
+        }
+        Err(crate::LaunchFailure::Indeterminate {
+            error,
+            handler: Some(handler),
+        }) => {
+            assert_eq!(mode, "launch-indeterminate");
+            assert_eq!(handler.retired, Some(false));
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+            native_error = error.raw_os_error();
+        }
+        _ => panic!("original launch failure lost its handler or classification"),
+    }
+    native_error
+}
+
+async fn observe_capture(
+    mode: &str,
+    handler: Observed,
+    native_error: Option<i32>,
+) -> io::Result<()> {
+    let capture = child_tree()?.capture(
+        if mode == "before-capture" {
+            CaptureSchedule::Overflow
+        } else {
+            CaptureSchedule::Unbounded
+        },
+        usize::MAX,
+        None,
+        crate::ProcessControl::unbounded()?.bind(handler),
+    );
+    // The original callback runs on the native worker. Its panic must not
+    // emit successful cleanup telemetry, even after physical cleanup.
+    if mode == "callback-loss" {
+        match tokio::spawn(capture).await {
+            Err(error) => assert!(error.is_panic()),
+            Ok(_) => panic!("lost original callback returned normally"),
+        }
+    } else {
+        let outcome = capture.await?;
+        let handler = outcome.handler.into_inner();
+        assert_eq!(handler.retired, Some(true));
+        match outcome.result {
+            Ok(output) => {
+                assert_eq!(mode, "success");
+                assert_eq!(output.status.code(), Some(7));
+                assert_eq!(output.stderr, [0, 255, 7]);
+            }
+            Err(failure) => {
+                assert_ne!(mode, "success");
+                assert!(failure.cleanup_completed);
+                if mode == "capture-error" {
+                    assert_eq!(failure.error.raw_os_error(), native_error);
+                } else {
+                    assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn assert_disabled_capture_allocations() {
     tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
         drop(CaptureObservation::new());
         let disabled = acyclic_test_support::measure(|| {
@@ -256,5 +281,4 @@ async fn original_capture_retirement_preserves_failure_loss_and_credit() -> io::
         assert_eq!(disabled.count_total, 0);
         assert_eq!(extra.count_total, 1);
     });
-    Ok(())
 }

@@ -116,56 +116,57 @@ fn process_status_keeps_unbounded_exit_and_rejects_invalid_deadline() -> io::Res
     Ok(())
 }
 
+struct Reader {
+    pipe: io::PipeReader,
+    calls: usize,
+    fail_at: usize,
+}
+impl Read for Reader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.calls += 1;
+        if self.calls == self.fail_at {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        let count = output.len().min(3);
+        self.pipe
+            .read(output.get_mut(..count).ok_or(io::ErrorKind::InvalidData)?)
+    }
+}
+fn reader(fail_at: usize) -> io::Result<Reader> {
+    let (pipe, writer) = io::pipe()?;
+    ServiceReadySignal(File::from(PipeHandle::from(writer))).fail("retained")?;
+    Ok(Reader {
+        pipe,
+        calls: 0,
+        fail_at,
+    })
+}
+struct Writer {
+    file: File,
+    calls: usize,
+    fail_at: usize,
+    zero: bool,
+}
+impl io::Write for Writer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.calls += 1;
+        if self.calls == self.fail_at {
+            return if self.zero {
+                Ok(0)
+            } else {
+                Err(io::ErrorKind::Interrupted.into())
+            };
+        }
+        self.file.write(bytes.split_at(bytes.len().min(3)).0)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
 #[test]
 fn service_channels_return_first_errors_and_keep_physical_prefixes() -> io::Result<()> {
     use std::io::{Seek as _, Write as _};
-
-    struct Reader {
-        pipe: io::PipeReader,
-        calls: usize,
-        fail_at: usize,
-    }
-    impl Read for Reader {
-        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-            self.calls += 1;
-            if self.calls == self.fail_at {
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            let count = output.len().min(3);
-            self.pipe.read(&mut output[..count])
-        }
-    }
-    fn reader(fail_at: usize) -> io::Result<Reader> {
-        let (pipe, writer) = io::pipe()?;
-        ServiceReadySignal(File::from(PipeHandle::from(writer))).fail("retained")?;
-        Ok(Reader {
-            pipe,
-            calls: 0,
-            fail_at,
-        })
-    }
-    struct Writer {
-        file: File,
-        calls: usize,
-        fail_at: usize,
-        zero: bool,
-    }
-    impl io::Write for Writer {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.calls += 1;
-            if self.calls == self.fail_at {
-                return if self.zero {
-                    Ok(0)
-                } else {
-                    Err(io::ErrorKind::Interrupted.into())
-                };
-            }
-            self.file.write(&bytes[..bytes.len().min(3)])
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            self.file.flush()
-        }
-    }
 
     for (fail_at, consumed) in [(1, 0), (2, 1), (3, 2)] {
         let mut source = reader(fail_at)?;
@@ -179,7 +180,12 @@ fn service_channels_return_first_errors_and_keep_physical_prefixes() -> io::Resu
         );
         let mut remainder = Vec::new();
         crate::io_progress::read_to_end(&mut source, &mut remainder)?;
-        assert_eq!(remainder, b"!retained"[consumed..]);
+        assert_eq!(
+            remainder,
+            *b"!retained"
+                .get(consumed..)
+                .ok_or(io::ErrorKind::InvalidData)?
+        );
 
         // Restoring the original standard-library error consumption accepts
         // the same physical pipe after its first failed read instead.
