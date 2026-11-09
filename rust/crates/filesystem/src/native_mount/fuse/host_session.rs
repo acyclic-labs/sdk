@@ -151,7 +151,7 @@ impl Drop for HostSession {
         self.io.stop();
         self.protocol.close();
         // Every reader has exited: `run` joins them before the session drops.
-        if let Some(connection) = self.connection
+        if let Some(connection) = self.connection.as_ref()
             && let Err(error) = connection.abort()
         {
             tracing::error!(%error, "aborting an unserved FUSE connection failed");

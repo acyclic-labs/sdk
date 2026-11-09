@@ -75,6 +75,7 @@ fn projection_core_at(
 pub(super) mod model_checking;
 
 mod cache;
+mod connection;
 mod detach;
 mod directory_reply;
 mod disclosure;

@@ -240,9 +240,9 @@ impl Mount {
         }
         Ok(detached)
     }
-    /// The kernel connection this mount created, once mounted.
-    pub(super) fn connection(&self) -> Option<super::host_io::Connection> {
-        self.connection
+    /// Transfer the acquired abort control to the session that owns its readers.
+    pub(super) fn take_connection(&mut self) -> Option<super::host_io::Connection> {
+        self.connection.take()
     }
 
     pub(super) fn pending(&self) -> bool {

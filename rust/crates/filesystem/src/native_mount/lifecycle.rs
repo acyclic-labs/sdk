@@ -102,6 +102,11 @@ fn linux_fuse_refusal() -> Option<&'static str> {
 }
 
 /// Starts a real native projection over the supplied canonical checkout.
+///
+/// Linux startup requires writable access to the connection's abort control
+/// under `/sys/fs/fuse/connections`. The session retains that control so held
+/// files receive `ENOTCONN` after its last packet reader exits, even if fusectl
+/// subsequently becomes inaccessible.
 pub fn mount_native(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,
