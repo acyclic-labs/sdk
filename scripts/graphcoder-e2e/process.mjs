@@ -376,7 +376,7 @@ export function conptyArgs(binary, args) {
   let resume = false;
   for (let index = 0; index < args.length; index++) {
     if (args[index] === "--resume" && !resume) { resume = true; continue; }
-    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation"].includes(args[index])
+    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation", "--diagnostic-records", "--diagnostic-record-bytes"].includes(args[index])
       && !flags.has(args[index]) && index + 1 < args.length, `ConPTY host cannot launch argument ${args[index]}`);
     flags.set(args[index], args[++index]);
   }
@@ -384,7 +384,8 @@ export function conptyArgs(binary, args) {
   assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
   const operation = flags.get("--operation");
   return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
-    ...(operation === undefined ? [] : ["--operation", operation])];
+    ...(operation === undefined ? [] : ["--operation", operation]),
+    ...["--diagnostic-records", "--diagnostic-record-bytes"].flatMap(flag => flags.has(flag) ? [flag, flags.get(flag)] : [])];
 }
 
 // A settled process result. Its output is the explicit historical query of
