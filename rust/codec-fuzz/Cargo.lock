@@ -517,6 +517,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "http",
  "indexed_db_futures",
  "js-sys",
  "pin-project-lite",
