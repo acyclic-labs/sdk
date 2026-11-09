@@ -33,6 +33,22 @@ impl TurnChildren for Children {
         self.original.agent()
     }
 
+    fn resolve<'a>(
+        &'a self,
+        parent: &'a AgentPath,
+        name: &'a str,
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<SpawnResolution>> {
+        self.original.resolve(parent, name)
+    }
+
+    fn select<'a>(
+        &'a self,
+        operation: OperationId,
+        references: &'a [String],
+    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Vec<(String, AgentPath)>>> {
+        self.original.select(operation, references)
+    }
+
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,

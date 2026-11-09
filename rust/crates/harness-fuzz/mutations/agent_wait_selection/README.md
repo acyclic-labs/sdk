@@ -4,7 +4,7 @@ The `agent_wait_selection` target and the retained property call the actual wait
 resolver with borrowed admission arguments and owned dispatch arguments. They
 check the same selected children, original first references, complete parent
 containment, quorum refusals and timeout. The identity counter observes actual
-resolver calls; it does not model them or bound hash-table collision probes.
+shared primitive calls; it does not model them or bound hash-table collision probes.
 
 Run the retained property with:
 
@@ -25,8 +25,10 @@ The scan mutation restores growing-prefix comparisons of actual decoded child
 identities. The production path decodes one fixed 16-byte identity per supplied
 reference and inserts it once. Hash-table operations are expected amortized O(1),
 not worst-case O(1). Whole selection is expected O(N), plus parsing the supplied
-path bytes. Admission and dispatch still resolve independently. Selection is
-synchronous, terminates on finite input and introduces no waits or I/O.
+path bytes. Name resolution uses the committed spawn generation, and the turn persists the
+first selection before it waits. Replays retain those child identities after name
+reuse. The selection corpus supplies a released generation to the production
+primitive; the wired actor suite covers live generations and persisted replay.
 
 The fuzz target consumes the same oracle:
 

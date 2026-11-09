@@ -2,7 +2,7 @@
 //! Status records announce phase changes; conversation entries announce replies.
 
 use super::{AgentPath, ConversationEntry, Error, Phase, inbox_tail};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 /// A settled phase and its answer position from the same actor checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +81,6 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<(String, AgentPath)>>>;
 
     /// `child`'s phase and exact answer position once it settled, else `None`.
-
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
@@ -104,13 +103,14 @@ pub(crate) async fn select_children(
 ) -> crate::Result<Vec<(String, AgentPath)>> {
     let parent = observer.agent();
     let mut children = Vec::with_capacity(references.len());
+    let mut seen = HashSet::with_capacity(references.len());
     for reference in references {
         let child = named_child(Some(observer), parent, reference, true)
             .await?
             .ok_or_else(|| {
                 crate::Error::Invalid(format!("{reference} names no child of this agent"))
             })?;
-        if !children.iter().any(|(_, known)| *known == child) {
+        if seen.insert(wait_identity(&child)) {
             children.push((reference.clone(), child));
         }
     }
@@ -146,4 +146,16 @@ pub(crate) async fn named_child(
         }
         super::SpawnResolution::Free(_) => Ok(None),
     }
+}
+
+#[inline]
+fn wait_identity(child: &AgentPath) -> [u8; 16] {
+    #[cfg(any(test, feature = "test-support"))]
+    SELECTED_IDENTITIES.with(|count| count.set(count.get() + 1));
+    child.id_bytes()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static SELECTED_IDENTITIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

@@ -1,9 +1,65 @@
 //! Invariants over the production resolver, shared by corpus replay and fuzzing.
 use super::*;
+use crate::agent::SELECTED_IDENTITIES as IDENTITIES;
 use std::cell::Cell;
 
-thread_local! {
-    pub(super) static IDENTITIES: Cell<usize> = const { Cell::new(0) };
+// Every valid spawn name has one released generation in this selection input.
+// Live generations and replay binding are exercised by the wired actor suite.
+struct Selection(AgentPath);
+
+impl TurnChildren for Selection {
+    fn agent(&self) -> &AgentPath {
+        &self.0
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        _: &'a AgentPath,
+        _: &'a str,
+    ) -> BoxProviderFuture<'a, Result<crate::agent::SpawnResolution>> {
+        Box::pin(async { Ok(crate::agent::SpawnResolution::Free(1)) })
+    }
+
+    fn select<'a>(
+        &'a self,
+        _: crate::OperationId,
+        references: &'a [String],
+    ) -> BoxProviderFuture<'a, Result<Vec<(String, AgentPath)>>> {
+        Box::pin(crate::agent::select_children(self, references))
+    }
+
+    fn settled<'a>(
+        &'a self,
+        _: &'a AgentPath,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::agent::Settlement>>> {
+        unreachable!("selection never observes settlement")
+    }
+
+    fn answer<'a>(&'a self, _: &'a AgentPath, _: u64) -> BoxProviderFuture<'a, Result<String>> {
+        unreachable!("selection never reads an answer")
+    }
+}
+
+fn waited<'de>(
+    parent: &AgentPath,
+    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
+) -> std::result::Result<(Vec<(String, AgentPath)>, u32, Option<u64>), ToolResult> {
+    futures::executor::block_on(super::waited(
+        &Selection(parent.clone()),
+        crate::OperationId::from_bytes([1; 16]),
+        arguments,
+    ))
+    .map_err(super::super::rejected_input)
+}
+
+fn named_child(parent: &AgentPath, reference: &str) -> Option<AgentPath> {
+    futures::executor::block_on(crate::agent::named_child(
+        Some(&Selection(parent.clone())),
+        parent,
+        reference,
+        true,
+    ))
+    .unwrap()
 }
 
 /// Fuzz container: a canonical parent path and the original tool argument value.
@@ -122,7 +178,7 @@ mod tests {
             let foreign =
                 named_child(&foreign_parent, foreign["agents"][0].as_str().unwrap()).unwrap();
             let parent = AgentPath::try_from(parent).unwrap();
-            let worker = spawned_child(&parent, "worker").unwrap();
+            let worker = named_child(&parent, "worker").unwrap();
             let names = ["worker".to_owned(), worker.to_string()];
             // Exhaust every alias ordering through length six, then vary the
             // quorum on both sides of the actual distinct-child count.

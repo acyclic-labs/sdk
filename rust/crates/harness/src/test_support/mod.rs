@@ -2,14 +2,6 @@
 
 pub use acyclic_harness_core::test_support::*;
 
-/// Calls the state owner's production separation and directory admission boundary.
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub fn separated_state_directory(
-    path: &std::path::Path,
-    checkout: Option<&std::path::Path>,
-) -> crate::Result<std::path::PathBuf> {
-    crate::local::owner::separated_directory(path, checkout)
-}
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",

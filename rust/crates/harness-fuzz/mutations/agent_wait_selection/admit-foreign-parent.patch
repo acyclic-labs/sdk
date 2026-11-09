@@ -1,12 +1,12 @@
---- a/rust/crates/harness-core/src/tools/agents.rs
-+++ b/rust/crates/harness-core/src/tools/agents.rs
-@@ -413,7 +413,8 @@
- /// path of one of its children, open or settled.
- fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
+--- a/rust/crates/harness-core/src/agent/settled.rs
++++ b/rust/crates/harness-core/src/agent/settled.rs
+@@ -126,7 +126,8 @@
+     released: bool,
+ ) -> crate::Result<Option<AgentPath>> {
      if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
--        return path.is_child_of(agent).then_some(path);
-+        let _ = path.is_child_of(agent);
-+        return Some(path);
+-        return Ok(path.is_child_of(parent).then_some(path));
++        let _ = path.is_child_of(parent);
++        return Ok(Some(path));
      }
-     spawned_child(agent, reference).ok()
- }
+     if parent.depth() == super::MAX_DEPTH || super::spawn_names::spawn_intent(reference, 0).is_err()
+     {

@@ -39,7 +39,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -155,7 +155,10 @@ impl AgentTool {
     ) -> Result<ToolResult> {
         let turn = &*self.turn;
         if self.name == "wait" {
-            return match self.prepare_wait(invocation.operation_id, &invocation.arguments, true).await? {
+            return match self
+                .prepare_wait(invocation.operation_id, &invocation.arguments, true)
+                .await?
+            {
                 ToolPreparation::Ready(result) => Ok(result),
                 ToolPreparation::Deferred(_) => {
                     Err(Error::Conflict("released wait deferred its result".into()))
@@ -378,15 +381,23 @@ impl AgentTool {
 
     /// Select every status and answer position once under this turn's
     /// authority. Readiness and the result consume the same observations.
-    async fn prepare_wait(&self, operation: crate::OperationId, arguments: &Value, released: bool) -> Result<ToolPreparation> {
+    async fn prepare_wait(
+        &self,
+        operation: crate::OperationId,
+        arguments: &Value,
+        released: bool,
+    ) -> Result<ToolPreparation> {
         let Some(observer) = &self.turn.observer else {
             return Ok(ToolPreparation::Ready(rejected(
                 "this host observes no children",
             )));
         };
-        let (children, mut need, timeout_ms) = match waited(&**observer, operation, arguments.clone()).await {
+        let (children, mut need, timeout_ms) = match waited(&**observer, operation, arguments).await
+        {
             Ok(waited) => waited,
-            Err(error @ Error::Invalid(_)) => return Ok(ToolPreparation::Ready(super::rejected_input(error))),
+            Err(error @ Error::Invalid(_)) => {
+                return Ok(ToolPreparation::Ready(super::rejected_input(error)));
+            }
             Err(error) => return Err(error),
         };
         let observations = futures::future::try_join_all(children.iter().map(|(name, child)| {
@@ -475,13 +486,13 @@ fn peer_grants(
 /// naming it, how many must settle and its timeout; the model's error when
 /// the input names none, names a non-child, or needs none or more than it
 /// names.
-async fn waited(
+async fn waited<'de>(
     observer: &dyn TurnChildren,
     operation: crate::OperationId,
-    arguments: Value,
+    arguments: impl serde::Deserializer<'de, Error = serde_json::Error>,
 ) -> Result<(Vec<(String, AgentPath)>, u32, Option<u64>)> {
-    let input: WaitAgentInput =
-        serde_json::from_value(arguments).map_err(|error| Error::Invalid(error.to_string()))?;
+    let input: WaitAgentInput = WaitAgentInput::deserialize(arguments)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
     let children = observer.select(operation, &input.agents).await?;
     if children.is_empty() {
         return Err(Error::Invalid("wait names no child".into()));
@@ -494,13 +505,6 @@ async fn waited(
         )));
     }
     Ok((children, need, input.timeout_ms))
-}
-
-#[inline]
-fn wait_identity(child: &AgentPath) -> [u8; 16] {
-    #[cfg(any(test, feature = "test-support"))]
-    selection_checks::IDENTITIES.with(|count| count.set(count.get() + 1));
-    child.id_bytes()
 }
 
 #[cfg(any(test, feature = "test-support"))]

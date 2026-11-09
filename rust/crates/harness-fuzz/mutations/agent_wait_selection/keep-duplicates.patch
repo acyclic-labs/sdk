@@ -1,11 +1,11 @@
---- a/rust/crates/harness-core/src/tools/agents.rs
-+++ b/rust/crates/harness-core/src/tools/agents.rs
-@@ -437,7 +437,7 @@
-         };
-         // Resolution already checked the complete parent. Within that one
-         // parent the fixed-size child identity suffices; retain its first name.
+--- a/rust/crates/harness-core/src/agent/settled.rs
++++ b/rust/crates/harness-core/src/agent/settled.rs
+@@ -110,7 +110,7 @@
+             .ok_or_else(|| {
+                 crate::Error::Invalid(format!("{reference} names no child of this agent"))
+             })?;
 -        if seen.insert(wait_identity(&child)) {
 +        if { seen.insert(wait_identity(&child)); true } {
-             children.push((reference, child));
+             children.push((reference.clone(), child));
          }
      }

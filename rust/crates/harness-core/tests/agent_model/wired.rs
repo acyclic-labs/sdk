@@ -23,12 +23,12 @@ use acyclic_stream::{
 };
 use std::sync::Arc;
 
-#[path = "wired/spawn_names.rs"]
-mod spawn_names;
 #[path = "wired/preparation.rs"]
 mod preparation;
 #[path = "wired/settlement.rs"]
 mod settlement;
+#[path = "wired/spawn_names.rs"]
+mod spawn_names;
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
