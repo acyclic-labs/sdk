@@ -451,6 +451,50 @@ pub(super) fn with_parent_leaf<W: NativeHostWork, T>(
 }
 
 #[cfg(test)]
+mod regular_file_tests {
+    use super::*;
+
+    #[test]
+    fn regular_file_admission_preserves_bytes_and_rejects_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("input");
+        std::fs::write(&path, b"original input")?;
+        assert_eq!(read_regular_file(&path)?, b"original input");
+        assert!(read_regular_file(temporary.path()).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_file_admission_rejects_links() -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("input");
+        let link = temporary.path().join("link");
+        std::fs::write(&path, b"original input")?;
+        std::os::unix::fs::symlink(&path, &link)?;
+        assert!(read_regular_file(&link).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_file_admission_refuses_a_fifo_without_a_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("pipe");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        // SAFETY: name is terminated and remains live throughout mkfifo.
+        if unsafe { libc::mkfifo(name.as_ptr(), 0o600) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        assert!(read_regular_file(&path).is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod prepared_leaf_tests {
     use super::*;
 

@@ -11,6 +11,44 @@ use std::{
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
 
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_schema_links_are_refused_before_model_dispatch() {
+    let fixture = fixture();
+    let model = model(fixture._directory.path()).await;
+    let schema = fixture._directory.path().join("schema.json");
+    let link = fixture._directory.path().join("schema-link.json");
+    std::fs::write(&schema, br#"{"type":"object"}"#).unwrap();
+    std::os::unix::fs::symlink(&schema, &link).unwrap();
+    let refused = graphcoder(
+        &fixture,
+        &model.catalog,
+        vec![
+            "--operation",
+            "schema-admission",
+            "--output-format",
+            "jsonl",
+            "--output-schema",
+            link.to_str().unwrap(),
+            "exec",
+            "unadmitted input",
+        ],
+        "",
+    )
+    .await;
+    assert!(!refused.status.success());
+    let failure: Value = serde_json::from_str(
+        String::from_utf8_lossy(&refused.stdout)
+            .lines()
+            .last()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(failure["step"], "prepare_output");
+    assert_eq!(model.generated(), 0);
+    model.close().await;
+}
+
 #[path = "../examples/embedded.rs"]
 mod embedded;
 
