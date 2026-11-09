@@ -53,9 +53,9 @@ impl DirectoryRead {
         let Some(entry) = page.entries.pop() else {
             return false;
         };
-        let owner = if page.ownership.has_native_custody() {
+        let owner = if page._ownership.has_native_custody() {
             Some(
-                page.ownership
+                page._ownership
                     .split_owned_payload(entry.name.capacity() as u64)
                     .expect("source page owns each name"),
             )

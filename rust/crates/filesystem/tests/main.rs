@@ -47,6 +47,10 @@ mod access;
 #[cfg(not(loom))]
 mod path_properties;
 
+#[cfg(all(feature = "native-mount", not(loom)))]
+#[path = "cases/directory_cursor.rs"]
+mod directory_cursor;
+
 #[cfg(feature = "fuzzing")]
 #[path = "cases/workspace_names.rs"]
 #[cfg(not(loom))]

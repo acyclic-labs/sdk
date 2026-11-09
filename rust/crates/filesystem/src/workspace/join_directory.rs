@@ -499,26 +499,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
             let view = &rendered.value;
             let path = self.conflict_file_path(&view.key)?;
             let (path, bytes) = if view.kind == ConflictKind::Text {
-                use crate::MergeDriver;
-                let resolution = crate::DefaultTextMergeDriver
-                    .resolve(view)
-                    .map_err(|_| WorkspaceError::InvalidMergeResolution)?;
-                let text = match resolution {
-                    MergeResolution::Text(text) => text,
-                    MergeResolution::Select(side) => {
-                        let value = match side {
-                            ConflictSide::Base => rendered.value.base,
-                            ConflictSide::Ours => rendered.value.ours,
-                            ConflictSide::Theirs => rendered.value.theirs,
-                        };
-                        let ConflictValue::Text(text) = value else {
-                            return Err(WorkspaceError::InvalidMergeResolution);
-                        };
-                        text
-                    }
-                    _ => return Err(WorkspaceError::InvalidMergeResolution),
+                let (
+                    ConflictValue::Text(base),
+                    ConflictValue::Text(ours),
+                    ConflictValue::Text(theirs),
+                ) = (&view.base, &view.ours, &view.theirs)
+                else {
+                    return Err(WorkspaceError::InvalidMergeResolution);
                 };
-                (path, text.into_bytes().into())
+                let accounting = self.preview.accounting()?;
+                let merge = move || {
+                    let mut accounting = accounting;
+                    crate::kernel::allocation::writer::text_merge(
+                        base,
+                        ours,
+                        theirs,
+                        &mut accounting,
+                    )
+                    .map_err(WorkspaceError::from)
+                };
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let bytes = crate::test_support::observe_text_output(merge)?;
+                #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+                let bytes = merge()?;
+                (path, bytes)
             } else {
                 let absent = |value: &ConflictValue| {
                     matches!(value, ConflictValue::Absent | ConflictValue::Binding(None))

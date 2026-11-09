@@ -2,6 +2,26 @@
 
 use std::borrow::Cow;
 
+/// Original-invocation allocation and work admission for the shared merger.
+pub mod admitted;
+
+struct Unbounded;
+
+impl admitted::Work for Unbounded {
+    type Allocation = ();
+    type Error = std::convert::Infallible;
+
+    fn allocate(&mut self, _bytes: usize) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn copy(&mut self, _bytes: usize) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    fn examine(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 /// Result of one three-way UTF-8 merge.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextMerge {
@@ -186,31 +206,11 @@ pub fn merge_text(
     ours_label: &str,
     theirs_label: &str,
 ) -> TextMerge {
-    use diffy::{ConflictStyle, MergeOptions};
-
-    let mut options = MergeOptions::new();
-    options
-        .set_conflict_style(ConflictStyle::Diff3)
-        .set_conflict_marker_length(7);
-    let base_value = with_trailing_newline(base);
-    let ours_value = with_trailing_newline(ours);
-    let theirs_value = with_trailing_newline(theirs);
-    match options.merge(&base_value, &ours_value, &theirs_value) {
-        Ok(mut content) => {
-            if !result_has_trailing_newline(base, ours, theirs) {
-                content.pop();
-            }
-            TextMerge {
-                clean: true,
-                content,
-            }
-        }
-        Err(conflicted) => TextMerge {
-            clean: false,
-            content: conflicted
-                .replace("<<<<<<< ours", &format!("<<<<<<< {ours_label}"))
-                .replace(">>>>>>> theirs", &format!(">>>>>>> {theirs_label}")),
-        },
+    let merged = admitted::merge(base, ours, theirs, ours_label, theirs_label, &mut Unbounded)
+        .unwrap_or_else(|_| std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>()));
+    TextMerge {
+        clean: merged.clean,
+        content: merged.content,
     }
 }
 
@@ -240,6 +240,85 @@ pub fn conflict_hunks(content: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_merger_preserves_independent_edits_and_conflict_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for our_line in 0..4 {
+            for their_line in 0..4 {
+                for trailing in [false, true] {
+                    let build = |changed: Option<(usize, &str)>| -> Result<String, &'static str> {
+                        let mut lines = ["alpha", "beta", "gamma", "delta"];
+                        if let Some((index, text)) = changed {
+                            *lines.get_mut(index).ok_or("generated line index")? = text;
+                        }
+                        let text = lines.join("\n");
+                        Ok(if trailing { format!("{text}\n") } else { text })
+                    };
+                    let base = build(None)?;
+                    let ours = build(Some((our_line, "OURS")))?;
+                    let theirs = build(Some((their_line, "THEIRS")))?;
+                    let base_value = with_trailing_newline(&base);
+                    let ours_value = with_trailing_newline(&ours);
+                    let theirs_value = with_trailing_newline(&theirs);
+                    let (clean, mut content) = match diffy::MergeOptions::new().merge(
+                        &base_value,
+                        &ours_value,
+                        &theirs_value,
+                    ) {
+                        Ok(text) => (true, text),
+                        Err(text) => (false, text),
+                    };
+                    if clean && !trailing {
+                        content.pop();
+                    }
+                    assert_eq!(
+                        merge_text(&base, &ours, &theirs, "ours", "theirs"),
+                        TextMerge { clean, content }
+                    );
+                }
+            }
+        }
+        let texts = [
+            "",
+            "a\n",
+            "b\n",
+            "a\nb\n",
+            "b\na\n",
+            "a\nb\na\n",
+            "a\na\nb\n",
+            "π\nσ",
+        ];
+        for base in texts {
+            for ours in texts {
+                for theirs in texts {
+                    let values = [
+                        with_trailing_newline(base),
+                        with_trailing_newline(ours),
+                        with_trailing_newline(theirs),
+                    ];
+                    let [base_value, ours_value, theirs_value] = &values;
+                    let (clean, mut content) = match diffy::MergeOptions::new().merge(
+                        base_value,
+                        ours_value,
+                        theirs_value,
+                    ) {
+                        Ok(text) => (true, text),
+                        Err(text) => (false, text),
+                    };
+                    if clean && !result_has_trailing_newline(base, ours, theirs) {
+                        content.pop();
+                    }
+                    assert_eq!(
+                        merge_text(base, ours, theirs, "ours", "theirs"),
+                        TextMerge { clean, content },
+                        "base={base:?}, ours={ours:?}, theirs={theirs:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn clean_merge_preserves_content_and_newline_choice() {
