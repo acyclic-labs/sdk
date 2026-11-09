@@ -187,7 +187,7 @@ mod tests {
     fn startup_abort_releases_original_native_producers() -> io::Result<()> {
         for count in [1, 2] {
             let pool = Pool::open(NonZeroUsize::new(count).unwrap())?;
-            std::thread::scope(|scope| {
+            std::thread::scope(|scope| -> io::Result<()> {
                 // The omission control observes the missing terminal at its
                 // publication point. Its rescue releases the actual startup wait
                 // before scoped joins, even when that assertion unwinds.
