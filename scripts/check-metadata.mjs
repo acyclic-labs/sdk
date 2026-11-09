@@ -216,13 +216,8 @@ for (const path of [
 }
 const filesystemVersion = compatibility.families.filesystem.version;
 const filesystemCrateVersion = compatibility.families.filesystem.crateVersion ?? filesystemVersion;
-for (const path of [
-  "typescript/packages/filesystem/package.json",
-  "typescript/packages/filesystem/generated/wasm/package.json",
-]) {
-  if ((await load(path)).version !== filesystemVersion) {
-    throw new Error(`filesystem package version mismatch: ${path}`);
-  }
+if ((await load("typescript/packages/filesystem/package.json")).version !== filesystemVersion) {
+  throw new Error("filesystem package version mismatch: typescript/packages/filesystem/package.json");
 }
 for (const path of [
   "rust/crates/filesystem-napi/Cargo.toml",

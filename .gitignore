@@ -31,8 +31,4 @@ node_modules/
 /typescript/packages/harness/src/conversation-page-contract.ts
 /typescript/packages/harness/src/private-directory-page-contract.ts
 /typescript/packages/harness/src/limits-contract.ts
-!/typescript/packages/filesystem/generated/wasm/
-/typescript/packages/filesystem/generated/wasm/*
-!/typescript/packages/filesystem/generated/wasm/package.json
-!/typescript/packages/filesystem/generated/wasm/.npmignore
 /rust/crates/*/src/generated/
