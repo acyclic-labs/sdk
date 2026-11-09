@@ -14,7 +14,11 @@ use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
 mod cancellation;
+mod live;
+#[cfg(test)]
+mod live_tests;
 mod native;
+mod watched;
 use cancellation::CancelOnDrop;
 
 /// Protective per-message bounds, independent of catalog size and task allowances.
@@ -57,6 +61,7 @@ struct Connected {
     transport: Arc<dyn McpToolTransport>,
     tools: Vec<McpToolDefinition>,
     binding: [u8; 32],
+    generation: u64,
 }
 
 impl McpConfig {
@@ -110,7 +115,8 @@ impl McpConfig {
                     Ok(connected) => {
                         let name = name.clone();
                         register_before(deadline, move |check| {
-                            register(name, &server, connected, limits, check)
+                            check()?;
+                            live::LiveCatalog::new(name, server, connected, limits)
                         })
                         .await
                     }
@@ -231,11 +237,9 @@ fn register(
             .iter()
             .map(|tool| format!("tool:call:mcp.{}.{}", catalog.server, tool.name)),
     );
-    if !catalog.tools.is_empty() {
-        capabilities
-            .0
-            .insert(format!("mcp:call:{}", catalog.server));
-    }
+    capabilities
+        .0
+        .insert(format!("mcp:call:{}", catalog.server));
     Ok((tools, capabilities))
 }
 

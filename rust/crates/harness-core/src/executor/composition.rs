@@ -24,6 +24,7 @@ impl StockExecutor {
             provider,
             context,
             tools,
+            epoch_tools: None,
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
             hooks: None,
             #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
@@ -108,11 +109,18 @@ impl StockExecutor {
                 "executor already has a context manifest".into(),
             ));
         }
-        let (tools, stage) = crate::context::ContextManifest::bind(
+        let bytes = reader
+            .read(&reference, self.limits.render_bytes, None, None)?
+            .await?;
+        let manifest = crate::context::ContextManifest::decode(&bytes, self.limits)?;
+        self.epoch_tools = Some(Arc::new(manifest.tools));
+        let (tools, stage) = crate::context::ContextManifest::bind_observed(
             reference,
             reader.as_ref(),
             self.tools,
             self.limits,
+            None,
+            false,
         )
         .await?;
         self.tools = tools;

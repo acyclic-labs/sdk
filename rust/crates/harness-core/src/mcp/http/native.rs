@@ -34,18 +34,21 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
+            let streaming = request.method == "GET";
+            let mut builder = self.0.request(method, &request.endpoint).body(request.body);
+            if !streaming {
+                builder = builder.timeout(Duration::from_millis(u64::from(request.timeout_ms)));
+            }
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
             }
-            let response = builder
-                .send()
-                .await
-                .map_err(|_| Error::Indeterminate(operation))?;
+            let response = tokio::time::timeout(
+                Duration::from_millis(u64::from(request.timeout_ms)),
+                builder.send(),
+            )
+            .await
+            .map_err(|_| Error::Indeterminate(operation))?
+            .map_err(|_| Error::Indeterminate(operation))?;
             let status = response.status().as_u16();
             let headers = response
                 .headers()
@@ -63,7 +66,11 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             Ok(McpHttpResponse {
                 status,
                 headers,
-                body: Box::pin(bounded(body, request.maximum_response_bytes, operation)),
+                body: if streaming {
+                    Box::pin(body)
+                } else {
+                    Box::pin(bounded(body, request.maximum_response_bytes, operation))
+                },
             })
         })
     }

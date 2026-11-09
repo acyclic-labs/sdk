@@ -112,7 +112,7 @@ impl LocalHarness {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ContextEpoch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let tools = self.declared_tools()?;
-            let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint, &tools)?;
+            let operation = ContextEpoch::operation(agent.path.as_str(), agent.checkpoint)?;
             ContextEpoch::open(publisher, operation, self.limits, || {
                 self.live_manifest(binding, publisher, tools)
             })
@@ -834,16 +834,16 @@ mod tests {
         // the path bound, and agents or checkpoints never share an epoch.
         #[test]
         fn epochs_are_distinct_per_agent_and_checkpoint(agent in "[a-z]{1,16}", other in "[a-z]{1,16}", checkpoint in proptest::option::of(any::<u64>()), next in any::<u64>()) {
-            let operation = ContextEpoch::operation(&agent, checkpoint, &[])?;
+            let operation = ContextEpoch::operation(&agent, checkpoint)?;
             let path = ContextEpoch::path(operation);
             crate::conversation::validate_content_path(&path, &mut None)?;
             prop_assert!(path.len() <= Limits::default().path_bytes);
-            prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint, &[])?, operation);
+            prop_assert_eq!(ContextEpoch::operation(&agent, checkpoint)?, operation);
             if agent != other {
-                prop_assert_ne!(ContextEpoch::operation(&other, checkpoint, &[])?, operation);
+                prop_assert_ne!(ContextEpoch::operation(&other, checkpoint)?, operation);
             }
             if checkpoint != Some(next) {
-                prop_assert_ne!(ContextEpoch::operation(&agent, Some(next), &[])?, operation);
+                prop_assert_ne!(ContextEpoch::operation(&agent, Some(next))?, operation);
             }
         }
     }

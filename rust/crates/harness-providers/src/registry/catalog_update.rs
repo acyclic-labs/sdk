@@ -53,8 +53,6 @@ impl Registry {
         } else {
             retained
         };
-        // Admission observes only the default's provider, into a new generation.
-        let mut observed = selection::Observations::default();
         let validation: Result<()> = (|| {
             if let Some(default) = default.as_ref().or(retained) {
                 let (provider, name) = default
@@ -69,7 +67,7 @@ impl Registry {
                 let credential = if entry.authentication.secret_reference().is_some() {
                     Credential::Missing
                 } else {
-                    self.observe(&mut observed, provider)?
+                    self.selected_credential(provider, entry)?
                 };
                 let counted = selection::counts_input(entry, name, credential);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -82,15 +80,6 @@ impl Registry {
             }
             Ok(())
         })();
-        self.selection
-            .publish(|current| {
-                if validation.is_ok() {
-                    *current = observed;
-                } else {
-                    current.adopt(observed);
-                }
-            })
-            .map_err(|()| invalid("credential selection lock poisoned"))?;
         validation?;
         self.providers.extend(
             changes

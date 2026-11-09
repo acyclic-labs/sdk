@@ -132,6 +132,7 @@ async fn envelope_and_callback_negative_controls() -> Result<()> {
             operation,
             4096,
             None,
+            &std::sync::atomic::AtomicU64::new(0),
         )
         .await,
         Err(Error::Unsupported(_))

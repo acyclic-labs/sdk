@@ -150,13 +150,11 @@ impl Opening {
             let mut opening = self;
             let installation = match &opening.settings {
                 Some(settings) => {
-                    let mcp =
-                        crate::native_settings::NativeSettings::load_mcp(Arc::clone(settings))
-                            .await?;
                     let root = std::fs::canonicalize(opening.config.project.root())
                         .map_err(Error::process_io)?;
-                    mcp.install(
+                    crate::mcp::McpConfig::install_watched(
                         opening.tools,
+                        Arc::clone(settings),
                         &root,
                         opening.config.mcp_limits,
                         Arc::new(crate::secrets::EnvSecrets),

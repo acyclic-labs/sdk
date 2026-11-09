@@ -77,6 +77,18 @@ pub struct HttpMcpTransport {
     maximum_bytes: u32,
     timeout_ms: u32,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
+    tools_generation: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+    notifications: Option<Arc<NotificationWatch>>,
+}
+
+#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+struct NotificationWatch(tokio::task::JoinHandle<()>);
+#[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+impl Drop for NotificationWatch {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl HttpMcpTransport {
@@ -147,7 +159,42 @@ impl HttpMcpTransport {
             maximum_bytes,
             timeout_ms,
             callbacks,
+            tools_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+            notifications: None,
         })
+    }
+
+    /// One GET event stream per connection, shared by every installed tool.
+    #[cfg(all(feature = "mcp-http", not(target_arch = "wasm32")))]
+    pub(super) fn watch_tools(&mut self) -> Result<()> {
+        let request = self.request("GET", Vec::new())?;
+        let provider = self.provider.clone();
+        let generation = self.tools_generation.clone();
+        self.notifications = Some(Arc::new(NotificationWatch(tokio::spawn(async move {
+            let operation = OperationId::new();
+            let result = async {
+                let response = provider.exchange(operation, request.clone()).await?;
+                if response.status == 405 {
+                    return Ok(());
+                }
+                if response.status != 200 {
+                    return Err(Error::Indeterminate(operation));
+                }
+                sse::notifications(
+                    response.body,
+                    operation,
+                    request.maximum_response_bytes,
+                    &generation,
+                )
+                .await
+            }
+            .await;
+            if result.is_err() {
+                generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            }
+        }))));
+        Ok(())
     }
 
     /// Constructs initialization for separate host admission.
@@ -235,6 +282,7 @@ impl HttpMcpTransport {
             operation,
             self.maximum_bytes,
             context.map(|context| (self, context)),
+            &self.tools_generation,
         )
         .await
     }
@@ -260,6 +308,16 @@ impl HttpMcpTransport {
 }
 
 impl McpToolTransport for HttpMcpTransport {
+    fn tools_generation(&self) -> u64 {
+        self.tools_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn list<'a>(
+        &'a self,
+        cursor: Option<String>,
+    ) -> BoxProviderFuture<'a, Result<rmcp::model::ListToolsResult>> {
+        Box::pin(self.list_tools(OperationId::new(), cursor))
+    }
     fn callback_policy(&self) -> Option<&McpCallbackPolicy> {
         self.callbacks.as_ref().map(|(policy, _)| policy)
     }

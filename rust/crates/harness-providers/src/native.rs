@@ -176,10 +176,16 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
+            let current = provider.current_credentials()?;
+            let provider = &current;
             let (names, name_custody) =
                 crate::tool_names::Names::funded(request.request(), Some(work))?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
-            let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
+            let auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
+            let mut auth = (
+                auth.0.map(|key| std::borrow::Cow::Owned(key.into_owned())),
+                auth.1,
+            );
             let (body, cache) = encode(
                 provider,
                 request,
@@ -208,6 +214,7 @@ pub(crate) fn generate<'a>(
             .await;
             NativeModelStream::new(work, || {
                 async_stream::try_stream! {
+                    let provider = &current;
                     let _name_custody = name_custody;
                     let mut attempt = dispatch::GenerationAttempt::new(provider.config.retry, dispatch_id);
                     let response = attempt.exchange(provider, &body, dispatch_id, &mut auth,
