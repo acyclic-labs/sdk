@@ -230,10 +230,12 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
     let projected = temporary.path().join("projected");
     std::fs::create_dir(&projected)?;
     let projected_name = HSTRING::from(projected.as_os_str());
+    let virtualization_root = HSTRING::from(temporary.path().as_os_str());
     let guid = GUID::from_u128(0x7feffaae_9cb5_46d6_9dfa_20c26f344870);
     // SAFETY: the directory name and virtualization identifier outlive the call.
     unsafe {
-        PrjMarkDirectoryAsPlaceholder(&projected_name, PCWSTR::null(), None, &raw const guid)
+        PrjMarkDirectoryAsPlaceholder(&virtualization_root, PCWSTR::null(), None, &raw const guid)?;
+        PrjMarkDirectoryAsPlaceholder(&virtualization_root, &projected_name, None, &raw const guid)
     }?;
     // SAFETY: the directory name remains live throughout the query.
     let state = unsafe {
@@ -262,7 +264,7 @@ fn name_query_reads_reparse_leaves_without_following_ancestors()
         .map_err(|(error, _)| error)?;
         let actual =
             query_metadata(&root, &wide, &mut &limited, || ())?.ok_or("tagged leaf fell back")?;
-        assert_eq!(actual.raw.ReparseTag, tag);
+        assert_eq!(actual.raw.ReparseTag, tag, "{path}: {actual:?}");
         assert_eq!(limited.receipt().backend_read_operations, 1);
         assert_eq!(limited.receipt().items_examined, wide.len() as u64);
         let expected = root.stat(&wide, &mut &work)?;

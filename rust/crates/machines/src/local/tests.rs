@@ -128,7 +128,8 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     assert_eq!(stderr, [0, 254, 4]);
     let original = execution.finish().await?;
     assert!(Arc::ptr_eq(&original.buffers, &buffers));
-    assert_eq!(std::fs::read(&marker)?, cwd.to_string_lossy().as_bytes());
+    let observed = std::fs::read(&marker)?;
+    assert_eq!(std::fs::canonicalize(std::str::from_utf8(&observed)?)?, cwd);
     std::fs::remove_file(marker)?;
     let mut lost = local
         .exec(

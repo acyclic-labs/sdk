@@ -21,6 +21,7 @@ tonic-prost-build.workspace = true
 workspace = true
 
 [dev-dependencies]
+acyclic-test-support = { path = "../rust/crates/test-support" }
 prost-types.workspace = true
 proptest.workspace = true
 tempfile = "3.27.0"

@@ -451,7 +451,11 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         observing.join().expect("early owner terminal must return");
         Ok(bridge)
     });
-    assert!(matches!(result, Err(Error::NotFound(_))));
+    assert!(
+        matches!(result, Err(Error::NotFound(_))),
+        "{:?}",
+        result.as_ref().err()
+    );
     assert_eq!(lock(&registry).bridges.len(), 1);
     assert_eq!(lock(&registry).located.len(), 1);
     assert!(Arc::ptr_eq(
