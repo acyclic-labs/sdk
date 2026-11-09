@@ -527,22 +527,41 @@ mod platform {
             self.change(&[event(REARM, libc::EVFILT_USER, 0, libc::NOTE_TRIGGER, 0)])
         }
 
-        pub(super) fn wait(&self, deadline: Option<u64>) -> io::Result<()> {
+        fn arm(&self, deadline: Option<u64>) -> io::Result<()> {
             match deadline {
-                // An absolute calendar timer; the clock-set notification
-                // covers a clock change made after it was armed.
-                Some(deadline) => self.change(&[event(
-                    TIMER,
-                    libc::EVFILT_TIMER,
-                    libc::EV_ADD | libc::EV_ONESHOT,
-                    libc::NOTE_ABSOLUTE | libc::NOTE_USECONDS,
-                    isize::try_from(deadline.saturating_mul(1000)).unwrap_or(isize::MAX),
-                )])?,
+                Some(deadline) => {
+                    // XNU converts calendar milliseconds to u64 nanoseconds.
+                    // Beyond that range, wait one representable interval and
+                    // let the shared driver re-read the original deadline.
+                    // Clock-set events also interrupt this interval.
+                    let (flags, milliseconds) = if deadline <= u64::MAX / 1_000_000 {
+                        (libc::NOTE_ABSOLUTE, deadline)
+                    } else {
+                        (
+                            0,
+                            deadline
+                                .saturating_sub(super::now_unix_ms())
+                                .min((u64::MAX / 2) / 1_000_000),
+                        )
+                    };
+                    self.change(&[event(
+                        TIMER,
+                        libc::EVFILT_TIMER,
+                        libc::EV_ADD | libc::EV_ONESHOT,
+                        flags,
+                        isize::try_from(milliseconds).unwrap_or(isize::MAX),
+                    )])?;
+                }
                 None => {
                     // Absent when it already fired or was never armed.
                     let _ = self.change(&[event(TIMER, libc::EVFILT_TIMER, libc::EV_DELETE, 0, 0)]);
                 }
             }
+            Ok(())
+        }
+
+        pub(super) fn wait(&self, deadline: Option<u64>) -> io::Result<()> {
+            self.arm(deadline)?;
             let mut ready = [event(0, 0, 0, 0, 0)];
             // SAFETY: one live event slot on an owned kqueue; no timeout.
             if unsafe {
@@ -582,6 +601,23 @@ mod platform {
             // SAFETY: cancels this waiter's own registration once.
             unsafe { notify_cancel(self.token) };
         }
+    }
+
+    #[test]
+    fn native_timer_accepts_deadlines_across_its_calendar_range() -> io::Result<()> {
+        let waiter = Waiter::new()?;
+        let calendar_end = u64::MAX / 1_000_000;
+        for deadline in [
+            0,
+            1,
+            calendar_end - 1,
+            calendar_end,
+            calendar_end + 1,
+            u64::MAX,
+        ] {
+            waiter.arm(Some(deadline))?;
+        }
+        waiter.arm(None)
     }
 }
 

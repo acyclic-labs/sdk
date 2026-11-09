@@ -383,7 +383,8 @@ impl AgentTool {
     /// reports: a settled child is named with the phase `wait` returns for
     /// it, so the two tools never disagree about one child.
     async fn unarchivable(&self, agent: &str) -> Result<String> {
-        let child = named_child(self.turn.observer.as_deref(), &self.turn.agent, agent, true).await?;
+        let child =
+            named_child(self.turn.observer.as_deref(), &self.turn.agent, agent, true).await?;
         let (Some(child), Some(observer)) = (child, &self.turn.observer) else {
             return Ok(format!("{agent} names no child of this agent"));
         };

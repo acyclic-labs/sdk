@@ -286,11 +286,11 @@ fn system_clock_keeps_its_original_deadline_after_runtime_retirement() -> TestRe
                 .is_pending(),
             "a live native producer must retain the future absolute deadline"
         );
-        drop(wait);
         // Exercise the same original native driver delivering an elapsed
         // deadline with no Tokio runtime, not a virtual time or mock callback.
         futures::executor::block_on(acyclic_native_runtime::WallAlarm::wait(0)?)?;
         futures::executor::block_on(SystemClock.sleep_until(0))?;
+        assert!(wait.as_mut().poll(&mut context).is_pending());
     }
     for polled_before_loss in [false, true] {
         let runtime = acyclic_native_runtime::testing::seeded_runtime(71)?;
