@@ -60,7 +60,11 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
 /// Returns compiler discovery and Cargo output directory errors.
 pub fn config() -> Result<Config, Box<dyn std::error::Error>> {
     let mut config = Config::new();
-    config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
+    config.protoc_executable(
+        std::env::var_os("PROTOC").map_or_else(protoc_bin_vendored::protoc_bin_path, |path| {
+            Ok(PathBuf::from(path))
+        })?,
+    );
     config.btree_map([".acyclic.objects.v1.ObjectMetadata.user"]);
     config.protoc_arg("--retain_options");
     Ok(config)
@@ -89,6 +93,17 @@ pub fn shared_protocols() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
 }
 
+/// Import root for the selected compiler's standard protobuf definitions.
+///
+/// # Errors
+/// Returns discovery errors when no explicit include directory is supplied.
+pub fn compiler_includes() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(std::env::var_os("PROTOC_INCLUDE")
+        .map_or_else(protoc_bin_vendored::include_path, |path| {
+            Ok(PathBuf::from(path))
+        })?)
+}
+
 /// Compile messages and selected services; only protocol changes rerun codegen.
 ///
 /// # Errors
@@ -99,7 +114,7 @@ pub fn compile(
     protos: &[&str],
     descriptor: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let include = protoc_bin_vendored::include_path()?;
+    let include = compiler_includes()?;
     let manifest =
         PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?);
     let output =
@@ -125,6 +140,7 @@ pub fn descriptor(
     manifest: &std::path::Path,
     protos: &[&str],
     output: &std::path::Path,
+    shared: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = config()?;
     config.file_descriptor_set_path(output);
@@ -133,8 +149,8 @@ pub fn descriptor(
         &paths,
         &[
             manifest.join("proto"),
-            shared_protocols(),
-            protoc_bin_vendored::include_path()?,
+            shared.to_path_buf(),
+            compiler_includes()?,
         ],
     )?;
     std::fs::write(output, canonicalize(&std::fs::read(output)?, protos)?)?;

@@ -150,6 +150,12 @@ impl Delivery {
         error: DemandError,
         work: &mut W,
     ) {
+        // Ending the subscription's own work invalidates delivery, but does
+        // not turn its birth-paid physical cleanup into cancelled work.
+        if matches!(error, DemandError::Cancelled) && self.cancellation.is_cancelled() {
+            self.notify_lost();
+            return;
+        }
         self.report_failure(&error);
         self.retain_failure(error, work);
         self.notify_lost();

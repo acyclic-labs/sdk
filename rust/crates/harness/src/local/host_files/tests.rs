@@ -431,10 +431,10 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
     replacement_observer
         .join()
         .expect("replacement owner terminal must return");
+    drop((replacement, replacement_alias));
 
     // Real owner loss before registration is not allowed to publish an alias
     // with no future producer. Join that same native observer inside setup.
-    let early_lock = ownership(&cwd)?;
     let original_directory = cwd.join(DIRECTORY);
     let retained_directory = original_directory.with_file_name("retained-host-files");
     let result = Registry::bridge(&registry, &cwd, |directory, endpoint| {
@@ -442,16 +442,30 @@ fn owner_exit_retires_only_its_original_registry_entries() -> Result<()> {
         // same directory even if its name changes before the owner probe.
         std::fs::rename(&original_directory, &retained_directory).map_err(storage)?;
         std::fs::create_dir(&original_directory).map_err(storage)?;
+        // Acquire ownership after moving the directory: Windows cannot rename
+        // a directory with open descendants, even with delete sharing. This
+        // still loses the admitted owner before registry publication.
+        let early_lock = acyclic_native_runtime::FileLock::try_acquire(
+            directory
+                .open_file(Path::new("owner.lock"), true)
+                .map_err(native_file_error)?,
+            acyclic_native_runtime::FileLockMode::Exclusive,
+        )
+        .map_err(storage)?;
         let bridge = Bridge::open(directory, endpoint)
             .expect("discovery retains its original directory through connection admission");
         std::fs::remove_dir(&original_directory).map_err(storage)?;
-        std::fs::rename(&retained_directory, &original_directory).map_err(storage)?;
         let observing = observer(&bridge);
         drop(early_lock);
         observing.join().expect("early owner terminal must return");
         Ok(bridge)
     });
-    assert!(matches!(result, Err(Error::NotFound(_))));
+    std::fs::rename(&retained_directory, &original_directory).map_err(storage)?;
+    assert!(
+        matches!(result, Err(Error::NotFound(_))),
+        "{:?}",
+        result.as_ref().err()
+    );
     assert_eq!(lock(&registry).bridges.len(), 1);
     assert_eq!(lock(&registry).located.len(), 1);
     assert!(Arc::ptr_eq(

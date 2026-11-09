@@ -76,6 +76,7 @@ fn run() -> io::Result<()> {
                 &root.join("rust/crates").join(family),
                 protos,
                 &output.join(baseline),
+                &root.join("compatibility/proto"),
             )
             .map_err(|error| io::Error::other(error.to_string()))?;
         }
