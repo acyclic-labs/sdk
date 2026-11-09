@@ -8,6 +8,8 @@ pub(crate) mod media_type;
     not(loom)
 ))]
 mod skills_tests;
+#[cfg(all(test, not(loom)))]
+mod tests;
 
 #[cfg(all(
     feature = "filesystem-local",
