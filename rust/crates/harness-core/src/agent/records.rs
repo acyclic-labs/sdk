@@ -901,7 +901,9 @@ pub(super) fn settlement_frame(input: super::TurnInput) -> crate::Result<super::
         inbox: u64::MAX,
         input,
         output: file.clone(),
-        outcome: super::TurnOutcome::RestoreConflict,
+        outcome: super::TurnOutcome::Failed {
+            message: "a".repeat(MAX_MESSAGE_BYTES),
+        },
         goal: Some(crate::OperationId::from_bytes([255; 16])),
         targets: Some(file.clone()),
         steering: Some(super::SteeringTranscript {
