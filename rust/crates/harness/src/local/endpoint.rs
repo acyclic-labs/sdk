@@ -21,6 +21,7 @@ pub(super) const CREDENTIAL: u32 = 0;
 /// A session bound to one served agent tree.
 #[derive(Clone)]
 pub struct Connection {
+    pub(super) session: Client,
     // One immutable authenticated selection, shared by commands and follows.
     pub(super) controls: Arc<AgentControls>,
     pub(super) root: AgentPath,
@@ -28,7 +29,7 @@ pub struct Connection {
     pub(super) tools: String,
     /// The in-process harness serving the tree: a connection keeps it
     /// running, so its prompts' turns run for as long as any clone lives.
-    _host: Option<Arc<LocalHarness>>,
+    pub(super) _host: Option<Arc<LocalHarness>>,
 }
 
 fn exchange(error: impl std::fmt::Display) -> Error {
@@ -101,6 +102,7 @@ impl Connection {
             .await
             .map_err(exchange)?;
         Ok(Self {
+            session: self.session.clone(),
             controls: Arc::new(controls),
             root: agent,
             tools,
@@ -189,7 +191,7 @@ impl Connection {
         session
             .register_credential(CREDENTIAL, credential.into())
             .map_err(exchange)?;
-        let (controls, tools) = AgentControls::discover(session, CREDENTIAL)
+        let (controls, tools) = AgentControls::discover(session.clone(), CREDENTIAL)
             .await
             .map_err(exchange)?;
         let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root {}).await?
@@ -197,6 +199,7 @@ impl Connection {
             return Err(Error::Conflict("the endpoint named no root".into()));
         };
         Ok(Self {
+            session,
             controls: Arc::new(controls),
             root,
             tools,
@@ -246,7 +249,11 @@ impl LocalHarness {
     /// session is not bound to it: what the tree already committed (usage,
     /// history, turns) stays readable after a delivery failure stops that
     /// runtime, and each read answers from those records.
-    async fn attach(self: &Arc<Self>, agent: Option<AgentPath>, live: bool) -> Result<Connection> {
+    pub(super) async fn attach(
+        self: &Arc<Self>,
+        agent: Option<AgentPath>,
+        live: bool,
+    ) -> Result<Connection> {
         self.agents().await?;
         let hosted = self
             .agents
@@ -286,6 +293,7 @@ impl LocalHarness {
             .await
             .map_err(exchange)?;
         Ok(Connection {
+            session: connection.session,
             controls: Arc::new(controls),
             root: agent,
             tools,
