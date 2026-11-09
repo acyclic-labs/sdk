@@ -14,8 +14,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 use wire::{session_data::Item, session_frame::Body, session_subscription::Kind};
 
-/// Session admission version. Checked before credentials or the first request.
-pub const VERSION: u32 = 3;
+pub use crate::SESSION_PROTOCOL_VERSION as VERSION;
 
 mod authority;
 #[cfg(any(test, feature = "test-support"))]

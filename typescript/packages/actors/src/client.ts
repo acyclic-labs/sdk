@@ -372,17 +372,23 @@ export async function admitDeploymentBindings(input: readonly DeploymentDeclarat
 
 let wasmModulePromise: Promise<WasmActorsModule> | undefined;
 
-async function loadWasmModule(): Promise<WasmActorsModule> {
+/** Initialize the shared bridge with a host-compiled module, or reuse initSync's
+ * instance. File-backed packages load bytes lazily; URL-backed packages fetch. */
+export async function loadWasmModule(input?: WebAssembly.Module): Promise<WasmActorsModule> {
   wasmModulePromise ??= (async () => {
     // @ts-ignore generated Rust WASM module is intentionally untracked
     const module = await import("../generated/wasm/acyclic_actors_wasm.js") as unknown as WasmActorsModule;
-    if (isNodeRuntime()) {
-      const fs = await import("node:fs/promises");
-      const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
-      await module.default(bytes);
-    } else {
-      await module.default();
-    }
+    await module.default({
+      // wasm-bindgen returns its existing instance before reading this property.
+      // Keep even the fs import behind that check, including after external initSync.
+      get module_or_path() {
+        if (input !== undefined) return input;
+        const url = new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url);
+        return url.protocol === "file:"
+          ? import("node:fs/promises").then(fs => fs.readFile(url))
+          : url;
+      },
+    });
     return module;
   })().catch(error => {
     wasmModulePromise = undefined;
