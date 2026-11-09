@@ -70,7 +70,8 @@ cargo test --all-features --locked
 
 The product workspace shares its root `Cargo.lock` with compatible fuzzers,
 proofs and tools. Root commands include the SDK and the codec, Markdown and ts-rs
-fuzzers and ID codec proofs, so changes to their dependencies are checked together.
+fuzzers, the patched ts-rs derive crate and ID codec proofs, so changes to their
+dependencies are checked together.
 Other tools remain explicitly selected with `-p PACKAGE`. `--workspace` also
 includes compiler-negative fixtures, so use it only for that intended scope.
 Documentation and generation packages, their file-identity helper and both fuzz
