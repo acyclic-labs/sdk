@@ -1,0 +1,13 @@
+diff --git a/rust/crates/actors/src/local/runtime.rs b/rust/crates/actors/src/local/runtime.rs
+index 04df8b2add1..68c8695d99c 100644
+--- a/rust/crates/actors/src/local/runtime.rs
++++ b/rust/crates/actors/src/local/runtime.rs
+@@ -786,7 +786,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
+             slot.registration.update_alarm(state.alarm())?;
+             let now = self.clock.now_unix_ms();
+             let (trigger, record) = match state.alarm().pending() {
+-                Some(deadline) if deadline <= now => (
++                Some(deadline) if deadline <= now.saturating_add(100) => (
+                     Trigger::Alarm {
+                         generation: state.alarm().generation(),
+                         now_unix_ms: now,

@@ -29,6 +29,17 @@ const claims = {
     "hard-link reply discarded current detached file facts",
     ["--no-default-features", "--features", "memory,native-mount"],
   ],
+  "actors-conformance-clock": [
+    "rust/crates/actors/src/conformance.rs", "acyclic-actors",
+    "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
+    "outbox", [],
+    { patch: "missing.patch", negativeLabel: "restart-without-advancement" },
+  ],
+  "actors-alarm-deadline": [
+    "rust/crates/actors/src/local/runtime.rs", "acyclic-actors",
+    "local::runtime::tests::conformance_suite_passes_on_memory_runtime",
+    "CompletionFailed(Conflict)", [],
+  ],
   "stream-error-admission": [
     "rust/crates/stream/src/lib/error.rs", "acyclic-guest-fuzz", "",
     "canonical failure writer output was refused", [],
