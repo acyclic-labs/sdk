@@ -1,3 +1,4 @@
+import { selectContractModules } from "./contract-selection.mjs";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,47 +9,8 @@ import { writeChanged } from "./generated-bindings.mjs";
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
-const availableModules = [
-  "generate-stream-authorization.mjs",
-  "generate-objects-authorization.mjs",
-  "generate-actors-authorization.mjs",
-  "generate-machines-authorization.mjs",
-  "generate-workers-authorization.mjs",
-  "generate-filesystem-authorization.mjs",
-  "generate-actors-routes.mjs",
-  "generate-actors-rpc-inventory.mjs",
-  "generate-stream-rpc-inventory.mjs",
-  "generate-objects-rpc-inventory.mjs",
-  "generate-inference-routes.mjs",
-  "filesystem-napi-types.mjs",
-  "stream-napi-types.mjs",
-  "actors-napi-types.mjs",
-  "filesystem-descriptor-digest.mjs",
-  "generate-filesystem-defaults.mjs",
-  "generate-filesystem-hosted-contract.mjs",
-  "generate-filesystem-object-references.mjs",
-  "generate-filesystem-git-compat-contract.mjs",
-  "generate-inference-defaults.mjs",
-  "generate-inference-terminal-metadata.mjs",
-  "generate-inference-widths.mjs",
-  "generate-stream-http-contract.mjs",
-  "generate-stream-token-operations.mjs",
-  "generate-harness-model-fixtures.mjs",
-  "generate-harness-file-tools-contract.mjs",
-  "generate-machines-managed-oci-contract.mjs",
-];
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const families = process.argv.slice(3);
-const knownFamilies = workspaceManifests(root);
-// A complete family or one exact contract can be selected. Exact selection
-// keeps a narrow contract update from compiling unrelated bindings.
-const matchesFamily = (name, family) => name === `generate-${family}.mjs` || name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
-for (const family of families) {
-  if (!knownFamilies.has(family) && !availableModules.includes(`generate-${family}.mjs`)) {
-    throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
-  }
-}
-const modules = availableModules.filter(name => !families.length || families.some(family => matchesFamily(name, family)));
+const modules = selectContractModules(process.argv.slice(3), workspaceManifests(root));
 
 const mode = process.argv[2] ?? "write";
 if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");

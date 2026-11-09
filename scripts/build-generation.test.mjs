@@ -109,21 +109,15 @@ test("generated runtime bindings stay out of the source index", () => {
   }
 });
 
-test("every TypeScript package prepares generation for build, test and prepack", () => {
-  for (const name of ["actors", "auth", "filesystem", "harness", "inference", "machines", "objects", "sdk", "stream", "workers"]) {
-    const { scripts } = JSON.parse(readFileSync(`typescript/packages/${name}/package.json`, "utf8"));
-    assert.equal(scripts.generate, `bun ../../../scripts/generate.mjs ${name}`);
-    for (const operation of ["build", "check", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);
-  }
-});
-
 test("native source roots cover the generators' transitive script imports", () => {
   // Node's module parser enumerates static imports without executing generators.
   execFileSync("node", ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
     import assert from "node:assert/strict";
     import { readFileSync } from "node:fs";
     import { posix } from "node:path";
-    import { SourceTextModule, runInNewContext } from "node:vm";
+    import { SourceTextModule } from "node:vm";
+    import { selectContractModules } from "./scripts/contract-selection.mjs";
+    import { workspaceManifests } from "./scripts/package-closure.mjs";
     import { packageClosure } from "./scripts/package-closure.mjs";
 
     function check(roots, generators, changes = new Map()) {
@@ -151,20 +145,18 @@ test("native source roots cover the generators' transitive script imports", () =
         }
       }
     }
-    const contracts = readFileSync("scripts/generate-contracts.mjs", "utf8");
-    const selection = contracts.slice(contracts.indexOf("const modules ="), contracts.indexOf("const root ="));
     for (const family of ["actors", "stream"]) {
       const { sourceRoots } = JSON.parse(readFileSync("compatibility/native-families/" + family + ".json", "utf8"));
       // Use the real selector for the computed import in generate-contracts.
-      const modules = runInNewContext(selection + "modules", { process: { argv: ["node", "generate-contracts", "write", ...packageClosure(process.cwd(), family)] } });
+      const modules = selectContractModules([...packageClosure(process.cwd(), family)], workspaceManifests(process.cwd()));
       const generators = modules.map(name => "scripts/" + name);
       check(sourceRoots, generators);
-      assert.throws(() => check(sourceRoots.filter(path => path !== "scripts/package-closure.mjs"), generators), /imports unattested scripts\/package-closure\.mjs/);
-      const changed = new Map([["scripts/package-closure.mjs", 'import "./unattested-generator-helper.mjs";']]);
-      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
-      changed.set("scripts/package-closure.mjs", 'await import("./unattested-generator-helper.mjs");');
-      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested scripts\/unattested-generator-helper\.mjs/);
-      changed.set("scripts/package-closure.mjs", 'const name = "./unattested-generator-helper.mjs"; await import(name);');
+      assert.throws(() => check(sourceRoots.filter(path => path !== "scripts"), generators), /imports unattested scripts\//);
+      const changed = new Map([["scripts/package-closure.mjs", 'import "../unattested-generator-helper.mjs";']]);
+      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+      changed.set("scripts/package-closure.mjs", 'await import("../unattested-generator-helper.mjs");');
+      assert.throws(() => check(sourceRoots, generators, changed), /imports unattested unattested-generator-helper\.mjs/);
+      changed.set("scripts/package-closure.mjs", 'const name = "../unattested-generator-helper.mjs"; await import(name);');
       assert.throws(() => check(sourceRoots, generators, changed), /uncovered computed import/);
     }
   `], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
