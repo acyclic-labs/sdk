@@ -557,8 +557,11 @@ impl<M, P: Deref<Target = M>> Account<M, P> {
         &self.medium
     }
 
-    /// The same account, sharing its state, over `medium`.
-    pub(crate) fn over<N, Q: Deref<Target = N>>(&self, medium: Q) -> Account<N, Q> {
+    /// The same account over a wrapper of its original medium. Shares collection
+    /// exclusion, pending writes, revisions, availability and crash recovery.
+    /// `medium` must address the same physical storage and key namespace; create
+    /// request-specific wrappers here instead of opening an independent store.
+    pub fn over<N, Q: Deref<Target = N>>(&self, medium: Q) -> Account<N, Q> {
         Account {
             medium,
             state: Arc::clone(&self.state),
@@ -1726,7 +1729,7 @@ impl<M: Medium, P: Deref<Target = M> + ProviderPlatform> crate::Blobs for Accoun
         let _gate = self.state.gate.read().await;
         let mut outcomes = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
-            requests,
+            requests.into_iter(),
             crate::BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
             |(body, references)| self.publish_blob(body, references),

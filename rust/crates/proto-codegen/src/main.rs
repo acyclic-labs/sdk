@@ -74,7 +74,6 @@ fn run() -> io::Result<()> {
             }
             acyclic_proto_build::descriptor(
                 &root.join("rust/crates").join(family),
-                &root.join("compatibility/proto"),
                 protos,
                 &output.join(baseline),
                 &root.join("compatibility/proto"),

@@ -311,7 +311,7 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
             let before = node.children.end;
             let mut from = node.children.start;
             while from < before
-                && result
+                && self
                     .key::<W::Error>(position(from).ok_or(Invariant)?)?
                     .len()
                     == end
@@ -325,7 +325,7 @@ impl<V, A, K: PrefixKey<V>> CompiledPrefixIndex<V, A, K> {
                 let mut to = from + 1;
                 while to < before {
                     work.charge_items(1).map_err(Work)?;
-                    if result
+                    if self
                         .key::<W::Error>(position(to).ok_or(Invariant)?)?
                         .get(end)
                         .ok_or(Invariant)?

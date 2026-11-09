@@ -66,15 +66,6 @@ pub fn protoc() -> Result<PathBuf, protoc_bin_vendored::Error> {
         .map_or_else(protoc_bin_vendored::protoc_bin_path, |path| Ok(path.into()))
 }
 
-/// Locate compiler imports, honoring `PROTOC_INCLUDE` before bundled imports.
-///
-/// # Errors
-/// Returns bundled import discovery errors.
-pub fn protoc_include() -> Result<PathBuf, protoc_bin_vendored::Error> {
-    std::env::var_os("PROTOC_INCLUDE")
-        .map_or_else(protoc_bin_vendored::include_path, |path| Ok(path.into()))
-}
-
 /// Configure the compiler and the public Objects metadata map shape.
 ///
 /// # Errors
@@ -114,11 +105,9 @@ pub fn shared_protocols() -> PathBuf {
 ///
 /// # Errors
 /// Returns discovery errors when no explicit include directory is supplied.
-pub fn compiler_includes() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(std::env::var_os("PROTOC_INCLUDE")
-        .map_or_else(protoc_bin_vendored::include_path, |path| {
-            Ok(PathBuf::from(path))
-        })?)
+pub fn compiler_includes() -> Result<PathBuf, protoc_bin_vendored::Error> {
+    std::env::var_os("PROTOC_INCLUDE")
+        .map_or_else(protoc_bin_vendored::include_path, |path| Ok(path.into()))
 }
 
 /// Compile messages and selected services; only protocol changes rerun codegen.
@@ -159,7 +148,6 @@ pub fn compile(
 /// Returns compiler, descriptor and filesystem errors.
 pub fn descriptor(
     manifest: &std::path::Path,
-    shared: &std::path::Path,
     protos: &[&str],
     output: &std::path::Path,
     shared: &std::path::Path,
