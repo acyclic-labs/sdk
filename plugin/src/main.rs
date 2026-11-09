@@ -4,7 +4,7 @@ mod install;
 mod tests;
 
 use acyclic_harness::local::{host_files, host_owner::HostAction};
-use acyclic_plugin::input::{Result, parse_native_task, parse_task, read_json};
+use acyclic_plugin::input::{Result, agy_hook, parse_native_task, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
     env, io,
@@ -230,7 +230,7 @@ fn hook(host: &str, event: &str, input: Value) -> Value {
         let mut input = hook_input(input, env::var_os("ACYCLIC_TASK").as_deref())?;
         let event = if host == "agy" {
             let workspace = env::var("ACYCLIC_WORKSPACE").ok();
-            let Some(event) = input::agy_hook(event, &mut input, workspace.as_deref())? else {
+            let Some(event) = agy_hook(event, &mut input, workspace.as_deref())? else {
                 return Ok(json!({}));
             };
             event
