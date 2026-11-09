@@ -72,6 +72,7 @@ bytes.workspace = true
 futures.workspace = true
 pin-project-lite = "0.2.17"
 h2 = { version = "0.4.19", optional = true }
+http.workspace = true
 hyper = { version = "1.11.0", default-features = false, optional = true }
 prost.workspace = true
 ruzstd.workspace = true

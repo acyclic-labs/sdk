@@ -1302,6 +1302,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "h2",
+ "http",
  "hyper",
  "hyper-util",
  "indexed_db_futures",
