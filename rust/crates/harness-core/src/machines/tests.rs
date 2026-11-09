@@ -7,7 +7,7 @@ fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert!(matches!(
         map_error(ProviderError::OperationIndeterminate(operation), None),
-        Error::Indeterminate(actual) if actual == OperationId::from_bytes(operation.as_bytes())
+        Error::MachinesIndeterminate { operation_id: actual, .. } if actual == OperationId::from_bytes(operation.as_bytes())
     ));
     Ok(())
 }
@@ -88,12 +88,33 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             true,
         ),
     ];
-    for (cause, code, uncertain) in causes {
+    for (cause, code, uncertain) in causes.into_iter().flat_map(|(cause, code, uncertain)| {
+        [
+            (cause.clone(), code, uncertain),
+            (
+                cause.with_cause(std::io::Error::other("original transport failure")),
+                code,
+                uncertain,
+            ),
+        ]
+    }) {
         let retained = map_error(cause.clone(), None);
         assert!(matches!(&retained, Error::Machines(actual) if *actual == cause));
         assert_eq!(retained.code(), code);
         match map_error(cause.clone(), Some(receipt)) {
-            Error::Indeterminate(actual) => assert!(uncertain && actual == receipt),
+            Error::MachinesIndeterminate {
+                operation_id,
+                cause: actual,
+            } => {
+                assert!(uncertain && operation_id == receipt);
+                assert_eq!(actual, cause);
+                let retained = map_error(actual, Some(receipt));
+                let wire = crate::wire_codec::encode_error(&retained);
+                assert_eq!(wire.code, ErrorCode::Indeterminate as i32);
+                assert_eq!(wire.operation_id, receipt.to_string());
+                assert!(std::error::Error::source(&retained).is_some());
+                assert!(retained.leaves_effect_uncertain());
+            }
             Error::Machines(actual) => assert!(!uncertain && actual == cause),
             other => return Err(other),
         }

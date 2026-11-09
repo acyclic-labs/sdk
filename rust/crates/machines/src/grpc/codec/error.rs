@@ -4,7 +4,7 @@ pub(in super::super) fn mutation_error(
     key: IdempotencyKey,
     value: &tonic::Status,
 ) -> ProviderError {
-    match value.code() {
+    let classification = match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
         | tonic::Code::Cancelled
@@ -16,10 +16,11 @@ pub(in super::super) fn mutation_error(
             ProviderError::FailedPrecondition,
         ),
         _ => ProviderError::Rejected(value.message().into()),
-    }
+    };
+    classification.with_cause(value.clone())
 }
-pub(in super::super) fn watch_error(key: IdempotencyKey, _value: &tonic::Status) -> ProviderError {
-    ProviderError::Indeterminate(key)
+pub(in super::super) fn watch_error(key: IdempotencyKey, value: &tonic::Status) -> ProviderError {
+    ProviderError::Indeterminate(key).with_cause(value.clone())
 }
 pub(in super::super) fn operation_watch_error(operation: OperationId) -> ProviderError {
     ProviderError::OperationIndeterminate(operation)
@@ -28,22 +29,24 @@ pub(in super::super) fn recovery_error(
     key: IdempotencyKey,
     value: &tonic::Status,
 ) -> ProviderError {
-    match value.code() {
+    let classification = match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
         | tonic::Code::Cancelled
         | tonic::Code::Unknown
         | tonic::Code::Internal => ProviderError::Indeterminate(key),
         _ => ProviderError::Rejected(value.message().into()),
-    }
+    };
+    classification.with_cause(value.clone())
 }
 pub(in super::super) fn read_error(value: &tonic::Status) -> ProviderError {
-    match value.code() {
+    let classification = match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
         | tonic::Code::Cancelled
         | tonic::Code::Unknown => ProviderError::Unavailable,
         tonic::Code::NotFound => ProviderError::NotFound(value.message().into()),
         _ => ProviderError::Rejected(value.message().into()),
-    }
+    };
+    classification.with_cause(value.clone())
 }

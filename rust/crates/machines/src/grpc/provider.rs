@@ -652,9 +652,13 @@ machine_mutations! {
                             .is_ok_and(|value| !matches!(value.phase, OperationPhase::Pending));
                         Some((value, (stream, terminal || decode_failed)))
                     }
-                    Ok(None) | Err(_) => {
-                        Some((Err(operation_watch_error(operation)), (stream, true)))
+                    Ok(None) => {
+                        Some((Err(operation_watch_error(operation).with_cause(std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "operation watch ended before its terminal result",
+                        ))), (stream, true)))
                     }
+                    Err(error) => Some((Err(operation_watch_error(operation).with_cause(error)), (stream, true))),
                 }
             });
             Ok(Box::pin(stream) as OperationStream)

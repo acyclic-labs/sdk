@@ -66,24 +66,62 @@ fn managed_usage_rejects_missing_lineage_authority() {
 }
 
 #[test]
-fn mutation_errors_preserve_unsupported_capabilities() {
+fn rpc_failures_preserve_original_causes_and_outcomes() {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")
         .unwrap_or_else(|_| unreachable!());
     assert_eq!(
-        mutation_error(key, &tonic::Status::unimplemented("capability unavailable"),),
-        ProviderError::Unsupported("capability unavailable".into())
+        mutation_error(key, &tonic::Status::unimplemented("capability unavailable"))
+            .classification(),
+        &ProviderError::Unsupported("capability unavailable".into())
     );
     assert_eq!(
-        watch_error(key, &tonic::Status::unimplemented("watch unavailable")),
-        ProviderError::Indeterminate(key)
+        watch_error(key, &tonic::Status::unimplemented("watch unavailable")).classification(),
+        &ProviderError::Indeterminate(key)
     );
     assert_eq!(
         watch_error(
             key,
             &tonic::Status::resource_exhausted("watch capacity unavailable"),
-        ),
-        ProviderError::Indeterminate(key)
+        )
+        .classification(),
+        &ProviderError::Indeterminate(key)
     );
+    for code in [
+        tonic::Code::Unavailable,
+        tonic::Code::DeadlineExceeded,
+        tonic::Code::Cancelled,
+        tonic::Code::Unknown,
+        tonic::Code::Internal,
+        tonic::Code::NotFound,
+        tonic::Code::PermissionDenied,
+        tonic::Code::Unimplemented,
+    ] {
+        let status = tonic::Status::with_details(
+            code,
+            "original Machines refusal",
+            b"original-status-details".as_slice().into(),
+        );
+        for error in [
+            read_error(&status),
+            mutation_error(key, &status),
+            watch_error(key, &status),
+            recovery_error(key, &status),
+        ] {
+            let source = std::error::Error::source(&error)
+                .and_then(|source| source.downcast_ref::<tonic::Status>())
+                .expect("RPC failure lost its original status");
+            assert_eq!(source.code(), code);
+            assert_eq!(source.message(), status.message());
+            assert_eq!(source.details(), status.details());
+            assert_eq!(error.kind(), error.classification().kind());
+            assert_eq!(
+                error
+                    .clone()
+                    .with_cause(std::io::Error::other("later cause")),
+                error
+            );
+        }
+    }
 }
 
 pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {

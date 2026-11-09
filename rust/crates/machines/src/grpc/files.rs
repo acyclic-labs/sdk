@@ -168,8 +168,9 @@ fn decode_errno(errno: u32) -> Result<NonZeroU32, ProviderError> {
 }
 
 fn file_error(machine: MachineId, error: &Status) -> ProviderError {
-    match command_error(machine, error) {
+    let classification = match command_error(machine, error).classification() {
         ProviderError::CommandIndeterminate(_) => ProviderError::FileIndeterminate(machine),
-        cause => cause,
-    }
+        cause => cause.clone(),
+    };
+    classification.with_cause(error.clone())
 }
