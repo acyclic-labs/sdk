@@ -623,14 +623,14 @@ pub async fn run(
     let query_loading = [Line::raw("Loading…")];
     let mut query_future = std::pin::pin!(None);
     if resume {
-        apply_open_view(
+        view.notice = apply_open_view(
             ui.open_view(),
             &mut overlay,
             &mut queries,
             query_future.as_mut(),
             &catalog,
             &input,
-        )?;
+        );
     }
     let mut files_future = std::pin::pin!(session::follow(
         Arc::clone(&conversation),
@@ -761,8 +761,8 @@ pub async fn run(
                 ui.project()?;
                 ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
                 if layout_changed {
-                    apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                        query_future.as_mut(), &catalog, &input)?;
+                    view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                        query_future.as_mut(), &catalog, &input).or(view.notice.take());
                     overlay_top = 0;
                 }
                 files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));
@@ -907,8 +907,8 @@ pub async fn run(
                                         match ui.select(&conversation, Some(&selected)).await {
                                             Ok(()) => {
                                                 selection_changed = true;
-                                                apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                                    query_future.as_mut(), &catalog, &input)?;
+                                                view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                                    query_future.as_mut(), &catalog, &input).or(view.notice.take());
                                                 overlay_top = 0;
                                             }
                                             Err(error) => view.notice = Some(error.to_string()),
@@ -962,8 +962,8 @@ pub async fn run(
                                 match ui.select(&conversation, None).await {
                                     Ok(()) => {
                                         selection_changed = true;
-                                        apply_open_view(ui.open_view(), &mut overlay, &mut queries,
-                                            query_future.as_mut(), &catalog, &input)?;
+                                        view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
+                                            query_future.as_mut(), &catalog, &input).or(view.notice.take());
                                         overlay_top = 0;
                                     }
                                     Err(error) => view.notice = Some(error.to_string()),
@@ -1040,6 +1040,51 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_views_this_terminal_cannot_render_leave_it_open() -> Result<(), Failure> {
+        use acyclic_harness::command_request::{CommandFileSnapshot, layout_view, view_changes};
+        let catalog = CommandCatalog::builtins()?;
+        let input = PromptInput::default();
+        let mut overlay = None;
+        let mut queries = QueryController::<query::Source>::default();
+        let mut pending = std::pin::pin!(None::<std::future::Ready<()>>);
+        // Views the shared writer saves and this terminal does not render.
+        for query in [
+            CommandQuery::Model,
+            CommandQuery::Plan,
+            CommandQuery::Feedback,
+        ] {
+            let changes = view_changes(
+                &CommandFileSnapshot::new(),
+                Some(&query),
+                acyclic_harness::OperationId::new(),
+            )?;
+            let saved = layout_view(&changes[0].contents)?.ok_or("view was not saved")?;
+            queries.select(query::Source::Diff(None), pending.as_mut());
+            let notice = apply_open_view(
+                Some(saved),
+                &mut overlay,
+                &mut queries,
+                pending.as_mut(),
+                &catalog,
+                &input,
+            );
+            assert!(notice.is_some_and(|notice| notice.contains(saved)));
+            assert!(overlay.is_none() && queries.source().is_none());
+        }
+        // Negative control: a renderable view opens without a notice.
+        let notice = apply_open_view(
+            Some("shortcuts"),
+            &mut overlay,
+            &mut queries,
+            pending.as_mut(),
+            &catalog,
+            &input,
+        );
+        assert!(notice.is_none() && overlay.is_some());
+        Ok(())
+    }
 
     #[test]
     fn approval_answers_retain_the_observed_action_across_status_changes() -> Result<(), Failure> {
@@ -1125,6 +1170,10 @@ mod tests {
     }
 }
 
+/// Projects the session's saved view onto the terminal. Total over every
+/// view name: `layout.json` is shared with other clients and the shared
+/// `view_changes` writer, so a view this terminal cannot render closes the
+/// panel and returns a notice instead of ending the session.
 fn apply_open_view<F>(
     selected: Option<&str>,
     overlay: &mut Option<(&'static str, Vec<Line<'static>>)>,
@@ -1132,17 +1181,22 @@ fn apply_open_view<F>(
     pending: std::pin::Pin<&mut Option<F>>,
     catalog: &CommandCatalog,
     input: &PromptInput,
-) -> Result<(), Failure> {
+) -> Option<String> {
     *overlay = None;
     match selected {
-        None => queries.close(pending),
         Some("diff") => queries.select(query::Source::Diff(None), pending),
         Some("history") => queries.select(query::Source::History(None), pending),
         Some("shortcuts") => {
             queries.close(pending);
             *overlay = Some(("Help", View::help(catalog, input)));
         }
-        Some(other) => return Err(format!("session view {other:?} is unavailable").into()),
+        None => queries.close(pending),
+        Some(other) => {
+            queries.close(pending);
+            return Some(format!(
+                "The saved {other:?} view is not available in this terminal"
+            ));
+        }
     }
-    Ok(())
+    None
 }
