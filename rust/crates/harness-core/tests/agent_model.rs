@@ -972,6 +972,7 @@ fn spawn_request(sequence: u64) -> Wake {
         sequence,
         record: InboxRecord::Spawn(SpawnRequest {
             profile: acyclic_harness_core::agent::CreationConfig {
+                continuation: None,
                 context: acyclic_harness_core::agent::SpawnContext::Fork,
                 template: None,
                 peers: Default::default(),

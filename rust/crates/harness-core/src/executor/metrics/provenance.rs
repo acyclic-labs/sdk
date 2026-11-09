@@ -490,6 +490,7 @@ mod tests {
             (SpawnContext::Fork, "fork"),
         ] {
             let batch = project(Some(CreationConfig {
+                continuation: None,
                 context,
                 template: Some(original.clone()),
                 peers: Default::default(),
@@ -521,6 +522,7 @@ mod tests {
             );
         }
         let root = project(Some(CreationConfig {
+            continuation: None,
             context: SpawnContext::TopLevel,
             template: None,
             peers: Default::default(),

@@ -71,6 +71,7 @@ pub fn root() -> Result<CreationConfig> {
         return Err(Error::Invalid("the root default must be top_level".into()));
     }
     Ok(CreationConfig {
+        continuation: None,
         context: root.context,
         template: None,
         peers: Default::default(),
@@ -163,6 +164,7 @@ pub(crate) async fn select(
         ));
     }
     Ok(CreationConfig {
+        continuation: None,
         context: creation.context,
         template: Some(file),
         peers: Default::default(),

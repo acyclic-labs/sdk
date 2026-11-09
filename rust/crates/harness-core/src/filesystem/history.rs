@@ -379,7 +379,8 @@ where
             .checked_add(1)
             .ok_or_else(|| guest("history cut overflow"))?;
         let saved = HistoryCheckpoint {
-            version: 1,
+            version: 2,
+            live_children: !next.open_children.is_empty(),
             conversation: sequence,
             checkpoint,
             context: context.clone(),

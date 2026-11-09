@@ -448,6 +448,7 @@ mod tests {
     fn adoption() -> ForkAdopted {
         ForkAdopted {
             profile: Some(crate::agent::CreationConfig {
+                continuation: None,
                 context: crate::agent::SpawnContext::TopLevel,
                 template: Some(file()),
                 peers: Default::default(),
@@ -509,6 +510,7 @@ mod tests {
             }));
             records.push(InboxRecord::Spawn(SpawnRequest {
                 profile: crate::agent::CreationConfig {
+                    continuation: None,
                     context: crate::agent::SpawnContext::TopLevel,
                     template: Some(file()),
                     peers: Default::default(),

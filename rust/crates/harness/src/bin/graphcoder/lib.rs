@@ -411,6 +411,23 @@ async fn connected(
         }
         None => connection,
     };
+    let connection = if let Some(source) = &args.fork_from {
+        let request = match &args.override_file {
+            Some(path) => serde_json::from_slice(&std::fs::read(path)?)?,
+            None => acyclic_harness::agent::ContinuationRequest {
+                version: 1,
+                override_item: None,
+            },
+        };
+        let operation = args
+            .operation
+            .clone()
+            .unwrap_or_else(|| OperationId::new().to_string());
+        acyclic_harness::local::continuation::fork_from(&connection, source, &operation, request)
+            .await?
+    } else {
+        connection
+    };
     if let Some(Command::Sessions(page) | Command::History(page)) = &args.command {
         let page = acyclic_harness::client::AgentPageRequest::new(
             page.page_size,

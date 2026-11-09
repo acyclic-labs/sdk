@@ -7,6 +7,8 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
+mod continuation;
+pub use continuation::{Continuation, ContinuationOverride, ContinuationRequest, ForcedCall};
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod codec_fuzz;

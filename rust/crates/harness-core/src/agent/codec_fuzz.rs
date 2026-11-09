@@ -267,7 +267,7 @@ fn history(bytes: &[u8]) {
     let Ok(value) = HistoryCheckpoint::decode(bytes) else {
         return;
     };
-    assert_eq!(value.version, 1);
+    assert_eq!(value.version, 2);
     assert_ne!(value.conversation, 0);
     assert!(value.context.tail <= value.conversation);
     assert!(value.checkpoint.is_none_or(|cut| cut < value.conversation));
@@ -296,7 +296,7 @@ fn history(bytes: &[u8]) {
     // Refusals are derived from an admitted writer record, so they cannot pass
     // just because an unrelated malformed field kept the decoder unreachable.
     let mut invalid = value.clone();
-    for version in [0, 2, u32::MAX] {
+    for version in [0, 1, u32::MAX] {
         invalid.version = version;
         let bytes = encode(&invalid);
         assert!(HistoryCheckpoint::decode(&bytes).is_err());
@@ -431,6 +431,7 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         id: IntentId::try_from("captured-spawn")?,
         brief: Box::new(file.clone()),
         profile: super::CreationConfig {
+            continuation: None,
             context: super::SpawnContext::Fork,
             template: Some(file.clone()),
             peers: Default::default(),
@@ -683,7 +684,8 @@ pub fn history_seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::erro
     use super::{ContextCut, SavedVolume, VolumeBinding};
     use crate::conversation::{VolumeClass, VolumeOwner, VolumeRef};
     let mut checkpoint = HistoryCheckpoint {
-        version: 1,
+        version: 2,
+        live_children: false,
         conversation: 1,
         checkpoint: None,
         context: ContextCut {

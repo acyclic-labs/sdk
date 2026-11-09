@@ -243,6 +243,11 @@ pub enum AgentCommand {
     },
     /// Fork the conversation and project generations saved at a prior turn.
     Fork {
+        /// Continue the decider's own role, with an optional intervention.
+        /// No brief is run; the caller drives this independent run normally.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(type = "unknown | null"))]
+        continuation: Option<acyclic_harness_core::agent::ContinuationRequest>,
         /// Exact parent.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         parent: AgentPath,

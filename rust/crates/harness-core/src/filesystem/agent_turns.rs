@@ -1771,6 +1771,13 @@ where
                             .as_ref()
                             .and_then(|creation| creation.template.as_ref()),
                     )
+                    .chain(
+                        agent
+                            .profile
+                            .as_ref()
+                            .and_then(|creation| creation.continuation.as_ref())
+                            .and_then(|continuation| continuation.override_item.as_ref()),
+                    )
                     .cloned()
                     .collect();
                 let (journal, bindings, files) = self

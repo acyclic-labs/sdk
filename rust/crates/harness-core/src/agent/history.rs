@@ -110,13 +110,15 @@ fn count_volumes<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u6
     deserializer.deserialize_seq(Count)
 }
 
-/// Version-one checkpoint, committed with its conversation entry and every
+/// Version-two checkpoint, committed with its conversation entry and every
 /// retention fork. Its sequence in `AgentPath::history` is the turn's sequence
 /// in the conversation. Readers use ordinary stream reads and follows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryCheckpoint {
-    /// Descriptor format; readers refuse versions other than 1.
+    /// Whether a child was still open when this boundary committed.
+    pub live_children: bool,
+    /// Descriptor format; readers refuse versions other than 2.
     pub version: u32,
     /// Exclusive conversation cut, including this settled turn.
     pub conversation: u64,
@@ -147,7 +149,7 @@ impl HistoryCheckpoint {
         }
         let value: Summary = serde_json::from_slice(bytes)
             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
-        if value.version != 1 || value.conversation == 0 || value.context.tail > value.conversation
+        if value.version != 2 || value.conversation == 0 || value.context.tail > value.conversation
         {
             return Err(super::Error::Record(
                 "history checkpoint version or cut is invalid",
@@ -164,7 +166,7 @@ impl HistoryCheckpoint {
     pub fn decode(bytes: &[u8]) -> Result<Self, super::Error> {
         let checkpoint: Self = serde_json::from_slice(bytes)
             .map_err(|_| super::Error::Record("history checkpoint is malformed"))?;
-        if checkpoint.version != 1 || checkpoint.conversation == 0 {
+        if checkpoint.version != 2 || checkpoint.conversation == 0 {
             return Err(super::Error::Record(
                 "history checkpoint version or cut is invalid",
             ));
