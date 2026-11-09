@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::agent::AgentPath;
 
 #[test]
 fn unknown_internal_commands_fail_before_workspace_lookup() -> Result<()> {
@@ -76,7 +77,7 @@ fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() ->
     let HostAction::Fs {
         task: selected,
         command,
-    } = action(task.clone(), &args)?
+    } = acyclic_plugin::input::workspace_action(&args, || Ok(task.clone()))?
     else {
         return Err("discard did not use the shared filesystem facade".into());
     };
@@ -84,9 +85,14 @@ fn discard_routes_references_through_shared_fs_instead_of_cancelling_a_task() ->
     assert_eq!(command, "'discard' 'agents/child'\"'\"'s-view'");
     let fs = ["fs", "discard", "agents/child's-view"].map(String::from);
     assert!(
-        matches!(action(task.clone(), &fs)?, HostAction::Fs { command: explicit, .. } if explicit == command)
+        matches!(acyclic_plugin::input::workspace_action(&fs, || Ok(task.clone()))?, HostAction::Fs { command: explicit, .. } if explicit == command)
     );
-    assert!(action(task, &["cancel".into(), "agents/child".into()]).is_err());
+    assert!(
+        acyclic_plugin::input::workspace_action(&["cancel".into(), "agents/child".into()], || Ok(
+            task
+        ))
+        .is_err()
+    );
     Ok(())
 }
 
