@@ -83,8 +83,7 @@ impl Drop for AuthorityScope<'_, '_> {
         if !self.work.is_native() {
             self.work
                 .allocations
-                .release_scratch_to(self.work.scratch_floor)
-                .unwrap_or_else(|_| unreachable!("a call retires only its own scratch"));
+                .retire_scratch_to(self.work.scratch_floor);
         }
         self.work.scratch_floor = self.previous_floor;
     }

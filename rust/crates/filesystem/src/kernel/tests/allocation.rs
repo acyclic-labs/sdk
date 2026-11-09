@@ -42,6 +42,61 @@ fn object(suffix: u8) -> ObjectId {
 }
 
 #[test]
+fn scratch_retirement_preserves_errors_and_fences_invalid_custody() -> Result<(), crate::FsError> {
+    for authority in [false, true] {
+        for shared in [false, true] {
+            let cancellation = crate::CancellationToken::new();
+            let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let retained = shared
+                .then(|| retained::RetainedAllocation::claim(17, 1, &mut work.accounting()))
+                .transpose()?;
+            let earlier = crate::kernel::Owned::<Vec<u8>>::allocate(31, &mut work.accounting())?;
+            let result: Result<(), crate::ObjectStoreError> = (|| {
+                if authority {
+                    let mut scope = work.scope().map_err(crate::ObjectStoreError::from)?;
+                    earlier
+                        .retire(&mut scope.accounting())
+                        .map_err(crate::async_storage::object_error)?;
+                } else {
+                    let mut accounting = work.accounting();
+                    let mut scope = accounting
+                        .allocation_scope()
+                        .map_err(crate::async_storage::object_error)?;
+                    earlier
+                        .retire(&mut scope)
+                        .map_err(crate::async_storage::object_error)?;
+                }
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+            })();
+            assert!(matches!(result, Err(crate::ObjectStoreError::Io(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied));
+            let before = work.spent();
+            let live = work.allocations.live_bytes();
+            assert!(matches!(
+                work.accounting().check(),
+                Err(crate::FsError::Work(WorkError::Overflow))
+            ));
+            assert!(work.accounting().allocation_scope().is_err());
+            assert!(work.scope().is_err());
+            assert!(work.accounting().claim_owned(1, 1).is_err());
+            assert!(matches!(
+                work.allocations
+                    .claim_bytes(1, 1, &mut work.work, work.budget),
+                Err(AllocationError::ReleaseInvariant)
+            ));
+            assert_eq!(work.spent(), before);
+            assert_eq!(work.allocations.live_bytes(), live);
+            drop(retained);
+            assert_eq!(
+                work.allocations.live_bytes(),
+                live - if shared { 17 } else { 0 }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn simultaneous_claims_produce_one_operation_wide_peak() -> Result<(), AllocationError> {
     let mut ledger = AllocationLedger::default();
     let mut work = WorkCounters::default();
