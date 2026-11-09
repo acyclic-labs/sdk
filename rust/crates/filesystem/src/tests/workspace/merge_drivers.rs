@@ -1123,8 +1123,14 @@ async fn merge_directory_text_admission() -> Result<(), Box<dyn Error>> {
         let staging = unbounded!(fs, create_workspace("text-admission-output"))?;
         let before = unbounded!(staging, head())?.id();
         let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| error)?;
+        let original = crate::NativeMaterializationWork::new(
+            WorkBudget {
+                peak_allocation_bytes: 16 * 1024 * 1024,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
         let join = unbounded!(source.join_into(&target), plan())?;
         let options = ApplyOptions {
             if_target: join.target_head(),
@@ -1161,12 +1167,15 @@ async fn merge_directory_text_admission() -> Result<(), Box<dyn Error>> {
                 u64::from(allowance != 0),
                 "text allocated unadmitted scratch"
             );
-            assert!(matches!(
-                result,
-                Err(WorkspaceError::Work(
-                    crate::WorkError::BudgetExceeded { .. }
-                ))
-            ));
+            assert!(
+                matches!(
+                    result,
+                    Err(WorkspaceError::Work(
+                        crate::WorkError::BudgetExceeded { .. }
+                    ))
+                ),
+                "text admission returned {result:?}"
+            );
             assert_eq!(unbounded!(staging, head())?.id(), before);
         } else {
             result?;
