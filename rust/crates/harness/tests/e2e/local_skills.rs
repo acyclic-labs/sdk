@@ -78,7 +78,7 @@ async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestR
                     Err("a refused turn settled".into())
                 };
             }
-            Ok(Event::Turn(_) | Event::Output) => {}
+            Ok(Event::Turn(_) | Event::Delta) => {}
             // The in-process Session holds the hosting Runtime's lifetime:
             // failed delivery or producer loss closes this event source.
             Err(acyclic_harness::Error::Storage(_)) if !settles => return Ok(()),

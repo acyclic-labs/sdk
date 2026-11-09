@@ -1,12 +1,17 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts, its streaming answer and its phase, over the shared prompt
 //! editor and screen widgets.
+//!
+//! The transcript is a window over the conversation stream: settled turns
+//! append as they commit, older ones page in from the stream as the view
+//! scrolls toward them, and nothing shown is evicted or capped. The
+//! streaming answer is the observer's delta projection, rewrapped alone.
 use acyclic_harness::local::{
-    Event,
+    Event, LiveKind,
     agent_conversation::{Conversation, UsageQuery, checkpoint},
 };
 use acyclic_harness::{
-    agent::{AgentOutcome, ContextAction, IntentId, Phase, TurnOutcome},
+    agent::{AgentOutcome, ContextAction, ConversationEntry, IntentId, Phase, TurnOutcome},
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
@@ -37,9 +42,81 @@ async fn usage(mut query: UsageQuery) -> (UsageQuery, acyclic_harness::Result<bo
     (query, result)
 }
 
-/// Settled turns shown when a conversation reopens.
-const HISTORY: u64 = 64;
-/// Rows of the newest tool call's output shown while the agent works.
+/// An older page of the transcript, for the view's `epoch`: the settled
+/// turns at `from..to` as blocks, oldest first, and whether one of them
+/// cleared the conversation, so nothing before the page shows.
+struct Older {
+    epoch: u64,
+    from: u64,
+    cleared: bool,
+    blocks: Vec<(bool, String)>,
+}
+
+async fn older(
+    conversation: Arc<Conversation>,
+    epoch: u64,
+    from: u64,
+    to: u64,
+) -> Result<Older, String> {
+    let read = async {
+        let mut page = Older {
+            epoch,
+            from,
+            cleared: false,
+            blocks: Vec::new(),
+        };
+        for entry in conversation.entries(from, to).await? {
+            if let Some(action) = checkpoint(&entry) {
+                match notice(&action) {
+                    Some(text) => page.blocks.push((false, text)),
+                    // A cleared conversation shows nothing before it.
+                    None => {
+                        page.blocks.clear();
+                        page.cleared = true;
+                    }
+                }
+            } else {
+                page.blocks.extend(turn(&conversation, &entry).await?);
+            }
+        }
+        acyclic_harness::Result::Ok(page)
+    };
+    read.await.map_err(|error| error.to_string())
+}
+
+/// A settled turn's blocks: its prompt, its answer and, if it was
+/// interrupted, the mark. A cancelled checkpoint shows nothing.
+async fn turn(
+    conversation: &Conversation,
+    entry: &ConversationEntry,
+) -> acyclic_harness::Result<Vec<(bool, String)>> {
+    let mut blocks = Vec::new();
+    if entry.input.context().is_some() {
+        return Ok(blocks);
+    }
+    let (prompt, answer) = conversation.turn(entry).await?;
+    blocks.extend(prompt.map(|prompt| (true, prompt)));
+    if !answer.is_empty() {
+        blocks.push((false, answer));
+    }
+    if entry.outcome == TurnOutcome::Cancelled {
+        blocks.push((false, CANCELLED.into()));
+    }
+    Ok(blocks)
+}
+
+/// What a settled checkpoint shows; a clear shows nothing, before it too.
+fn notice(action: &ContextAction) -> Option<String> {
+    match action {
+        ContextAction::Compact { .. } => Some(COMPACTED.into()),
+        ContextAction::Rewind => Some(REWOUND.into()),
+        ContextAction::Restore { at, mode, .. } => Some(format!("Restored {mode:?} at turn {at}")),
+        ContextAction::Clear => None,
+    }
+}
+
+/// Rows of the newest tool call's output, or of the running reasoning,
+/// shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
 /// What an interrupted turn shows in its place.
 const CANCELLED: &str = "interaction cancelled";
@@ -109,7 +186,17 @@ struct View {
     /// Rows scrolled back from the live tail.
     back: usize,
     width: u16,
+    /// The pending prompts changed, or a settled turn cleared them.
     pending_dirty: bool,
+    /// The streaming answer changed: only its rows rewrap.
+    tail_dirty: bool,
+    /// The first conversation sequence the transcript shows.
+    top: u64,
+    /// The first it may page in: 0 for a resumed view, the tail for a new
+    /// one, and after a clear, the turn after it.
+    floor: u64,
+    /// Advanced by a clear, so a page read before it is not shown.
+    epoch: u64,
     search: Option<(String, usize)>,
     /// The one prompt the view itself opened. The next submission answers
     /// it before anything else, a waiting approval included, and it hides
@@ -180,14 +267,16 @@ impl View {
                 self.pending_dirty = true;
                 self.checkpoints.retain(|inbox| *inbox != entry.inbox);
                 if let Some(action) = checkpoint(&entry) {
-                    match action {
-                        ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED),
-                        ContextAction::Rewind => self.transcript.push(false, REWOUND),
-                        ContextAction::Restore { at, mode, .. } => self
-                            .transcript
-                            .push(false, &format!("Restored {mode:?} at turn {at}")),
-                        // A cleared conversation shows nothing before it.
-                        ContextAction::Clear => self.transcript = TranscriptRows::default(),
+                    match notice(&action) {
+                        Some(text) => self.transcript.push(false, &text),
+                        // A cleared conversation shows nothing before it,
+                        // and pages nothing in from before it.
+                        None => {
+                            self.transcript = TranscriptRows::default();
+                            self.top = seen;
+                            self.floor = seen;
+                            self.epoch += 1;
+                        }
                     }
                     self.outcome = Outcome::Settled;
                     self.ring = true;
@@ -224,7 +313,7 @@ impl View {
                 self.ring = true;
                 self.stop(seen);
             }
-            Event::Output => return Ok(()),
+            Event::Delta => return Ok(()),
             Event::Status(status) => {
                 self.ended = None;
                 self.approval_prompt = match &status.phase {
@@ -340,21 +429,30 @@ impl View {
         self.pending_dirty = true;
     }
 
-    /// Append and transient-prompt changes leave settled rows wrapped once.
+    /// Settled rows are wrapped once; a pending-prompt change rewraps the
+    /// prompts and the tail, and a delta rewraps only the tail.
     fn rows(&mut self, width: u16) -> &[Line<'static>] {
         if self.pending_dirty || self.width != width {
             self.width = width;
             self.transcript.rows(width);
-            let reply = (!self.reply.is_empty()).then_some((false, self.reply.as_str()));
-            self.transcript.pending(
-                self.pending
-                    .iter()
-                    .map(|(_, text)| (true, text.as_str()))
-                    .chain(reply),
-            );
+            self.transcript
+                .pending(self.pending.iter().map(|(_, text)| (true, text.as_str())));
             self.pending_dirty = false;
+            self.tail_dirty = true;
+        }
+        if std::mem::take(&mut self.tail_dirty) {
+            self.transcript.tail(Some(self.reply.as_str()));
         }
         self.transcript.rows(width)
+    }
+
+    /// The next older page to read, `from..self.top`, while fewer than two
+    /// pages of rows are above the viewport. A page is `page` turns, each at
+    /// least one row, so one read fills the shown rows whatever their size.
+    fn older_page(&self, page: usize) -> Option<u64> {
+        let above = self.transcript.len().saturating_sub(self.back + page);
+        (self.top > self.floor && above < page.saturating_mul(2))
+            .then(|| self.top.saturating_sub(page as u64).max(self.floor))
     }
 
     /// The commands and keys, from the same catalog completion uses.
@@ -419,9 +517,6 @@ impl View {
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ if self.transcript.truncated() => {
-                "earlier transcript omitted · Ctrl+F finds prompt text".into()
-            }
             _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
         }
     }
@@ -477,7 +572,8 @@ fn terminal_events(
 }
 
 /// Runs the terminal view; `resume` reopens the last conversation's recent
-/// turns, otherwise the view starts empty.
+/// turns, paged in from the stream as they show, otherwise the view starts
+/// empty.
 pub async fn run(
     conversation: Arc<Conversation>,
     inline: bool,
@@ -494,15 +590,22 @@ pub async fn run(
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty)?;
+    // Its settled turns from the tail on, its phase and, while it works, the
+    // newest tool call's output or its streaming answer or reasoning. A
+    // resumed view replays its newest turn, whose outcome is the session's,
+    // and pages the turns before it in as it shows them.
     let from = if resume {
-        Some(conversation.settled().await?.saturating_sub(HISTORY))
+        Some(conversation.settled().await?.saturating_sub(1))
     } else {
         None
     };
-    // Its settled turns, its phase and, while it works, the newest tool
-    // call's output or its streaming answer.
     let mut events = conversation.observe(from).await?;
-    let mut view = View::default();
+    let mut view = View {
+        top: events.seen(),
+        floor: if resume { 0 } else { events.seen() },
+        ..View::default()
+    };
+    let mut older_future = std::pin::pin!(None);
     let mut output_rows = Vec::new();
     let catalog = CommandCatalog::builtins()?;
     let mut input = PromptInput::default();
@@ -610,6 +713,18 @@ pub async fn run(
         queries.start(credit, query_future.as_mut(), |source, rows| {
             query::load(Arc::clone(&conversation), rows, source.clone())
         });
+        // Older turns page in as the view nears them: one read at a time,
+        // started by the frame that showed the need, never retried.
+        if older_future.is_none()
+            && let Some(from) = view.older_page(page)
+        {
+            older_future.set(Some(older(
+                Arc::clone(&conversation),
+                view.epoch,
+                from,
+                view.top,
+            )));
+        }
         tokio::select! {
             (query, result) = async {
                 match usage_future.as_mut().as_pin_mut() {
@@ -631,6 +746,29 @@ pub async fn run(
                     }
                 }
             }
+            read = async {
+                match older_future.as_mut().as_pin_mut() {
+                    Some(read) => read.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                older_future.set(None);
+                match read {
+                    Ok(older) if older.epoch == view.epoch => {
+                        view.transcript.prepend(older.blocks);
+                        view.top = older.from;
+                        if older.cleared {
+                            view.floor = older.from;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        // The rows shown stay; nothing older is read again.
+                        view.floor = view.top;
+                        view.notice = refusal(format_args!("Older turns unavailable: {error}"));
+                    }
+                }
+            }
             result = async {
                 match query_future.as_mut().as_pin_mut() {
                     Some(query) => query.await,
@@ -645,7 +783,7 @@ pub async fn run(
             event = events.next() => {
                 let event = event?;
                 let settled = matches!(&event, Event::Turn(_));
-                if matches!(event, Event::Output) {
+                if matches!(event, Event::Delta) {
                     events.absorb().await?;
                 }
                 // Only a turn this view waited on rings; a reopened
@@ -656,14 +794,23 @@ pub async fn run(
                 if settled {
                     queries.invalidate(query::Source::follows_tail);
                 }
-                // A settled turn clears the output and the streamed answer.
-                if view.reply != events.reply() {
+                // A settled turn clears the output and the streamed text.
+                let (kind, live) = events.live();
+                let answer = if kind == LiveKind::Answer { live } else { "" };
+                if view.reply != answer {
                     view.reply.clear();
-                    view.reply.push_str(events.reply());
-                    view.pending_dirty = true;
+                    view.reply.push_str(answer);
+                    view.tail_dirty = true;
                 }
-                output_rows = events.output().lines().rev().take(OUTPUT_ROWS)
-                    .map(|line| Line::raw(line.to_owned()))
+                // Reasoning shows muted in the strip tool output uses.
+                let style = if kind == LiveKind::Reasoning {
+                    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+                } else {
+                    Style::default()
+                };
+                output_rows = if kind == LiveKind::Answer { "" } else { live }
+                    .lines().rev().take(OUTPUT_ROWS)
+                    .map(|line| Line::styled(line.to_owned(), style))
                     .collect();
                 output_rows.reverse();
             }
@@ -750,13 +897,6 @@ pub async fn run(
                                         input.editor = Editor::new(&text);
                                         continue;
                                     }
-                                }
-                                if view.pending.len() >= HISTORY as usize
-                                    || text.len().saturating_add(view.pending.iter().map(|(_, text)| text.len()).sum::<usize>()) > 1024 * 1024
-                                {
-                                    view.notice = Some("pending prompt display is full; wait for a turn to settle".into());
-                                    input.editor = Editor::new(&text);
-                                    continue;
                                 }
                                 // A refused prompt, such as an unknown `/name`, stays
                                 // in the editor with its reason. Sending the same text

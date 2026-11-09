@@ -188,6 +188,7 @@
         "pty-conversation",
         "pty-help",
         "pty-markdown",
+        "pty-stream-delta",
         "pty-image-attach",
         "pty-notification",
         "pty-slash",

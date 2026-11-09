@@ -354,6 +354,19 @@ test("screen conditions require rendered styles and reject literal markdown", as
   screen.dispose();
 });
 
+test("a delta condition admits streamed text only while its turn is open", async () => {
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const write = data => new Promise(resolve => screen.write(data, resolve));
+  await write("\u25cf GraphCoder\r\n  streamed");
+  assert.ok(matches(screen, raw(""), { delta: "streamed" }));
+  assert.ok(!matches(screen, raw(""), { delta: "not yet streamed" }));
+  // Negative control: the same text on a settled (idle) screen is no delta.
+  await write("\x1b[H\x1b[2K\u25cb GraphCoder");
+  assert.ok(matches(screen, raw(""), { contains: ["streamed"] }));
+  assert.ok(!matches(screen, raw(""), { delta: "streamed" }));
+  screen.dispose();
+});
+
 test("captured interrupted recovery admits its wrapped diagnostic through original completion", async () => {
   class TerminalProcess extends Processes {
     startTerminal(binary, args, { cwd, env }) { return this.start(binary, args, { cwd, env }); }

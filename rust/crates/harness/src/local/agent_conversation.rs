@@ -575,7 +575,7 @@ impl Conversation {
                 match events.next().await? {
                     super::Event::Status(next) => break Some(next),
                     super::Event::Turn(_) => break None,
-                    super::Event::Output => {}
+                    super::Event::Delta => {}
                 }
             };
         }
@@ -614,6 +614,45 @@ impl Conversation {
             from.unwrap_or(settled),
             statuses.saturating_sub(1),
         )
+    }
+
+    /// The settled entries at conversation sequences `from..to`, every one
+    /// of them below the settled tail, read over one follow of the
+    /// conversation that is dropped at `to`. A transcript pages its older
+    /// turns with this, so a view holds only the turns it has shown.
+    ///
+    /// # Errors
+    /// Session or host failures, or a refused follow.
+    pub async fn entries(&self, from: u64, to: u64) -> Result<Vec<ConversationEntry>> {
+        let mut entries = Vec::new();
+        if from >= to {
+            return Ok(entries);
+        }
+        // The status follow starts at its tail: only the turns are read.
+        let (_, statuses, _) = self.settlement().await?;
+        let mut turns = self
+            .connection
+            .controls
+            .observe(acyclic_harness_client::AgentSelection::new(
+                self.agent().clone(),
+                from,
+                statuses,
+            ))
+            .map_err(failed)?;
+        loop {
+            if let acyclic_harness_client::AgentEvent::Conversation {
+                sequence, entry, ..
+            } = turns.next().await.map_err(failed)?
+            {
+                if sequence >= to {
+                    return Ok(entries);
+                }
+                entries.push(entry);
+                if sequence + 1 == to {
+                    return Ok(entries);
+                }
+            }
+        }
     }
 
     /// Replay every committed transition after the source cursors in `projection`.

@@ -1,0 +1,17 @@
+{
+  "id": "pty-stream-delta",
+  "workspace": {"kind": "plain", "files": {}},
+  "model": {"steps": [
+    {"when": {"user": "stream DELTA_PROMPT"}, "text": ["DELTA_FIRST ", "**DELTA_SECOND**"], "hold": true},
+    {"when": {"user": "settle DELTA_PROMPT"}, "text": ["SETTLE_FIRST ", "SETTLE_SECOND"]}
+  ]},
+  "inputs": [
+    {"mode": "pty", "actions": [
+      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "stream DELTA_PROMPT"},
+      {"when": {"delta": "DELTA_FIRST"}, "send": "\u001b"},
+      {"when": {"contains": ["DELTA_FIRST", "DELTA_SECOND", "interaction cancelled", "○"], "bold": "DELTA_SECOND", "absent": ["**DELTA_SECOND**"]}, "prompt": "settle DELTA_PROMPT"},
+      {"when": {"contains": ["SETTLE_FIRST SETTLE_SECOND", "○"]}, "send": "\u0004"}
+    ], "settled_contains": ["stream DELTA_PROMPT", "DELTA_SECOND", "SETTLE_FIRST SETTLE_SECOND", "○"]}
+  ],
+  "assert": {"requests": 2}
+}

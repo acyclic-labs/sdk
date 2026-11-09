@@ -1,6 +1,20 @@
-//! The live display of an agent's newest tool call or streaming answer,
+//! The live display of an agent's newest tool call or streaming model text,
 //! folded from the change records of its `tools/` directory: a call's
-//! `stdout/` and `stderr/` chunks, or a model dispatch's `reply/` chunks.
+//! `stdout/` and `stderr/` chunks, or a model dispatch's `reply/` (answer) or
+//! `reasoning/` chunks. The records are the one source: this is a projection
+//! of them, and a settled turn's entry replaces it.
+
+/// What the live display shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LiveKind {
+    /// The newest tool call's stdout and stderr.
+    #[default]
+    Output,
+    /// A model dispatch's answer text while it streams.
+    Answer,
+    /// A model dispatch's reasoning summary while it streams.
+    Reasoning,
+}
 
 /// Bytes of the newest call's output a [`OutputTail`] retains.
 const TAIL_BYTES: usize = 16 * 1024;
@@ -16,10 +30,10 @@ pub(super) struct OutputTail {
     /// The opened follow's replayed history ends here; nothing is chosen
     /// before it is drained, so a reopen reads only the newest call.
     replayed: Option<u64>,
-    /// `tools/{turn}/{operation}` of the newest call or dispatch.
+    /// `tools/{turn}/{operation}` of the newest call, or
+    /// `tools/{turn}/{dispatch}/{reply|reasoning}` of the newest model text.
     call: Option<String>,
-    /// Whether the newest is a model dispatch's answer text.
-    reply: bool,
+    kind: LiveKind,
     text: String,
     /// Bytes of a character a chunk split, for stdout and stderr.
     split: [Vec<u8>; 2],
@@ -29,7 +43,7 @@ pub(super) struct OutputTail {
 pub(super) struct Plan {
     end: u64,
     call: Option<String>,
-    reply: bool,
+    kind: LiveKind,
     /// Each chunk's path and whether it is stderr.
     pub(super) reads: Vec<(String, bool)>,
 }
@@ -54,32 +68,36 @@ impl OutputTail {
             return None;
         }
         let mut call = None;
-        let mut reply = false;
+        let mut kind = LiveKind::Output;
         let mut chunks = Vec::new();
         for (sequence, paths) in records {
             if sequence < self.next {
                 continue;
             }
             for path in paths {
-                if let Some((owner, stderr, answer)) = path
+                // A dispatch's answer and reasoning are separate displays:
+                // their owner includes the stream's own directory.
+                let model = |label: &str, kind| {
+                    path.find(label)
+                        .map(|at| (at + label.len() - 1, false, kind))
+                };
+                if let Some((owner, stderr, chunk)) = path
                     .split_once("/stdout/")
-                    .map(|(owner, _)| (owner, false, false))
+                    .map(|(owner, _)| (owner.len(), false, LiveKind::Output))
                     .or_else(|| {
                         path.split_once("/stderr/")
-                            .map(|(owner, _)| (owner, true, false))
+                            .map(|(owner, _)| (owner.len(), true, LiveKind::Output))
                     })
-                    .or_else(|| {
-                        path.split_once("/reply/")
-                            .map(|(owner, _)| (owner, false, true))
-                    })
+                    .or_else(|| model("/reply/", LiveKind::Answer))
+                    .or_else(|| model("/reasoning/", LiveKind::Reasoning))
                 {
-                    call = Some(owner.to_owned());
-                    reply = answer;
-                    chunks.push((owner.len(), path, stderr));
+                    call = Some(path[..owner].to_owned());
+                    kind = chunk;
+                    chunks.push((owner, path, stderr));
                 } else if let Some(owner) = path.strip_suffix("/request.json") {
                     // A new call starts its display even before it writes.
                     call = Some(owner.to_owned());
-                    reply = false;
+                    kind = LiveKind::Output;
                 }
             }
         }
@@ -91,7 +109,7 @@ impl OutputTail {
         Some(Plan {
             end,
             call,
-            reply,
+            kind,
             reads,
         })
     }
@@ -105,7 +123,7 @@ impl OutputTail {
         let switched = plan.call.is_some() && plan.call != self.call;
         if switched {
             self.call = plan.call;
-            self.reply = plan.reply;
+            self.kind = plan.kind;
         }
         if switched || cut {
             self.text.clear();
@@ -137,7 +155,7 @@ impl OutputTail {
     pub(super) fn reset(&mut self, end: u64) {
         self.next = self.next.max(end);
         self.call = None;
-        self.reply = false;
+        self.kind = LiveKind::Output;
         self.text.clear();
         self.split = Default::default();
     }
@@ -146,9 +164,9 @@ impl OutputTail {
         &self.text
     }
 
-    /// Whether [`Self::text`] is a streaming answer rather than tool output.
-    pub(super) const fn reply(&self) -> bool {
-        self.reply
+    /// What [`Self::text`] is.
+    pub(super) const fn kind(&self) -> LiveKind {
+        self.kind
     }
 }
 
@@ -261,7 +279,7 @@ fn keep_tail(text: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputTail, TAIL_BYTES, read_newest};
+    use super::{LiveKind, OutputTail, TAIL_BYTES, read_newest};
     use std::{cell::Cell, collections::BTreeMap};
 
     fn paths(paths: &[&str]) -> Vec<String> {
@@ -334,6 +352,29 @@ mod tests {
     }
 
     #[test]
+    fn a_dispatch_shows_its_reasoning_then_only_its_answer() {
+        let mut tail = OutputTail::default();
+        let reasoning = (0, paths(&["tools/t/d/reasoning/0"]));
+        assert!(absorb(&mut tail, vec![reasoning], 1, 1, &[b"weighing"]).is_some());
+        assert_eq!(
+            (tail.kind(), tail.text()),
+            (LiveKind::Reasoning, "weighing")
+        );
+        // The answer is its own display; the reasoning chunks are not read
+        // into it, though one record announces both.
+        let both = (1, paths(&["tools/t/d/reasoning/1", "tools/t/d/reply/0"]));
+        assert_eq!(
+            absorb(&mut tail, vec![both], 2, 2, &[b"answer"]),
+            Some(vec!["tools/t/d/reply/0".to_owned()])
+        );
+        assert_eq!((tail.kind(), tail.text()), (LiveKind::Answer, "answer"));
+        // Negative control: a tool call after the answer is tool output.
+        let call = (2, paths(&["tools/t/c/request.json", "tools/t/c/stdout/0"]));
+        assert!(absorb(&mut tail, vec![call], 3, 3, &[b"ran"]).is_some());
+        assert_eq!((tail.kind(), tail.text()), (LiveKind::Output, "ran"));
+    }
+
+    #[test]
     fn a_character_split_across_chunks_decodes_whole() {
         let mut tail = OutputTail::default();
         let bytes = "é✓".as_bytes();
@@ -391,7 +432,7 @@ mod tests {
             panic!("the drained follow plans its reads");
         };
         tail.apply(plan, bytes, cut);
-        assert!(tail.reply());
+        assert_eq!(tail.kind(), LiveKind::Answer);
         assert!(answer.ends_with(tail.text()));
         assert!(tail.text().len() + 4 > TAIL_BYTES);
     }

@@ -66,6 +66,7 @@ use config::LocalProject;
 pub use config::ModelResolver;
 
 pub use observer::{Event, Observer};
+pub use tool_output::LiveKind;
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;
 

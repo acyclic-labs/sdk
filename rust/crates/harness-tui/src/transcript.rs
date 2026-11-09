@@ -1,4 +1,9 @@
-//! Bounded transcript storage and incremental display-width wrapping.
+//! Transcript rows and incremental display-width wrapping.
+//!
+//! A transcript holds the turns its view paged in from the conversation
+//! stream, oldest first, and nothing else: no text is evicted or omitted.
+//! Older turns page in before the first row, settled turns append, and the
+//! streaming tail rewraps alone, so a delta costs the tail block's rows.
 
 use crate::Layout;
 use ratatui::{
@@ -6,29 +11,23 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::{borrow::Cow, collections::VecDeque};
-use unicode_segmentation::UnicodeSegmentation;
-
-const MAX_BLOCKS: usize = 128;
-const MAX_BYTES: usize = 1024 * 1024;
-const MAX_BLOCK_BYTES: usize = 64 * 1024;
-const MAX_ROWS: usize = 8192;
-const OMITTED: &str = "… earlier text omitted …";
 
 struct Block {
     prompt: bool,
     text: String,
-    rows: usize,
 }
 
-/// One bounded transcript shared by terminal applications. Appending wraps only
-/// the new block; resizing rewraps the retained window. Older text is evicted.
+/// The transcript shared by terminal applications: settled blocks, then the
+/// transient pending prompts, then the streaming tail. Appending or
+/// prepending wraps only the new blocks; resizing rewraps the settled ones.
 pub struct TranscriptRows {
     blocks: VecDeque<Block>,
     lines: Vec<Line<'static>>,
-    bytes: usize,
     width: usize,
+    /// Rows of the pending prompts, after the settled rows.
     pending_rows: usize,
-    truncated: bool,
+    /// Rows of the streaming tail, after the pending prompts.
+    tail_rows: usize,
 }
 
 impl Default for TranscriptRows {
@@ -36,44 +35,56 @@ impl Default for TranscriptRows {
         Self {
             blocks: VecDeque::new(),
             lines: Vec::new(),
-            bytes: 0,
             width: 80,
             pending_rows: 0,
-            truncated: false,
+            tail_rows: 0,
         }
     }
 }
 
 impl TranscriptRows {
-    /// Append a settled prompt or answer, retaining a bounded suffix of a large
-    /// block. Truncation is shown explicitly in the transcript.
+    /// Append a settled prompt or answer after every settled row. The
+    /// pending prompts and the tail are cleared; the caller restores them.
     pub fn push(&mut self, prompt: bool, text: &str) {
         self.clear_pending();
-        self.truncated |= text.len() > MAX_BLOCK_BYTES;
-        self.push_owned(prompt, bounded_text(text).into_owned());
+        self.push_owned(prompt, settled(text).to_owned());
     }
 
     fn push_owned(&mut self, prompt: bool, text: String) {
-        self.bytes += text.len();
-        let rows = wrap(prompt, &text, self.width.max(1));
-        self.blocks.push_back(Block {
-            prompt,
-            text,
-            rows: rows.len(),
-        });
-        self.lines.extend(rows);
-        self.evict();
+        self.lines.extend(wrap(prompt, &text, self.width.max(1)));
+        self.blocks.push_back(Block { prompt, text });
+    }
+
+    /// Insert older settled blocks, oldest first, before every row, and
+    /// return how many rows they add. Rows counted from the end, as a
+    /// scroll offset from the live tail is, keep their place.
+    pub fn prepend(&mut self, blocks: impl IntoIterator<Item = (bool, String)>) -> usize {
+        let width = self.width.max(1);
+        let mut rows = Vec::new();
+        let mut added = Vec::new();
+        for (prompt, text) in blocks {
+            let text = settled(&text).to_owned();
+            rows.extend(wrap(prompt, &text, width));
+            added.push(Block { prompt, text });
+        }
+        for block in added.into_iter().rev() {
+            self.blocks.push_front(block);
+        }
+        let count = rows.len();
+        self.lines.splice(0..0, rows);
+        count
     }
 
     /// Wrapped rows for `width` terminal columns, including the prompt marker.
-    /// Call `pending` again after a width change to restore transient prompts.
+    /// After a width change, call `pending` and `tail` again to restore the
+    /// transient rows.
     pub fn rows(&mut self, width: u16) -> &[Line<'static>] {
         let width = usize::from(width).max(1);
         if width != self.width {
             self.width = width;
             self.pending_rows = 0;
+            self.tail_rows = 0;
             self.lines.clear();
-            self.bytes = 0;
             for block in std::mem::take(&mut self.blocks) {
                 self.push_owned(block.prompt, block.text);
             }
@@ -81,30 +92,34 @@ impl TranscriptRows {
         &self.lines
     }
 
-    /// Replace the transient suffix, each block a prompt (`true`) or an
-    /// answer, without rewrapping settled text. Display budgets do not change
-    /// the caller's pending operation identities.
-    pub fn pending<'a>(&mut self, blocks: impl DoubleEndedIterator<Item = (bool, &'a str)>) {
+    /// Replace the pending prompts, each a prompt (`true`) or an answer,
+    /// without rewrapping settled text. The tail is cleared with them, since
+    /// it follows them; restore it with [`Self::tail`].
+    pub fn pending<'a>(&mut self, blocks: impl Iterator<Item = (bool, &'a str)>) {
         self.clear_pending();
-        let mut rows = VecDeque::new();
-        for (prompt, text) in blocks.rev().take(MAX_BLOCKS) {
-            let wrapped = wrap(prompt, &bounded_text(text), self.width.max(1));
-            for row in wrapped.into_iter().rev() {
-                if rows.len() == MAX_ROWS {
-                    break;
-                }
-                rows.push_front(row);
-            }
-            if rows.len() == MAX_ROWS {
-                break;
-            }
+        let width = self.width.max(1);
+        for (prompt, text) in blocks {
+            let rows = wrap(prompt, settled(text), width);
+            self.pending_rows += rows.len();
+            self.lines.extend(rows);
         }
-        self.pending_rows = rows.len();
-        self.lines.extend(rows);
     }
 
-    /// Search the retained display before an exclusive row index. Call again
-    /// with the previous hit to search backward; an empty query has no hit.
+    /// Replace the streaming answer after the pending prompts, wrapping only
+    /// it: a delta costs the tail's rows, whatever precedes it.
+    pub fn tail(&mut self, text: Option<&str>) {
+        self.lines
+            .truncate(self.lines.len().saturating_sub(self.tail_rows));
+        self.tail_rows = 0;
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            let rows = wrap(false, settled(text), self.width.max(1));
+            self.tail_rows = rows.len();
+            self.lines.extend(rows);
+        }
+    }
+
+    /// Search the display before an exclusive row index. Call again with the
+    /// previous hit to search backward; an empty query has no hit.
     #[must_use]
     pub fn find(&self, query: &str, before: usize) -> Option<usize> {
         if query.is_empty() {
@@ -121,7 +136,7 @@ impl TranscriptRows {
             })
     }
 
-    /// Retained display rows, including transient prompts.
+    /// Display rows, including the transient prompts and tail.
     #[must_use]
     pub fn len(&self) -> usize {
         self.lines.len()
@@ -133,48 +148,20 @@ impl TranscriptRows {
         self.lines.is_empty()
     }
 
-    /// Whether settled source text was omitted from this retained window.
-    #[must_use]
-    pub fn truncated(&self) -> bool {
-        self.truncated
-    }
-
     fn clear_pending(&mut self) {
-        self.lines
-            .truncate(self.lines.len().saturating_sub(self.pending_rows));
+        self.lines.truncate(
+            self.lines
+                .len()
+                .saturating_sub(self.pending_rows + self.tail_rows),
+        );
         self.pending_rows = 0;
-    }
-
-    fn evict(&mut self) {
-        let mut removed = 0;
-        while self.blocks.len() > MAX_BLOCKS
-            || self.bytes > MAX_BYTES
-            || self.lines.len().saturating_sub(removed) > MAX_ROWS
-        {
-            let Some(block) = self.blocks.pop_front() else {
-                break;
-            };
-            self.bytes -= block.text.len();
-            removed += block.rows;
-        }
-        if removed > 0 {
-            self.truncated = true;
-            self.lines.drain(..removed);
-        }
+        self.tail_rows = 0;
     }
 }
 
-fn bounded_text(text: &str) -> Cow<'_, str> {
-    let text = text.trim_end_matches('\n');
-    if text.len() <= MAX_BLOCK_BYTES {
-        return Cow::Borrowed(text);
-    }
-    let minimum = text.len() - (MAX_BLOCK_BYTES - OMITTED.len() - 1);
-    let start = text
-        .grapheme_indices(true)
-        .find(|(at, _)| *at >= minimum)
-        .map_or(text.len(), |(at, _)| at);
-    Cow::Owned(format!("{OMITTED}\n{}", &text[start..]))
+/// A block's shown text: its trailing newlines end it rather than add rows.
+fn settled(text: &str) -> &str {
+    text.trim_end_matches('\n')
 }
 
 /// A prompt is shown bold as typed; an answer is rendered markdown.
@@ -192,16 +179,9 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     };
     let mut style_at = crate::styled_cells::ordered_styles(styles);
     let layout = Layout::from_text(&text, columns);
-    let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
-    if first > 0 {
-        // The marker must itself fit even in a one-column text area.
-        rows.push(Line::raw("…"));
-    }
-    let mut previous_end = first
-        .checked_sub(1)
-        .map(|previous| layout.rows[previous].end);
-    for (index, row) in layout.rows.into_iter().enumerate().skip(first) {
+    let mut previous_end = None;
+    for (index, row) in layout.rows.into_iter().enumerate() {
         let joins_previous = previous_end.replace(row.end) == Some(row.start);
         if row.cells.is_empty() && joins_previous {
             continue;
@@ -235,6 +215,17 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
 
+    fn text(rows: &[Line<'static>]) -> Vec<String> {
+        rows.iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     #[test]
     fn append_keeps_existing_rows_and_status_work_needs_no_wrap() {
         let mut transcript = TranscriptRows::default();
@@ -252,51 +243,78 @@ mod tests {
     }
 
     #[test]
-    fn retained_source_and_rows_stay_bounded_under_append_and_resize() {
+    fn a_delta_rewraps_only_the_tail_and_older_pages_keep_the_tail_offset() {
         let mut transcript = TranscriptRows::default();
-        for _ in 0..MAX_BLOCKS + 10 {
-            transcript.push(false, &"界".repeat(MAX_BLOCK_BYTES));
-            assert!(transcript.bytes <= MAX_BYTES);
-            assert!(transcript.blocks.len() <= MAX_BLOCKS);
-            assert!(transcript.lines.len() <= MAX_ROWS);
+        transcript.rows(20);
+        transcript.push(true, "settled prompt");
+        transcript.pending([(true, "pending prompt")].into_iter());
+        let settled = transcript.lines[0].spans.as_ptr();
+        let pending = transcript.lines[transcript.len() - 2].spans.as_ptr();
+        for streamed in ["str", "streaming **answer**", "streaming **answer** grows"] {
+            transcript.tail(Some(streamed));
+            // The settled and pending rows are the same allocations.
+            assert_eq!(transcript.lines[0].spans.as_ptr(), settled);
+            assert_eq!(transcript.lines[2].spans.as_ptr(), pending);
         }
-        for width in [1, 2, 3, 12, 80] {
-            let rows = transcript.rows(width);
-            assert!(rows.len() <= MAX_ROWS);
-            assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
-        }
-        assert!(transcript.truncated());
+        let rows = text(transcript.rows(20));
+        assert!(rows.iter().any(|row| row.contains("grows")));
+        assert!(!rows.iter().any(|row| row.contains("**")));
+        // Negative control: a cleared tail leaves only its predecessors.
+        let before = transcript.len();
+        transcript.tail(None);
+        assert!(transcript.len() < before);
+        assert!(
+            !text(transcript.rows(20))
+                .iter()
+                .any(|row| row.contains("grows"))
+        );
+
+        // An older page goes first; the rows counted from the end stay put.
+        transcript.tail(Some("tail"));
+        let tail = text(transcript.rows(20));
+        let added = transcript.prepend([(true, "older prompt".into()), (false, "older".into())]);
+        let rows = text(transcript.rows(20));
+        assert_eq!(rows.len(), tail.len() + added);
+        assert_eq!(&rows[added..], &tail[..]);
+        assert!(rows[0].starts_with("› older prompt"), "{rows:?}");
+        // A resize rewraps settled blocks in order: the page, then the push.
+        transcript.rows(40);
+        let rows = text(transcript.rows(40));
+        let older = rows.iter().position(|row| row.contains("older prompt"));
+        let newer = rows.iter().position(|row| row.contains("settled prompt"));
+        assert!(older < newer, "{rows:?}");
     }
 
     #[test]
-    fn resize_moves_retained_sources_and_preserves_the_bounded_projection() {
+    fn resize_moves_settled_sources_without_copying_them() {
         let mut transcript = TranscriptRows::default();
-        for index in 0..MAX_BLOCKS + 2 {
+        for index in 0..130 {
             transcript.push(
                 index % 2 == 0,
                 &format!("source {index:03}: 界e\u{301}👩‍💻\nlast"),
             );
         }
+        // Nothing is evicted, however many blocks or rows there are.
+        assert_eq!(transcript.blocks.len(), 130);
+        assert!(text(transcript.rows(80))[0].contains("source 000"));
         let sources = transcript
             .blocks
             .iter()
             .map(|block| block.text.as_ptr())
             .collect::<Vec<_>>();
-        let bytes = transcript.bytes;
         let original = transcript.lines.clone();
         // Negative control: transient text must be rebuilt at the new width,
         // rather than carried over with the immutable settled source.
         transcript.pending([(true, "transient text")].into_iter());
-        assert!(transcript.pending_rows > 0);
+        transcript.tail(Some("streaming"));
+        assert!(transcript.pending_rows > 0 && transcript.tail_rows > 0);
         for width in [47, 15, 3, 0, 80] {
             let rows = transcript.rows(width);
-            assert!(rows.len() <= MAX_ROWS);
             assert!(
                 rows.iter()
                     .all(|row| row.width() <= usize::from(width.max(1)))
             );
-            assert_eq!(transcript.pending_rows, 0);
-            assert_eq!(transcript.bytes, bytes);
+            assert_eq!((transcript.pending_rows, transcript.tail_rows), (0, 0));
             assert_eq!(
                 transcript
                     .blocks
@@ -311,16 +329,6 @@ mod tests {
         let allocation = transcript.lines[0].spans.as_ptr();
         transcript.rows(80);
         assert_eq!(transcript.lines[0].spans.as_ptr(), allocation);
-
-        // A narrow projection may evict older display blocks, but it must
-        // retain the original newest source without exceeding row credit.
-        transcript.push(false, &"界".repeat(MAX_ROWS - 4));
-        let newest = transcript.blocks.back().unwrap().text.as_ptr();
-        assert!(transcript.rows(1).len() <= MAX_ROWS);
-        assert_eq!(transcript.blocks.len(), 1);
-        assert_eq!(transcript.blocks.back().unwrap().text.as_ptr(), newest);
-        assert!(transcript.bytes <= MAX_BYTES);
-        assert!(transcript.truncated());
     }
 
     #[test]
@@ -335,10 +343,17 @@ mod tests {
                     .all(|line| line.width() <= usize::from(width))
             );
         }
-        let source = format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES));
-        let text = bounded_text(&source);
-        assert!(text.len() <= MAX_BLOCK_BYTES);
-        assert!(text.ends_with("e\u{301}end"));
-        assert!(text.starts_with(OMITTED));
+        // A block of any size is shown whole: its last characters included.
+        let source = format!("{}e\u{301}end", "界".repeat(64 * 1024));
+        transcript.push(false, &source);
+        let rows = text(transcript.rows(11));
+        let shown = rows.iter().map(|row| row.trim_start()).collect::<String>();
+        assert_eq!(shown.matches('界').count(), 64 * 1024 + 1);
+        assert!(
+            shown.ends_with("e\u{301}end"),
+            "{}",
+            &shown[shown.len() - 32..]
+        );
+        assert!(!shown.contains('…'));
     }
 }
