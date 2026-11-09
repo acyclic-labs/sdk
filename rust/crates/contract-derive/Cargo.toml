@@ -21,11 +21,11 @@ quote = "1"
 syn = { version = "3", features = ["full"] }
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-test-support = { path = "../test-support" }
 async-trait.workspace = true
 prost.workspace = true
 prost-types.workspace = true
-protoc-bin-vendored.workspace = true
 tempfile = "3.27.0"
 
 [lints]

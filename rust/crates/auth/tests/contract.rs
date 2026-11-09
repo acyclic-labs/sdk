@@ -68,23 +68,17 @@ fn rendered_contract_compiles_and_preserves_presence() -> Result<(), Box<dyn std
         std::fs::read(checked_in)?
     );
     let descriptor = root.path().join("auth.bin");
-    let status = std::process::Command::new(acyclic_test_support::runtime_path(
-        "PROTOC",
-        protoc_bin_vendored::protoc_bin_path,
-    )?)
-    .arg(format!("--proto_path={}", root.path().display()))
-    .arg(format!(
-        "--proto_path={}",
-        acyclic_test_support::source_path("compatibility/proto").display()
-    ))
-    .arg(format!(
-        "--proto_path={}",
-        acyclic_test_support::runtime_path("PROTOC_INCLUDE", protoc_bin_vendored::include_path)?
-            .display()
-    ))
-    .arg(format!("--descriptor_set_out={}", descriptor.display()))
-    .arg("auth/v1/auth.proto")
-    .status()?;
+    let compiler = acyclic_proto_build::Compiler::new()?;
+    let status = std::process::Command::new(compiler.executable())
+        .arg(format!("--proto_path={}", root.path().display()))
+        .arg(format!(
+            "--proto_path={}",
+            acyclic_test_support::source_path("compatibility/proto").display()
+        ))
+        .arg(format!("--proto_path={}", compiler.includes().display()))
+        .arg(format!("--descriptor_set_out={}", descriptor.display()))
+        .arg("auth/v1/auth.proto")
+        .status()?;
     assert!(status.success());
     let set = prost_types::FileDescriptorSet::decode(std::fs::read(descriptor)?.as_slice())?;
     let file = set.file.first().ok_or("missing descriptor")?;

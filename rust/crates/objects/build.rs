@@ -1,6 +1,7 @@
 //! Generate the public objects contract from the crate-owned protocol.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let compiler = acyclic_proto_build::Compiler::new()?;
     let native = std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32";
     let feature = |name: &str| std::env::var_os(format!("CARGO_FEATURE_{name}")).is_some();
     let grpc = feature("GRPC") && native;
@@ -13,12 +14,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo::rustc-cfg=objects_server");
     }
     // Bodies share the caller's buffer end to end instead of copying it.
-    let mut config = acyclic_proto_build::config()?;
+    let mut config = compiler.config();
     config.bytes([
         ".acyclic.objects.v1.PutBlobRequest.body",
         ".acyclic.objects.v1.GetBlobResponse.body",
     ]);
-    acyclic_proto_build::compile(
+    compiler.compile(
         config,
         acyclic_proto_build::services(grpc),
         &["proto/objects/v1/objects.proto"],

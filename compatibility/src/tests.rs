@@ -7,6 +7,7 @@ use prost_types::{
 
 #[test]
 fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn std::error::Error>> {
+    let compiler = Compiler::new()?;
     let root = tempfile::tempdir()?;
     for (action, admitted) in [
         ("streams/follow", true),
@@ -19,14 +20,17 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
         let input = root.path().join("test.proto");
         let output = root.path().join("test.bin");
         std::fs::write(&input, source)?;
-        config()?.file_descriptor_set_path(&output).load_fds(
-            &[input],
-            &[
-                root.path().to_owned(),
-                acyclic_test_support::crate_path!("proto"),
-                compiler_includes()?,
-            ],
-        )?;
+        compiler
+            .config()
+            .file_descriptor_set_path(&output)
+            .load_fds(
+                &[input],
+                &[
+                    root.path().to_owned(),
+                    acyclic_test_support::crate_path!("proto"),
+                    compiler.includes().to_owned(),
+                ],
+            )?;
         let bytes = std::fs::read(&output)?;
         assert_eq!(
             canonicalize(&bytes, &["test.proto"]).is_ok(),
@@ -45,11 +49,12 @@ fn descriptor_authorization_rejects_undeclared_actions() -> Result<(), Box<dyn s
 #[test]
 fn every_compiled_descriptor_is_byte_identical_to_its_wire_baseline()
 -> Result<(), Box<dyn std::error::Error>> {
+    let compiler = Compiler::new()?;
     let root = acyclic_test_support::source_path("");
     let output = tempfile::tempdir()?;
     for (family, baseline, protos) in FAMILIES {
         let destination = output.path().join(baseline);
-        descriptor(
+        compiler.descriptor(
             &root.join("rust/crates").join(family),
             protos,
             &destination,

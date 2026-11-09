@@ -56,6 +56,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Event", "EventTarget"], optional = true }
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
 axum.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
@@ -68,7 +69,6 @@ prost-reflect.workspace = true
 tempfile = "3.27.0"
 prost-types.workspace = true
 tonic-prost.workspace = true
-protoc-bin-vendored = "=3.3.0"
 
 [lints]
 workspace = true

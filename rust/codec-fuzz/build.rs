@@ -106,6 +106,7 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let mut table = String::from("pub static DECODERS: &[Decoder] = &[\n");
     let mut descriptors = String::from("static DESCRIPTORS: &[&[u8]] = &[\n");
+    let compiler = acyclic_proto_build::Compiler::new()?;
     for (index, (family, packages, rust, auth)) in families.iter().copied().enumerate() {
         let (_, _, protos) = acyclic_proto_build::FAMILIES
             .iter()
@@ -113,7 +114,7 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("unknown protocol family")?;
         let manifest = root.join("../crates").join(family);
         let descriptor = out.join(format!("{family}.bin"));
-        acyclic_proto_build::descriptor(&manifest, protos, &descriptor, &shared)?;
+        compiler.descriptor(&manifest, protos, &descriptor, &shared)?;
         writeln!(
             descriptors,
             "include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{family}.bin\")),"

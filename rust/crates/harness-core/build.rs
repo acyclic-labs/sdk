@@ -5,7 +5,7 @@ pub mod native_environment;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
-    let protoc = acyclic_proto_build::protoc()?;
+    let compiler = acyclic_proto_build::Compiler::new()?;
     // Crate-owned protocol sources make the published archive independently buildable.
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
-    config.protoc_executable(protoc);
+    config.protoc_executable(compiler.executable());
     let descriptor = std::path::PathBuf::from(
         native_environment::variable("OUT_DIR").ok_or("OUT_DIR is unset")?,
     )

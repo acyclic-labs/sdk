@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 
 mod authorization;
+mod compiler;
+pub use compiler::Compiler;
 mod descriptor;
 mod method;
 pub use descriptor::canonicalize;
@@ -54,28 +56,16 @@ pub const FAMILIES: &[(&str, &str, &[&str])] = &[
     ),
 ];
 
-/// Locate the compiler, honoring `PROTOC` before the pinned bundled compiler.
-///
-/// Relocated generators supply the executable available on their runtime host.
-/// The bundled path is resolved only when no explicit compiler is supplied.
-///
-/// # Errors
-/// Returns bundled compiler discovery errors.
-pub fn protoc() -> Result<PathBuf, protoc_bin_vendored::Error> {
-    std::env::var_os("PROTOC")
-        .map_or_else(protoc_bin_vendored::protoc_bin_path, |path| Ok(path.into()))
-}
-
-/// Configure the compiler and the public Objects metadata map shape.
-///
-/// # Errors
-/// Returns compiler discovery and Cargo output directory errors.
-pub fn config() -> Result<Config, Box<dyn std::error::Error>> {
-    let mut config = Config::new();
-    config.protoc_executable(protoc()?);
-    config.btree_map([".acyclic.objects.v1.ObjectMetadata.user"]);
-    config.protoc_arg("--retain_options");
-    Ok(config)
+impl Compiler {
+    /// Configure the compiler and the public Objects metadata map shape.
+    #[must_use]
+    pub fn config(&self) -> Config {
+        let mut config = Config::new();
+        config.protoc_executable(self.executable());
+        config.btree_map([".acyclic.objects.v1.ObjectMetadata.user"]);
+        config.protoc_arg("--retain_options");
+        config
+    }
 }
 
 /// Preserve the public service client/server shapes when transport is enabled.
@@ -101,70 +91,66 @@ pub fn shared_protocols() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
 }
 
-/// Import root for the selected compiler's standard protobuf definitions.
-///
-/// # Errors
-/// Returns discovery errors when no explicit include directory is supplied.
-pub fn compiler_includes() -> Result<PathBuf, protoc_bin_vendored::Error> {
-    std::env::var_os("PROTOC_INCLUDE")
-        .map_or_else(protoc_bin_vendored::include_path, |path| Ok(path.into()))
-}
+impl Compiler {
+    /// Compile messages and selected services; only protocol changes rerun codegen.
+    ///
+    /// # Errors
+    /// Returns filesystem and protobuf compilation errors.
+    pub fn compile(
+        &self,
+        mut config: Config,
+        services: Builder,
+        protos: &[&str],
+        descriptor: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let include = self.includes().to_owned();
+        let manifest = PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?,
+        );
+        let output =
+            PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?).join(descriptor);
+        config.file_descriptor_set_path(&output);
+        let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
+        services.compile_with_config(
+            config,
+            &paths,
+            &[manifest.join("proto"), shared_protocols(), include],
+        )?;
+        std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
+        println!("cargo:rerun-if-changed=proto");
+        println!("cargo:rerun-if-changed={}", shared_protocols().display());
+        println!("cargo:rerun-if-env-changed=PROTOC");
+        println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
+        Ok(())
+    }
 
-/// Compile messages and selected services; only protocol changes rerun codegen.
-///
-/// # Errors
-/// Returns filesystem and protobuf compilation errors.
-pub fn compile(
-    mut config: Config,
-    services: Builder,
-    protos: &[&str],
-    descriptor: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let include = compiler_includes()?;
-    let manifest =
-        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is unset")?);
-    let output =
-        PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?).join(descriptor);
-    config.file_descriptor_set_path(&output);
-    let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
-    services.compile_with_config(
-        config,
-        &paths,
-        &[manifest.join("proto"), shared_protocols(), include],
-    )?;
-    std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
-    println!("cargo:rerun-if-changed=proto");
-    println!("cargo:rerun-if-changed={}", shared_protocols().display());
-    println!("cargo:rerun-if-env-changed=PROTOC");
-    println!("cargo:rerun-if-env-changed=PROTOC_INCLUDE");
-    Ok(())
-}
-
-/// Regenerate a complete descriptor closure without building any SDK crate.
-/// `shared` is the import root containing the shared validation protocol.
-/// Both source roots are explicit so generators can run after relocation.
-///
-/// # Errors
-/// Returns compiler, descriptor and filesystem errors.
-pub fn descriptor(
-    manifest: &std::path::Path,
-    protos: &[&str],
-    output: &std::path::Path,
-    shared: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = config()?;
-    config.file_descriptor_set_path(output);
-    let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
-    config.load_fds(
-        &paths,
-        &[
-            manifest.join("proto"),
-            shared.to_path_buf(),
-            compiler_includes()?,
-        ],
-    )?;
-    std::fs::write(output, canonicalize(&std::fs::read(output)?, protos)?)?;
-    Ok(())
+    /// Regenerate a complete descriptor closure without building any SDK crate.
+    /// `shared` is the import root containing the shared validation protocol.
+    /// Both source roots are explicit so generators can run after relocation.
+    ///
+    /// # Errors
+    /// Returns compiler, descriptor and filesystem errors.
+    pub fn descriptor(
+        &self,
+        manifest: &std::path::Path,
+        protos: &[&str],
+        output: &std::path::Path,
+        shared: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = self.config();
+        config.file_descriptor_set_path(output);
+        let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
+        config.load_fds(
+            &paths,
+            &[
+                manifest.join("proto"),
+                shared.to_path_buf(),
+                self.includes().to_owned(),
+            ],
+        )?;
+        std::fs::write(output, canonicalize(&std::fs::read(output)?, protos)?)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
