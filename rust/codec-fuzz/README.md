@@ -1,6 +1,7 @@
-Unless stated otherwise, run these checks on demand from this directory.
-This is an independent Cargo workspace; fuzzing and proofs have no CI or
-scheduled jobs.
+Run these checks on demand from this directory. This package shares the SDK's
+root workspace and lockfile so changes to imported SDK crates cannot stale a
+second dependency graph. It remains outside the root default members; fuzzing
+and proofs have no CI or scheduled jobs.
 
 The [shared format inventory](../../compatibility/FORMATS.md) tracks decoder
 versions, targets, goldens and remaining qualification boundaries. A listed source
@@ -795,6 +796,12 @@ Replay them with `cargo run --locked --example replay -- actor_codecs/live-updat
 Removing canonical-byte rejection from the production decoder must make this
 oracle fail on `live-update-noncanonical`; omitting the oracle dispatch misses
 that mutation.
+
+The shared log-frame oracle also passes arbitrary caller bodies through both
+narrow and wide writers before parsing candidate frames. Every writer output
+must be admitted by the slice and finite-reader APIs. This catches reject-all
+readers that a parsed-input-only oracle cannot distinguish from valid refusal;
+`mutations/log-frame-refuse-writer.patch` retains that production mutation.
 
 The same Actors target admits the actual `SocketOpen::encode`,
 `SocketFrame::encode` and `socket_reply` writers before decoding arbitrary input.
