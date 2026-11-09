@@ -13,8 +13,9 @@ its account or agent from the payload. Forks retain their original record origin
 sequence and commit. The binding proves the original opaque provider and Machine
 reference; physical host, region and resource measurements remain unknown.
 
-`MachinesHost::exec` returns the provider's original stdout/stderr and terminal
-event stream. `read_file` and `write_file` use the native binary file primitives
+`MachinesHost::exec` selects declared binary duplex or textual request/response
+execution. Duplex retains separate stdout/stderr bytes; textual execution retains
+combined UTF-8 output and its terminal receipt. `read_file` and `write_file` use binary file primitives
 with an absolute guest path, exact offset and original deadline. `suspend` and
 `destroy` retain the caller's original idempotency key on uncertain outcomes.
 
@@ -26,21 +27,29 @@ parent expiry and task deadline. The standard input schema and 300 second
 default remain shared with native execution. Interrupted commands retain the
 original tool operation as indeterminate and are never submitted again.
 
-The host must bind the selected guest workspace to that volume using its existing
-filesystem admission. Immutable file tools keep their authenticated
-`ContentBindings`; this shell adapter does not supply the `fs` history facade or
-claim a filesystem snapshot. Native ledger execution is explicitly unsupported.
+The host binds the selected guest workspace through its existing filesystem
+admission with `FilesystemHost::bind_machine_workspace`. When `AttachVolume` is
+Unsupported, the shared workspace layer copies the admitted logical volume into
+a private guest directory at bind time. At turn settlement it captures file
+changes and publishes through the existing workspace transaction facade under
+the original turn identity, rechecking volume access before publication. Native
+attachment keeps the admitted physical selection. Immutable file tools keep their
+authenticated `ContentBindings` and observe published generations. Native ledger
+execution is explicitly unsupported.
 
 JavaScript hosts initialize `@acyclic-labs/harness/browser`, then call
-`BrowserMachinesWorkspace.open(originalAuthority, source)` and pass the result to
+`await BrowserMachinesWorkspace.open(originalAuthority, originalProviders, source)` and pass the result to
 `BrowserAgentRegistry.bindMachinesWorkspace`. Use the same initialized module and
 authority for the registry, guest and server. `source` is the platform's admitted
 `machines:/` binding: canonical ProviderRef and original settled MachineState
 protobuf bytes, `createMachinesRpcTransport` over the authenticated duplex
 transport, and the original invocation's clock-budget projection. The selected
-volume comes from that observation; scope and verification come from the retained
-authority. Construction performs no RPC, creates no Machine and reads no current
-state. Decoding is validation of evidence, not admission of a replacement Machine.
+physical volume comes from that observation. A provider declaring attachment
+Unsupported instead receives `source.selectedVolume`, the canonical protobuf of
+the original admitted logical VolumeRef. Scope and verification come from the
+retained authority; the providers must open that exact volume. Construction
+materializes a copied workspace when needed and rechecks the original authority
+after asynchronous work. Decoding validates the admitted Machine evidence.
 
 The budget projection registers the earlier of the original caller deadline,
 command-relative timeout and authenticated expiry once, before dispatch. Its

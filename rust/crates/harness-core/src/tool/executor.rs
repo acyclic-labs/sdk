@@ -12,6 +12,13 @@ pub struct Dispatch {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Commits an admitted copied workspace before its owning turn settles.
+    fn settle_workspace(
+        &self,
+        _turn: crate::OperationId,
+    ) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Runs a JavaScript composition through the stock caller. The interpreter
     /// receives no executor or host authority; each inner call is admitted again.
     fn is_code_mode(&self) -> bool {

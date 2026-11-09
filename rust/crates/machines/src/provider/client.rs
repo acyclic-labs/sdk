@@ -82,10 +82,7 @@ impl Machine {
         access: FileAccess,
         limit: u32,
     ) -> Result<FileRead, ProviderError> {
-        self.machines
-            .provider
-            .read_file(self.id, access, limit)
-            .await
+        read_file_at(self.machines.provider.as_ref(), self.id, access, limit).await
     }
     /// Writes one native chunk; interruption never authorizes redispatch.
     pub async fn write_file(
@@ -94,10 +91,14 @@ impl Machine {
         data: Vec<u8>,
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
-        self.machines
-            .provider
-            .write_file(self.id, access, data, truncate)
-            .await
+        write_file_at(
+            self.machines.provider.as_ref(),
+            self.id,
+            access,
+            data,
+            truncate,
+        )
+        .await
     }
     pub async fn read_output(
         &self,

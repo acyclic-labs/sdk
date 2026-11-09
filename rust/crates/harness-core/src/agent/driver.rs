@@ -201,6 +201,14 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
 
 /// Host binding of agent turns to an executor and journal.
 pub trait TurnHost: acyclic_stream::ProviderPlatform {
+    /// Publishes workspace effects before any terminal turn record.
+    fn settle<'a>(
+        &'a self,
+        _agent: &'a AgentState,
+        _turn: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Open only the bounded resources a context control needs. Hosts without
     /// context controls refuse before opening an executor or dispatching a model.
     fn open_control<'a>(
@@ -236,6 +244,13 @@ pub trait TurnHost: acyclic_stream::ProviderPlatform {
 }
 
 impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
+    fn settle<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+    ) -> BoxFuture<'a, crate::Result<()>> {
+        (**self).settle(agent, turn)
+    }
     fn open_control<'a>(
         &'a self,
         agent: &'a AgentState,
@@ -875,6 +890,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 )
                 .await;
             if stop.is_cancelled() && !matches!(progress, Ok(ExecutionProgress::Ready(_))) {
+                self.host.settle(agent, turn).await.map_err(host_error)?;
                 // A cancel or archive stops this turn: it settles durably as
                 // a cancelled entry holding its prompt and the answer it
                 // streamed so far, with no further model request.
@@ -904,6 +920,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // the normal agent commit; parents observe it by `wait`. Only an
                 // undecided failure retries the step.
                 Err(error) if error.is_model_failure() || !error.uncertain() => {
+                    self.host.settle(agent, turn).await.map_err(host_error)?;
                     return failed(agent, &open, turn, inbox, input, notices, error.to_string())
                         .await;
                 }
@@ -911,6 +928,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
             };
             let step = match progress {
                 ExecutionProgress::Ready(output) => {
+                    self.host.settle(agent, turn).await.map_err(host_error)?;
                     // An active goal continues the agent through its own inbox;
                     // a checkpoint is no step of it.
                     let checkpoint = input.context().is_some();
@@ -1106,6 +1124,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     });
                 }
                 ExecutionProgress::Failed(kind) => {
+                    self.host.settle(agent, turn).await.map_err(host_error)?;
                     return failed(
                         agent,
                         &open,
@@ -1118,6 +1137,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     .await;
                 }
                 ExecutionProgress::PreDispatchFailed(failure) => {
+                    self.host.settle(agent, turn).await.map_err(host_error)?;
                     let message = failure.message().to_owned();
                     return failed(agent, &open, turn, inbox, input, notices, message).await;
                 }

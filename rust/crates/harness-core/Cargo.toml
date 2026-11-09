@@ -57,10 +57,11 @@ mcp-stdio = ["acyclic-mcp/stdio", "tokio/process", "tokio/io-util", "dep:toml"]
 search-http = []
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls"]
 objects = ["dep:acyclic-objects"]
-machines = ["dep:acyclic-machines"]
+machines = ["filesystem", "dep:acyclic-machines", "dep:tar"]
 grpc = ["acyclic-stream/grpc"]
 
 [dependencies]
+tar = { version = "=0.4.46", default-features = false, optional = true }
 acyclic-mcp = { version = "=0.2.0", path = "../mcp" }
 oxrdf = { version = "=0.3.5", default-features = false, optional = true }
 oxttl = { version = "=0.2.5", default-features = false, optional = true }
@@ -93,6 +94,8 @@ bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 http.workspace = true
+httpdate = "1.0.3"
+serde-wasm-bindgen.workspace = true
 jsonschema.workspace = true
 rmp-serde = "=1.3.1"
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
@@ -169,6 +172,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

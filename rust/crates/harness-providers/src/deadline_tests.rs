@@ -87,6 +87,7 @@ fn script(timer: Timer) -> (Arc<Script>, oneshot::Sender<Result<HttpResponse>>) 
 
 fn request() -> HttpRequest {
     HttpRequest {
+        method: http::Method::POST,
         url: "http://127.0.0.1:1/v1".into(),
         headers: Default::default(),
         body: Bytes::new(),

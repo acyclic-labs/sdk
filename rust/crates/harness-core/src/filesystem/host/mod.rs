@@ -75,6 +75,25 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Copies a non-attached Machine's exact admitted volume at bind time.
+    #[cfg(feature = "machines")]
+    pub async fn bind_machine_workspace(
+        &self,
+        workspace: crate::machines::MachinesWorkspace,
+    ) -> Result<crate::machines::MachinesWorkspace> {
+        if !workspace.copy_required {
+            return Ok(workspace);
+        }
+        let volume = workspace.selected_volume();
+        let reference = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
+        if volume.provider() != &self.provider {
+            return Err(Error::Unauthorized(
+                "selected volume belongs to another filesystem".into(),
+            ));
+        }
+        let selected = self.open(&reference, None).await?;
+        workspace.bind_copy(selected).await
+    }
     #[cfg(not(target_arch = "wasm32"))]
     #[doc(hidden)]
     pub fn for_workspace(

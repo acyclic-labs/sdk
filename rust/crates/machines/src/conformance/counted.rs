@@ -8,6 +8,26 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
     fn assurance(&self) -> ProviderAssurance {
         self.inner().assurance()
     }
+    fn capability(&self, capability: ProviderCapability) -> Support {
+        self.inner().capability(capability)
+    }
+    async fn download_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+    ) -> Result<FileRead, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().download_file(machine, access).await
+    }
+    async fn upload_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+        data: Vec<u8>,
+    ) -> Result<(), ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().upload_file(machine, access, data).await
+    }
     async fn read_file(
         &self,
         machine: MachineId,
@@ -36,6 +56,14 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
     ) -> Result<ExecStream, ProviderError> {
         self.record(RequestClass::Data);
         self.inner().exec(machine, command).await
+    }
+    async fn exec_request(
+        &self,
+        machine: MachineId,
+        command: ExecCommand,
+    ) -> Result<TextExecResult, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().exec_request(machine, command).await
     }
     async fn read_output(
         &self,

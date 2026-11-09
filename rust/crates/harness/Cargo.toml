@@ -74,7 +74,7 @@ mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which", "acyclic
 search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util", "acyclic-harness-core/search-http", "acyclic-harness-search/search-http"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls", "acyclic-harness-core/mcp-oauth"]
 objects = ["dep:acyclic-objects", "acyclic-harness-core/objects"]
-machines = ["dep:acyclic-machines", "acyclic-harness-core/machines"]
+machines = ["dep:acyclic-machines", "dep:acyclic-machines-daytona", "acyclic-harness-core/machines"]
 grpc = ["acyclic-stream/grpc", "acyclic-harness-client/grpc", "acyclic-harness-core/grpc"]
 # The local harness's agents served as a self-hosted gRPC endpoint.
 serve = ["grpc", "filesystem-local", "dep:tonic", "dep:rustls", "dep:tokio-rustls", "dep:x509-parser"]
@@ -95,6 +95,7 @@ async-trait.workspace = true
 ratatui = { version = "=0.30.2", default-features = false, optional = true }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, optional = true }
+acyclic-machines-daytona = { version = "=0.2.0", path = "../machines-daytona", optional = true }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 base64 = "=0.23.1"

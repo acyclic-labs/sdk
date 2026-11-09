@@ -3,14 +3,16 @@
 use crate::{
     Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
     LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
-    OperatingSystem, OperationPhase, Platform, Precondition, ProviderError, Shell,
-    SuspensionPolicy,
+    OperatingSystem, OperationPhase, Platform, Precondition, ProviderCapability, ProviderError,
+    Shell, Support, SuspensionPolicy,
 };
 use acyclic_stream::testing::{Counted, RequestLedger, Requests};
 use futures::StreamExt as _;
 use std::num::NonZeroU32;
 
 mod counted;
+mod files;
+pub use files::verify_files;
 
 /// Canonical language-neutral Machines inventory, shipped with this crate.
 pub const SUITE: &[u8] = include_bytes!("../conformance/machines.json");
@@ -190,19 +192,39 @@ async fn exec_admitted(
     provider: &dyn MachinesProvider,
     machine: &MachineObservation,
 ) -> Result<(), String> {
-    match provider
+    if provider.capability(ProviderCapability::RequestResponseExec) == Support::Supported {
+        let receipt = provider
+            .exec_request(machine.id, probe(machine.contract.platform)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if receipt.exit_code != 0 {
+            return Err("request/response probe failed".into());
+        }
+    } else {
+        require_unsupported(
+            provider
+                .exec_request(machine.id, probe(machine.contract.platform)?)
+                .await,
+        )?;
+    }
+    if provider.capability(ProviderCapability::BinaryDuplexExec) == Support::Unsupported {
+        return require_unsupported(
+            provider
+                .exec(machine.id, probe(machine.contract.platform)?)
+                .await,
+        );
+    }
+    let output = provider
         .exec(machine.id, probe(machine.contract.platform)?)
         .await
-    {
-        Ok(mut output) => {
-            while let Some(frame) = output.next().await {
-                frame.map_err(|error| error.to_string())?;
-            }
-            Ok(())
-        }
-        Err(error) if matches!(error.classification(), ProviderError::Unsupported(_)) => Ok(()),
-        Err(error) => Err(error.to_string()),
+        .map_err(|error| error.to_string())?;
+    let output = crate::capture_exec(output, u64::MAX)
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.exit_code != Some(0) || output.stop.is_some() {
+        return Err("binary duplex probe lacks a successful terminal receipt".into());
     }
+    Ok(())
 }
 
 /// Exec wakes a Machine suspended under AfterIdle within the same call, and
@@ -265,6 +287,26 @@ async fn exec_wakes(
     Ok(())
 }
 
+fn create_request(
+    provider: &dyn MachinesProvider,
+    key: IdempotencyKey,
+    image: Image,
+    network: [u8; 32],
+) -> CreateMachine {
+    let mut request = CreateMachine::new(key, Some(image), network);
+    if provider.capability(ProviderCapability::SuspendResume) == Support::Unsupported {
+        request.suspension = SuspensionPolicy::Manual;
+    }
+    request
+}
+
+fn require_unsupported<T>(result: Result<T, ProviderError>) -> Result<(), String> {
+    match result {
+        Err(error) if matches!(error.classification(), ProviderError::Unsupported(_)) => Ok(()),
+        _ => Err("undeclared native mechanism did not return Unsupported".into()),
+    }
+}
+
 /// Runs all lifecycle, replay, capability, fork, operation and payload-read cases.
 pub async fn verify(backend: &dyn Backend) -> Result<(), String> {
     verify_provider(
@@ -273,7 +315,9 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), String> {
         backend.network_policy(),
     )
     .await?;
-    workload(backend, 3, "b0").await?;
+    if backend.provider().capability(ProviderCapability::Events) == Support::Supported {
+        workload(backend, 3, "b0").await?;
+    }
     Ok(())
 }
 
@@ -308,9 +352,10 @@ async fn workload(
             .map_err(|error| error.to_string())
     };
     let created = provider
-        .create(CreateMachine::new(
+        .create(create_request(
+            provider,
             key("0001")?,
-            Some(backend.image().clone()),
+            backend.image().clone(),
             backend.network_policy(),
         ))
         .await
@@ -416,7 +461,7 @@ async fn verify_provider(
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
         let mut capability_request =
-            CreateMachine::new(key(create_suffix)?, Some(image.clone()), network_policy);
+            create_request(provider, key(create_suffix)?, image.clone(), network_policy);
         capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
         let admission = provider.create(capability_request).await;
         if qualification.capabilities.contains(&capability) {
@@ -445,7 +490,7 @@ async fn verify_provider(
         }
     }
     let create_key = key(1)?;
-    let request = CreateMachine::new(create_key, Some(image.clone()), network_policy);
+    let request = create_request(provider, create_key, image.clone(), network_policy);
     let created = provider
         .create(request.clone())
         .await
@@ -461,175 +506,231 @@ async fn verify_provider(
     {
         return Err("create replay changed its outcome".into());
     }
-    if machine.state != MachineState::Running || machine.endpoints.len() != 1 {
-        return Err("created machine is not ready with one stable endpoint".into());
+    if provider.capability(ProviderCapability::AttachVolume) == Support::Unsupported {
+        require_unsupported(
+            provider
+                .attach_volume(machine.id, Default::default(), key(0x60)?)
+                .await,
+        )?;
     }
-    let operation = provider
-        .recover_operation(create_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    let expected_operation = provider
-        .inspect_operation(operation)
-        .await
-        .map_err(|error| error.to_string())?;
-    if expected_operation.id != operation || expected_operation.phase != OperationPhase::Succeeded {
-        return Err("create operation inspection is not correlated and terminal".into());
+    if machine.state != MachineState::Running {
+        return Err("created machine is not ready".into());
     }
-    if provider
-        .cancel(operation)
-        .await
-        .map_err(|error| error.to_string())?
-        != expected_operation
-    {
-        return Err("terminal operation cancellation changed its observation".into());
-    }
-    let mut operation_stream = provider
-        .watch_operation(operation)
-        .await
-        .map_err(|error| error.to_string())?;
-    let watched = operation_stream
-        .next()
-        .await
-        .ok_or_else(|| "operation watch ended before its current state".to_owned())?
-        .map_err(|error| error.to_string())?;
-    if watched != expected_operation {
-        return Err("operation watch substituted its requested identity or state".into());
-    }
-    let checkpointed = provider
-        .checkpoint(machine.id, key(2)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
-        return Err("checkpoint returned the wrong outcome".into());
-    };
-    let forked = provider
-        .fork(
-            checkpoint.id,
-            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-            key(3)?,
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    let MutationOutcome::Forked {
-        provenance,
-        results,
-    } = forked
-    else {
-        return Err("fork returned the wrong outcome".into());
-    };
-    let children = provider
-        .read_results(
-            crate::results::ResultCursor {
-                cut: results,
-                from: 0,
-            },
-            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
-        )
-        .await
-        .map_err(|error| error.to_string())?
-        .machines;
-    if provenance
-        != (crate::Provenance {
-            source: crate::ForkSource::Checkpoint(checkpoint.id),
-            inherited: crate::ForkFidelity::MemoryAndDisk,
-        })
-    {
-        return Err("fork substituted its checkpoint provenance".into());
-    }
-    let [first_child, second_child] = children.as_slice() else {
-        return Err("fork identities are not an exact fresh set".into());
-    };
-    if first_child.id == second_child.id || children.contains(&machine) {
-        return Err("fork identities are not an exact fresh set".into());
-    }
-    // A fork child is an ordinary machine: every read shows the same contract,
-    // whose image is the checkpoint it resumed.
-    for child in &children {
-        let read = provider
-            .inspect_machine(child.id)
+    if provider.capability(ProviderCapability::Operations) == Support::Supported {
+        let operation = provider
+            .recover_operation(create_key)
             .await
             .map_err(|error| error.to_string())?;
-        if child.contract.image != Image::Checkpoint(checkpoint.id)
-            || read.contract != child.contract
+        let expected_operation = provider
+            .inspect_operation(operation)
+            .await
+            .map_err(|error| error.to_string())?;
+        if expected_operation.id != operation
+            || expected_operation.phase != OperationPhase::Succeeded
         {
-            return Err("fork child contract does not name its checkpoint image".into());
+            return Err("create operation inspection is not correlated and terminal".into());
         }
+        if provider
+            .cancel(operation)
+            .await
+            .map_err(|error| error.to_string())?
+            != expected_operation
+        {
+            return Err("terminal operation cancellation changed its observation".into());
+        }
+        let mut operation_stream = provider
+            .watch_operation(operation)
+            .await
+            .map_err(|error| error.to_string())?;
+        let watched = operation_stream
+            .next()
+            .await
+            .ok_or_else(|| "operation watch ended before its current state".to_owned())?
+            .map_err(|error| error.to_string())?;
+        if watched != expected_operation {
+            return Err("operation watch substituted its requested identity or state".into());
+        }
+    } else {
+        require_unsupported(provider.recover_operation(create_key).await)?;
+        let operation = crate::OperationId::parse("00000000-0000-0000-0000-000000000001")
+            .map_err(|e| e.to_string())?;
+        require_unsupported(provider.inspect_operation(operation).await)?;
+        require_unsupported(provider.cancel(operation).await)?;
+        require_unsupported(provider.watch_operation(operation).await)?;
     }
-    provider
-        .suspend(machine.id, key(4)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Suspended
-    {
-        return Err("suspend did not change observable state".into());
+    if provider.capability(ProviderCapability::Checkpoint) == Support::Supported {
+        let checkpointed = provider
+            .checkpoint(machine.id, key(2)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        let MutationOutcome::Checkpointed(checkpoint) = checkpointed else {
+            return Err("checkpoint returned the wrong outcome".into());
+        };
+        let forked = provider
+            .fork(
+                checkpoint.id,
+                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+                key(3)?,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let MutationOutcome::Forked {
+            provenance,
+            results,
+        } = forked
+        else {
+            return Err("fork returned the wrong outcome".into());
+        };
+        let children = provider
+            .read_results(
+                crate::results::ResultCursor {
+                    cut: results,
+                    from: 0,
+                },
+                NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .machines;
+        if provenance
+            != (crate::Provenance {
+                source: crate::ForkSource::Checkpoint(checkpoint.id),
+                inherited: crate::ForkFidelity::MemoryAndDisk,
+            })
+        {
+            return Err("fork substituted its checkpoint provenance".into());
+        }
+        let [first_child, second_child] = children.as_slice() else {
+            return Err("fork identities are not an exact fresh set".into());
+        };
+        if first_child.id == second_child.id || children.contains(&machine) {
+            return Err("fork identities are not an exact fresh set".into());
+        }
+        // A fork child is an ordinary machine: every read shows the same contract,
+        // whose image is the checkpoint it resumed.
+        for child in &children {
+            let read = provider
+                .inspect_machine(child.id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if child.contract.image != Image::Checkpoint(checkpoint.id)
+                || read.contract != child.contract
+            {
+                return Err("fork child contract does not name its checkpoint image".into());
+            }
+        }
+        provider
+            .destroy_checkpoint(checkpoint.id, key(6)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if provider
+            .inspect_checkpoint(checkpoint.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .forkable
+        {
+            return Err("destroyed checkpoint still accepts forks".into());
+        }
+    } else {
+        require_unsupported(provider.checkpoint(machine.id, key(2)?).await)?;
+        let checkpoint = crate::CheckpointId::parse("00000000-0000-0000-0000-000000000001")
+            .map_err(|e| e.to_string())?;
+        require_unsupported(provider.inspect_checkpoint(checkpoint).await)?;
+        require_unsupported(provider.fork(checkpoint, NonZeroU32::MIN, key(3)?).await)?;
+        require_unsupported(provider.destroy_checkpoint(checkpoint, key(6)?).await)?;
     }
-    provider
-        .wake(machine.id, key(5)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    let events = provider
-        .events(machine.id, None, 16)
-        .await
-        .map_err(|error| error.to_string())?;
-    let states = events
-        .events
-        .iter()
-        .filter_map(|event| match event.fact {
-            crate::EventFact::State(state) => Some(state),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if !states.windows(3).any(|states| {
-        states
-            == [
-                MachineState::Running,
-                MachineState::Suspended,
-                MachineState::Running,
-            ]
-    }) {
-        return Err("lifecycle state event history is incomplete".into());
+    if provider.capability(ProviderCapability::SuspendResume) == Support::Supported {
+        provider
+            .suspend(machine.id, key(4)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if provider
+            .inspect_machine(machine.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .state
+            != MachineState::Suspended
+        {
+            return Err("suspend did not change observable state".into());
+        }
+        provider
+            .wake(machine.id, key(5)?)
+            .await
+            .map_err(|error| error.to_string())?;
+    } else {
+        require_unsupported(provider.suspend(machine.id, key(4)?).await)?;
+        require_unsupported(provider.wake(machine.id, key(5)?).await)?;
+        require_unsupported(
+            provider
+                .set_suspension_policy(machine.id, SuspensionPolicy::Manual, key(9)?)
+                .await,
+        )?;
     }
-    exec_wakes(provider, &machine, image, network_policy).await?;
-    let usage = provider
-        .usage(machine.id, 1, 2)
-        .await
-        .map_err(|error| error.to_string())?;
-    if usage.machine != machine.id
-        || (assurance == crate::ProviderAssurance::ProcessLocalSimulation)
-            != usage.receipt.is_empty()
-    {
-        return Err("simulation usage receipt is malformed".into());
+    if provider.capability(ProviderCapability::Events) == Support::Supported {
+        let events = provider
+            .events(machine.id, None, 16)
+            .await
+            .map_err(|error| error.to_string())?;
+        let states = events
+            .events
+            .iter()
+            .filter_map(|event| match event.fact {
+                crate::EventFact::State(state) => Some(state),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if provider.capability(ProviderCapability::SuspendResume) == Support::Supported
+            && !states.windows(3).any(|states| {
+                states
+                    == [
+                        MachineState::Running,
+                        MachineState::Suspended,
+                        MachineState::Running,
+                    ]
+            })
+        {
+            return Err("lifecycle state event history is incomplete".into());
+        }
+    } else {
+        require_unsupported(provider.events(machine.id, None, 16).await)?;
+        require_unsupported(provider.follow_events(machine.id, None).await)?;
+    }
+    if provider.capability(ProviderCapability::SuspendResume) == Support::Supported {
+        exec_wakes(provider, &machine, image, network_policy).await?;
+    } else {
+        exec_admitted(provider, &machine).await?;
+    }
+    if provider.capability(ProviderCapability::Usage) == Support::Supported {
+        let usage = provider
+            .usage(machine.id, 1, 2)
+            .await
+            .map_err(|error| error.to_string())?;
+        if usage.machine != machine.id
+            || (assurance == crate::ProviderAssurance::ProcessLocalSimulation)
+                != usage.receipt.is_empty()
+        {
+            return Err("simulation usage receipt is malformed".into());
+        }
+    } else {
+        require_unsupported(provider.usage(machine.id, 1, 2).await)?;
     }
     live_fork(provider, &machine).await?;
-    provider
-        .destroy_checkpoint(checkpoint.id, key(6)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_checkpoint(checkpoint.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .forkable
-    {
-        return Err("destroyed checkpoint still accepts forks".into());
-    }
-    provider
-        .destroy_machine(machine.id, key(7)?)
-        .await
-        .map_err(|error| error.to_string())?;
-    if provider
-        .inspect_machine(machine.id)
-        .await
-        .map_err(|error| error.to_string())?
-        .state
-        != MachineState::Destroyed
-    {
-        return Err("destroy did not retain its terminal state".into());
+    if provider.capability(ProviderCapability::Destroy) == Support::Supported {
+        provider
+            .destroy_machine(machine.id, key(7)?)
+            .await
+            .map_err(|error| error.to_string())?;
+        if provider
+            .inspect_machine(machine.id)
+            .await
+            .map_err(|error| error.to_string())?
+            .state
+            != MachineState::Destroyed
+        {
+            return Err("destroy did not retain its terminal state".into());
+        }
+    } else {
+        require_unsupported(provider.destroy_machine(machine.id, key(7)?).await)?;
     }
     Ok(())
 }

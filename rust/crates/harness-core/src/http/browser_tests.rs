@@ -11,7 +11,7 @@ export function httpFixture(mode) {
   const state = { calls: 0, aborted: false, ready: new Promise(resolve => { ready = resolve; }) };
   state.fetch = (url, init) => {
     state.calls++;
-    state.request = { url, body: Array.from(init.body), headers: Object.fromEntries(init.headers),
+    state.request = { url, body: Array.from(init.body ?? []), headers: Object.fromEntries(init.headers),
       credentials: init.credentials, redirect: init.redirect };
     init.signal.addEventListener('abort', () => {
       state.aborted = true;
@@ -127,7 +127,7 @@ async fn deadline_timer_registration_failure_is_terminal() {
         let fixture = TimerFixture(timer_fixture(mode));
         assert!(matches!(
             timer::delay(std::time::Duration::from_millis(1)).await,
-            Err(acyclic_harness_core::Error::Invalid(_))
+            Err(crate::Error::Invalid(_))
         ));
         assert_eq!(fixture.call("active").as_f64(), Some(0.0));
     }
@@ -145,6 +145,7 @@ fn transport(fixture: &JsValue) -> std::result::Result<BrowserTransport, JsValue
 
 fn request() -> HttpRequest {
     HttpRequest {
+        method: http::Method::POST,
         url: "https://example.test/v1/responses".into(),
         headers: BTreeMap::from([
             ("authorization".into(), "Bearer fixture".into()),
@@ -155,7 +156,7 @@ fn request() -> HttpRequest {
     }
 }
 
-fn js_error(error: acyclic_harness_core::Error) -> JsValue {
+fn js_error(error: crate::Error) -> JsValue {
     JsValue::from_str(&error.to_string())
 }
 

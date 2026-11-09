@@ -254,6 +254,7 @@ impl CodexLogin {
             let refresh = token(&auth, "refresh_token")?;
             io.graph(refresh.len() as u64 * 6 + 1024, 32)?;
             let request = HttpRequest {
+                method: http::Method::POST,
                 url: "https://auth.openai.com/oauth/token".into(),
                 headers: BTreeMap::new(),
                 body: io.json_body(&RefreshRequest {

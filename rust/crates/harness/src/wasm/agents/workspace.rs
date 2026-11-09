@@ -43,11 +43,13 @@ impl WasmMachinesWorkspace {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl WasmMachinesWorkspace {
-    /// Materialize a trusted `machines:/` grant, without performing an RPC.
+    /// Binds a trusted `machines:/` grant and copies the selected workspace when
+    /// the provider has no native attachment capability.
     /// The source is supplied by authenticated platform admission, never by
     /// request metadata. Its transport and budget belong to this same caller.
-    pub fn open(
+    pub async fn open(
         owner: &super::WasmAgentAuthority,
+        providers: &super::WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmMachinesWorkspaceSource")] source: JsValue,
     ) -> Result<Self, JsValue> {
         use crate::{conversation::VolumeRef, machines::MachinesHost, resources::ProviderRef};
@@ -86,14 +88,8 @@ impl WasmMachinesWorkspace {
             )))?;
         let observation = MachineObservation::try_from(observation)
             .map_err(|error| super::js_error(crate::Error::Machines(error)))?;
-        let volume = observation
-            .contract
-            .selected_volume_ref
-            .clone()
-            .ok_or_else(|| super::js_error(crate::Error::Unauthorized(
-                "admitted Machine has no selected volume; recovery: retain the original selected-volume admission".into(),
-            )))?;
-        let volume = VolumeRef::try_from(volume).map_err(super::js_error)?;
+        let provider: Arc<dyn MachinesProvider> = match (provider_ref.namespace(), provider_ref.family()) {
+            ("acyclic", "machines") => {
         let open = field::<js_sys::Function>(&source, "open")?;
         let authority = owner.issuer.clone();
         let context = authority.operation_context().ok_or_else(|| super::js_error(crate::Error::Unauthorized(
@@ -102,9 +98,51 @@ impl WasmMachinesWorkspace {
         let endpoint = grpc::javascript::Endpoint::new(open, move |timeout, expiry| {
             deadline::open(&authority, &context, timeout, expiry)
         });
-        let provider: Arc<dyn MachinesProvider> = Arc::new(grpc::Provider::over(endpoint));
+        Arc::new(grpc::Provider::over(endpoint))
+
+            }
+            ("io.daytona", "machines") => {
+                use acyclic_harness_core::http::{BrowserCredentialResolver, BrowserTransport};
+                use acyclic_machines_daytona::{DaytonaConfig, DaytonaProvider};
+                let reference = js_sys::Reflect::get(&source, &"secretReference".into())?;
+                let reference: acyclic_auth::secrets::SecretRef = serde_wasm_bindgen::from_value(reference).map_err(|_| super::js_error(crate::Error::Invalid("Daytona requires a canonical SecretRef object; recovery: retain the protected sandbox binding".into())))?;
+                let resolver = BrowserCredentialResolver(field(&source, "credentialResolver")?);
+                let config = DaytonaConfig::new(reference, observation.contract.platform);
+                Arc::new(DaytonaProvider::new(config, Arc::new(resolver), Arc::new(BrowserTransport::global().map_err(super::js_error)?)).map_err(|error| super::js_error(crate::Error::Machines(error)))?)
+            }
+            _ => return Err(super::js_error(crate::Error::Unsupported("Machines provider reference is not admitted; recovery: retain the original provider selection".into()))),
+        };
+        let volume = if provider.capability(acyclic_machines::ProviderCapability::AttachVolume)
+            == acyclic_machines::Support::Unsupported
+        {
+            let selected: js_sys::Uint8Array = field(&source, "selectedVolume")?;
+            let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&selected, |_| Ok(()))?;
+            let selected = crate::wire::VolumeRef::decode(bytes.as_slice()).map_err(|_| {
+                super::js_error(crate::Error::Invalid(
+                    "invalid admitted selected VolumeRef protobuf".into(),
+                ))
+            })?;
+            VolumeRef::try_from(selected).map_err(super::js_error)?
+        } else {
+            let selected = observation
+                .contract
+                .selected_volume_ref
+                .clone()
+                .ok_or_else(|| {
+                    super::js_error(crate::Error::Unauthorized(
+                        "admitted Machine has no selected volume".into(),
+                    ))
+                })?;
+            VolumeRef::try_from(selected).map_err(super::js_error)?
+        };
         let workspace = MachinesHost::new(provider, provider_ref)
             .and_then(|host| host.workspace(observation, &volume, scope.clone(), verifier))
+            .map_err(super::js_error)?;
+        let workspace = providers
+            .providers
+            .filesystem
+            .bind_machine_workspace(workspace)
+            .await
             .map_err(super::js_error)?;
         // Source getters can run host code: a same-turn stop must beat success.
         owner.issuer.verifier(&mut None).map_err(super::js_error)?;
@@ -202,15 +240,22 @@ mod deadline {
 const SOURCE: &str = r#"
 /** Trusted projection of the ORIGINAL resource admission, never guest config.
  * The authority passed to open and this source must belong to the same caller,
- * Machine incarnation, physical selected volume and invocation lifetime. */
+ * Machine incarnation, selected volume and invocation lifetime. */
 export interface WasmMachinesWorkspaceSource {
     /** Canonical harness.v2.ProviderRef protobuf. */
     readonly provider: Uint8Array;
-    /** Original settled machines.v1.MachineState protobuf, including the exact
-     * selected_volume_ref. No second volume or scope input is accepted. */
+    /** Original settled machines.v1.MachineState protobuf, including its exact
+     * physical selected_volume_ref when the provider supports attachment. */
     readonly observation: Uint8Array;
+    /** Original platform-admitted logical VolumeRef protobuf for a provider
+     * declaring attach_volume Unsupported. Its Machine has no physical selection. */
+    readonly selectedVolume?: Uint8Array;
     /** createMachinesRpcTransport(originalAuthenticatedConnectTransport).
      * Provider credentials remain behind this protected transport. */
-    readonly open: ReturnType<typeof import("@acyclic-labs/machines/transport").createMachinesRpcTransport>;
+    /** Required for io.daytona/machines; a plain string is refused. */
+    readonly secretReference?: { readonly scope: string; readonly name: string; readonly version: string };
+    /** The same host-owned resolver used for model credentials. */
+    readonly credentialResolver?: (origin: string, reference: { scope: string; name: string; version: string }, scheme: 'bearer') => { credentialScope: Uint8Array; fetch: typeof fetch };
+    readonly open?: ReturnType<typeof import("@acyclic-labs/machines/transport").createMachinesRpcTransport>;
 }
 "#;

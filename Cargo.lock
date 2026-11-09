@@ -235,7 +235,7 @@ dependencies = [
  "acyclic-stream",
  "blake3",
  "bytes",
- "ed25519-dalek 3.0.0",
+ "ed25519-dalek",
  "futures",
  "heck",
  "hex",
@@ -540,6 +540,7 @@ dependencies = [
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-machines",
+ "acyclic-machines-daytona",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -694,6 +695,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "http",
+ "httpdate",
  "js-sys",
  "jsonschema",
  "loom",
@@ -726,11 +728,13 @@ dependencies = [
  "schemars",
  "serde",
  "serde-saphyr",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
  "shuttle",
  "sse-stream",
  "syn 3.0.9",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -744,6 +748,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
  "zeroize",
 ]
 
@@ -1016,6 +1021,26 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-machines-daytona"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-harness-core",
+ "acyclic-harness-providers",
+ "acyclic-machines",
+ "acyclic-stream",
+ "async-trait",
+ "bytes",
+ "futures",
+ "http",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "url",
 ]
 
 [[package]]

@@ -1,107 +1,14 @@
 use acyclic_harness_core::Result;
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, ProviderPlatform};
-use bytes::Bytes;
+use acyclic_stream::BoxProviderFuture;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
-use std::collections::BTreeMap;
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod owned_bytes;
 
-/// One streaming JSON request. Headers may contain credentials; deliberately not Debug.
-pub struct HttpRequest {
-    /// Fully resolved endpoint.
-    pub url: String,
-    /// Protocol and authentication headers.
-    pub headers: BTreeMap<String, String>,
-    /// Exact encoded JSON.
-    pub body: Bytes,
-}
-
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use acyclic_harness_core::http::owned_bytes;
+pub use acyclic_harness_core::http::{HttpRequest, HttpResponse, HttpTransport};
 pub(crate) mod bounded;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod refusal_tests;
-
-/// Response whose body remains lazy until polled.
-pub struct HttpResponse {
-    /// HTTP status.
-    pub status: u16,
-    /// Incremental body. Dropping it cancels I/O.
-    pub body: BoxProviderStream<'static, Result<Bytes>>,
-    /// Allow-listed provider request identifier. Header storage moves from the
-    /// transport and is copied once into admitted completion metadata.
-    pub request_id: Option<::http::HeaderValue>,
-    /// The response's `Retry-After` delay, when it gave one in seconds.
-    pub retry_after: Option<std::time::Duration>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl HttpResponse {
-    /// Admits the concrete body stream before boxing it on the issued ledger.
-    /// Charges received bytes once; downstream codecs charge their own copies/decoding.
-    /// Its first error or EOF is terminal; later polls return EOF without polling
-    /// the original source or checking its work again.
-    pub fn with_native_body<S>(
-        status: u16,
-        stream: S,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self>
-    where
-        S: futures::Stream<Item = Result<Bytes>> + Send + Unpin + 'static,
-    {
-        Ok(Self {
-            status,
-            body: native::body(stream, Some(work))?,
-            request_id: None,
-            retry_after: None,
-        })
-    }
-}
-
-/// Platform HTTP boundary, also used by scripted fixtures.
-pub trait HttpTransport: ProviderPlatform {
-    /// Sends exactly one request without retries.
-    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
-    /// Waits `duration` on the platform timer: a redelivery backoff, or a deadline's wake-up.
-    /// A lost or failed timer producer returns an error, never an elapsed wait.
-    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, Result<()>>;
-    /// Monotonic time on the platform clock that `delay` waits on, from a fixed origin.
-    /// Deadlines are measured on it; timers only wake their measurement.
-    fn now(&self) -> std::time::Duration;
-    /// `delay` admitted on the original invocation ledger before it exists.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn delay_with_native_work(
-        &self,
-        _: std::time::Duration,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-        work.remaining()?;
-        Err(acyclic_harness_core::Error::NativeBoundary {
-            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-            reason: "HTTP transport has no native timer",
-        })
-    }
-    /// Whether this transport funds its native callback frames before allocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        work.remaining()?;
-        Ok(false)
-    }
-    /// Issues one HTTP exchange on the original invocation ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn send_with_native_work<'a>(
-        &'a self,
-        _: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        work.remaining()?;
-        Err(acyclic_harness_core::Error::NativeBoundary {
-            code: acyclic_harness_core::wire::ErrorCode::Unsupported,
-            reason: "HTTP transport has no native producer",
-        })
-    }
-}
 
 /// Issue one exchange through the selected platform adapter. Native work never
 /// falls back to an unfunded producer, including when admission is refused.
@@ -164,10 +71,14 @@ impl ReqwestTransport {
         let native = work.is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        let mut builder = self
-            .0
-            .post(request.url)
-            .header("content-type", "application/json");
+        let mut builder = self.0.request(request.method, request.url);
+        if !request
+            .headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("content-type"))
+        {
+            builder = builder.header("content-type", "application/json");
+        }
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
@@ -194,7 +105,10 @@ impl ReqwestTransport {
             .bytes_stream()
             .map(move |chunk| chunk.map_err(|error| reqwest_failure(native, &error)));
         #[cfg(not(target_arch = "wasm32"))]
-        let body = native::body(body, work)?;
+        let body = match work {
+            Some(work) => HttpResponse::with_native_body(status, body, work)?.body,
+            None => Box::pin(body),
+        };
         #[cfg(target_arch = "wasm32")]
         let body = Box::pin(body);
         Ok(HttpResponse {
