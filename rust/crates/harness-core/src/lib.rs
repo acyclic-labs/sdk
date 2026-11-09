@@ -229,3 +229,6 @@ pub mod build_metadata;
 
 /// File-driven, composable approval policy data and the tool admission gate.
 pub mod approvals;
+
+/// Shared HTTP and host-protected credential boundary.
+pub mod http;

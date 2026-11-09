@@ -93,6 +93,8 @@ bytes.workspace = true
 futures.workspace = true
 hex.workspace = true
 http.workspace = true
+httpdate = "1.0.3"
+serde-wasm-bindgen.workspace = true
 jsonschema.workspace = true
 rmp-serde = "=1.3.1"
 rmcp = { workspace = true, features = ["client", "transport-async-rw"] }
@@ -169,6 +171,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 tokio = { workspace = true, features = ["test-util", "process"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 # Rust SDK execution uses the real browser event loop even without exports.
 js-sys.workspace = true
 wasm-bindgen.workspace = true

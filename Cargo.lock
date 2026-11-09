@@ -540,6 +540,7 @@ dependencies = [
  "acyclic-harness-search",
  "acyclic-harness-tui",
  "acyclic-machines",
+ "acyclic-machines-daytona",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
@@ -694,6 +695,7 @@ dependencies = [
  "getrandom 0.3.4",
  "hex",
  "http",
+ "httpdate",
  "js-sys",
  "jsonschema",
  "loom",
@@ -726,6 +728,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde-saphyr",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
  "shuttle",
@@ -744,6 +747,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
  "zeroize",
 ]
 
@@ -1014,6 +1018,26 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "acyclic-machines-daytona"
+version = "0.2.0"
+dependencies = [
+ "acyclic-auth",
+ "acyclic-harness-core",
+ "acyclic-harness-providers",
+ "acyclic-machines",
+ "acyclic-stream",
+ "async-trait",
+ "bytes",
+ "futures",
+ "http",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "url",
 ]
 
 [[package]]

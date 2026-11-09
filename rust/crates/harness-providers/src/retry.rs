@@ -156,30 +156,9 @@ impl Redelivery {
     }
 }
 
-/// Both HTTP forms of `Retry-After`, relative to the platform clock.
-pub(crate) fn retry_after(value: &str) -> Option<Duration> {
-    retry_after_at(value, || {
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now();
-        #[cfg(target_arch = "wasm32")]
-        let now = std::time::UNIX_EPOCH + Duration::from_secs_f64(js_sys::Date::now() / 1_000.0);
-        now
-    })
-}
-
-pub(crate) fn retry_after_at(
-    value: &str,
-    now: impl FnOnce() -> std::time::SystemTime,
-) -> Option<Duration> {
-    let value = value.trim();
-    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        // Overflow is still a delay hint, always beyond our u32-millisecond retry budget.
-        // Treating it as absent would retry before the endpoint's requested time.
-        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
-    }
-    let date = httpdate::parse_http_date(value).ok()?;
-    Some(date.duration_since(now()).unwrap_or(Duration::ZERO))
-}
+pub(crate) use acyclic_harness_core::http::retry_after;
+#[cfg(test)]
+use acyclic_harness_core::http::retry_after_at;
 
 #[cfg(test)]
 mod tests {

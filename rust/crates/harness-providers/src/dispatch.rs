@@ -112,6 +112,7 @@ pub(crate) async fn send(
         None => url,
     };
     let request = HttpRequest {
+        method: http::Method::POST,
         url: url?,
         headers: request_headers(provider, dispatch, key, account),
         body,

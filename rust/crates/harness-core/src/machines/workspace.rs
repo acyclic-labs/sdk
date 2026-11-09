@@ -36,6 +36,13 @@ impl MachinesWorkspace {
         signed: Scope,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
+        if host
+            .provider
+            .capability(acyclic_machines::ProviderCapability::AttachVolume)
+            == acyclic_machines::Support::Unsupported
+        {
+            return Err(Error::Unsupported("provider requires a copied workspace; recovery: retain the selected volume and admit its materialize/commit binding before opening shell tools".into()));
+        }
         if host.machine_id(&sandbox)? != admitted.id
             || admitted.contract.selected_volume_ref.as_ref() != Some(&volume.into())
             || !matches!(

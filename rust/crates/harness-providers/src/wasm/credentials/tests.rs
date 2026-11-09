@@ -69,6 +69,7 @@ fn field(owner: &JsValue, key: &str) -> JsValue {
 
 fn request() -> crate::HttpRequest {
     crate::HttpRequest {
+        method: http::Method::POST,
         url: "https://example.test/v1/chat/completions".into(),
         headers: Default::default(),
         body: bytes::Bytes::from_static(b"{}"),
@@ -126,9 +127,10 @@ async fn protected_fetch_retains_authority_and_settles_when_its_producer_closes(
             continue;
         }
         let binding = binding.unwrap();
-        assert!(binding.key.is_none());
+        let (key, _, transport) = binding.into_parts();
+        assert!(key.is_none());
         let operation = async {
-            let response = binding.transport.send(request()).await?;
+            let response = transport.send(request()).await?;
             response
                 .body
                 .map_ok(|bytes| bytes.to_vec())
