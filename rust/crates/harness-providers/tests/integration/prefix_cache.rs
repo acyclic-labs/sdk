@@ -764,7 +764,7 @@ async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
         "messages",
         "anthropic",
         b"\"messages\":[",
-        4521,
+        4544,
     )
     .await
 }
@@ -777,7 +777,7 @@ async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
         "responses",
         "responses",
         b"\"input\":[",
-        4779,
+        4794,
     )
     .await
 }
@@ -790,7 +790,7 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
-        4445,
+        4460,
     )
     .await
 }
@@ -804,7 +804,7 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
         "chat/completions",
         "chat",
         b"\"messages\":[",
-        4670,
+        4685,
     )
     .await
 }
