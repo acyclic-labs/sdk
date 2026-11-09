@@ -334,7 +334,7 @@ def run(target, seed, witness, *, capture=False, runs=0):
         "native_settings": ["--no-default-features", "--features", "native-settings"],
         "event_projection": ["--no-default-features", "--features", "client"],
         "native_model_selection": ["--no-default-features"],
-        "native_marketplace": ["--no-default-features"],
+        "native_marketplace": ["--no-default-features", "--features", "native-input"],
     }.get(target, [])
     environment = os.environ.copy()
     environment.pop("ACYCLIC_FUZZ_CORPUS", None)
