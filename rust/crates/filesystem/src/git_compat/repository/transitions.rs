@@ -117,4 +117,37 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         })
         .await
     }
+
+    /// Atomically replaces an observed branch workspace and clears the old
+    /// fork's history. A concurrent replacement cannot be overwritten.
+    pub async fn rebind_branch_workspace(
+        &self,
+        branch: impl Into<String>,
+        expected: WorkspaceId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), GitCompatError<S::Error>> {
+        let branch = branch.into();
+        self.update(|state| {
+            let existing = state
+                .branches
+                .get(&branch)
+                .ok_or_else(|| GitCompatError::UnknownObject(branch.clone()))?;
+            if existing.workspace_id == workspace_id {
+                return Ok(());
+            }
+            if existing.workspace_id != expected {
+                return Err(GitCompatError::Contended);
+            }
+            if let Some(pending) = &state.pending {
+                return Err(GitCompatError::TransitionPending(pending.id));
+            }
+            if state.current_branch == branch {
+                return Err(GitCompatError::WorkspaceMismatch);
+            }
+            state.branches.remove(&branch);
+            register_branch_workspace_state(state, branch, workspace_id, None, false)?;
+            Ok(())
+        })
+        .await
+    }
 }

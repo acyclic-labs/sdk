@@ -1829,6 +1829,7 @@ where
                     self.limits.maximum_bytes,
                 )) as Arc<dyn crate::agent::TurnEffects>;
                 let children = Arc::new(FilesystemTurnChildren {
+                    files: Arc::clone(&files),
                     stream: Arc::clone(&self.stream),
                     within: self.within.clone(),
                     host: Arc::clone(&self.host),
@@ -1941,6 +1942,7 @@ where
 /// What one agent turn's `wait` observes: each child's status and, once it
 /// settled, its last answer, read under a grant of exactly that output.
 struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    files: Arc<AgentInternalFiles<A, O>>,
     stream: Arc<P>,
     within: acyclic_actors::addressing::ActorReference,
     host: Arc<FilesystemHost<A, O>>,
@@ -1959,6 +1961,31 @@ where
 {
     fn agent(&self) -> &AgentPath {
         &self.agent
+    }
+
+    fn select<'a>(
+        &'a self,
+        operation: OperationId,
+        references: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<(String, AgentPath)>>> {
+        Box::pin(async move {
+            use super::agent_internal::InternalFileCreation;
+            let path = format!("waits/v1/{operation}.msgpack");
+            let vacant = match self.files.prepare_create(&path, self.maximum_bytes).await? {
+                InternalFileCreation::Existing(bytes) => {
+                    return crate::agent::records::open(&bytes)
+                        .map_err(|_| Error::Storage("invalid wait selection".into()));
+                }
+                InternalFileCreation::Vacant(file) => file,
+            };
+            let selected = crate::agent::select_children(self, references).await?;
+            let bytes = crate::agent::records::seal(&selected)?;
+            match vacant.create(&bytes).await? {
+                None => Ok(selected),
+                Some(bytes) => crate::agent::records::open(&bytes)
+                    .map_err(|_| Error::Storage("invalid wait selection".into())),
+            }
+        })
     }
 
     fn resolve<'a>(

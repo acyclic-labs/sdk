@@ -1,6 +1,80 @@
 use super::*;
 use crate::{conversation::VolumeRef, core::AuthorityRoot, resources::ProviderRef};
 
+#[tokio::test]
+async fn wait_selection_survives_reopening_and_reference_replacement() -> Result<()> {
+    use crate::agent::{AgentId, TurnChildren};
+    let agent = AgentPath::root(&AgentId::from_bytes([201; 16]));
+    let provider = ProviderRef::new("waits".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let volume = private_volume(provider.clone(), &agent.id())?;
+    let host =
+        FilesystemHost::<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>::new(
+            acyclic_fs::Fs::memory(),
+            &provider,
+            None,
+        )?;
+    host.create_volume(&volume).await?;
+    let volumes = vec![VolumeBinding {
+        name: PRIVATE_VOLUME.into(),
+        volume: volume.clone(),
+    }];
+    let issuer: RuntimeAuthority = AuthorityRoot::new(
+        "waits",
+        [202; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "waits".into(),
+        },
+    )
+    .into();
+    let authority =
+        agent_authority(&issuer, &TurnAdmission::LocalRoot, &agent, &volumes, &[]).await?;
+    let grant = crate::conversation::ContentGrant::verify(
+        &authority.verifier,
+        &authority.scope,
+        &volume,
+        VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
+    )?;
+    let files = Arc::new(AgentInternalFiles::new(host.clone(), volume, grant));
+    let reopen = || FilesystemTurnChildren {
+        files: files.clone(),
+        stream: Arc::new(acyclic_stream::MemoryStream::default()),
+        within: acyclic_actors::addressing::ActorReference::new(b"a", b"agents", b"owner")
+            .expect("namespace"),
+        host: host.clone(),
+        issuer: issuer.clone(),
+        admission: TurnAdmission::LocalRoot,
+        agent: agent.clone(),
+        volumes: volumes.clone(),
+        maximum_bytes: 64 * 1024,
+    };
+    let first = agent
+        .child(&AgentId::from_bytes([203; 16]))
+        .map_err(agent_error)?;
+    let replacement = agent
+        .child(&AgentId::from_bytes([204; 16]))
+        .map_err(agent_error)?;
+    let operation = OperationId::from_bytes([205; 16]);
+    let selected = reopen().select(operation, &[first.as_str().into()]).await?;
+    assert_eq!(selected[0].1, first);
+    assert_eq!(
+        reopen()
+            .select(operation, &[replacement.as_str().into()])
+            .await?,
+        selected
+    );
+    let fresh = reopen()
+        .select(
+            OperationId::from_bytes([206; 16]),
+            &[replacement.as_str().into()],
+        )
+        .await?;
+    assert_eq!(fresh[0].1, replacement);
+    Ok(())
+}
+
 /// Fault injection at the original finite-read producer; all other operations
 /// retain the real in-memory provider.
 struct OpeningRead {

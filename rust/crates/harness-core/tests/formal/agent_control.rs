@@ -38,8 +38,10 @@ fn archive_cascade_drains_and_reports_exactly_once() {
 fn released_generation_is_terminal_and_has_no_committed_turn() {
     let base: u64 = kani::any();
     let tail: u64 = kani::any();
-    kani::assume(release::released(true, tail, base));
+    let actions: bool = kani::any();
+    kani::assume(release::released(true, tail, base, actions));
     assert_eq!(tail, base);
+    assert!(!actions);
     let before = Control {
         mode: Mode::Done,
         closed: kani::any(),
@@ -55,7 +57,7 @@ fn released_generation_is_terminal_and_has_no_committed_turn() {
             Pick::Nothing
         );
     }
-    assert!(release::released(true, tail, base));
+    assert!(release::released(true, tail, base, actions));
 }
 
 fn main() {}

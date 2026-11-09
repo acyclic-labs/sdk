@@ -248,7 +248,8 @@ impl AgentApprovals {
             },
         ) = (&outcome, &self.children, &subject)
             && let Some(awaited) =
-                crate::tools::awaited(&**children, tool, arguments, &self.released).await?
+                crate::tools::awaited(&**children, operation_id, tool, arguments, &self.released)
+                    .await?
         {
             self.wait(None)?;
             *locked(&self.awaiting)? = Some(awaited);

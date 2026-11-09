@@ -45,6 +45,7 @@ mod release;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
+pub(crate) use settled::{named_child, select_children};
 pub(crate) mod spawn_names;
 pub use spawn_names::{SpawnResolution, resolve_spawn_name};
 mod messaging;

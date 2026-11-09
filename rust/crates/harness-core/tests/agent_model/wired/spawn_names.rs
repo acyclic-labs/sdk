@@ -119,6 +119,90 @@ async fn named(
 }
 
 #[tokio::test]
+async fn first_turn_failure_after_send_retains_the_spawn_name() -> Result {
+    let root = AgentPath::root(&id(81));
+    let (agents, stream, _, _) = fixture(
+        vec![
+            spawn_call("w", &[]),
+            ScriptedTurn::Text("spawned".into()),
+            call(
+                "send",
+                json!({"agent": root.as_str(), "message": "committed work"}),
+            ),
+            ScriptedTurn::Events(vec![ScriptedEvent::Interrupted {
+                error: "failure after send".into(),
+            }]),
+        ],
+        0,
+    )
+    .await?;
+    deliver(&agents, &root, requested("start", &root)).await?;
+    let child = named(&agents, &root, "w").await?;
+    agents.drain(&child).await?;
+    let state = agents.state(&child).await?;
+    assert!(matches!(
+        state.phase,
+        Phase::Done {
+            outcome: AgentOutcome::Failed { .. }
+        }
+    ));
+    assert_eq!(state.conversation_tail, state.conversation_base);
+    assert!(!state.released());
+    assert_eq!(named(&agents, &root, "w").await?, child);
+    assert!(
+        super::super::values(&*stream, root.inbox()?)
+            .await?
+            .iter()
+            .any(|bytes| {
+                matches!(InboxRecord::decode(bytes), Ok(InboxRecord::Message(message))
+            if message.from == Sender::Agent { path: child.clone() })
+            })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn waits_report_setup_failure_before_and_after_it_settles() -> Result {
+    let (agents, _, root, model) = fixture(
+        vec![
+            spawn_call("w", &[]),
+            call("wait", json!({"agents": ["w"]})),
+            ScriptedTurn::Text("observed failure".into()),
+            call("wait", json!({"agents": ["w"]})),
+            ScriptedTurn::Text("observed released child".into()),
+        ],
+        1,
+    )
+    .await?;
+    let state = deliver(&agents, &root, requested("start", &root)).await?;
+    assert!(matches!(state.phase, Phase::Waiting { .. }));
+    let failed = named(&agents, &root, "w").await?;
+    agents.drain(&failed).await?;
+    agents.drain(&root).await?;
+    deliver(&agents, &root, requested("after-failure", &root)).await?;
+    let requests = model.requests();
+    let results: Vec<_> = requests
+        .iter()
+        .flat_map(|request| &request.messages)
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            ModelContentPart::ToolResult {
+                name,
+                content: ToolResultContent::Json { value },
+                ..
+            } if name == "wait" => Some(value),
+            _ => None,
+        })
+        .collect();
+    assert!(results.len() >= 2);
+    for result in results {
+        assert_eq!(result["settled"][0]["agent"], failed.as_str());
+        assert!(result["settled"][0]["phase"]["done"]["outcome"]["failed"].is_object());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn atomic_spawn_retries_setup_and_preserves_references_and_sibling_grants() -> Result {
     let text = || ScriptedTurn::Text("ready".into());
     let (agents, stream, root, model) = fixture(

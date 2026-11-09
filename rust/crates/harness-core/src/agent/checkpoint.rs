@@ -681,6 +681,7 @@ mod tests {
                     policy: adopted.policy.clone(),
                     brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
+                    committed_actions: true,
                     conversation_tail: u64::MAX,
                     steered_through: u64::MAX,
                     pending_notices: Some(0..u64::MAX),
