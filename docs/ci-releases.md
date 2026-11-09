@@ -127,7 +127,11 @@ platform/profile/flag closure. Release and artifact requests use the shared
 `release-dist` pool family, with a distinct dist compatibility identity. The
 canonical profile environment clears inherited Cargo profile and Rust flag
 overrides before execution; profiles and linker flags stay in repository config.
-Existing pool locks and content maps retain targets and restore source clocks
+The shared artifact runner partitions compiled units within that target by the
+measured toolchain key: Cargo only fingerprints compiler version output, which
+cannot detect every in-place binary or sysroot update. It maps declared target
+paths in the command to that partition and returns the executable at the recipe
+output path. Existing pool locks and content maps retain targets and restore source clocks
 across jobs. Source updates preserve unchanged file mtimes;
 Cargo then rebuilds only affected units on a cache miss. Product builds honor
 `CARGO_TARGET_DIR`; qualifier and install builds retain their separate target
