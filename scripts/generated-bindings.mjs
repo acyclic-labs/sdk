@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,8 +102,9 @@ export const compatibilityArtifacts = {
 };
 
 export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
+// Only checkout-owned copies belong here. Validate at import so every consumer,
+// including generators, rejects build outputs before reading or writing them.
 export const packagedSourceCopies = [
-  [compatibilityArtifacts.auth.conformanceDigest, "typescript/packages/auth/generated/conformance/secrets-v1.json"],
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant",
@@ -111,3 +112,14 @@ export const packagedSourceCopies = [
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
   ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
 ];
+
+const ignoredCopies = spawnSync("git", ["check-ignore", "--no-index", "--stdin", "-z"], {
+  cwd: sourceRoot, encoding: "utf8", windowsHide: true,
+  input: packagedSourceCopies.map(([, copy]) => copy).join("\0") + "\0",
+});
+if (ignoredCopies.error || (ignoredCopies.status !== 0 && ignoredCopies.status !== 1)) {
+  throw new Error(`STEP_FAILED packaged-source-copy-ignore-check: ${ignoredCopies.error?.message ?? ignoredCopies.stderr}`);
+}
+if (ignoredCopies.status === 0) {
+  throw new Error(`STEP_FAILED packaged-source-copy-ignored: ${ignoredCopies.stdout.split("\0").filter(Boolean).join(", ")}; remove ignored copies from packagedSourceCopies`);
+}
