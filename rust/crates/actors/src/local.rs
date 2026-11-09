@@ -89,8 +89,17 @@ pub enum Error {
     Conflict,
     /// A composed external guard changed. Recompute the original delivery;
     /// its handler must observe the changed guard or settle its refusal.
+    /// Carries the refusal's conflicts, the external change a recomputation
+    /// must observe; empty when the participant refused while sealing and
+    /// supplied no comparable source observation. Two empty lists do not
+    /// establish that a source is unchanged.
     #[error("composed transaction precondition changed")]
-    PreconditionChanged,
+    PreconditionChanged(Vec<acyclic_stream::CommitConflict>),
+    /// A recomputed delivery met the identical guard refusal again: nothing
+    /// external changed, so its handler cannot observe a change and another
+    /// attempt would touch storage forever without progress.
+    #[error("composed transaction precondition refused again with no external change")]
+    PreconditionUnchanged,
     /// The actor is paused; queued work remains unconsumed.
     #[error("actor is paused")]
     Paused,
@@ -126,7 +135,8 @@ impl Error {
             Self::Unknown { .. } => "unknown",
             Self::Settlement { .. } => "settlement",
             Self::Conflict => "conflict",
-            Self::PreconditionChanged => "precondition_changed",
+            Self::PreconditionChanged(_) => "precondition_changed",
+            Self::PreconditionUnchanged => "precondition_unchanged",
             Self::Paused => "paused",
             Self::Handler(_) => "handler",
             Self::InvocationFailed { .. } => "invocation_failed",
@@ -1031,7 +1041,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         let original = &prepared.request;
                         let request = composition.seal(original.clone()).await.map_err(
                             |error| match error {
-                                GuestError::PreconditionChanged => Error::PreconditionChanged,
+                                GuestError::PreconditionChanged => {
+                                    Error::PreconditionChanged(Vec::new())
+                                }
                                 error => Error::Handler(error),
                             },
                         )?;
@@ -1156,7 +1168,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     return Err(Error::CallSettled { call, trigger });
                 }
                 if revalidate {
-                    return Err(Error::PreconditionChanged);
+                    return Err(Error::PreconditionChanged(match outcome {
+                        Ok(CommitOutcome::Conflict(conflicts)) => conflicts,
+                        _ => Vec::new(),
+                    }));
                 }
                 PreparedPublish::settle(&outcome?)?;
                 retained
