@@ -248,13 +248,13 @@ async fn run(
     // is opened.
     if let Some(endpoint) = &args.endpoint {
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
-        return connected(&args, connection, output, event_output).await;
+        return connected(&args, connection, output, event_output, None).await;
     }
     if matches!(args.command, Some(Command::Doctor)) {
         return setup::doctor(&args).await;
     }
     let mut registry = setup::registry(&args)?;
-    setup::first_run(&mut args, &mut registry)?;
+    let terminal = setup::first_run(&mut args, &mut registry)?;
     let config = configure(&args, registry)?;
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
@@ -293,7 +293,7 @@ async fn run(
     }
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
-    connected(&args, connection, output, event_output).await
+    connected(&args, connection, output, event_output, terminal).await
 }
 
 async fn host_workspace(
@@ -350,6 +350,7 @@ async fn connected(
     connection: Connection,
     output: headless::Prepared,
     event_output: Option<&mut headless::Output>,
+    terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = match &args.agent {
         Some(agent) => {
@@ -417,7 +418,14 @@ async fn connected(
         }
         return Ok(());
     }
-    drive(args, Conversation::open(connection), output, event_output).await
+    drive(
+        args,
+        Conversation::open(connection),
+        output,
+        event_output,
+        terminal,
+    )
+    .await
 }
 
 /// Drives `conversation` headless (`-p`, JSONL) or through the terminal view.
@@ -426,6 +434,7 @@ async fn drive(
     conversation: Arc<Conversation>,
     prepared: headless::Prepared,
     event_output: Option<&mut headless::Output>,
+    terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
     let interactive = args.prompt.is_none()
@@ -442,8 +451,9 @@ async fn drive(
                 "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
             );
         }
-        return phase(|| view::run(conversation, args.inline, args.resume)).await;
+        return phase(|| view::run(conversation, args.inline, args.resume, terminal)).await;
     }
+    drop(terminal);
     let usage_stdout = args
         .usage_jsonl
         .as_ref()

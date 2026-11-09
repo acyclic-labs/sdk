@@ -1,6 +1,7 @@
 //! CLI composition of shared provider, terminal and local-host preflights.
 use super::*;
 use acyclic_harness::tui::onboarding;
+use acyclic_harness::tui::term::Tty;
 use std::io::Write as _;
 
 type Failure = Box<dyn std::error::Error>;
@@ -55,11 +56,11 @@ fn selection(args: &Args, registry: &Registry) -> Result<String, Failure> {
 
 const KEYS: &str = "provider key unavailable; recovery: run graphcoder in a terminal to save a key in OS keychain service acyclic-harness, set ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY), or pass --credentials FILE with an api_keys provider map";
 
-pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<(), Failure> {
+pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<Option<Tty>, Failure> {
     let selected = selection(args, registry)?;
     args.model = Some(selected.clone());
     if !registry.needs_credentials(&selected)? {
-        return Ok(());
+        return Ok(None);
     }
     if args.default_config
         || !onboarding::interactive()
@@ -69,14 +70,15 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<(), 
     {
         return Err(KEYS.into());
     }
-    println!("GraphCoder first run: choose a provider");
+    let mut terminal = Tty::open()?;
+    print!("GraphCoder first run: choose a provider\r\n");
     let providers: Vec<String> = registry
         .catalog()
         .iter()
         .filter(|(_, spec)| !spec.models.is_empty())
         .map(|(name, _)| name.clone())
         .collect();
-    let index = onboarding::choose("Provider", &providers)?;
+    let index = onboarding::choose(&mut terminal, "Provider", &providers)?;
     let provider = providers
         .get(index)
         .ok_or("provider selection unavailable")?;
@@ -95,11 +97,11 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<(), 
         if !Credentials::keychain_available() {
             return Err("OS keychain unavailable; recovery: unlock/start the OS credential service, or configure an environment key or --credentials FILE before starting graphcoder".into());
         }
-        let key = onboarding::read("API key (hidden)", true)?;
+        let key = onboarding::read(&mut terminal, "API key (hidden)", true)?;
         Credentials::store_api_key(provider, &key)?;
-        println!("Key saved in OS keychain service acyclic-harness.");
+        print!("Key saved in OS keychain service acyclic-harness.\r\n");
     }
-    let index = onboarding::choose("Model", &models)?;
+    let index = onboarding::choose(&mut terminal, "Model", &models)?;
     let selected = models
         .get(index)
         .ok_or("model selection unavailable")?
@@ -110,7 +112,7 @@ pub(super) fn first_run(args: &mut Args, registry: &mut Registry) -> Result<(), 
     args.model = Some(selected);
     // Rebuild the source snapshot only after publishing the new credential.
     *registry = self::registry(args)?;
-    Ok(())
+    Ok(Some(terminal))
 }
 
 pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
