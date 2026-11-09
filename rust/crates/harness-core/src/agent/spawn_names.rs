@@ -31,7 +31,10 @@ impl SpawnResolution {
 /// Validates a model-supplied name before constructing any internal suffix.
 pub(crate) fn spawn_intent(name: &str, generation: u64) -> Result<IntentId, Error> {
     let base = format!("{SPAWN}{name}");
-    if name.is_empty() || base.len() > MAX_SPAWN_INTENT_BYTES || !name.bytes().all(|byte| byte.is_ascii_graphic()) {
+    if name.is_empty()
+        || base.len() > MAX_SPAWN_INTENT_BYTES
+        || !name.bytes().all(|byte| byte.is_ascii_graphic())
+    {
         return Err(Error::Record(
             "spawn name must be printable ASCII without spaces",
         ));
