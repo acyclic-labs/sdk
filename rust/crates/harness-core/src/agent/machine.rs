@@ -695,7 +695,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         ) => {
             outs.push(Out::Spawn {
                 intent: requested_intent(sequence)?,
-                brief: Some(*spawn.brief),
+                brief: spawn.brief.map(|brief| *brief),
                 profile: Some(spawn.profile),
                 volumes: Vec::new(),
                 history: spawn.history,

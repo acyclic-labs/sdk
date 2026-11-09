@@ -364,8 +364,9 @@ pub struct SpawnRequest {
     pub by: Sender,
     /// Stable intent identity.
     pub id: IntentId,
-    /// Task brief, staged on the parent's private volume.
-    pub brief: Box<FileRef>,
+    /// Optional first input, staged on the parent's private volume. A fork
+    /// without a brief waits for an ordinary input after adoption.
+    pub brief: Option<Box<FileRef>>,
     /// The child's admitted creation snapshot.
     pub profile: CreationConfig,
     /// Select a retained prior turn instead of the current conversation head.

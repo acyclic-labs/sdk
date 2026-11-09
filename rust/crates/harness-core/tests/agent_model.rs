@@ -980,7 +980,7 @@ fn spawn_request(sequence: u64) -> Wake {
             history: None,
             by: user(),
             id: intent(&format!("s{sequence}")),
-            brief: Box::new(driver::file("task").expect("file")),
+            brief: Some(Box::new(driver::file("task").expect("file"))),
         }),
     }
 }

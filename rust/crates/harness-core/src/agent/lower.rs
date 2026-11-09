@@ -112,12 +112,6 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             let mut adopted = adoption(state, volumes, cursor, prior_conversation);
             adopted.brief.clone_from(brief);
             adopted.profile.clone_from(profile);
-            if profile
-                .as_ref()
-                .is_some_and(|profile| profile.continuation.is_some())
-            {
-                adopted.brief = None;
-            }
             if let Some(history) = history {
                 if history.conversation > prior_conversation {
                     return Err(Error::Record("history fork exceeds committed conversation"));
