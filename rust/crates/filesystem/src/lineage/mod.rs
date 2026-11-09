@@ -39,30 +39,26 @@ pub struct WorkspaceLineageRecord {
 }
 
 fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
+    let cancellation = CancellationToken::new();
+    let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    );
+    let mut canonical =
+        |name: &str| crate::WorkspaceName::is_canonical(name, &mut accounting).unwrap_or(false);
     let parent_shape = match (
         record.parent_workspace_id,
         record.parent_workspace_name.as_deref(),
     ) {
         (None, None) => record.fork_generation == record.initial_generation,
         (Some(parent_id), Some(parent_name)) => {
-            parent_id != record.workspace_id
-                && crate::WorkspaceName::new(
-                    parent_name,
-                    &WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .is_ok()
+            parent_id != record.workspace_id && canonical(parent_name)
         }
         _ => false,
     };
     record.version == LINEAGE_VERSION
         && record.revision > 0
-        && crate::WorkspaceName::new(
-            &record.workspace_name,
-            &WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .is_ok()
+        && canonical(&record.workspace_name)
         && parent_shape
 }
 

@@ -215,6 +215,7 @@ proptest! {
         let quota = WorkBudget { items_examined: items, bytes_copied: copies,
             allocation_operations: operations, peak_allocation_bytes: peak,
             ..WorkBudget::UNBOUNDED };
+        check_workspace_name(text.as_bytes());
         compare(&text, quota, mode, recheck, failure, 0).map_err(|reason|
             TestCaseError::fail(format!("{reason}: {text:?}, mode={mode}, quota={quota:?}")))?;
         compare(&text, WorkBudget::UNBOUNDED, mode, recheck, 0, 0)
@@ -303,12 +304,27 @@ fn physical_bound(length: usize, broken: bool) -> Result<(), &'static str> {
 fn ascii_names_have_exact_physical_storage_and_a_temporary_allocation_is_detected() {
     for length in [1, 7, 64, 255] {
         physical_bound(length, false).unwrap();
+        let text = "n".repeat(length);
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(
+            WorkBudget {
+                allocation_operations: 0,
+                bytes_copied: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
+        let heap =
+            measure(|| assert!(WorkspaceName::is_canonical(&text, &mut accounting).unwrap()));
+        assert_eq!(heap.count_total, 0);
+        assert_eq!(accounting.spent().items_examined, length as u64);
     }
     assert_eq!(physical_bound(7, true), Err("physical allocation bound"));
 }
 
 #[test]
 fn redundant_normalization_and_missing_unicode_normalization_fail_the_same_oracle() {
+    check_workspace_name("cafe\u{301}".as_bytes());
     compare("private", WorkBudget::UNBOUNDED, 1, false, 0, 0).unwrap();
     assert_eq!(
         compare("private", WorkBudget::UNBOUNDED, 1, false, 0, 3),
