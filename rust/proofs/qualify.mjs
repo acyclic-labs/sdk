@@ -241,6 +241,7 @@ const claims = {
         "filesystem::memory::tests::layered_reads::seed_fallback_and_off_markers_keep_the_original_layer_decision",
         "filesystem::memory::tests::layered_reads::effective_reads_preserve_the_selected_layers_authority",
         "filesystem::memory::tests::projections::cached_line_reads_keep_original_receipts_outside_the_source_volume"],
+      positiveCount: 5,
       completed: ["5 passed; 0 failed"],
     },
   ],
@@ -1843,7 +1844,7 @@ if (claim === "--help" && extra.length === 0) {
       phases.push(phase);
       console.log(JSON.stringify(phase));
       require(readFileSync(oraclePath).equals(oracle));
-      const count = label === "restored" ? options.positive?.length ?? 1 : 1;
+      const count = label === "restored" ? options.positiveCount ?? options.positive?.length ?? 1 : 1;
       const started = invocation[0] === "cargo" && invocation[1] === "nextest"
         ? `Starting ${count} ${count === 1 ? "test" : "tests"} across 1 binary`
         : `running ${count} ${count === 1 ? "test" : "tests"}`;

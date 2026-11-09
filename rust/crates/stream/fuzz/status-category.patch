@@ -1,9 +1,10 @@
 diff --git a/rust/crates/stream/src/wire_codec/status.rs b/rust/crates/stream/src/wire_codec/status.rs
+index 732a9d2fe8e..eaf275fd752 100644
 --- a/rust/crates/stream/src/wire_codec/status.rs
 +++ b/rust/crates/stream/src/wire_codec/status.rs
-@@ -5,6 +5,9 @@ use tonic::{Code, Status, metadata::MetadataMap};
- /// Decodes a member's category and retains everything beyond its canonical status.
- pub(crate) fn status(error: &Status) -> StreamError {
+@@ -6,6 +6,9 @@ use tonic::{Code, Status, metadata::MetadataMap};
+ #[must_use]
+ pub fn status(error: &Status) -> StreamError {
      let category = category(error);
 +    if category != StreamError::Unavailable {
 +        return category;
