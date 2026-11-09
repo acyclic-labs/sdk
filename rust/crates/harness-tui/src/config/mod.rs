@@ -7,7 +7,7 @@ mod validate;
 use crate::{InputKeymap, PromptInput, UiSettings};
 pub use diagnostics::ConfigDiagnostics;
 use serde_json::Value;
-pub use theme::{ThemeRole, ThemeStyles, default_style};
+pub use theme::{ThemeRole, ThemeStyles, Token, default_style};
 
 /// Location determines precedence, independently of publication arrival order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub enum ConfigFile {
     Settings,
     /// Named action bindings.
     Keymap,
-    /// Semantic colors and attributes.
+    /// Semantic colour tokens, dark and light.
     Theme,
 }
 impl ConfigFile {
@@ -275,7 +275,8 @@ impl ConfigView {
         let text = value.to_string();
         parse(file, scope, &text).map(|value| value.to_string().into_bytes())
     }
-    /// Resolve all semantic UI and Markdown roles from gc-terminal's profile.
+    /// Resolve the theme's tokens for gc-terminal's profile: the light or dark
+    /// set by the file's mode or the probed background, at its colour depth.
     pub fn theme(
         &self,
         profile: &crate::term::Capabilities,

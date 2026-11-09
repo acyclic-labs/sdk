@@ -5,6 +5,7 @@ use acyclic_harness::{
     client::commands::{
         BuiltinCommand, CommandAction, CommandArguments, CommandCatalog, CommandQuery,
         CommandRequest, CommandSpec, CommandTaskScope, CommandTool, DEFAULT_COMMANDS_JSON,
+        ThemeMode,
     },
 };
 
@@ -186,7 +187,7 @@ pub(super) fn check(bytes: &[u8]) {
                 text: "caller replacement".into(),
             },
             CommandRequest::Theme {
-                name: "caller".into(),
+                mode: ThemeMode::Light,
             },
             CommandRequest::Compact {
                 instructions: "caller".into(),

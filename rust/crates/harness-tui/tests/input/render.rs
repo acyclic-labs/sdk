@@ -1,10 +1,5 @@
-use acyclic_harness_tui::ratatui::{
-    Terminal,
-    backend::TestBackend,
-    buffer::Buffer,
-    style::{Color, Style},
-};
-use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Viewport};
+use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::Style};
+use acyclic_harness_tui::{Editor, PromptBox, PromptInput, Viewport, config::Token};
 
 #[test]
 fn editing_message_border_title_and_text_snapshot() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,7 +23,11 @@ fn editing_message_border_title_and_text_snapshot() -> Result<(), Box<dyn std::e
     terminal.draw(|frame| {
         frame.render_stateful_widget(PromptBox::new(&input, 1000), frame.area(), &mut viewport);
     })?;
-    assert_eq!(terminal.backend().buffer()[(0, 0)].fg, Color::Yellow);
+    // The editing title takes the attention token.
+    assert_eq!(
+        Some(terminal.backend().buffer()[(0, 0)].fg),
+        input.theme.token(Token::Attention).fg
+    );
     assert_eq!(viewport.cursor, Some((6, 1)));
     Ok(())
 }

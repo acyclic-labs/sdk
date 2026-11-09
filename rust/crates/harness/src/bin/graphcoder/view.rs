@@ -19,6 +19,7 @@ use acyclic_harness::{
     tui::{
         Action, AppAction, Editor, InputEffect, PromptInput, QueryController, QueryPage, Screen,
         Thinking, TranscriptRows, Viewport,
+        config::Token,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -273,7 +274,7 @@ impl View {
                         // A cleared conversation shows nothing before it,
                         // and pages nothing in from before it.
                         None => {
-                            self.transcript = TranscriptRows::default();
+                            self.transcript.clear();
                             self.top = seen;
                             self.floor = seen;
                             self.epoch += 1;
@@ -621,6 +622,9 @@ pub async fn run(
     ui.config
         .apply(&mut input, &profile)
         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+    view.transcript.set_theme(input.theme);
+    view.pending_dirty = true;
+    view.tail_dirty = true;
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
     let mut queries = QueryController::<query::Source>::default();
@@ -764,6 +768,9 @@ pub async fn run(
                 ui.snapshot = snapshot;
                 ui.project()?;
                 ui.config.apply(&mut input, &profile).map_err(|errors| format!("UI configuration: {errors:?}"))?;
+                view.transcript.set_theme(input.theme);
+                view.pending_dirty = true;
+                view.tail_dirty = true;
                 if layout_changed {
                     view.notice = apply_open_view(ui.open_view(), &mut overlay, &mut queries,
                         query_future.as_mut(), &catalog, &input).or(view.notice.take());
@@ -859,7 +866,7 @@ pub async fn run(
                 }
                 // Reasoning shows muted in the strip tool output uses.
                 let style = if kind == LiveKind::Reasoning {
-                    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+                    input.theme.token(Token::Muted).add_modifier(Modifier::ITALIC)
                 } else {
                     Style::default()
                 };
@@ -1028,6 +1035,9 @@ pub async fn run(
                 if selection_changed {
                     ui.config.apply(&mut input, &profile)
                         .map_err(|errors| format!("UI configuration: {errors:?}"))?;
+                    view.transcript.set_theme(input.theme);
+                    view.pending_dirty = true;
+                    view.tail_dirty = true;
                     // Retire the older in-flight projection before following
                     // the cut that supplied this batch's conditional sources.
                     files_future.set(session::follow(Arc::clone(&conversation), ui.snapshot.generation.clone()));

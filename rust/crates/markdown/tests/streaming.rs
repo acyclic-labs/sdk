@@ -121,16 +121,12 @@ fn styles_links_and_highlighting_survive_the_port() {
         .iter()
         .find(|line| plain(std::slice::from_ref(line)).contains("const value"));
     assert!(code.is_some_and(|line| {
-        let colors: std::collections::HashSet<_> = line
+        let tones: std::collections::HashSet<_> = line
             .spans
             .iter()
-            .filter_map(|span| {
-                span.style
-                    .foreground
-                    .map(|color| (color.0, color.1, color.2))
-            })
+            .filter_map(|span| span.style.foreground)
             .collect();
-        colors.len() >= 2
+        tones.len() >= 2
     }));
 }
 

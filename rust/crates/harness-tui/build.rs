@@ -114,71 +114,45 @@ fn settings(out: &Path) -> BuildResult<()> {
     Ok(())
 }
 
-/// The ratatui expression for one declared theme style.
-fn style_expression(style: &Value) -> BuildResult<String> {
-    let mut expression = String::from("Style::new()");
-    for (key, method) in [("foreground", "fg"), ("background", "bg")] {
-        if let Some(color) = style[key].as_str() {
-            let expression_color = if let Some(hex) = color.strip_prefix('#') {
-                let rgb = u32::from_str_radix(hex, 16)?;
-                format!(
-                    "Color::Rgb({}, {}, {})",
-                    (rgb >> 16) & 255,
-                    (rgb >> 8) & 255,
-                    rgb & 255
-                )
-            } else if color == "default" {
-                "Color::Reset".to_owned()
-            } else {
-                format!("Color::{}", variant(color)?)
-            };
-            write!(expression, ".{method}({expression_color})")?;
-        }
-    }
-    for (key, modifier) in [
-        ("bold", "BOLD"),
-        ("italic", "ITALIC"),
-        ("dim", "DIM"),
-        ("underline", "UNDERLINED"),
-        ("reverse", "REVERSED"),
-        ("strikethrough", "CROSSED_OUT"),
-    ] {
-        if style[key] == true {
-            write!(expression, ".add_modifier(Modifier::{modifier})")?;
-        }
-    }
-    Ok(expression)
+/// The value at a JSON pointer, or null when it is absent.
+fn at<'a>(value: &'a Value, pointer: &str) -> &'a Value {
+    static NULL: Value = Value::Null;
+    value.pointer(pointer).unwrap_or(&NULL)
 }
 
+/// The `Token` enum from the shipped theme's tokens: the dark set names them,
+/// and the light set and the schema must name exactly the same.
 fn theme(out: &Path) -> BuildResult<()> {
-    let theme: Value = read_json("data/theme.json")?;
-    let theme = object(&theme, "theme")?;
-    let mut roles = String::from(
-        "/// Semantic UI and Markdown color role.\n#[derive(Clone, Copy, Debug, PartialEq, Eq)] #[repr(usize)] pub enum ThemeRole {\n",
+    let theme = read_json("data/theme.json")?;
+    let schema = read_json("data/theme.schema.json")?;
+    let tokens = object(at(&theme, "/dark"), "dark tokens")?;
+    for (other, what) in [
+        (at(&theme, "/light"), "light tokens"),
+        (at(&schema, "/$defs/tokens/properties"), "schema tokens"),
+    ] {
+        if !object(other, what)?.keys().eq(tokens.keys()) {
+            return Err(format!("{what} must name exactly the dark tokens").into());
+        }
+    }
+    let mut source = String::from(
+        "/// A semantic colour of `data/theme.json`.\n#[derive(Clone, Copy, Debug, PartialEq, Eq)] #[repr(usize)] pub enum Token {\n",
     );
-    let mut styles = String::from("const DEFAULT_THEME_STYLES: ThemeStyles = ThemeStyles([\n");
-    for (role, style) in theme {
-        let variant_name = variant(role)?;
-        writeln!(roles, "/// `{role}` style.\n{variant_name},")?;
-        writeln!(styles, "{},", style_expression(style)?)?;
+    for name in tokens.keys() {
+        writeln!(source, "/// `{name}`.\n{},", variant(name)?)?;
     }
-    let count = theme.len();
-    roles.push_str("}\nimpl ThemeRole { /// All semantic roles.\npub const ALL: &[Self] = &[");
-    for role in theme.keys() {
-        write!(roles, "Self::{},", variant(role)?)?;
-    }
-    roles.push_str(
-        "]; /// Declarative theme key.\npub fn name(self) -> &'static str { match self {",
-    );
-    for role in theme.keys() {
-        write!(roles, "Self::{} => {role:?},", variant(role)?)?;
-    }
-    roles.push_str("} } }\n");
     write!(
-        roles,
-        "/// Capability-resolved semantic styles.\n#[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct ThemeStyles([Style; {count}]);\n"
+        source,
+        "}}\nimpl Token {{ /// Every token, in theme order.\npub const ALL: [Self; {}] = [",
+        tokens.len()
     )?;
-    styles.push_str("]);\n");
-    fs::write(out.join("theme.rs"), roles + &styles)?;
+    for name in tokens.keys() {
+        write!(source, "Self::{},", variant(name)?)?;
+    }
+    source.push_str("]; /// The token's key in a theme file.\npub const fn name(self) -> &'static str { match self {");
+    for name in tokens.keys() {
+        write!(source, "Self::{} => {name:?},", variant(name)?)?;
+    }
+    source.push_str("} } }\n");
+    fs::write(out.join("theme.rs"), source)?;
     Ok(())
 }

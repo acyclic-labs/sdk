@@ -2,20 +2,30 @@
 
 use std::sync::Arc;
 
-/// An RGB foreground color.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Color(pub u8, pub u8, pub u8);
+/// A semantic foreground. The renderer's theme gives each its colour, so
+/// presentation never fixes a palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Tone {
+    /// Headings, links, and code keywords.
+    Accent,
+    /// Inline code, and code numbers and constants.
+    Attention,
+    /// Code strings.
+    Success,
+    /// Invalid code.
+    Error,
+}
 
 /// Additive text attributes, independent of a terminal or browser.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     /// Foreground; absent means the renderer's default.
-    pub foreground: Option<Color>,
+    pub foreground: Option<Tone>,
     /// Strong emphasis.
     pub bold: bool,
     /// Emphasis.
     pub italic: bool,
-    /// Muted text.
+    /// Muted text, unless a foreground is set.
     pub dim: bool,
     /// Link decoration.
     pub underline: bool,
@@ -105,10 +115,14 @@ pub(crate) const MUTED: Style = Style {
     dim: true,
     ..Style::DEFAULT
 };
-pub(crate) const BLUE: Color = Color(97, 175, 239);
-pub(crate) const CYAN: Color = Color(86, 182, 194);
-pub(crate) const YELLOW: Color = Color(229, 192, 123);
-pub(crate) const MAGENTA: Color = Color(198, 120, 221);
+
+/// Text in `tone`, otherwise unstyled.
+pub(crate) const fn toned(tone: Tone) -> Style {
+    Style {
+        foreground: Some(tone),
+        ..Style::DEFAULT
+    }
+}
 
 impl Style {
     pub(crate) const DEFAULT: Self = Self {
