@@ -125,6 +125,59 @@ fn digest(
     Ok(digest)
 }
 
+fn verify_release(
+    placement: &AuthorityPlacement,
+    reservation: PublicationReservation,
+    observation: &acyclic_stream::IdempotencyObservation,
+    work: &mut AuthorityWork<'_>,
+) -> Result<(), AuthorityStoreError> {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
+        return Err(authority_corrupt(
+            "publication release identity retained another Stream mutation family",
+            work,
+        ));
+    };
+    let record = match envelope.mutations.as_slice() {
+        [acyclic_stream::CommittedMutation::Append(append)] => match append.records.as_slice() {
+            [record] => record,
+            _ => {
+                return Err(authority_corrupt(
+                    "publication release observation must retain one record",
+                    work,
+                ));
+            }
+        },
+        _ => {
+            return Err(authority_corrupt(
+                "publication release observation must retain one append",
+                work,
+            ));
+        }
+    };
+    let mut candidate = request(
+        placement,
+        reservation.authority_id,
+        None,
+        reservation.operation_id,
+        reservation.gate_tail,
+        None,
+        work,
+    )?;
+    let tail = reservation
+        .gate_tail
+        .checked_add(1)
+        .ok_or(crate::WorkError::Overflow)?;
+    if record.sequence != reservation.gate_tail
+        || !qualified(observation, &mut candidate, record, tail, work)?
+    {
+        return Err(authority_corrupt(
+            "publication release observation does not bind the original gate release",
+            work,
+        ));
+    }
+    Ok(())
+}
+
 fn qualified(
     observation: &acyclic_stream::IdempotencyObservation,
     candidate: &mut CommitRequest,

@@ -876,7 +876,7 @@ async fn release_lost_ack_retains_its_original_decision_and_rejects_forged_envel
             .await?,
         ReservationOutcome::Reserved(_)
     ));
-    for corrupt in 0..=10 {
+    for corrupt in 0..=12 {
         let mut spy = ReleaseSpy::new(stream.clone());
         spy.corrupt_observation = corrupt;
         let spy = Arc::new(spy);
@@ -1102,6 +1102,13 @@ impl StreamProvider for ReleaseSpy {
                         }
                         9 => append.records.push(append.records[0].clone()),
                         10 => observation.request_digest = [0; 32],
+                        11 => append.records[0].origin = StreamPath::new("other/origin")?,
+                        12 => {
+                            append.records[0].headers = acyclic_stream::RecordHeaders::new(
+                                vec![acyclic_stream::OwnedBytes::from_static(b"forged-key")],
+                                vec![],
+                            )?;
+                        }
                         12 => append.records[0].committed_at_micros += 1,
                         13 => append.records[0].origin = StreamPath::new("other/origin")?,
                         _ => {}
