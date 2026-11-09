@@ -1,0 +1,12 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/retained/native.rs b/rust/crates/filesystem/src/kernel/allocation/retained/native.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/retained/native.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/retained/native.rs
+@@ -19,7 +19,7 @@ impl NativeAccounting {
+         bytes: u64,
+     ) -> Result<KernelOwnedAllocation, crate::FsError> {
+         if self.baseline.is_some() {
+-            allocation.transfer_original_bytes(&self.work.state, bytes)?;
++            allocation.release(bytes)?;
+             return Ok(KernelOwnedAllocation::Standalone);
+         }
+         if allocation.bytes() != bytes || !allocation.work().shares_allocation_context(&self.work) {

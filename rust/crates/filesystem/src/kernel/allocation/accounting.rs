@@ -601,8 +601,12 @@ impl<'a> KernelAccounting<'a> {
         #[cfg(all(test, feature = "memory", not(loom)))]
         super::snapshot_tests::observe();
         match self {
-            Self::Standalone { work, .. } => *work,
-            Self::BorrowedStandalone { work, .. } => **work,
+            Self::Standalone {
+                allocations, work, ..
+            } => allocations.spent(*work),
+            Self::BorrowedStandalone {
+                allocations, work, ..
+            } => allocations.spent(**work),
             #[cfg(not(target_arch = "wasm32"))]
             Self::NativeOriginal { work, .. } => work.receipt(),
         }

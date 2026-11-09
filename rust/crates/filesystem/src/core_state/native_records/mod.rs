@@ -12,6 +12,20 @@ type Owned<T> = (T, crate::NativeAllocation);
 
 // Enter the log only through the admitted namespace's retained native custody.
 macro_rules! transaction {
+    ($store:expr, $original:expr, $cxl:expr, |$root:ident, $log:ident, $work:ident| $operation:block) => {
+        $crate::core_state::native_records::cancellable(
+            $original,
+            ($cxl).clone(),
+            move |original| async move {
+                $crate::core_state::native_records::transaction!(
+                    $store,
+                    original,
+                    |$root, $log, $work| $operation
+                )
+                .await
+            },
+        )
+    };
     ($store:expr, $original:expr, |$root:ident, $log:ident, $work:ident| $operation:block) => {
         ($store)
             .materialization($original)
@@ -26,6 +40,44 @@ macro_rules! transaction {
     };
 }
 pub(super) use transaction;
+
+// Register before dispatch. Withdrawing the reply leaves the accepted native
+// producer owning its input and original ledger through physical completion.
+pub(super) async fn cancellable<T, F: std::future::Future<Output = Result<T, Error>>>(
+    work: Work,
+    cancellation: CancellationToken,
+    transaction: impl FnOnce(Work) -> F,
+) -> Result<T, Error> {
+    use std::{future::Future, pin::pin, task::Poll};
+
+    check(&work, &cancellation)?;
+    let request = cancellation
+        .prepare_cancelled_with_native_work(&work)
+        .map_err(crate::cancellation::CancellationWaitError::into_native)?;
+    let original = if cancellation.same_state(work.cancellation()) {
+        None
+    } else {
+        Some(work.cancellation_wait()?)
+    };
+    let mut request = pin!(request);
+    let mut original = pin!(original);
+    let mut transaction = pin!(transaction(work));
+    std::future::poll_fn(|context| {
+        if let Poll::Ready(result) = transaction.as_mut().poll(context) {
+            return Poll::Ready(result);
+        }
+        if request.as_mut().poll(context).is_ready()
+            || original
+                .as_mut()
+                .as_pin_mut()
+                .is_some_and(|wait| wait.poll(context).is_ready())
+        {
+            return Poll::Ready(Err(NativeError::Cancelled.into()));
+        }
+        Poll::Pending
+    })
+    .await
+}
 
 pub(super) fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     cxl.check().map_err(|_| NativeError::Cancelled)?;

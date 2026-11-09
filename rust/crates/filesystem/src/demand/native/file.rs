@@ -93,8 +93,11 @@ impl NativeDemandFile {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             if let Some(gate) = &gate {
+                let original = context
+                    .native_source_work()
+                    .ok_or(DemandError::OriginalWorkPoisoned)?;
                 gate.entered
-                    .send(Some(std::thread::current().id()))
+                    .send(Some((std::thread::current().id(), original.state.clone())))
                     .map_err(|_| DemandError::WorkerUnavailable)?;
                 gate.release
                     .recv()

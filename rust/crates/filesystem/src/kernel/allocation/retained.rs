@@ -1,10 +1,10 @@
 //! Owned custody at asynchronous boundaries, using the original ledger.
 use super::*;
 use std::sync::{Arc, Mutex};
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod shared;
-#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::NativeAccounting;
 pub(crate) use shared::{RetainedArc, RetainedWeak};
 

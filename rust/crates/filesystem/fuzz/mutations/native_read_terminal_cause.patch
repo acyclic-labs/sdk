@@ -1,0 +1,11 @@
+--- a/rust/crates/filesystem/src/demand/native/file.rs
++++ b/rust/crates/filesystem/src/demand/native/file.rs
+@@ -348,7 +348,7 @@
+         match result {
+             Ok(Some(result)) => {
+                 owner.restore(accounting)?;
+-                result
++                result.map_err(|_| DemandError::Cancelled)
+             }
+             Ok(None) => Err(DemandError::Cancelled),
+             Err(error) => Err(crate::demand::DemandError::from(

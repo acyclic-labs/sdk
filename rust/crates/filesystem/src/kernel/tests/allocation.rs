@@ -22,7 +22,7 @@ impl AllocationLedger {
                 assert_eq!(self.live_bytes(), bytes, "only the live ledger is funded");
                 Ok(true)
             }
-            LedgerState::Suspended(_) => panic!("original accounting custody not returned"),
+            LedgerState::Suspended(..) => panic!("original accounting custody not returned"),
             LedgerState::Empty | LedgerState::Inline(_) => {
                 assert_eq!(self.live_bytes(), 0);
                 Ok(false)
