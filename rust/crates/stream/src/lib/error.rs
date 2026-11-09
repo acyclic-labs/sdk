@@ -1,6 +1,8 @@
 /// Stable public failures. CAS and absence conflicts are values instead.
 /// With `serde`, failures use their canonical [`Self::code`] string; unknown
 /// codes are refused rather than replaced with another cause.
+/// With `grpc`, servers must use `tonic::Status::from(error)` (owned or borrowed)
+/// for the canonical mapping, which preserves retained member refusal diagnostics.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum StreamError {
     /// Peer violated the response contract; retrying the connection cannot repair it.

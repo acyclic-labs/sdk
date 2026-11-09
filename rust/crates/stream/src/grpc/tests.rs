@@ -782,8 +782,10 @@ fn every_member_refusal_round_trips_its_original_status() {
         );
         assert!(error.uncertain());
         assert_eq!(error.code(), "unavailable");
-        assert_eq!(original(&error_status(&error)), original(&relayed));
-        assert_eq!(status(&error_status(&error)), error);
+        for encoded in [Status::from(&error), Status::from(error.clone())] {
+            assert_eq!(original(&encoded), original(&relayed));
+            assert_eq!(status(&encoded), error);
+        }
     }
 }
 
@@ -792,16 +794,16 @@ proptest::proptest! {
     /// unavailable-class status encodes back to its original after decoding.
     #[test]
     fn status_decode_then_encode_is_the_identity(
-        index in 0usize..StreamError::ALL.len(),
         code in 0i32..17,
         message in ".{0,32}",
         details in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..8),
         reason in proptest::option::of("[a-z-]{1,24}"),
     ) {
-        let error = StreamError::ALL
-            .get(index)
-            .ok_or_else(|| proptest::test_runner::TestCaseError::fail("no such error"))?;
-        proptest::prop_assert_eq!(status(&error_status(error)), error.clone());
+        for error in StreamError::ALL {
+            for encoded in [Status::from(&error), Status::from(error.clone())] {
+                proptest::prop_assert_eq!(status(&encoded), error.clone());
+            }
+        }
         let mut relayed = Status::with_details(Code::from_i32(code), message, details.into());
         if let Some(reason) = reason {
             let value = tonic::metadata::MetadataValue::try_from(reason.as_str())
@@ -809,9 +811,11 @@ proptest::proptest! {
             relayed.metadata_mut().insert("acyclic-unserved-reason", value);
         }
         let decoded = status(&relayed);
-        if decoded.code() == "unavailable" {
-            proptest::prop_assert_eq!(original(&error_status(&decoded)), original(&relayed));
+        for encoded in [Status::from(&decoded), Status::from(decoded.clone())] {
+            if decoded.code() == "unavailable" {
+                proptest::prop_assert_eq!(original(&encoded), original(&relayed));
+            }
+            proptest::prop_assert_eq!(status(&encoded), decoded.clone());
         }
-        proptest::prop_assert_eq!(status(&error_status(&decoded)), decoded);
     }
 }
