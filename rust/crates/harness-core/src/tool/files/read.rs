@@ -24,9 +24,12 @@ impl FileTool {
             work,
         )?;
         if input.0.path.starts_with(crate::layers::EFFECTIVE_PATH) {
-            let (path, selected, retained) = context.effective_tool_path(&input.0.path, io).await?;
-            let custody = super::window::custody(io, retained)?;
-            input.0.path = path.into_owned();
+            let (path, selected) = context.effective_tool_path(&input.0.path, io).await?;
+            let (selected, custody) = match selected {
+                Some((selected, custody)) => (Some(selected), custody),
+                None => (None, None),
+            };
+            input.0.path = path;
             source = super::source::ReadSource {
                 source: selected.map(FileReadSource::Authored),
                 custody,
@@ -109,13 +112,8 @@ impl FileTool {
                 };
                 // Native input needs complete bytes. Resolve only this already
                 // selected generation; a concurrent head cannot substitute it.
-                let source = super::executor::Source::read(
-                    context,
-                    &input.path,
-                    Some(&selected.generation),
-                    io,
-                )
-                .await?;
+                let source =
+                    super::executor::Source::selected(context, &input.path, &selected, io).await?;
                 return self.media_result(source.file, media, work);
             }
         }

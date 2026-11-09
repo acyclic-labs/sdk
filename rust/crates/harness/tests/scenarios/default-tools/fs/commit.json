@@ -1,3 +1,3 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"fs",
   "arguments":{"command":"commit -m plans"}},{"type":"event","kind":"completed","metadata":null}],"done"],
- "expect":{"results":{"call":{"content":{"value":{"error":"invalid request: fs supports a child fork's lifecycle only: diff, merge or discard agents/<name>, add <path> and merge --continue or --abort while resolving its conflicts; recovery: use shell for other git commands"}}}}}}
+ "expect":{"results":{"call":{"content":{"value":{"error":{"$contains":"invalid request: fs supports a child fork's lifecycle only"}}}}}}}

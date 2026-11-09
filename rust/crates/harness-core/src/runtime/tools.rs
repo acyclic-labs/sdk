@@ -894,39 +894,40 @@ impl ToolContext {
         ))
     }
 
-    /// The layer path a read of `path` selects. A path under
-    /// [`EFFECTIVE_PATH`] resolves to the highest layer holding it, the home
+    /// The layer path and original funded selection for an effective path.
+    /// The read resolves to the highest layer holding it, the home
     /// over the seed (`sys/` only from the seed), so the read returns that
-    /// layer's own pinned file; other paths are returned unchanged. A home
+    /// layer's own pinned file. A home
     /// file holding only `off: true` hides the seed's. A composed settings
     /// file reads as its highest module; its value is the evaluated fold.
-    /// The caller must retain the returned selection and its original metadata
-    /// funding through the read, rather than select the layer's head again.
-    pub(crate) async fn effective_tool_path<'a>(
+    pub(crate) async fn effective_tool_path(
         &self,
-        path: &'a str,
+        path: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(
-        std::borrow::Cow<'a, str>,
-        Option<crate::conversation::FilePathSelection>,
-        u64,
+        String,
+        Option<(
+            crate::conversation::FilePathSelection,
+            crate::conversation::FileSelectionCustody,
+        )>,
     )> {
         use crate::layers::{WHY_SUFFIX, is_off, layered};
         let Some(relative) = path.strip_prefix(EFFECTIVE_PATH) else {
-            return Ok((std::borrow::Cow::Borrowed(path), None, 0));
+            return Ok((path.into(), None));
         };
-        let missing = || Error::NotFound(format!("{path} is in no layer")).tool_input();
+        let missing =
+            || Error::NotFound(format!("{EFFECTIVE_PATH}{relative} is in no layer")).tool_input();
         if relative.ends_with(WHY_SUFFIX) {
             return Err(Error::Unsupported(format!(
-                "{path} is derived; read its modules under {HOME_PATH} and {SEED_PATH}"
+                "{EFFECTIVE_PATH}{relative} is derived; read its modules under {HOME_PATH} and {SEED_PATH}"
             ))
             .tool_input());
         }
-        let seed = || std::borrow::Cow::Owned(format!("{SEED_PATH}{relative}"));
+        let seed = || format!("{SEED_PATH}{relative}");
         let seeded = self.task().harness.seed.is_some();
         if !layered(relative) {
             return if seeded {
-                Ok((seed(), None, 0))
+                Ok((seed(), None))
             } else {
                 Err(missing())
             };
@@ -938,26 +939,26 @@ impl ToolContext {
             length: 32,
         };
         let held = |result: Result<_>| match result {
-            Ok(selected) => Ok(Some(selected)),
+            Ok(range) => Ok(Some(range)),
             Err(error) if error.code() == crate::wire::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error),
         };
         let mine = held(self.read_tool_path_range(&home, None, probe, io).await)?;
-        let Some((selected, bytes, retained)) = mine else {
+        let selection_hold;
+        let Some((selected, bytes, hold)) = mine else {
             return if seeded {
-                Ok((seed(), None, 0))
+                Ok((seed(), None))
             } else {
                 Err(missing())
             };
         };
+        selection_hold = hold;
         if selected.byte_length <= probe.length && is_off(&bytes) {
-            #[cfg(feature = "filesystem")]
-            let _custody = io.map(|io| io.guard_owned(retained)).transpose()?;
             drop(bytes);
             drop(selected);
             return Err(missing());
         }
-        Ok((home.into(), Some(selected), retained))
+        Ok((home, Some((selected, selection_hold))))
     }
 
     /// Checks original directory authority for the selected mounted path.
@@ -1029,9 +1030,10 @@ impl ToolContext {
     ) -> Result<(
         crate::conversation::FilePathSelection,
         acyclic_stream::OwnedBytes,
-        u64,
+        crate::conversation::FileSelectionCustody,
     )> {
         let (volume, relative) = self.authorize_tool_path_read(path, io)?;
+        let mut retained;
         let (selected, bytes, hold) = self
             .task()
             .content_binding(Some(volume))
@@ -1049,6 +1051,7 @@ impl ToolContext {
                 },
             )?
             .await?;
+        retained = hold;
         crate::executor::with_history_io(io, |history| {
             selected.validate(history)?;
             if &selected.volume != volume
@@ -1069,17 +1072,16 @@ impl ToolContext {
             Ok(())
         })?;
         #[cfg(feature = "filesystem")]
-        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = hold {
-            hold.into_retained()?;
-        }
+        let custody = retained
+            .as_mut()
+            .map(|hold| hold.take_custody())
+            .transpose()?;
         #[cfg(not(feature = "filesystem"))]
-        let retained = {
-            let _ = hold;
-            0
+        let custody = {
+            let _ = &mut retained;
+            None
         };
-        Ok((selected, bytes, retained))
+        Ok((selected, bytes, custody))
     }
 
     /// Resolves a write destination through the original admitted publisher.

@@ -1,0 +1,11 @@
+--- a/rust/crates/harness/src/local/workspace/bindings.rs
++++ b/rust/crates/harness/src/local/workspace/bindings.rs
+@@ -21,7 +21,7 @@
+         self.entries
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+-            .retire_if(key, |entry| std::ptr::eq(entry.as_ptr(), original));
++            .retire_if(key, |_| { let _ = original; true });
+     }
+ 
+     pub(super) fn new(cancellation: &acyclic_fs::CancellationToken) -> Result<RetainedArc<Self>> {

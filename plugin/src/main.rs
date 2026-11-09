@@ -87,6 +87,13 @@ fn internal(args: &[String]) -> Result<bool> {
         "--help" | "-h" => {
             help()?;
         }
+        "fs" if matches!(args, [_, option] if matches!(option.as_str(), "--help" | "-h" | "help")) =>
+        {
+            let fs = acyclic_harness::tools::catalog()
+                .find(|tool| tool.name == "fs")
+                .ok_or("step=read filesystem help: fs descriptor absent; recovery: reinstall the complete Acyclic package")?;
+            println!("Usage: acyclic fs COMMAND...\n{}", fs.description);
+        }
         "--version" | "-V" => {
             println!("acyclic {}", env!("CARGO_PKG_VERSION"));
         }
@@ -213,7 +220,7 @@ fn verify_certification(
 
 fn help() -> Result<()> {
     println!(
-        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
+        "Acyclic {}\nNative hosts own their tools, permissions and agent loops.\nStart graphcoder --host-workspace --host-state-directory PATH outside the host sandbox.\nacyclic install|uninstall|doctor HOST [--plugin-root PATH] [--settings PATH]\nacyclic host HOST [--headless] -- POLICY_ARGS\nacyclic [--task ID] fs COMMAND... | discard REF | agents | log | capture | reopen ID",
         env!("CARGO_PKG_VERSION")
     );
     Ok(())

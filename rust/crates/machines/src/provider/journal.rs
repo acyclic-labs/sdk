@@ -140,7 +140,7 @@ impl Journal {
             })
             .await
         {
-            Err(StreamError::NotFound) => return Ok(snapshot),
+            Err(error) if error.category() == StreamError::NotFound => return Ok(snapshot),
             result => result.map_err(storage)?.take(3),
         };
         while let Some(record) = records.next().await {
@@ -159,7 +159,7 @@ impl Journal {
 
     async fn head(&self, path: StreamPath) -> Result<PathHead, ProviderError> {
         match self.streams.head(path).await {
-            Err(StreamError::NotFound) => Ok(PathHead {
+            Err(error) if error.category() == StreamError::NotFound => Ok(PathHead {
                 tail: 0,
                 last: None,
                 durable: 0,
@@ -668,11 +668,12 @@ fn decode<T: serde::de::DeserializeOwned>(head: PathHead) -> Result<T, ProviderE
 }
 
 fn storage(error: StreamError) -> ProviderError {
-    match error {
-        StreamError::Unavailable | StreamError::Refused(_) => ProviderError::Unavailable,
-        error => ProviderError::Rejected(format!(
+    if error.category() == StreamError::Unavailable {
+        ProviderError::Unavailable
+    } else {
+        ProviderError::Rejected(format!(
             "Machine journal access failed: {error}; recovery: restore the original Streams authority and publication"
-        )),
+        ))
     }
 }
 

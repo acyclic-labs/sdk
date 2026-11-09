@@ -30,6 +30,221 @@ async fn nested_children_preserve_unmerged_work_across_follow_up_and_merge() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_reference_aliases_preserve_process_and_parent_ownership() -> Result {
+    for host in ["codex", "claude-code", "pi"] {
+        served(host, references).await?;
+        served(host, shared_references).await?;
+    }
+    Ok(())
+}
+
+/// Parent-local names remain independent across roots and a nested fork,
+/// even though both roots deliberately share the original checkout.
+fn shared_references(host: &str, cwd: &Path) -> Result {
+    let (mut left, left_parent) = children(host, cwd, "shared-left")?;
+    let (mut right, right_parent) = children(host, cwd, "shared-right")?;
+    let spawn = || SessionAction::Spawn {
+        prompt: "shared child name".into(),
+    };
+    let (left_run, left_view) = claim(&mut left, cwd, "shared", spawn())?;
+    let left_task = left_run.claim.agent.clone();
+    let (right_run, right_view) = claim(&mut right, cwd, "shared", spawn())
+        .map_err(|cause| failed("parent-scoped child reference", cause))?;
+    let right_task = right_run.claim.agent.clone();
+    assert_ne!(left_task, right_run.claim.agent);
+    let mut nested = NativeChildren::own(host, cwd, left_task.clone(), left.flags.clone())?;
+    let (nested_run, nested_view) = claim(&mut nested, cwd, "shared", spawn())?;
+    let nested_task = nested_run.claim.agent.clone();
+    assert!(nested_run.claim.agent.is_child_of(&left_task));
+    let events = match host {
+        "codex" => include_str!("../fixtures/codex-completed.jsonl"),
+        "claude-code" => include_str!("../fixtures/claude-code-completed.jsonl"),
+        "pi" => include_str!("../fixtures/pi-assistant-error.jsonl"),
+        _ => return Err(failed("select captured native output", host)),
+    };
+    for (sessions, mut running, view, name) in [
+        (&mut nested, nested_run, nested_view, "nested"),
+        (&mut left, left_run, left_view, "left"),
+        (&mut right, right_run, right_view, "right"),
+    ] {
+        let mut command = native_fixture(&view, events, "0");
+        running
+            .process
+            .spawn(&mut command, running.claim.operation)?;
+        shell_pid(&mut running)?;
+        running.process.queue_stdin(b"release\n".to_vec())?;
+        wait_exit(&mut running)?;
+        fs::rename(view.join("partial.txt"), view.join(format!("{name}.txt")))?;
+        let completed = sessions
+            .refresh("shared", &mut running, &mut [0; 8192])?
+            .ok_or("shared child did not settle")?;
+        assert_eq!(completed["status"]["settled"], true);
+        assert!(
+            !cwd.join(format!("{name}.txt")).exists(),
+            "child write escaped its fork"
+        );
+    }
+    for (name, parent, branch) in [
+        ("nested", left_task.clone(), nested_task.to_string()),
+        ("left", left_parent.clone(), "agents/shared".into()),
+        ("right", right_parent.clone(), right_task.to_string()),
+    ] {
+        let inspect = |command: &str| {
+            host_files::request(
+                cwd,
+                HostAction::Fs {
+                    task: parent.clone(),
+                    command: command.into(),
+                },
+            )
+        };
+        let diff = inspect(&format!("diff {branch}"))
+            .map_err(|cause| failed(&format!("{host} inspect {name} child"), cause))?;
+        inspect(&format!("merge {branch}")).map_err(|cause| {
+            failed(
+                &format!("{host} merge {name} child"),
+                format!("{cause}; parent={parent}; diff={diff}"),
+            )
+        })?;
+    }
+    for name in ["nested", "left", "right"] {
+        assert_eq!(fs::read(cwd.join(format!("{name}.txt")))?, b"captured");
+    }
+    host_files::request(
+        cwd,
+        HostAction::Fs {
+            task: left_parent,
+            command: format!("discard {left_task}"),
+        },
+    )?;
+    host_files::request(
+        cwd,
+        HostAction::Fs {
+            task: right_parent,
+            command: "diff agents/shared".into(),
+        },
+    )?;
+    Ok(())
+}
+
+fn references(host: &str, cwd: &Path) -> Result {
+    let reference = "a".repeat(255);
+    let (mut sessions, parent) = children(host, cwd, "reference-custody")?;
+    let (mut running, view) = claim(
+        &mut sessions,
+        cwd,
+        &reference,
+        SessionAction::Spawn {
+            prompt: "work".into(),
+        },
+    )?;
+    let task = running.claim.agent.clone();
+    let key = task.to_string();
+    let mut command = native_fixture(&view, "", "0");
+    running
+        .process
+        .spawn(&mut command, running.claim.operation)?;
+    shell_pid(&mut running)?;
+    sessions.children.insert(key.clone(), running);
+    let replay = sessions.spawn(&reference, "work".into())?;
+    assert_eq!(replay["task"], key);
+    assert_eq!(sessions.children.len(), 1);
+    assert!(sessions.wait(&reference)?.is_none());
+    assert!(sessions.wait(&key)?.is_none());
+    assert_eq!(sessions.accepted.len(), 1);
+    for branch in [key.clone(), format!("agents/{reference}")] {
+        let refused = host_files::request(
+            cwd,
+            HostAction::Fs {
+                task: parent.clone(),
+                command: format!("merge {branch}"),
+            },
+        )
+        .expect_err("canonical child merge bypassed running-session custody");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
+        assert!(
+            refused
+                .to_string()
+                .contains("native session is still running"),
+            "{refused}"
+        );
+    }
+    let grandchild = crate::local::host_owner::child(&task, "grandchild")?;
+    for other in [&parent, &grandchild] {
+        assert!(
+            matches!(sessions.wait(other.as_str()), Err(Error::Invalid(message))
+                if message.contains("only direct children can be waited on")),
+            "a non-child path must fail before a storage lookup"
+        );
+    }
+    for other in [&parent, &grandchild] {
+        for operation in ["diff", "merge", "discard"] {
+            let refused = host_files::request(
+                cwd,
+                HostAction::Fs {
+                    task: parent.clone(),
+                    command: format!("{operation} {other}"),
+                },
+            )
+            .expect_err("a full non-child address bypassed parent ownership");
+            assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
+            assert!(
+                refused.to_string().contains("only direct children"),
+                "{refused}"
+            );
+        }
+    }
+    let refused = host_files::request(
+        cwd,
+        HostAction::Fs {
+            task,
+            command: format!("merge agents/{reference}"),
+        },
+    )
+    .expect_err("a leaf cannot merge its own changes");
+    assert_eq!(refused.code(), crate::wire::ErrorCode::Invalid);
+    assert!(
+        refused.to_string().contains("only a parent can merge"),
+        "{refused}"
+    );
+    sessions.cancel(&key)?;
+    assert!(!sessions.running());
+    let local = sessions
+        .wait(&reference)?
+        .ok_or("cancelled child is still running")?;
+    let full = sessions
+        .wait(&key)?
+        .ok_or("cancelled path is still running")?;
+    assert_eq!(local["task"], full["task"]);
+    assert_eq!(local["control"], "interrupt");
+    sessions.archive(&reference)?;
+    for result in [
+        sessions.resume(&key, "next".into()),
+        sessions.spawn(&reference, "work".into()),
+        sessions.spawn(&reference, "different".into()),
+        sessions.send(&reference, "next".into()),
+        sessions.send(&key, "next".into()),
+    ] {
+        let refused = result.expect_err("an archived reference cannot resume");
+        assert_eq!(refused.code(), crate::wire::ErrorCode::Conflict);
+        assert!(
+            refused.to_string().contains("spawn a new reference"),
+            "{refused}"
+        );
+    }
+    let fresh = sessions.request(
+        "fresh",
+        SessionAction::Spawn {
+            prompt: "new work".into(),
+        },
+        false,
+    )?;
+    assert_ne!(fresh["task"], full["task"]);
+    sessions.archive("fresh")?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_exited_pid_producer_refuses_with_a_retained_stdout_writer() -> Result {
     served("codex", |host, cwd| {
         let (mut sessions, _) = children(host, cwd, "closed-pid")?;
@@ -133,15 +348,16 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
             writer.write_all(&captured[..boundary])?;
             writer.write_all(&corrupted)?;
             writer.write_all(&captured[boundary..])?;
-            sessions.children.insert(reference.into(), running);
-            sessions.ready.push(reference);
+            let key = sessions.key(reference)?;
+            sessions.children.insert(key.clone(), running);
+            sessions.ready.push(&key);
             // Small scratch pages force both real output passes to spend all
             // their credit while the captured terminal is still unread.
             let mut page = [0; 8];
             sessions.pump_output(&mut page)?;
-            assert!(sessions.children.contains_key(reference));
+            assert!(sessions.children.contains_key(&key));
             assert!(
-                sessions.children[reference].answer.outcome.is_none(),
+                sessions.children[&key].answer.outcome.is_none(),
                 "terminal remains unread after the full passes"
             );
             assert_eq!(
@@ -152,11 +368,25 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
                     .iter()
                     .map(String::as_str)
                     .collect::<Vec<_>>(),
-                [reference],
+                [key.as_str()],
                 "actual output must schedule exactly its next bounded pass"
             );
+            // Detached writers cannot extend the original terminal capture.
+            writer.write_all(captured)?;
+            diagnostic_writer.write_all(diagnostic.as_bytes())?;
+            assert_eq!(
+                sessions
+                    .children
+                    .get_mut(&key)
+                    .ok_or("original child absent")?
+                    .process
+                    .drain_stderr()?
+                    .read_bytes,
+                0,
+                "terminal capture must exclude later detached stderr writes"
+            );
             sessions.pump_output(&mut page)?;
-            assert!(!sessions.children.contains_key(reference));
+            assert!(!sessions.children.contains_key(&key));
             assert!(sessions.ready.queue().keys.is_empty());
             let completed = sessions
                 .wait(reference)?
@@ -181,7 +411,7 @@ async fn an_exited_child_requeues_captured_output_without_waiting_for_stdout_eof
 }
 
 /// Runs `body` against a live workspace server for `host`.
-async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
+pub(super) async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -230,7 +460,11 @@ async fn served(host: &str, body: fn(&str, &Path) -> Result) -> Result {
 
 /// A root session for `host` and its children, as the root's native host
 /// holds them.
-fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, AgentPath)> {
+pub(super) fn children(
+    host: &str,
+    cwd: &Path,
+    session: &str,
+) -> Result<(NativeChildren, AgentPath)> {
     let root = host_files::request(
         cwd,
         HostAction::Open {
@@ -247,16 +481,21 @@ fn children(host: &str, cwd: &Path, session: &str) -> Result<(NativeChildren, Ag
             "never",
         ],
         "claude-code" => &["--settings", "{}", "--permission-mode", "default"],
-        _ => &[],
+        "pi" => &[],
+        _ => return Err(failed("select native host policy", host)),
     };
-    let policy = policy.iter().map(|value| (*value).to_owned()).collect();
-    let sessions = NativeChildren::own(host, cwd, parent.clone(), policy)?;
+    let policy = policy
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let flags = launch::parent_flags(host, &policy, cwd)?;
+    let sessions = NativeChildren::own(host, cwd, parent.clone(), flags)?;
     Ok((sessions, parent))
 }
 
 /// Sends `action` to `reference` claiming its input, and admits the claimed
 /// turn: its process slot and the view its exchange mounted.
-fn claim(
+pub(super) fn claim(
     sessions: &mut NativeChildren,
     cwd: &Path,
     reference: &str,
@@ -270,13 +509,14 @@ fn claim(
         .and_then(|reply| reply.remove("next"))
         .filter(Value::is_object)
         .ok_or("fixture child input was not claimed")?;
-    let receipt = sessions.record(reference, &accepted)?.receipt.clone();
+    let key = sessions.key(reference)?;
+    let receipt = sessions.record(&key, &accepted)?.receipt.clone();
     let view = receipt.confirm(&claimed)?;
     let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
     let running = Running::new(
         lease.funded_process()?,
         serde_json::from_value(claimed["claim"].clone())?,
-        reference,
+        &key,
         &sessions.ready,
     );
     Ok((running, view))
@@ -422,6 +662,7 @@ fn wait_exit(running: &mut Running) -> Result {
         running.process.pump_stdin()?;
         output(running, &mut page)?;
         if running.process.try_wait()?.is_some() {
+            running.process.drain_stderr()?;
             running.process.take_output_progress();
             return Ok(());
         }
@@ -433,7 +674,7 @@ fn wait_exit(running: &mut Running) -> Result {
 
 /// Read the real shell's PID before releasing its stdin gate. EOF is a
 /// terminal refusal rather than a missing file to keep checking.
-fn shell_pid(running: &mut Running) -> Result<u32> {
+pub(super) fn shell_pid(running: &mut Running) -> Result<u32> {
     let mut digits = [0; 11];
     let mut length = 0;
     loop {
@@ -465,7 +706,11 @@ fn shell_pid(running: &mut Running) -> Result<u32> {
     }
 }
 
-fn native_fixture(view: &Path, events: &str, exit: &str) -> acyclic_native_runtime::ProcessCommand {
+pub(super) fn native_fixture(
+    view: &Path,
+    events: &str,
+    exit: &str,
+) -> acyclic_native_runtime::ProcessCommand {
     let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
     command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release || { printf 'step=release native fixture: stdin closed; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_process::children::tests\\n' >&2; exit 125; }; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
         .arg(events).arg(exit).current_dir(view).stdin(ProcessStdio::piped()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());

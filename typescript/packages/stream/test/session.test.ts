@@ -5,7 +5,7 @@ import { StreamSessions } from "../src/session.js";
 import { StreamError } from "../src/types.js";
 import { SessionQueue } from "../src/session-queue.js";
 import { SessionFilterSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import { SessionNode, checkpoint } from "./session-node.js";
+import { SessionNode, checkpoint, sessionInterest } from "./session-node.js";
 
 test("session slots, filters and record headers survive the TypeScript bridge", async () => {
   const node = new SessionNode();
@@ -26,10 +26,9 @@ test("session slots, filters and record headers survive the TypeScript bridge", 
   const hello = node.received.find(frame => frame.body.case === "hello")!;
   if (hello.body.case !== "hello") throw new Error("missing hello");
   expect(hello.body.value.credentials[2]).toEqual(new Uint8Array([1, 2, 3]));
-  const interest = node.received.find(frame => frame.body.case === "interest")!;
-  if (interest.body.case !== "interest") throw new Error("missing interest");
-  expect(interest.body.value.upsert[0]!.credential).toBe(2);
-  expect(interest.body.value.upsert[0]!.filter).toEqual(filter);
+  const subscription = node.received.flatMap(frame => sessionInterest(frame)?.upsert ?? [])[0]!;
+  expect(subscription.credential).toBe(2);
+  expect(subscription.filter).toEqual(filter);
   await client.registerCredential(2, new Uint8Array([4, 5]));
   await node.until(() => node.received.some(frame => frame.body.case === "credential"));
   const renewal = node.received.find(frame => frame.body.case === "credential")!;

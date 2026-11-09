@@ -6,7 +6,7 @@ const STDERR_TAIL_BYTES: usize = 4096;
 
 /// One bounded output pass, distinguishing quiescence from actual progress.
 pub struct ProcessDrain {
-    /// The pipe reached its terminal EOF.
+    /// The pipe reached EOF or its sealed capture boundary.
     pub closed: bool,
     /// Actual bytes consumed, including those outside the retained tail.
     pub read_bytes: usize,
@@ -36,6 +36,7 @@ pub struct ProcessTreeIo<'a> {
     tree: &'a mut ProcessTree,
     meter: Arc<dyn crate::NativeReadMeter>,
     stderr: &'a mut ReadBuffer<u8>,
+    remaining_output: &'a mut Option<[usize; 2]>,
 }
 
 impl ProcessTreeIo<'_> {
@@ -60,13 +61,62 @@ impl ProcessTreeIo<'_> {
     }
     /// Reads bounded stdout without waiting for data.
     pub fn read_stdout(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
-        self.tree
-            .read_output_controlled(bytes, Some(self.meter.as_ref()), false)
+        self.read_output(bytes, false)
     }
     /// Reads bounded stderr through the same cross-platform pipe implementation.
     pub fn read_stderr(&mut self, bytes: &mut [u8]) -> io::Result<Option<usize>> {
-        self.tree
-            .read_output_controlled(bytes, Some(self.meter.as_ref()), true)
+        self.read_output(bytes, true)
+    }
+
+    /// Fixes the terminal capture boundary at the bytes each original pipe
+    /// currently holds. Later writes cannot extend this owner-selected capture.
+    /// Calling again retains the first boundary, including across bounded passes.
+    pub fn seal_output(&mut self) -> io::Result<()> {
+        if self.remaining_output.is_none() {
+            let child = self.tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
+            let stdout = child.stdout.as_ref().map_or(Ok(0), |pipe| {
+                platform::pipe_available(pipe, Some(self.meter.as_ref()))
+                    .and_then(|(count, recorded)| recorded.map(|()| count.unwrap_or(0)))
+            })?;
+            let stderr = child.stderr.as_ref().map_or(Ok(0), |pipe| {
+                platform::pipe_available(pipe, Some(self.meter.as_ref()))
+                    .and_then(|(count, recorded)| recorded.map(|()| count.unwrap_or(0)))
+            })?;
+            *self.remaining_output = Some([stdout, stderr]);
+        }
+        Ok(())
+    }
+
+    fn read_output(&mut self, bytes: &mut [u8], stderr: bool) -> io::Result<Option<usize>> {
+        if bytes.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty process read buffer",
+            ));
+        }
+        let remaining = self
+            .remaining_output
+            .as_mut()
+            .map(|[stdout, diagnostic]| if stderr { diagnostic } else { stdout });
+        let length = match remaining.as_deref() {
+            Some(0) => return Ok(Some(0)),
+            Some(count) => bytes.len().min(*count),
+            None => bytes.len(),
+        };
+        let (read, recorded) = self.tree.read_output_attempt(
+            bytes.get_mut(..length).ok_or(io::ErrorKind::InvalidInput)?,
+            Some(self.meter.as_ref()),
+            stderr,
+        )?;
+        if let (Some(remaining), Some(count)) = (remaining, read) {
+            // Physical transfer consumes this boundary even when recording
+            // the original operation subsequently refuses the work.
+            *remaining = remaining
+                .checked_sub(count)
+                .ok_or(io::ErrorKind::InvalidData)?;
+        }
+        recorded?;
+        Ok(read)
     }
     /// Drains a bounded pass while retaining only the originally funded tail.
     /// Reports EOF and actual progress, even when stdout closed before stderr.
@@ -120,6 +170,7 @@ struct ProcessSlot {
     tree: Option<ProcessTree>,
     retirement: Option<Retirement>,
     stderr: ReadBuffer<u8>,
+    remaining_output: Option<[usize; 2]>,
 }
 
 /// Concrete kill and wait SDK calls are withheld before physical admission.
@@ -158,6 +209,7 @@ impl ProcessTreeStorage {
             tree: slot.tree.as_mut().ok_or(io::ErrorKind::NotFound)?,
             meter: Arc::clone(meter),
             stderr: &mut slot.stderr,
+            remaining_output: &mut slot.remaining_output,
         })
     }
 
@@ -189,6 +241,7 @@ impl ProcessTreeStorage {
             tree: None,
             retirement: None,
             stderr: ReadBuffer::new(STDERR_TAIL_BYTES, meter)?,
+            remaining_output: None,
         });
         Ok(Self { slot })
     }

@@ -43,7 +43,6 @@ pub struct HostWorkspace {
     signed: Scope,
     scope: crate::runtime::RuntimeScope,
     _native_volumes: Vec<workspace::projection::Entered>,
-    _allocation: Option<Arc<workspace::Mounts>>,
 }
 
 impl HostWorkspace {
@@ -94,7 +93,6 @@ impl HostWorkspace {
             mount_root: Arc::new(admitted_mount_root),
             project,
             _native_volumes: Vec::new(),
-            _allocation: None,
         };
         result.verify().await?;
         result.activate_volumes().await?;
@@ -204,7 +202,12 @@ impl HostWorkspace {
             capture_options: &configuration.0,
             capture_policy: &configuration.1,
         };
-        let parsed = commands.fs_arguments(command, &self.scope)?;
+        let mut parsed = commands.fs_arguments(command, &self.scope)?;
+        crate::tools::resolve_child_branch(
+            &self.agent,
+            &mut parsed.arguments,
+            super::host_owner::child,
+        )?;
         let mut state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
         let (selected, pending) = self.workspace.selected_view().await?;
@@ -290,12 +293,7 @@ impl HostWorkspace {
             selected.workspace().id(),
             self.workspace.store.clone(),
         )
-        .register_branch_workspace(
-            format!("agents/{reference}"),
-            view.workspace().id(),
-            None,
-            false,
-        )
+        .register_branch_workspace(child.as_str(), view.workspace().id(), None, false)
         .await
         .map_err(storage)?;
         drop(state);
@@ -306,7 +304,7 @@ impl HostWorkspace {
             .as_ref()
             .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
             .for_scope(&signed)?;
-        let (workspace, mounts) = self
+        let workspace = self
             .workspace
             .bound_task_view(view, &project, scratch, &*child_owner, &authority)
             .await?;
@@ -323,7 +321,6 @@ impl HostWorkspace {
             )?,
             signed,
             _native_volumes: Vec::new(),
-            _allocation: Some(mounts),
         };
         result.verify().await?;
         result.activate_volumes().await?;

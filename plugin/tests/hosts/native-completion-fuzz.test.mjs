@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {test} from 'node:test';
-import {check,checkAnswer,checkRefusals,checkTransitions,fuzz,paths,replace,seeds} from './native-completion.fuzz.mjs';
+import {answers,check,checkAnswer,checkRefusals,checkTransitions,fuzz,paths,replace,seeds} from './native-completion.fuzz.mjs';
 
 for(const record of seeds)test(record.host+' native decoder contains generated shape failures ('+(record.mode??'tools')+')',()=> {
  const lines=record.stdout.trim().split('\n');
@@ -18,6 +18,11 @@ for(const record of seeds)test(record.host+' native decoder contains generated s
 test('byte fuzz entry retains the original decoder and raw JSON refusal',()=> {
  for(let seed=0;seed<seeds.length;seed++)for(const value of ['null','[]','{}','false','0','""','[null]','{'])
   fuzz(Buffer.concat([Buffer.from([seed,2,0]),Buffer.from(value)]));
+ for(const [index,record] of answers.entries()) {
+  for(const answer of [record.answer,record.answer+'0','0'+record.answer,record.answer+'\n','',record.answer+'\0'])
+   fuzz(Buffer.concat([Buffer.from([index,0,0]),Buffer.from(answer)]));
+  for(let byte=0;byte<256;byte++)fuzz(Buffer.from([index,byte]));
+ }
 });
 
 test('recorded refusal and answer oracles reject planted production decoder defects',async()=>{
@@ -34,10 +39,11 @@ test('recorded refusal and answer oracles reject planted production decoder defe
   ["event.type==='turn.failed'||event.type==='error'",'false',checkRefusals],
   ["nativeObject(host,event,'native event');",'',decode=>check(answer,'null',decode)],
   ["&&turn!=='active'",'&&false',checkTransitions],
+  ["assert.equal(turn,'complete','native Codex terminal missing');",'void 0;',checkTransitions],
   ['event.session_id!==session','false',checkTransitions],
  ]) {
   assert.ok(source.includes(before),'planted defect no longer matches production source');
   const mutant=await import('data:text/javascript;base64,'+Buffer.from(source.replace(before,after)).toString('base64'));
-  assert.throws(()=>oracle(mutant.assertNativeCompletion),{code:'ERR_ASSERTION'});
+  assert.throws(()=>oracle(mutant.assertNativeCompletion),{code:'ERR_ASSERTION'},'native completion oracle missed production mutation: '+before);
  }
 });

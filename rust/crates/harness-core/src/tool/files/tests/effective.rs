@@ -269,7 +269,8 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                                 Some(&io),
                             )
                             .await
-                            .unwrap_err();
+                            .err()
+                            .expect("effective selection must refuse");
                         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
                         assert!(
                             error.to_string().contains("is in no layer"),
@@ -288,7 +289,8 @@ async fn effective_projections_keep_the_original_selection_after_head_advances()
                                 Some(&io),
                             )
                             .await
-                            .unwrap_err();
+                            .err()
+                            .expect("effective selection must refuse");
                         assert_eq!(error.code(), crate::wire::ErrorCode::Cancelled);
                         if native {
                             assert!(error.is_native_failure());

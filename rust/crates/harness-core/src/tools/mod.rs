@@ -6,6 +6,7 @@ pub use agents::check_agent_wait_selection;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
     SpawnAgentInput, WaitAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
+    resolve_child_branch, spawned_child,
 };
 pub mod shell;
 pub mod variants;

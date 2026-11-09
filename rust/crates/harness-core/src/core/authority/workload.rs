@@ -399,12 +399,13 @@ pub(super) fn issue(
     retain(scope, &capability, work)
 }
 /// A sealed credential for exactly `grants`, each `(resource, prefix,
-/// actions)`, under `issuer`'s audience at `timestamp`. Its certificate is
+/// actions)`, for `audience` at `timestamp`. Its certificate is
 /// bound to `parent`: it expires no later and is revoked with it.
 pub(super) fn resource_credential(
     issuer: &AuthorityRoot,
     parent: &VerifiedCapability,
     grants: &[(&str, bool, &[&str])],
+    audience: String,
     timestamp: u64,
 ) -> Result<(Vec<u8>, String)> {
     let grants = GrantSet {
@@ -433,7 +434,7 @@ pub(super) fn resource_credential(
                 },
                 Caveat {
                     kind: CaveatKind::Audience(ResourcePattern {
-                        name: resource(&issuer.audience)?,
+                        name: audience,
                         prefix: false,
                     }),
                 },

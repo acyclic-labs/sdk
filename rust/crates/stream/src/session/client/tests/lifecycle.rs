@@ -4,6 +4,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
     (
         Client {
+            credential_owner: None,
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
                 commands,
@@ -237,7 +238,15 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             fixture
                 .controls
                 .send(Err(Status::permission_denied("terminal fixture failure")))?;
-            assert_eq!(records.next().await, Some(Err(StreamError::AccessDenied)));
+            let error = records
+                .next()
+                .await
+                .ok_or("terminal follow ended")?
+                .unwrap_err();
+            assert_eq!(error.category(), StreamError::AccessDenied);
+            let original = tonic::Status::from(&error);
+            assert_eq!(original.code(), tonic::Code::PermissionDenied);
+            assert_eq!(original.message(), "terminal fixture failure");
             drop(records);
             let cancelled = client
                 .follow(crate::FollowRequest::new(
