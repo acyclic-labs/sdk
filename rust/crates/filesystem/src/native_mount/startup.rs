@@ -111,6 +111,23 @@ pub fn prepare_native_mount_start(
 }
 
 impl PreparedNativeMountStart {
+    /// Starts the original constructor on an owned worker, leaving its
+    /// asynchronous caller available to native callback producers.
+    pub(crate) async fn start_async(
+        self,
+        request: NativeMountRequest,
+        source: Arc<dyn MountFilesystem>,
+        work: NativeMaterializationWork,
+        destination_custody: Option<crate::NativeAllocation>,
+        startup: acyclic_native_runtime::DescriptorAdmission,
+    ) -> Result<NativeMountSession, NativeMountError> {
+        lifecycle::run_native_control(move || {
+            let _startup = startup;
+            self.start(request, source, &work, destination_custody)
+        })
+        .await?
+    }
+
     /// Starts the same actual constructor on an already operative original Arc.
     pub fn start(
         self,

@@ -53,7 +53,7 @@ pub(super) use session::DarwinMountSession;
 pub use work_scope::NativeMountWorkScope;
 
 mod teardown_error;
-pub use teardown_error::DarwinTeardownFailure;
+pub use teardown_error::{DarwinRetirementFailure, DarwinTeardownFailure};
 
 mod mount_probe;
 use mount_probe::*;

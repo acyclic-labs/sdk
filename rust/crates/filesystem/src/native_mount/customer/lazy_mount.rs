@@ -4,7 +4,7 @@ use super::*;
 /// Process-owned native mount over a sparse workspace.
 pub struct LazyMount<A: 'static, O: 'static, D, S> {
     pub(super) source: Arc<LazyMountSource<A, O, D, S>>,
-    pub(super) session: Mutex<Option<NativeMountSession>>,
+    pub(super) session: Arc<CustomerSession>,
     pub(super) destination: PathBuf,
     pub(super) _destination_custody: NativeAllocation,
 }
@@ -314,7 +314,7 @@ where
     async fn revalidate_async(&self) -> Result<(), MountLifecycleError> {
         with_session_work_async(
             &self.session,
-            self.source.as_ref(),
+            &self.source,
             NativeSessionControl::Revalidate,
         )
         .await
@@ -364,8 +364,16 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.prepare_unmount_cleanup()?;
-        self.retire(&crate::CancellationToken::new())?.into_result()
+        let source = self.source.clone();
+        control_session(self.session.clone(), move |owner| {
+            #[cfg(windows)]
+            if let Some(session) = owner.as_mut() {
+                session.prepare_projection_cleanup()?;
+            }
+            Self::retire_owned(owner, &source, &crate::CancellationToken::new())
+        })
+        .await?
+        .into_result()
     }
 
     /// Prepares namespace cleanup while every route's publication owner is live.
@@ -393,6 +401,14 @@ where
             .session
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::retire_owned(&mut owner, &self.source, wait)
+    }
+
+    fn retire_owned(
+        owner: &mut Option<NativeMountSession>,
+        source: &Arc<LazyMountSource<A, O, D, S>>,
+        wait: &crate::CancellationToken,
+    ) -> Result<NativeMountDrainProof, MountLifecycleError> {
         let result = (|| {
             if let Some(session) = owner.as_mut() {
                 session.retire_with_context(&super::super::NativeSessionStopWork::AcceptedWait(
@@ -402,13 +418,13 @@ where
                     return Err(NativeMountError::ControlPending.into());
                 }
             } else {
-                self.source.cancel_with_cleanup_wait(wait)?;
+                source.cancel_with_cleanup_wait(wait)?;
             }
-            if !self.source.physically_retired()? {
+            if !source.physically_retired()? {
                 return Err(NativeMountError::ControlPending.into());
             }
             let proof = NativeMountDrainProof {
-                _source: self.source.clone(),
+                _source: source.clone(),
                 failures: owner
                     .as_mut()
                     .and_then(NativeMountSession::take_retired_failures)

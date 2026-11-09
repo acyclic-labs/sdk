@@ -270,6 +270,19 @@ fn callback_runtime_completes_ready_work_without_parking_current_thread()
         })?;
     }
     current.block_on(async {
+        for deliver in [true, false] {
+            let callback = callback.clone();
+            let result = crate::native_mount::lifecycle::run_native_control(move || {
+                callback.wait(|| callback_handoff(deliver))
+            })
+            .await?;
+            if deliver {
+                result?;
+            } else {
+                assert!(matches!(result, Err(MountSourceError::Io(ref error, _))
+                    if error.kind() == std::io::ErrorKind::BrokenPipe));
+            }
+        }
         let (sent, mut received) = tokio::sync::oneshot::channel();
         let sibling = tokio::spawn(async move { sent.send(()).unwrap() });
         // Removing the refusal fails at the park boundary, without hanging.

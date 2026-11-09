@@ -3,7 +3,9 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <DiskArbitration/DiskArbitration.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 static struct {
@@ -80,30 +82,45 @@ static SInt32 model_run(CFStringRef mode, CFTimeInterval duration, Boolean once)
 #define acyclic_fs_darwin_retire_mount model_retire_mount
 #include "../../darwin_mount_retirement.c"
 
-int acyclic_fs_darwin_test_retirement_custody(void) {
+int acyclic_fs_darwin_test_retirement_custody(bool (*check_result)(int, int)) {
+  const struct { DAReturn native; int error; } outcomes[] = {
+    {kDAReturnSuccess, 0}, {kDAReturnError, EIO},
+    {kDAReturnBusy, EBUSY}, {kDAReturnBadArgument, EINVAL},
+    {kDAReturnExclusiveAccess, EBUSY}, {kDAReturnNoResources, ENOMEM},
+    {kDAReturnNotFound, ENOENT}, {kDAReturnNotMounted, ENOENT},
+    {kDAReturnNotPermitted, EACCES}, {kDAReturnNotPrivileged, EACCES},
+    {kDAReturnNotReady, ENXIO}, {kDAReturnNotWritable, EROFS},
+    {kDAReturnUnsupported, ENOTSUP}, {(DAReturn)0x12345678, EIO}
+  };
   for (unsigned delay = 0; delay <= 1024; ++delay) {
-    for (unsigned denied = 0; denied <= 1; ++denied) {
+    for (unsigned outcome = 0; outcome < sizeof(outcomes) / sizeof(outcomes[0]); ++outcome) {
       memset(&model, 0, sizeof(model));
       model.delay = delay;
       model.source = 1;
-      model.dissent = denied ? kDAReturnNotPermitted : 0;
+      model.dissent = outcomes[outcome].native;
       int dissent = 0;
       int status = model_retire_mount("/fixture", &dissent);
       if (model.violation || model.pending || model.submitted != 1 ||
           model.released != 3 || model.visits != delay + 1 ||
-          status != (denied ? EACCES : 0) || dissent != model.dissent) return 1;
+          status != outcomes[outcome].error || dissent != model.dissent ||
+          !check_result(status, dissent)) {
+        fprintf(stderr, "retirement callback contract failed: native=%#x errno=%d expected=%d delay=%u; recovery: cargo test -p acyclic-fs --all-features retirement_keeps_callback_storage_until_terminal_completion -- --nocapture\n",
+                model.dissent, status, outcomes[outcome].error, delay);
+        return 1;
+      }
     }
   }
   memset(&model, 0, sizeof(model));
   int dissent = 0;
-  if (model_retire_mount("/fixture", &dissent) != ENOMEM ||
+  int status = model_retire_mount("/fixture", &dissent);
+  if (status != ENOMEM || !check_result(status, dissent) ||
       model.submitted != 0 || model.violation || model.released != 3) return 2;
   for (unsigned stage = 1; stage <= 3; ++stage) {
     memset(&model, 0, sizeof(model));
     model.source = 1;
     model.allocation_failure = stage;
-    int status = model_retire_mount("/fixture", &dissent);
-    if (status != (stage == 3 ? ENOENT : ENOMEM) || model.pending ||
+    status = model_retire_mount("/fixture", &dissent);
+    if (status != (stage == 3 ? ENOENT : ENOMEM) || !check_result(status, dissent) || model.pending ||
         model.submitted || model.violation || model.released != stage - 1) return 3;
   }
   return 0;

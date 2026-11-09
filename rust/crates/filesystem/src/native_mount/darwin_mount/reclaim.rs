@@ -97,16 +97,7 @@ fn arbitration_unmount(destination: &CStr) -> std::io::Result<()> {
     // SAFETY: the cached mount record retains its terminated path. The bridge
     // awaits the terminal callback before its storage or this fence can die.
     let status = unsafe { acyclic_fs_darwin_retire_mount(destination.as_ptr(), &raw mut dissent) };
-    if dissent != 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("Darwin mount retirement denied: {dissent:#x}"),
-        ));
-    }
-    if status != 0 {
-        return Err(std::io::Error::from_raw_os_error(status));
-    }
-    Ok(())
+    super::teardown_error::retirement_result(status, dissent)
 }
 
 pub(super) fn detach_stale_mount(mount: &libc::statfs) -> Result<(), NativeMountError> {

@@ -51,7 +51,7 @@ async fn publish_command(
         .await?;
     let mount = Mount {
         source: working.source.clone(),
-        session: Mutex::new(None),
+        session: CustomerSession::new(None, &work)?,
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
         retiring: std::sync::atomic::AtomicBool::new(false),
@@ -136,7 +136,8 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     workspace.write_text("/result.txt", "original").await?;
-    let root = tempfile::tempdir()?;
+    let root = tempfile::tempdir()
+        .inspect_err(|error| eprintln!("view temporary directory: {error:?}"))?;
     let admission = Arc::new(crate::hold_root(root.path())?);
     let options = super::tests::fixture_options(
         &workspace,
@@ -148,15 +149,21 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     let retained = workspace.mount_view(options.clone()).await?;
     // A startup that fails after issuance leaves nothing behind: the view's
     // issuance owns its directory from creation, not from a successful mount.
-    let listed = || std::fs::read_dir(root.path()).map(Iterator::count);
+    let listed = || {
+        std::fs::read_dir(root.path())
+            .inspect_err(|error| eprintln!("view admission directory listing: {error:?}"))
+            .map(Iterator::count)
+    };
     let before = listed()?;
     let unauthorized = MountOptions::read_write().view_root(admission);
     assert!(workspace.mount_view(unauthorized).await.is_err());
     assert_eq!(listed()?, before);
     let completed = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), completed.path().parent());
-    std::fs::write(retained.path().join("still-live.txt"), b"retained")?;
-    std::fs::write(completed.path().join("result.txt"), b"captured")?;
+    std::fs::write(retained.path().join("still-live.txt"), b"retained")
+        .inspect_err(|error| eprintln!("retained view kernel write: {error:?}"))?;
+    std::fs::write(completed.path().join("result.txt"), b"captured")
+        .inspect_err(|error| eprintln!("completed view kernel write: {error:?}"))?;
     {
         let mut owner = completed
             .session
@@ -170,7 +177,18 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         driver.prepare_destination_cleanup(completed.path(), &work)?;
         assert!(completed.path().exists());
     }
-    completed.complete_command(true).await?;
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let completion = schedule.scope(completed.complete_command(true));
+    tokio::pin!(completion);
+    loop {
+        tokio::select! {
+            result = &mut completion => { result?; break; }
+            boundary = events.recv() => {
+                boundary.ok_or("retirement boundary producer dropped")?.release();
+            }
+        }
+    }
+    schedule.drained().await;
     assert!(!completed.path().exists());
     assert_eq!(
         workspace
@@ -180,14 +198,16 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         b"captured"
     );
     assert_eq!(
-        std::fs::read(retained.path().join("still-live.txt"))?,
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after completion: {error:?}"))?,
         b"retained"
     );
 
     let abandoned = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), abandoned.path().parent());
-    std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
-    abandoned.abandon_command()?;
+    std::fs::write(abandoned.path().join("result.txt"), b"unverified")
+        .inspect_err(|error| eprintln!("abandoned view kernel write: {error:?}"))?;
+    abandoned.abandon_command().await?;
     assert!(!abandoned.path().exists());
     assert_eq!(
         workspace
@@ -197,7 +217,52 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
         b"captured"
     );
     assert_eq!(
-        std::fs::read(retained.path().join("still-live.txt"))?,
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after abandonment: {error:?}"))?,
+        b"retained"
+    );
+    let cancelled = workspace.mount_view(options.clone()).await?;
+    let cancelled_path = cancelled.path().to_owned();
+    let cancelled_session = Arc::downgrade(&cancelled.session);
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let mut retirement = Box::pin(schedule.scope(cancelled.abandon_command()));
+    let accepted = loop {
+        tokio::select! {
+            result = &mut retirement => {
+                result?;
+                return Err("retirement completed before its submission boundary".into());
+            }
+            boundary = events.recv() => {
+                let boundary = boundary.ok_or("retirement submission producer dropped")?;
+                if boundary.name == "blocking:submitted" && cancelled.is_retiring() {
+                    break boundary;
+                }
+                boundary.release();
+            }
+        }
+    };
+    assert!(cancelled.is_retiring());
+    assert!(schedule.pending_native_work() > 0);
+    schedule.cancel();
+    drop(retirement);
+    drop(cancelled);
+    assert!(cancelled_session.upgrade().is_some());
+    accepted.release();
+    let drained = schedule.drained();
+    tokio::pin!(drained);
+    loop {
+        tokio::select! {
+            () = &mut drained => break,
+            boundary = events.recv() => {
+                boundary.ok_or("accepted retirement producer dropped")?.release();
+            }
+        }
+    }
+    assert!(cancelled_session.upgrade().is_none());
+    assert!(!cancelled_path.exists());
+    assert_eq!(
+        std::fs::read(retained.path().join("still-live.txt"))
+            .inspect_err(|error| eprintln!("retained view read after cancellation: {error:?}"))?,
         b"retained"
     );
     let unmounted = workspace.mount_view(options).await?;
@@ -205,7 +270,7 @@ async fn view_completion_unmount_and_abandon_retire_only_their_view()
     assert!(unmounted.path().is_dir());
     unmounted.unmount().await?;
     assert!(!unmounted.path().exists());
-    retained.abandon_command()?;
+    retained.abandon_command().await?;
     assert!(!retained.path().exists());
     Ok(())
 }

@@ -100,7 +100,7 @@ impl MountOptions {
         ))
     }
 
-    pub(super) fn work(
+    pub(super) async fn work(
         &self,
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
@@ -110,7 +110,7 @@ impl MountOptions {
         } else {
             acyclic_native_runtime::initialize_native_io_services()
                 .map_err(NativeMountError::from)?;
-            super::super::initialize_native_mount_services()?;
+            super::super::initialize_native_mount_services_async().await?;
             NativeMaterializationWork::new(budget, cancellation)
                 .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
         };

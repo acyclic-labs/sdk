@@ -79,7 +79,9 @@ impl HostWorkspace {
             return Err(Error::Conflict("host task-view admission changed".into()));
         }
         workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
-        acyclic_fs::initialize_native_mount_services().map_err(storage)?;
+        acyclic_fs::initialize_native_mount_services_async()
+            .await
+            .map_err(storage)?;
         let mut result = Self {
             workspace,
             owner: Arc::new(AgentOwner(agent.clone())),

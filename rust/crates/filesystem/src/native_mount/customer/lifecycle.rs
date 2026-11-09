@@ -1,6 +1,53 @@
 use super::super::session::NativeSessionControl;
 use super::*;
 
+pub(in crate::native_mount) struct CustomerSession {
+    slot: Mutex<Option<NativeMountSession>>,
+    _allocation: NativeAllocation,
+}
+
+impl CustomerSession {
+    pub(super) fn new(
+        session: Option<NativeMountSession>,
+        work: &NativeMaterializationWork,
+    ) -> Result<Arc<Self>, MountLifecycleError> {
+        let allocation = work.claim(
+            acyclic_native_runtime::arc_allocation_bytes::<Self>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        Ok(Arc::new(Self {
+            slot: Mutex::new(session),
+            _allocation: allocation,
+        }))
+    }
+}
+
+impl std::ops::Deref for CustomerSession {
+    type Target = Mutex<Option<NativeMountSession>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.slot
+    }
+}
+
+/// Runs every asynchronous session access off the executor, including admission
+/// that can contend with retained retirement. Accepted work outlives its caller.
+pub(super) async fn control_session<T: Send + 'static>(
+    session: Arc<CustomerSession>,
+    operation: impl FnOnce(&mut Option<NativeMountSession>) -> Result<T, MountLifecycleError>
+    + Send
+    + 'static,
+) -> Result<T, MountLifecycleError> {
+    super::super::lifecycle::run_native_control(move || {
+        let mut owner = session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operation(&mut owner)
+    })
+    .await?
+}
+
 /// Runs one session control on the source's original meter, which its
 /// callbacks share. A control on any other meter cannot run the invalidator,
 /// so it could never see its changes settle.
@@ -25,15 +72,12 @@ pub(crate) fn with_session_work(
 /// Makes every later retirement of this session remove its destination,
 /// on the source's original meter. A view's destination is its issuance's.
 pub(crate) fn prepare_destination_cleanup(
-    session: &Mutex<Option<NativeMountSession>>,
+    owner: &mut Option<NativeMountSession>,
     source: &dyn MountFilesystem,
 ) -> Result<(), MountLifecycleError> {
     let work = source
         .native_original_work()?
         .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-    let mut owner = session
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(session) = owner.as_mut() {
         session.prepare_destination_cleanup(&work)?;
     }
@@ -124,22 +168,22 @@ impl NativeMountDrainProof {
     }
 }
 
-/// Admit under the session lock, then release it before waiting for the owner.
+/// Admit off the executor, then release the session lock before awaiting control.
 pub(in crate::native_mount) async fn with_live_session_async(
-    session: &Mutex<Option<NativeMountSession>>,
+    session: &Arc<CustomerSession>,
     work: &NativeMaterializationWork,
     control: NativeSessionControl,
 ) -> Result<(), MountLifecycleError> {
-    let completion = {
-        let owner = session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let admission_work = work.clone();
+    let completion = control_session(session.clone(), move |owner| {
         owner
             .as_ref()
-            .map(|session| session.start_control(work, control))
-            .transpose()?
-            .flatten()
-    };
+            .map(|session| session.start_control(&admission_work, control))
+            .transpose()
+            .map(Option::flatten)
+            .map_err(Into::into)
+    })
+    .await?;
     if let Some(completion) = completion {
         completion
             .await
@@ -148,28 +192,29 @@ pub(in crate::native_mount) async fn with_live_session_async(
     Ok(())
 }
 
-pub(in crate::native_mount) async fn with_session_work_async(
-    session: &Mutex<Option<NativeMountSession>>,
-    source: &dyn MountFilesystem,
+pub(in crate::native_mount) async fn with_session_work_async<
+    F: MountFilesystem + ?Sized + 'static,
+>(
+    session: &Arc<CustomerSession>,
+    source: &Arc<F>,
     control: NativeSessionControl,
 ) -> Result<(), MountLifecycleError> {
-    let completion = {
-        let owner = session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let source = source.clone();
+    let completion = control_session(session.clone(), move |owner| {
         if let Some(session) = owner.as_ref() {
             let work = source
                 .native_original_work()?
                 .ok_or(MountLifecycleError::NativePolicy(
                     "mounted volume has no original native work",
                 ))?;
-            session
+            Ok(session
                 .start_control(&work, control)?
-                .map(|completion| (work, completion))
+                .map(|completion| (work, completion)))
         } else {
-            None
+            Ok(None)
         }
-    };
+    })
+    .await?;
     if let Some((work, completion)) = completion {
         completion
             .await
