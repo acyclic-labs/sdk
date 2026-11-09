@@ -4,6 +4,11 @@ Claude Code, Codex, Pi, OpenCode and Antigravity run their own sessions, provide
 and agent loops. Acyclic coordinates isolated workspaces, capture and merges
 through an already-running GraphCoder harness.
 
+Root coordination and capture use the existing checkout and work without
+`/dev/fuse`, including in a stock Linux container. Native hosts retain their own
+configuration and session directories. Managed children project forked volumes
+and require the platform's native mount provider when their views open.
+
 Start GraphCoder outside the host sandbox, from the workspace:
 
 ```sh

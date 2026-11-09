@@ -15,16 +15,7 @@ impl LocalHarnessConfig {
     /// owner's state directory separately, so their host admission checks only
     /// these facilities, without inventing a default state location.
     pub fn native_preflight(&self) -> Vec<Error> {
-        let native = self.model.is_none() && {
-            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            {
-                self.models.is_none()
-            }
-            #[cfg(not(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
-            {
-                true
-            }
-        } || self.default_tools.iter().any(|name| name == "shell")
+        let native = self.default_tools.iter().any(|name| name == "shell")
             || self
                 .tools
                 .iter()

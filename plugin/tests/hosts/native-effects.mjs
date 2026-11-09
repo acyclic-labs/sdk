@@ -56,8 +56,8 @@ try {
   assert.notEqual(original.cwd,cwd,'parent substituted its own view for the child');
   // Public wait has settled the native turn. The existing owner query reads
   // its original native identifier; no second event reader is introduced.
-  const initial=join(root,'.volumes/home/native-initial-session.json');
-  const current=phase==='merge'?initial:join(root,'.volumes/home/native-resumed-session.json');
+  const initial=join(root,'.acyclic-sdk/native-initial-session.json');
+  const current=phase==='merge'?initial:join(root,'.acyclic-sdk/native-resumed-session.json');
   const descriptor=openSync(current,'w');
   try {
    step='read original native session';
