@@ -1,6 +1,8 @@
 //! Standard coding tools and shared host executors.
 mod agents;
-pub(crate) use agents::awaited;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use agents::check_agent_wait_selection;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
     SpawnAgentInput, WaitAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
@@ -18,7 +20,7 @@ pub(crate) mod bounds;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use bounds::prefix as json_string_prefix;
 mod command;
-mod fs_command;
+pub(crate) mod fs_command;
 /// Pinned public tool contracts for each model family's native tool surface.
 #[cfg(feature = "filesystem")]
 pub mod native;

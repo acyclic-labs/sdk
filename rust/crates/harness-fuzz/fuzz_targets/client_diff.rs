@@ -1,6 +1,6 @@
 #![no_main]
 
-use acyclic_harness::context;
+use acyclic_harness::client::FileDiff;
 use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/tests/support/file_diff_case.rs"]
@@ -11,19 +11,6 @@ mod expected_outcome;
 mod local_case;
 
 pub type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-// Compile the production pure module without pulling in unrelated providers.
-#[path = "../../harness/src/client/diff/compute.rs"]
-mod compute;
-#[path = "../../harness/src/client/diff/file.rs"]
-mod file;
-use file::{DiffHunk, FileDiff, PatchText, render_bound};
-
-#[derive(Debug)]
-pub enum Error {
-    Invalid(String),
-}
-pub type Result<T> = std::result::Result<T, Error>;
 
 fn check(before: Option<&[u8]>, after: Option<&[u8]>, render: usize, work: usize) {
     let Ok(Some(diff)) = FileDiff::between(before, after, render, work) else {

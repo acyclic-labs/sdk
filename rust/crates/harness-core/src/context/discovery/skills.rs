@@ -95,7 +95,10 @@ impl SkillMetadata {
                     io: content_io,
                 },
             )?
-            .await?;
+            .await?
+            .ok_or_else(|| {
+                stock_boundary(io, ErrorCode::NotFound, "selected skill does not exist")
+            })?;
         if file.volume() != &source.root.volume
             || file.path() != source.path
             || bytes.len() as u64 > maximum_bytes

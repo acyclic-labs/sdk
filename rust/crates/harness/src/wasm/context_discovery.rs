@@ -106,9 +106,11 @@ const READER: &'static str = r#"
 /** Bound owner authenticates each read; declarations confer no authority.
  * Functions are captured for one call and never retained in a process catalog. */
 export interface ContextDiscoveryReader {
-    list(query: ContextDirectoryQuery): Promise<PrivateDirectoryPage>;
+    /** Null means only that the authorized directory is absent. Other failures reject. */
+    list(query: ContextDirectoryQuery): Promise<PrivateDirectoryPage | null>;
     prefix(query: ContextReadQuery): Promise<Uint8Array>;
-    read(query: ContextReadQuery): Promise<ContextPathResult>;
+    /** Null means only that the authorized filename is absent. Other failures reject. */
+    read(query: ContextReadQuery): Promise<ContextPathResult | null>;
 }
 "#;
 
@@ -195,7 +197,7 @@ impl ContentResidencyVerifier for BrowserReader {
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             let query = ContextDirectoryQuery {
@@ -209,6 +211,9 @@ impl ContentResidencyVerifier for BrowserReader {
                 maximum_entries,
             };
             let result = self.invoke(&self.list, &query).await?;
+            if result.is_null() {
+                return Ok(None);
+            }
             let values: Array = Reflect::get(&result, &JsValue::from_str("entries"))
                 .map_err(platform_error)?
                 .dyn_into()
@@ -227,11 +232,11 @@ impl ContentResidencyVerifier for BrowserReader {
                 .map_err(platform_error)?
                 .as_bool()
                 .ok_or_else(|| Error::Storage("context page requires hasMore".into()))?;
-            Ok(PrivateDirectoryPage {
+            Ok(Some(PrivateDirectoryPage {
                 generation,
                 entries,
                 has_more,
-            })
+            }))
         })
     }
 
@@ -275,11 +280,11 @@ impl ContentResidencyVerifier for BrowserReader {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -305,6 +310,9 @@ impl ContentResidencyVerifier for BrowserReader {
                 maximum_bytes,
             };
             let result = self.invoke(&self.read, &query).await?;
+            if result.is_null() {
+                return Ok(None);
+            }
             let bytes = Self::bytes(
                 Reflect::get(&result, &JsValue::from_str("bytes")).map_err(platform_error)?,
                 maximum_bytes,
@@ -312,7 +320,7 @@ impl ContentResidencyVerifier for BrowserReader {
             let file =
                 from_js(Reflect::get(&result, &JsValue::from_str("file")).map_err(platform_error)?)
                     .map_err(platform_error)?;
-            Ok((file, bytes.into(), None))
+            Ok(Some((file, bytes.into(), None)))
         })
     }
 }

@@ -1,6 +1,14 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
 pub use acyclic_harness_core::test_support::*;
+
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use crate::local::host_process::children::answer::validation as native_answer;
+
 pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
 /// Runs the production local state-directory separation and preparation boundary.

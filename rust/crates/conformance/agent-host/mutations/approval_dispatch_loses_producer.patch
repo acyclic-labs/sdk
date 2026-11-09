@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/approvals/agent.rs b/rust/crates/harness-core/src/approvals/agent.rs
+--- a/rust/crates/harness-core/src/approvals/agent.rs
++++ b/rust/crates/harness-core/src/approvals/agent.rs
+@@ -243,7 +243,10 @@
+             return Ok(Some(InteractionOutcome::Denied {}));
+         }
+         let request = request_id(id);
+-        let bytes = self.policy.request(&*self.files, &request).await?;
++        let bytes = match self.policy.request(&*self.files, &request).await {
++            Ok(bytes) => bytes,
++            Err(_) => std::future::pending().await,
++        };
+         let view = ApprovalRequest::new(&request, &bytes, self.policy.limits.file_bytes)?;
+         self.resolve_outcome(&view, Some((journal, io))).await
+     }

@@ -256,7 +256,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         ))
     }
 
-    /// Discovers a private subtree at a stable generation.
+    /// Discovers a private subtree at a stable generation. `None` means only
+    /// that the authorized directory is absent; source failures remain errors.
     #[allow(
         clippy::too_many_arguments,
         reason = "The provider receives the grant, generation and cursor as separate borrowed fields."
@@ -271,7 +272,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _maximum_entries: u32,
         _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
         Err(content_error(
             io,
             crate::wire::ErrorCode::Unsupported,
@@ -311,6 +312,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 
     /// Resolves the named private file at the caller's pinned generation.
+    /// `None` means the authorized path is absent. Missing generations,
+    /// authority and backing content are errors, never optional absence.
     fn read_private_path<'a, 'io>(
         &'a self,
         _volume: &'a VolumeRef,
@@ -322,11 +325,11 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where
@@ -813,7 +816,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         maximum_entries: u32,
         ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
-    ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+    ) -> Result<BoundedContentFuture<'a, Option<PrivateDirectoryPage>>> {
         self.bound_reader(volume, io)?.list_private_directory(
             volume,
             granted_prefix,
@@ -867,11 +870,11 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
     ) -> Result<
         BoundedContentFuture<
             'a,
-            (
+            Option<(
                 FileRef,
                 acyclic_stream::OwnedBytes,
                 Option<ContentHold<'io>>,
-            ),
+            )>,
         >,
     >
     where

@@ -171,7 +171,7 @@ mod directory;
 mod family;
 mod keys;
 mod ranges;
-mod reads;
+pub(crate) mod reads;
 mod seed;
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) use directory::DirectoryListing;

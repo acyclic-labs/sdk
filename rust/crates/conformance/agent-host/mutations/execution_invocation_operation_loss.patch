@@ -1,0 +1,14 @@
+diff --git a/rust/crates/harness/src/conformance/protocol/observations.rs b/rust/crates/harness/src/conformance/protocol/observations.rs
+--- a/rust/crates/harness/src/conformance/protocol/observations.rs
++++ b/rust/crates/harness/src/conformance/protocol/observations.rs
+@@ -191,8 +191,8 @@ fn admission(
+     step: u32,
+     call_id: &str,
+ ) -> Result {
+-    if invocation.operation_id != ToolInvocation::model_call_operation(parent, step, call_id, None)?
+-        || invocation.call_id != call_id
++    let _ = ToolInvocation::model_call_operation(parent, step, call_id, None)?;
++    if invocation.call_id != call_id
+         || invocation.name != TOOL
+     {
+         return Err("tool admission differs from its original invocation".into());

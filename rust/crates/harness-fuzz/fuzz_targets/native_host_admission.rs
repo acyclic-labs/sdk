@@ -1,12 +1,9 @@
 //! Exercise the shipping native version and owned-hook admission directly.
 #![no_main]
 
-use acyclic_harness_core::{Error, Result, tools};
+use acyclic_harness::{host_hooks, tools};
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
-
-#[path = "../../harness/src/host_hooks.rs"]
-pub mod host_hooks;
 
 fuzz_target!(|bytes: &[u8]| {
     let Ok(text) = std::str::from_utf8(bytes) else {

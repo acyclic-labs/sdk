@@ -3,9 +3,7 @@
 use clap::Parser as _;
 use std::ffi::OsString;
 
-// This is the shipping parser and normalizer, not a model of its transitions.
-#[path = "../../harness/src/bin/graphcoder/args.rs"]
-mod args;
+use graphcoder::test_support as args;
 
 fn native(bytes: &[u8]) -> OsString {
     if let Ok(text) = std::str::from_utf8(bytes) {

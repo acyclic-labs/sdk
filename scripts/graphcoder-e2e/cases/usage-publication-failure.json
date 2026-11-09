@@ -1,0 +1,47 @@
+{
+  "id": "usage-publication-failure",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "exports/retained.txt": "retained export sibling\n",
+      "replace-export.cjs": "require('node:fs').mkdirSync(process.argv[2]); console.log('EXPORT_DESTINATION_REPLACED');\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [{
+          "id": "replace-export",
+          "name": "shell",
+          "arguments": {
+            "command": "node \"{{workspace}}/replace-export.cjs\" \"{{workspace}}/exports/usage.jsonl\""
+          }
+        }]
+      },
+      {
+        "when": { "tool_result": "EXPORT_DESTINATION_REPLACED" },
+        "text": ["done"]
+      },
+      { "when": {}, "text": ["successor done"] }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": ["--default-config", "--output-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000001", "--usage-jsonl", "{{workspace}}/exports/usage.jsonl", "exec", "replace the export destination"],
+      "exit": 1,
+      "stdout_contains": ["\"code\":\"execution_failed\""],
+      "stdout_absent": ["\"kind\":\"completed\",\"success\":true"]
+    },
+    {
+      "mode": "headless",
+      "args": ["--default-config", "--output-format", "jsonl", "--operation", "00000000-0000-0000-0000-000000000002", "exec", "a fresh invocation still works"],
+      "stdout_contains": ["successor done", "\"kind\":\"completed\",\"success\":true"]
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "files": { "exports/retained.txt": "retained export sibling\n" }
+  }
+}

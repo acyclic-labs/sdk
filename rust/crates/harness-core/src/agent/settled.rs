@@ -1,17 +1,27 @@
 //! Settlement from the original actor checkpoint and consumed inbox cursor.
 //! Status records announce phase changes; conversation entries announce replies.
 
-use super::{
-    AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,
-};
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProviderExt as _};
-use futures::TryStreamExt as _;
-use std::sync::Arc;
+use super::{AgentPath, ConversationEntry, Error, Phase, inbox_tail};
+use std::{collections::HashSet, sync::Arc};
 
-/// `agent`'s phase, and whether it has settled every inbox record committed
-/// before this call (idle, waiting for a user, or done): one read of its
-/// inbox tail and its original actor state, never a wait. `within` selects
+/// A phase, readiness and answer position from the same actor checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settlement {
+    /// Whether the checkpoint covers the observed inbox cut.
+    pub settled: bool,
+    /// The observed phase, including when the child has not settled.
+    pub phase: Phase,
+    /// Exact conversation position of the agent's last own turn, if any.
+    /// Inherited history is never an answer. Read this position with [`answer`].
+    pub answer: Option<u64>,
+}
+
+/// `agent`'s phase and whether it has settled every inbox record committed before
+/// this call (idle, waiting for a user, or done): one read of its
+/// inbox tail and its original actor state, read concurrently. `within` selects
 /// the original account and namespace; no actor discovery or history scan.
+/// An inbox cut newer than the actor checkpoint can only defer settlement:
+/// the checkpoint must cover that cut before an idle agent is returned.
 ///
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
@@ -20,62 +30,33 @@ pub async fn settled<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &Arc<P>,
     within: &acyclic_actors::addressing::ActorReference,
     agent: &AgentPath,
-) -> Result<(Phase, bool), Error> {
-    let inbox = inbox_tail(&**provider, agent).await?;
+) -> Result<Settlement, Error> {
     let actor = super::handler::Agents::<P>::actor(within, &agent.id())?;
-    let (state, cursor) = super::handler::Agents::new(super::actor_store(provider)?)
-        .state(&actor, agent)
-        .await?;
-    let settled = match &state.phase {
-        Phase::Done { .. } => true,
-        Phase::Idle | Phase::WaitingUser { .. } => state.settled_before(cursor) >= inbox,
-        _ => false,
-    };
-    Ok((state.phase, settled))
+    let agents = super::handler::Agents::new(super::actor_store(provider)?);
+    let (inbox, (state, cursor)) =
+        futures::try_join!(inbox_tail(&**provider, agent), agents.state(&actor, agent))?;
+    let settled = matches!(state.phase, Phase::Done { .. })
+        || matches!(state.phase, Phase::Idle | Phase::WaitingUser { .. })
+            && state.settled_before(cursor) >= inbox;
+    Ok(Settlement {
+        settled,
+        phase: state.phase,
+        answer: (settled && state.conversation_tail > state.conversation_base)
+            .then(|| state.conversation_tail - 1),
+    })
 }
 
-/// `agent`'s last own settled turn, if it has run one; inherited history is
-/// never its answer.
+/// `agent`'s immutable answer at the exact position selected by [`settled`].
+/// Later turns cannot change this selection; no status or live tail is read.
 ///
 /// # Errors
 /// Stream failures and malformed records as themselves.
 pub async fn answer<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
-) -> Result<Option<ConversationEntry>, Error> {
-    // The first status is the adoption's: `Idle` at its `ForkAdopted` sequence,
-    // the first inbox sequence of the agent's own turns.
-    let adopted = record(provider, &agent.status()?, 0).await?.cursor;
-    let conversation = agent.conversation()?;
-    match provider.tail(conversation.clone()).await {
-        Ok(0) | Err(StreamError::NotFound) => Ok(None),
-        Ok(tail) => Ok(
-            Some(super::reply::entry(provider, &conversation, tail - 1).await?)
-                .filter(|entry| entry.inbox >= adopted),
-        ),
-        Err(error) => Err(Error::Stream(error)),
-    }
-}
-
-async fn record<P: crate::store::JournalProvider + ?Sized>(
-    provider: &P,
-    status: &StreamPath,
     sequence: u64,
-) -> Result<StatusRecord, Error> {
-    let mut records = provider
-        .read(ReadRequest {
-            key: None,
-            path: status.clone(),
-            from: sequence,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await
-        .map_err(Error::Stream)?;
-    match records.try_next().await.map_err(Error::Stream)? {
-        Some(record) if record.sequence == sequence => StatusRecord::decode(&record.value),
-        _ => Err(Error::Record("committed status record is missing")),
-    }
+) -> Result<ConversationEntry, Error> {
+    super::reply::entry(provider, &agent.conversation()?, sequence).await
 }
 
 /// What one turn's `wait` observes of the agent's children, each read once.
@@ -98,18 +79,19 @@ pub trait TurnChildren: acyclic_stream::ProviderPlatform {
         references: &'a [String],
     ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Vec<(String, AgentPath)>>>;
 
-    /// `child`'s phase and whether it settled (see [`settled`]).
+    /// `child`'s phase, readiness and exact settled answer position.
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<(Phase, bool)>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Settlement>>;
 
-    /// The text `child`'s last own turn answered (see [`answer`]) and how
-    /// that turn settled, read under the turn's authority.
+    /// The text at `child`'s selected answer position, read under the turn's
+    /// authority. The caller retains the position from the same settlement.
     fn answer<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<(String, super::TurnOutcome)>>>;
+        sequence: u64,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<(String, super::TurnOutcome)>>;
 }
 
 /// Selects the current child, or the latest released generation when the name
@@ -120,13 +102,14 @@ pub(crate) async fn select_children(
 ) -> crate::Result<Vec<(String, AgentPath)>> {
     let parent = observer.agent();
     let mut children = Vec::with_capacity(references.len());
+    let mut seen = HashSet::with_capacity(references.len());
     for reference in references {
         let child = named_child(Some(observer), parent, reference, true)
             .await?
             .ok_or_else(|| {
                 crate::Error::Invalid(format!("{reference} names no child of this agent"))
             })?;
-        if !children.iter().any(|(_, known)| *known == child) {
+        if seen.insert(wait_identity(&child)) {
             children.push((reference.clone(), child));
         }
     }
@@ -162,4 +145,16 @@ pub(crate) async fn named_child(
         }
         super::SpawnResolution::Free(_) => Ok(None),
     }
+}
+
+#[inline]
+fn wait_identity(child: &AgentPath) -> [u8; 16] {
+    #[cfg(any(test, feature = "test-support"))]
+    SELECTED_IDENTITIES.with(|count| count.set(count.get() + 1));
+    child.id_bytes()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static SELECTED_IDENTITIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

@@ -88,16 +88,17 @@ fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-pub(super) fn exercise(bytes: &[u8]) {
+/// Exercises the shared native settings admission contract.
+///
+/// # Panics
+/// Panics if a settings admission invariant fails.
+pub fn exercise(bytes: &[u8]) {
     mcp::check(bytes);
     model::check(bytes);
     selection::inactive(bytes);
-    #[cfg(any(
-        not(test),
-        all(
-            feature = "filesystem-local",
-            any(feature = "mcp-stdio", feature = "mcp-http")
-        )
+    #[cfg(all(
+        feature = "filesystem-local",
+        any(feature = "mcp-stdio", feature = "mcp-http")
     ))]
     selection::partial(bytes);
     let (&role, document) = bytes.split_first().unwrap_or((&0, &[]));

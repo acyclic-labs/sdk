@@ -7,6 +7,12 @@
 acyclic_test_support::counting_allocator!();
 
 mod args;
+/// Shipping argument and input boundaries for decoder conformance and fuzzing.
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    pub use crate::args::{Args, Command, InputFormat, OutputFormat};
+    pub use crate::headless::input::{Request, parse};
+}
 mod headless;
 mod lifecycle;
 mod setup;
@@ -203,7 +209,9 @@ fn configure(
         config = config.state_directory(directory);
     }
     if let Some(path) = &args.approval_policy {
-        config = config.approval_policy(serde_json::from_slice(&std::fs::read(path)?)?);
+        config = config.approval_policy(serde_json::from_slice(
+            &acyclic_harness::local::read_regular_file(path)?,
+        )?);
     }
     if let Some(directory) = &args.directory {
         config = config.active_directory(directory);
@@ -229,6 +237,9 @@ async fn run(
     {
         return Err("doctor checks local startup: incompatible host workspace or endpoint; recovery: remove --host-workspace and --endpoint when running doctor".into());
     }
+    args.prepare_outputs().map_err(|error| {
+        headless::PreparationFailure(Box::new(error) as Box<dyn std::error::Error>)
+    })?;
     let output = headless::Prepared::open(&args).map_err(headless::PreparationFailure)?;
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
@@ -261,8 +272,8 @@ async fn run(
             (Some(certificate), Some(key), Some(url)) => {
                 Some(acyclic_harness::server::TlsIdentity {
                     url: url.clone(),
-                    certificate: std::fs::read(certificate)?,
-                    key: std::fs::read(key)?,
+                    certificate: acyclic_harness::local::read_regular_file(certificate)?,
+                    key: acyclic_harness::local::read_regular_file(key)?,
                     peer: None,
                 })
             }
@@ -309,7 +320,9 @@ async fn host_workspace(
     let policy = match &args.approval_policy {
         Some(path) => Some(serde_json::from_slice::<
             acyclic_harness::approvals::ApprovalPolicy,
-        >(&std::fs::read(path)?)?),
+        >(&acyclic_harness::local::read_regular_file(
+            path,
+        )?)?),
         None => None,
     };
     let local = Arc::new(
@@ -437,6 +450,7 @@ async fn drive(
     terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
+    let events = projection.is_some();
     let interactive = args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && args.output_format != OutputFormat::Jsonl
@@ -528,6 +542,14 @@ async fn drive(
                 return Err(error.into());
             }
         }
+    }
+    if events
+        && (result.is_ok()
+            || result
+                .as_ref()
+                .is_err_and(|error| error.is::<completion::Exit>()))
+    {
+        headless::completed(output, conversation.task(), &operation, result.is_ok()).await?;
     }
     result
 }

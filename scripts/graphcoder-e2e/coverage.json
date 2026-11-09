@@ -11,6 +11,11 @@
         "doctor-all-missing",
         "doctor-ok",
         "pty-first-run",
+        "explicit-credential-source",
+        "output-destination-aliases",
+        "output-destination-kind",
+        "usage-publication-failure",
+        "nonregular-startup-input",
         "text-responses"
       ]
     },
@@ -34,7 +39,8 @@
         "nested-children",
         "topology-pipeline",
         "topology-debate-ring",
-        "topology-group-chat"
+        "topology-group-chat",
+        "topology-blackboard"
       ]
     },
     "A4": {

@@ -405,6 +405,29 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         ))
     }
 
+    /// Whether an agent call can reach its turn's earlier effects. An owning
+    /// journal returns a barrier only when those effects need to be checked.
+    /// `false` stops before policy/preparation: the driver commits the effects
+    /// and resumes the same invocation with no delivery held.
+    fn tool_barrier<'a>(
+        &'a self,
+        _operation: OperationId,
+        _io: Option<&'a PreparationIo>,
+    ) -> Option<Result<crate::conversation::BoundedContentFuture<'a, bool>>> {
+        None
+    }
+
+    /// Hands an authorized tool's condition to its owning actor. Recording the
+    /// condition is not a wait; the driver's commit installs its actual event
+    /// producers before releasing delivery. Journals without an actor refuse.
+    fn defer_tool(&self, _until: crate::agent::Until, io: Option<&PreparationIo>) -> Result<()> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "tool preparation has no actor condition owner",
+        ))
+    }
+
     /// Opens one typed durable interaction exactly once on its optional original IO.
     fn open_interaction<'a>(
         &'a self,

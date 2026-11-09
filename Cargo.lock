@@ -772,6 +772,7 @@ dependencies = [
  "diffy",
  "ed25519-dalek",
  "futures",
+ "graphcoder",
  "harness-mock-model",
  "libfuzzer-sys",
  "p256",

@@ -75,7 +75,7 @@ where
 
     fn read(&self) -> BoxProviderFuture<'_, Result<Option<GoalView>>> {
         Box::pin(async move {
-            let (source, bytes, _) = match self
+            let selected = self
                 .host
                 .read_private_path_indexed(
                     &self.volume,
@@ -86,13 +86,15 @@ where
                     ContentAccess::default(),
                 )
                 .await
-            {
-                Ok(file) => file,
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => return Ok(None),
-                Err(error) if error.code() == crate::wire::ErrorCode::Invalid => {
-                    return Err(Error::Invalid(error.to_string()));
-                }
-                Err(error) => return Err(error),
+                .map_err(|error| {
+                    if error.code() == crate::wire::ErrorCode::Invalid {
+                        Error::Invalid(error.to_string())
+                    } else {
+                        error
+                    }
+                })?;
+            let Some((source, bytes, _)) = selected else {
+                return Ok(None);
             };
             GoalView::from_file(source, &bytes, self.maximum_bytes).map(Some)
         })

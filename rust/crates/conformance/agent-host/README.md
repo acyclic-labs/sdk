@@ -103,3 +103,20 @@ control must then fail with `recursion limit exceeded` before admission.
 `mutations/recorded_invocation_filesystem_loss.patch` drops bound filesystem
 authority during production serialization; the same envelope property must
 refuse that loss against its original bound value.
+
+The serving vector also joins each saved call to its execution operation, step
+and model call ID through `ToolInvocation::model_call_operation`. It changes
+only the actual saved operation ID and requires the same admission check to
+reject it. `mutations/execution_invocation_operation_loss.patch` restores the
+incomplete check and must fail with
+`execution invocation accepted another tool operation`.
+
+Child settlement selects the phase and exact answer position from one committed
+actor checkpoint. Reading that position takes one immutable entry read, without
+another status or live-tail query. The existing stock-executor inheritance vector,
+`agent_model::wired::a_child_inherits_context_but_retains_its_own_observed_answer_across_turns`,
+now uses the host's real spawn request and reopens the host for a second child
+turn between selection and reading. It retains the original answer and checks
+one data request and zero control requests at the provider boundary.
+`mutations/settled_answer_tail_substitution.patch` substitutes the live tail and
+must fail with `a later child turn substituted the original observed answer`.

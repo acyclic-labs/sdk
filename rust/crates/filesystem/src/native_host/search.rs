@@ -4,19 +4,6 @@
 use super::*;
 
 #[cfg(unix)]
-const fn search_flags() -> i32 {
-    #[cfg(target_os = "linux")]
-    let access = libc::O_PATH | libc::O_DIRECTORY;
-    #[cfg(target_os = "macos")]
-    let access = libc::O_SEARCH;
-    access | libc::O_NOFOLLOW | libc::O_CLOEXEC
-}
-
-#[cfg(windows)]
-const SEARCH_ACCESS: fs::FILE_ACCESS_RIGHTS =
-    fs::FILE_ACCESS_RIGHTS(fs::FILE_TRAVERSE.0 | fs::FILE_READ_ATTRIBUTES.0 | fs::SYNCHRONIZE.0);
-
-#[cfg(unix)]
 fn search_child<W: NativeHostWork>(
     parent: &Dir,
     name: &OsStr,
@@ -102,20 +89,7 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        #[cfg(unix)]
-        let file = unix_name(path.as_os_str(), work, |name, work| {
-            open_unix(libc::AT_FDCWD, name, search_flags(), work)
-        })?;
-        #[cfg(windows)]
-        let file = {
-            if path.as_os_str().is_empty() {
-                return Err(io::Error::from_raw_os_error(3).into());
-            }
-            with_root_name(path, work, |name, work| {
-                work.attempt_io(READ, || open_windows_root_name(name, SEARCH_ACCESS))
-            })?
-        };
-        let directory = Dir::from_std_file(file);
+        let directory = open_root_directory_handle(path, DirectoryAccess::Search, work)?;
         let identity = directory_identity(&directory, work)?;
         Ok(Self::from_parts(directory, identity))
     }

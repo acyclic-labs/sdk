@@ -1,0 +1,136 @@
+{
+  "id": "output-destination-aliases",
+  "workspace": {
+    "files": {
+      "AGENTS.md": "EXPORT_WORKSPACE_INSTRUCTION\n",
+      "result.json": "previous export\n",
+      "exports/.keep": ""
+    },
+    "kind": "plain"
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "done"
+        ],
+        "when": {}
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/result.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "stdout_contains": [
+        "must name distinct files"
+      ]
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/result.json",
+        "--event-cursor",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "stdout_contains": [
+        "must name distinct files"
+      ]
+    },
+    {
+      "mode": "headless",
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--event-cursor",
+        "{{workspace}}/result.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/../result.json",
+        "exec",
+        "hello"
+      ],
+      "exit": 1,
+      "stdout_contains": [
+        "must name distinct files"
+      ]
+    },
+    {
+      "mode": "headless",
+      "stdout_contains": [
+        "\"text\":\"done\""
+      ],
+      "args": [
+        "--default-config",
+        "--output-format",
+        "jsonl",
+        "--operation",
+        "00000000-0000-0000-0000-000000000001",
+        "--output",
+        "{{workspace}}/final.json",
+        "--event-cursor",
+        "{{workspace}}/exports/../cursor.json",
+        "--usage-jsonl",
+        "{{workspace}}/exports/usage.jsonl",
+        "exec",
+        "hello"
+      ]
+    }
+  ],
+  "assert": {
+    "each_model_contains": [
+      "EXPORT_WORKSPACE_INSTRUCTION"
+    ],
+    "files": {
+      "result.json": "previous export\n",
+      "final.json": "done"
+    },
+    "jsonl": {
+      "cursor.json": [
+        {
+          "version": 1,
+          "operation": "00000000-0000-0000-0000-000000000001",
+          "execution": {
+            "position": {
+              "input": 2,
+              "after": 0
+            }
+          }
+        }
+      ],
+      "exports/usage.jsonl": [
+        {
+          "version": 2,
+          "usage": {
+            "completed": true
+          }
+        }
+      ]
+    },
+    "requests": 1
+  }
+}

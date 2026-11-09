@@ -422,7 +422,8 @@ impl<
                     ceiling: None,
                 },
             )
-            .await
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
     /// Publishes one owner-mediated exact-file read scope to another agent, independent of any fork relationship.
@@ -481,7 +482,8 @@ impl<
                     ceiling: None,
                 },
             )
-            .await
+            .await?
+            .ok_or_else(|| Error::NotFound("selected directory does not exist".into()))
     }
 
     /// Reads a named file from a delegated private directory and pins its observed version for later exact-reference use.
@@ -502,7 +504,11 @@ impl<
                 crate::conversation::ContentAccess::default(),
             )?
             .await
-            .map(|(file, bytes, _)| (file, bytes))
+            .and_then(|selected| {
+                selected
+                    .map(|(file, bytes, _)| (file, bytes))
+                    .ok_or_else(|| Error::NotFound("selected file does not exist".into()))
+            })
     }
 
     fn delegated_reader(&self, scope: &Scope) -> Result<Arc<FilesystemContentVerifier<A, O>>> {

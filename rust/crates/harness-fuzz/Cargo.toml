@@ -32,9 +32,17 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_wait_selection"
+path = "fuzz_targets/agent_wait_selection.rs"
+required-features = ["core"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "native_host_admission"
 path = "fuzz_targets/native_host_admission.rs"
-required-features = ["core"]
+required-features = ["native-input"]
 test = false
 doc = false
 bench = false
@@ -66,7 +74,7 @@ bench = false
 [[bin]]
 name = "command_result"
 path = "fuzz_targets/command_result.rs"
-required-features = ["core"]
+required-features = ["command-result"]
 test = false
 doc = false
 bench = false
@@ -105,22 +113,21 @@ reader = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 core = ["dep:acyclic-harness-core", "dep:futures"]
 bounded-json = ["core", "dep:acyclic-native-runtime"]
 oidc = ["core", "acyclic-harness-core/oidc", "dep:bytes", "dep:acyclic-stream", "dep:p256", "dep:ed25519-dalek"]
-native-answer = ["core", "dep:acyclic-native-runtime"]
+native-answer = ["native-input", "acyclic-harness/test-support", "dep:acyclic-native-runtime"]
+command-result = ["core", "dep:acyclic-harness"]
+graphcoder = ["dep:graphcoder", "graphcoder/test-support"]
 code-mode = ["core", "acyclic-harness-core/filesystem", "dep:tokio"]
 native-arguments = ["core", "acyclic-harness-core/filesystem"]
 native-skill-records = ["core", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 native-settings = ["core", "dep:tempfile", "acyclic-harness-core/filesystem-local", "acyclic-harness-core/native-execution"]
 client = ["dep:acyclic-harness-client", "dep:acyclic-stream"]
 native-input = ["dep:acyclic-plugin", "dep:acyclic-harness", "dep:tempfile", "acyclic-harness/filesystem-local", "acyclic-harness/native-execution"]
-runtime = ["bounded-json", "native-settings", "filesystem-local", "native-execution", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
-# Harness sources included by `#[path]` gate native helpers on these features;
-# the fuzz runtime compiles them as the native harness it depends on does.
+runtime = ["bounded-json", "native-settings", "graphcoder", "command-result", "native-input", "acyclic-harness/terminal", "acyclic-harness/tui", "acyclic-harness/grpc", "acyclic-harness/test-support", "acyclic-harness/search-http", "acyclic-harness/objects", "dep:acyclic-native-runtime", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
-filesystem-local = []
-native-execution = []
 
 [dependencies]
 acyclic-plugin = { path = "../../../plugin", optional = true }
+graphcoder = { path = "../harness/src/bin/graphcoder", optional = true }
 acyclic-mcp = { path = "../mcp", features = ["stdio"], optional = true }
 ed25519-dalek = { version = "3.0.0", optional = true }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa"], optional = true }
@@ -170,6 +177,7 @@ bench = false
 [[bin]]
 name = "native_workspace"
 path = "fuzz_targets/native_workspace.rs"
+required-features = ["native-settings"]
 test = false
 doc = false
 bench = false
@@ -201,6 +209,7 @@ bench = false
 [[bin]]
 name = "native_model_selection"
 path = "fuzz_targets/native_model_selection.rs"
+required-features = ["native-settings"]
 test = false
 doc = false
 bench = false

@@ -1,0 +1,15 @@
+diff --git a/rust/crates/harness-core/src/agent/settled.rs b/rust/crates/harness-core/src/agent/settled.rs
+--- a/rust/crates/harness-core/src/agent/settled.rs
++++ b/rust/crates/harness-core/src/agent/settled.rs
+@@ -54,6 +54,11 @@ pub async fn answer<P: crate::store::JournalProvider + ?Sized>(
+     agent: &AgentPath,
+     sequence: u64,
+ ) -> Result<ConversationEntry, Error> {
++    let _ = sequence;
++    let sequence = acyclic_stream::StreamProviderExt::tail(provider, agent.conversation()?)
++        .await
++        .map_err(Error::Stream)?
++        .checked_sub(1).ok_or(Error::Record("answer is absent"))?;
+     super::reply::entry(provider, &agent.conversation()?, sequence).await
+ }
+ 

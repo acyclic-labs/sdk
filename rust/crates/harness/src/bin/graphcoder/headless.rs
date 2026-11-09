@@ -29,7 +29,7 @@ fn id_error(line: &Value, error: &Value) -> String {
 }
 use acyclic_harness::client::ExecutionPosition;
 
-mod input;
+pub(crate) mod input;
 use input::Request;
 
 /// The original invocation, with a generated operation made explicit for replay.
@@ -138,7 +138,7 @@ impl Prepared {
             .as_ref()
             .map(|path| -> Result<_, Failure> {
                 Ok(acyclic_harness::model::OutputSchema::new(
-                    serde_json::from_slice(&std::fs::read(path)?)?,
+                    serde_json::from_slice(&acyclic_harness::local::read_regular_file(path)?)?,
                 )?)
             })
             .transpose()?;
@@ -177,7 +177,10 @@ impl Projection {
         if path.is_some_and(|path| path.as_os_str() == "-") {
             return Err("event cursor: stdout is not a cursor file; recovery: pass --event-cursor events.cursor.json".into());
         }
-        let state = match path.map(std::fs::read).transpose() {
+        let state = match path
+            .map(acyclic_harness::local::read_regular_file)
+            .transpose()
+        {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes)?,
             Ok(None) => acyclic_harness::local::EventProjection::new(operation.to_owned()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -717,6 +720,24 @@ pub(super) async fn write_event(
     output.write(task, bytes).await
 }
 
+/// Completion follows the invocation's requested file publications.
+pub(super) async fn completed(
+    output: &mut Output,
+    task: OperationId,
+    operation: &str,
+    success: bool,
+) -> std::io::Result<()> {
+    write_event(
+        output,
+        task,
+        &VersionedLine {
+            line: &json!({"kind": "completed", "success": success}),
+            operation,
+        },
+    )
+    .await
+}
+
 async fn emit(
     output: &mut EventOutput<'_>,
     line: &Value,
@@ -1030,12 +1051,6 @@ pub(super) async fn jsonl(
                         if execution_complete
                             && drain.as_ref().is_some_and(|drain| drain.complete()) =>
                     {
-                        emit(
-                            output,
-                            &json!({"kind": "completed", "success": outstanding.failed.is_none()}),
-                            event_operation,
-                        )
-                        .await?;
                         return outstanding.exit();
                     }
                     Some(_) => {}

@@ -1890,12 +1890,7 @@ where
                 // calls committed, so it reaches what they created, and a `wait`
                 // only once its children settled.
                 let approvals = Arc::new(
-                    AgentApprovals::new(files, Arc::new(policy))
-                        .yielding(Arc::clone(&effects))
-                        .awaiting(
-                            Arc::clone(&children),
-                            matches!(agent.phase, crate::agent::Phase::Waiting { .. }),
-                        ),
+                    AgentApprovals::new(files, Arc::new(policy)).yielding(Arc::clone(&effects)),
                 );
                 let journal = journal
                     .with_model_boundary(Arc::new(boundary))
@@ -2044,7 +2039,7 @@ where
     fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxFuture<'a, Result<(crate::agent::Phase, bool)>> {
+    ) -> BoxFuture<'a, Result<crate::agent::Settlement>> {
         Box::pin(async move {
             match crate::agent::settled(&self.stream, &self.within, child).await {
                 Ok(settled) => Ok(settled),
@@ -2059,14 +2054,12 @@ where
     fn answer<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxFuture<'a, Result<Option<(String, crate::agent::TurnOutcome)>>> {
+        sequence: u64,
+    ) -> BoxFuture<'a, Result<(String, crate::agent::TurnOutcome)>> {
         Box::pin(async move {
-            let Some(entry) = crate::agent::answer(&*self.stream, child)
+            let entry = crate::agent::answer(&*self.stream, child, sequence)
                 .await
-                .map_err(agent_error)?
-            else {
-                return Ok(None);
-            };
+                .map_err(agent_error)?;
             let outcome = entry.outcome;
             let external = [entry.output];
             let authority = agent_authority(
@@ -2089,7 +2082,7 @@ where
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-            Ok(Some((output.text, outcome)))
+            Ok((output.text, outcome))
         })
     }
 }

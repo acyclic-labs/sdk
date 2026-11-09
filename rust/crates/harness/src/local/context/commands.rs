@@ -83,11 +83,9 @@ impl LocalHarness {
                     maximum,
                     crate::conversation::ContentAccess::default(),
                 )?
-                .await;
-            match read {
-                Ok((_, bytes, _)) => found.push((index, bytes.as_ref().to_vec())),
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => {}
-                Err(error) => return Err(error),
+                .await?;
+            if let Some((_, bytes, _)) = read {
+                found.push((index, bytes.as_ref().to_vec()));
             }
         }
         Ok(found)

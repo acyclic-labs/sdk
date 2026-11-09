@@ -82,8 +82,8 @@ mod unix_path;
 #[cfg(unix)]
 pub(crate) use unix_path::*;
 mod open;
-pub use open::file_transfer;
 pub(crate) use open::*;
+pub use open::{file_transfer, read_regular_file};
 mod mutation;
 pub(crate) use mutation::*;
 mod leaf;
