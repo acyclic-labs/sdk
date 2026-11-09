@@ -2,8 +2,10 @@ experimental = ["setup-scripts", "wrapper-scripts"]
 
 # These cases run through the full-cloud qualification entry, which owns a
 # fresh service topology per case. Portable runs do not offer that capability.
+# Live storage is selected only when its real service is available.
+# The capability profiles require their prerequisites rather than skipping tests.
 [profile.default]
-default-filter = "not test(::full_cloud::)"
+default-filter = 'not (test(::full_cloud::) | (package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)))'
 
 [profile.full-cloud]
 default-filter = "test(::full_cloud::)"
@@ -15,11 +17,6 @@ command = { command-line = "scripts/full-cloud-test.sh", relative-to = "workspac
 [[profile.full-cloud.scripts]]
 filter = "test(::full_cloud::)"
 run-wrapper = "full-cloud"
-
-# Live storage is selected only when its real service is available.
-# The capability profiles require their prerequisites rather than skipping tests.
-[profile.default]
-default-filter = 'not ((package(=acyclic-stream) & test(postgres::capability::)) | (package(=acyclic-objects) & test(s3::capability::)))'
 
 [profile.postgres]
 default-filter = 'package(=acyclic-stream) & test(postgres::capability::)'
