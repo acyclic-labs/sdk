@@ -125,9 +125,12 @@ export async function fuzz(schedule) {
     const actionNotice = command.visible.slice(command.visible.lastIndexOf("\n") + 1);
     admission(command.visible, actionNotice, "action_refusal", actionNotice.slice(refusalPrefix.length), schedule);
     const notice = query.visible.slice(query.visible.lastIndexOf("\n") + 1);
-    assert.equal(queryFailure(query.visible), notice);
-    admission(query.visible, notice, "query_failure", notice, schedule);
-    for (const reason of [notice, "resource not found: Unknown command: /marke", ...queryFormats.map(format => format.replace("{error}", notice))]) {
+    for (const prefix of ["", refusalPrefix]) {
+      const current = query.visible.slice(0, -notice.length) + prefix + notice;
+      assert.equal(queryFailure(current), undefined);
+      admission(current, prefix + notice, "action_refusal", notice, schedule);
+    }
+    for (const reason of ["resource not found: Unknown command: /marke", ...queryFormats.map(format => format.replace("{error}", notice))]) {
       const prefixed = refusalPrefix + reason;
       const current = query.visible.slice(0, -notice.length) + prefixed;
       assert.equal(queryFailure(current), reason);
