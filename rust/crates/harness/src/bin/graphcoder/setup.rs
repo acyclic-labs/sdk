@@ -150,7 +150,10 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
         writeln!(output, "refused: {refusal}")?;
     }
     if refusals.is_empty() {
-        writeln!(output, "ok: a run with these flags starts")?;
+        writeln!(
+            output,
+            "ok: local prerequisites checked; state and signing authority unopened"
+        )?;
     }
     output.flush()?;
     if refusals.is_empty() {

@@ -4,6 +4,7 @@
   "keychain": true,
   "first_run": true,
   "authentication": "api_key",
+  "models": ["tiny", "chosen"],
   "model": { "steps": [
     { "when": { "user": "first configured prompt" }, "text": ["FIRST_CONFIGURED_ANSWER"] },
     { "when": { "user": "next configured prompt" }, "text": ["NEXT_CONFIGURED_ANSWER"] }
@@ -21,5 +22,9 @@
       { "when": { "contains": ["NEXT_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004" }
     ] }
   ],
-  "assert": { "requests": 2, "wire_absent": ["E2E_FIRST_RUN_NONSECRET"], "each_model_absent": ["E2E_FIRST_RUN_NONSECRET"] }
+  "assert": {
+    "requests": 2,
+    "http": [{ "step": 0, "body": { "model": "chosen" } }, { "step": 1, "body": { "model": "chosen" } }],
+    "wire_absent": ["E2E_FIRST_RUN_NONSECRET"], "each_model_absent": ["E2E_FIRST_RUN_NONSECRET"]
+  }
 }

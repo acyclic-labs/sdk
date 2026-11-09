@@ -51,10 +51,11 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 /// Read-only local prerequisites. Never captures a checkout, opens storage,
 /// creates signing authority or starts configured MCP children.
 pub(crate) async fn doctor(config: LocalHarnessConfig) -> Vec<Error> {
-    match Opening::configure(config) {
-        Ok(opening) => opening.host_refusals(),
-        Err(error) => vec![error],
+    let mut refusals = config.preflight();
+    if let Err(error) = Opening::configure(config) {
+        refusals.push(error);
     }
+    refusals
 }
 
 impl Opening {
@@ -212,7 +213,9 @@ impl Opening {
         let native = self.native_mounts;
         #[cfg(not(any(test, feature = "native-execution")))]
         let native = true;
-        self.config.native_refusals(native)
+        let mut refusals = self.config.native_refusals(native);
+        refusals.extend(self.config.state_refusals());
+        refusals
     }
 
     fn storage(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<Storage>> {

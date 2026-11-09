@@ -414,17 +414,18 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         result
     }
     let original = snapshot(fixture._directory.path());
-    let ready = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
-    assert_eq!(
-        succeeded(&ready),
-        "ok: local prerequisites checked; state and signing authority unopened
-"
+    let ready = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
+    assert!(
+        succeeded(&ready)
+            .contains("ok: local prerequisites checked; state and signing authority unopened")
     );
     // A JSONL run's exact flags are accepted; output flags are inert here.
     let flagged = graphcoder(
         &fixture,
         &model.catalog,
         vec![
+            "-p",
+            "hello",
             "--output-format",
             "jsonl",
             "--operation",
@@ -434,11 +435,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
         "",
     )
     .await;
-    assert_eq!(
-        succeeded(&flagged),
-        "ok: local prerequisites checked; state and signing authority unopened
-"
-    );
+    assert!(succeeded(&flagged).contains("provider network: reachable"));
     assert_eq!(
         snapshot(fixture._directory.path()),
         original,
@@ -448,7 +445,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     let ran = graphcoder(&fixture, &model.catalog, vec!["-p", "hello"], "").await;
     succeeded(&ran);
     let existing = snapshot(fixture._directory.path());
-    let reopened = graphcoder(&fixture, &model.catalog, vec!["doctor"], "").await;
+    let reopened = graphcoder(&fixture, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
     succeeded(&reopened);
     assert_eq!(
         snapshot(fixture._directory.path()),
@@ -478,7 +475,7 @@ async fn doctor_lists_the_startup_refusals_of_the_same_flags() {
     std::fs::create_dir_all(nested.settings.join(".codex")).unwrap();
     let nested_original = snapshot(nested._directory.path());
     let checkout_original = snapshot(&fixture.workspace);
-    let refused = graphcoder(&nested, &model.catalog, vec!["doctor"], "").await;
+    let refused = graphcoder(&nested, &model.catalog, vec!["-p", "hello", "doctor"], "").await;
     let stdout = String::from_utf8_lossy(&refused.stdout);
     assert_eq!(refused.status.code(), Some(1), "{stdout}");
     let stderr = String::from_utf8_lossy(&refused.stderr);

@@ -115,7 +115,9 @@ async function prepare(test, gitOrigin) {
   await mkdir(fixture.settings, { recursive: true });
   await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
   const provider = { adapter: test.adapter ?? "responses", authentication: test.authentication ?? "optional", base_url: expand(test.base_url ?? fixture.url, fixture),
-    models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
+    models: Object.fromEntries((test.models ?? ["tiny"]).map(model => [model, {
+      capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true }
+    }])), max_event_bytes: 65536,
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
   await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
   fixture.env.E2E_MOCK_URL = fixture.url;

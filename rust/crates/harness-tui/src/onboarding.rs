@@ -4,6 +4,18 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io::{self, IsTerminal, Write};
 use zeroize::Zeroizing;
 
+// Grow by copying into a separately owned allocation. Replacing the wrapper
+// wipes the old allocation before freeing it; String::reserve would not.
+fn append(value: &mut Zeroizing<String>, text: &str) {
+    if text.len() > value.capacity() - value.len() {
+        let capacity = (value.len() + text.len()).max(value.capacity().saturating_mul(2));
+        let mut grown = Zeroizing::new(String::with_capacity(capacity));
+        grown.push_str(value);
+        *value = grown;
+    }
+    value.push_str(text);
+}
+
 /// Whether stdin/stdout can participate in interactive setup.
 pub fn interactive() -> bool {
     io::stdin().is_terminal()
@@ -43,7 +55,8 @@ pub fn read(
                     }
                 }
                 KeyCode::Char(ch) if !ch.is_control() => {
-                    value.push(ch);
+                    let mut bytes = Zeroizing::new([0; 4]);
+                    append(&mut value, ch.encode_utf8(&mut *bytes));
                     if !secret {
                         write!(output, "{ch}")?;
                     }
@@ -52,7 +65,7 @@ pub fn read(
             },
             Event::Paste(text) => {
                 let text = Zeroizing::new(text);
-                value.push_str(&text);
+                append(&mut value, &text);
                 if !secret {
                     write!(output, "{}", text.as_str())?;
                 }
@@ -80,5 +93,37 @@ pub fn choose(
             return Ok(index);
         }
         print!("Choose a listed number.\r\n");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn input_survives_growth_and_backspace(actions in prop::collection::vec(
+            prop::option::of(".{0,40}"), 0..64
+        )) {
+            let mut value = Zeroizing::new(String::new());
+            let mut expected = String::new();
+            for action in actions {
+                if let Some(text) = action {
+                    let capacity = value.capacity();
+                    let pointer = value.as_ptr();
+                    let fits = text.len() <= capacity - value.len();
+                    append(&mut value, &text);
+                    expected.push_str(&text);
+                    if fits {
+                        prop_assert_eq!(value.as_ptr(), pointer);
+                    }
+                } else {
+                    prop_assert_eq!(value.pop(), expected.pop());
+                }
+                prop_assert_eq!(&*value, &expected);
+            }
+        }
     }
 }
