@@ -227,3 +227,154 @@ async fn a_wait_holding_its_delivery_deadlocks_the_same_schedule() -> Result {
     assert_eq!(stuck(true, 2 * usize::from(PARENTS)).await?, None);
     Ok(())
 }
+
+/// A completion burst is consumed without advancing the clock. Withholding
+/// the last child is the negative control: unrelated deliveries cannot wake
+/// the root; its final completion must resume it in that very delivery.
+#[tokio::test]
+async fn completion_burst_wakes_root_on_last_delivery() -> Result {
+    use acyclic_actors::local::ControlledClock;
+
+    const CHILDREN: usize = 18;
+    const NOW: u64 = 5_000;
+    const TIMEOUT: u64 = 200_000;
+
+    struct Burst(Arc<Mutex<Vec<u64>>>);
+    impl TurnDriver for Burst {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            cursor: u64,
+            _input: Option<Queued>,
+            _cancellation: acyclic_actors::guest::CancellationToken,
+        ) -> TurnFuture<'a> {
+            Box::pin(async move {
+                let checkpoint = agent.turn.as_ref().map(|turn| turn.checkpoint.as_slice());
+                if agent.parent.is_some() {
+                    return Ok(match checkpoint {
+                        None => step(
+                            b"working",
+                            Vec::new(),
+                            Wait::Approval {
+                                id: intent("finish"),
+                                binding: None,
+                            },
+                        ),
+                        Some(_) => step(
+                            b"",
+                            vec![Out::Conversation(b"answer".to_vec())],
+                            Wait::Input,
+                        ),
+                    });
+                }
+                Ok(match checkpoint {
+                    None => step(
+                        b"spawned",
+                        (0..CHILDREN)
+                            .map(|n| Out::Spawn {
+                                profile: None,
+                                history: None,
+                                intent: intent(&format!("child-{n}")),
+                                brief: None,
+                                volumes: Vec::new(),
+                            })
+                            .collect(),
+                        Wait::Approval {
+                            id: intent("begin-wait"),
+                            binding: None,
+                        },
+                    ),
+                    Some(b"spawned") => step(
+                        b"waiting",
+                        Vec::new(),
+                        Wait::Until(Until::all(agent.open_children.clone()).within(Some(TIMEOUT))),
+                    ),
+                    Some(_) => {
+                        self.0
+                            .lock()
+                            .map_err(|_| Error::Record("resumes"))?
+                            .push(cursor);
+                        step(b"", Vec::new(), Wait::Input)
+                    }
+                })
+            })
+        }
+    }
+
+    let provider = Arc::new(MemoryStream::default());
+    let resumed = Arc::new(Mutex::new(Vec::new()));
+    let (clock, _time) = ControlledClock::new(NOW);
+    let host = AgentHost::new(
+        provider.clone(),
+        Burst(resumed.clone()),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(clock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    host.drain_event(&root).await?;
+    let start = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child: root.clone(),
+        id: intent("start"),
+    });
+    host.send(&root, &user(), &start).await?;
+    host.drain_event(&root).await?;
+    let children = host.state(&root).await?.open_children;
+    assert_eq!(children.len(), CHILDREN);
+    for child in &children {
+        host.send(child, &user(), &start).await?;
+        host.drain_event(child).await?;
+    }
+    let approval = |name| InboxRecord::Approval(Approval { id: intent(name) });
+    host.send(&root, &user(), &approval("begin-wait")).await?;
+    assert_eq!(host.drain_event(&root).await?, Some(NOW + TIMEOUT));
+    for child in &children {
+        // Consume the original Awaited registration while each child works.
+        host.drain_event(child).await?;
+    }
+    let before = inbox_tail(&*provider, &root).await?;
+    let mut completions = records_only(
+        provider
+            .follow(FollowRequest::new(root.inbox()?, before))
+            .await?,
+    );
+    let last = children.last().ok_or("missing last child")?;
+    for child in children.iter().filter(|child| *child != last) {
+        // The burst is queued at NOW, without delivering the root meanwhile.
+        host.send(child, &user(), &approval("finish")).await?;
+        host.drain_event(child).await?;
+    }
+    // Negative control: N-1 completions have arrived, but the condition is
+    // still false. The root remains parked at the original deadline.
+    assert_eq!(host.drain_event(&root).await?, Some(NOW + TIMEOUT));
+    assert!(resumed.lock().map_err(|_| "resumes")?.is_empty());
+    assert_eq!(host.state(&root).await?.need, 1);
+    // The final child finishes at the very same timestamp. Its one delivery
+    // must wake the root; no alarm or additional input may be necessary.
+    host.send(last, &user(), &approval("finish")).await?;
+    host.drain_event(last).await?;
+    for child in &children {
+        let record = completions
+            .next()
+            .await
+            .ok_or("completion follow ended")??;
+        assert_eq!(
+            InboxRecord::decode(&record.value)?,
+            InboxRecord::ChildSettled(ChildSettled {
+                child: child.clone()
+            })
+        );
+    }
+    assert_eq!(
+        inbox_tail(&*provider, &root).await?,
+        before + CHILDREN as u64
+    );
+    assert_eq!(host.drain_event(&root).await?, None);
+    assert_eq!(
+        *resumed.lock().map_err(|_| "resumes")?,
+        vec![before + CHILDREN as u64],
+        "root must resume in the delivery consuming the last completion, before its alarm"
+    );
+    assert_eq!(host.state(&root).await?.phase, Phase::Idle);
+    Ok(())
+}
