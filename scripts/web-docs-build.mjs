@@ -12,11 +12,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export function webDocsCommands(operation, selected) {
   const generate = ["bun", "run", "generate"];
   const wasm = ["bun", "scripts/build-wasm-groups.mjs"];
-  const compile = ["node", "node_modules/typescript/bin/tsc", "-b", "--force"];
-  if (operation === "build") return [generate, wasm, compile];
+  const compile = ["node", "node_modules/typescript/bin/tsc", "-b", "--force", "--pretty", "false"];
+  const typescript = [wasm, compile];
+  if (operation === "typescript") return typescript;
+  if (operation === "build") return [generate, ...typescript];
   if (operation === "check") return [
-    ["node", "scripts/generate-sdk-readmes.mjs", "check"], generate, wasm,
-    [...compile, "--pretty", "false"],
+    ["node", "scripts/generate-sdk-readmes.mjs", "check"], generate, ...typescript,
     ["node", "node_modules/typescript/bin/tsc", "-p", "scripts", "--pretty", "false"],
     ["bun", "run", "check:docs"],
   ];
@@ -25,7 +26,7 @@ export function webDocsCommands(operation, selected) {
     return [["bun", "run", "--filter", manifest.name, "build"]];
   }
   if (operation === "readmes") return [["node", "scripts/check-sdk-readmes.mjs", "compile"]];
-  throw new Error("usage: web-docs-build.mjs build|check|readmes|package PACKAGE");
+  throw new Error("usage: web-docs-build.mjs build|check|typescript|readmes|package PACKAGE");
 }
 
 async function main() {
