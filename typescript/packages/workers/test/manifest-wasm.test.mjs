@@ -20,10 +20,7 @@ test("public host credential name identifies the leaf that guests cannot select"
   validate(JSON.stringify(manifest));
   const [scope, name] = HostCredential.ACCOUNT_LEAF.slice("secrets:/".length).split("/");
   environment.secrets[0].reference = { scope, name, version: "1" };
-  assert.throws(() => validate(JSON.stringify(manifest)), error => {
-    assert.equal(error.rule, "host-fetch-exposed");
-    return true;
-  });
+  assert.throws(() => validate(JSON.stringify(manifest)), /host-fetch-exposed/);
 });
 
 test("standalone secret reference admission uses the deployment grammar", () => {
