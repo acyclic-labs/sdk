@@ -179,15 +179,6 @@ pub(crate) fn short_path(path: &std::path::Path) -> io::Result<std::path::PathBu
 }
 
 #[cfg(unix)]
-pub(super) fn cwd_metadata_flags() -> i32 {
-    #[cfg(target_os = "linux")]
-    let access = libc::O_PATH;
-    #[cfg(target_os = "macos")]
-    let access = libc::O_EVTONLY;
-    access | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
-}
-
-#[cfg(unix)]
 #[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn normalize_root_path<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     path: &Path,
@@ -198,7 +189,12 @@ pub(crate) fn normalize_root_path<W: NativeHostWork<Error = DemandError, Allocat
     if path.is_absolute() {
         return clone_path(path, work).map(|(path, _)| path);
     }
-    let current = Dir::from_std_file(open_unix(libc::AT_FDCWD, c".", cwd_metadata_flags(), work)?);
+    let current = Dir::from_std_file(open_unix(
+        libc::AT_FDCWD,
+        c".",
+        directory_metadata_flags(),
+        work,
+    )?);
     let (cwd, cwd_allocation) = canonical_directory_path_held(current, work)?;
     let result = (|| {
         let prefix = cwd.as_os_str().as_bytes();
@@ -434,7 +430,12 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
             return Ok((OsString::from_vec(output).into(), allocation));
         }
     }
-    let root = Dir::from_std_file(open_unix(libc::AT_FDCWD, c"/", cwd_metadata_flags(), work)?);
+    let root = Dir::from_std_file(open_unix(
+        libc::AT_FDCWD,
+        c"/",
+        directory_metadata_flags(),
+        work,
+    )?);
     let root = directory_identity(&root, work)?;
     let (mut output, mut allocation) = buffer::<u8, _>(1, work)?;
     let result = (|| {
@@ -447,7 +448,7 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
             let parent = Dir::from_std_file(open_unix(
                 current.as_raw_fd(),
                 c"..",
-                cwd_metadata_flags(),
+                directory_metadata_flags(),
                 work,
             )?);
             if directory_identity(&parent, work)? == child {

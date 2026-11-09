@@ -1,5 +1,15 @@
 use super::*;
 
+/// A no-follow directory capability for metadata and relative lookup, without
+/// requesting directory-list access: O_PATH on Linux and O_EVTONLY on Darwin.
+pub(super) const fn directory_metadata_flags() -> i32 {
+    #[cfg(target_os = "linux")]
+    let access = libc::O_PATH;
+    #[cfg(target_os = "macos")]
+    let access = libc::O_EVTONLY;
+    access | libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW
+}
+
 pub(crate) fn unix_name<W: NativeHostWork, T>(
     name: &OsStr,
     work: &mut W,

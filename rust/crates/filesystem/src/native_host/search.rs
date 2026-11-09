@@ -45,7 +45,7 @@ fn search_child<W: NativeHostWork>(
     create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    open_unix_directory_with_flags(parent, name, create, search_flags(), work)
+    open_unix_directory_with_flags(parent, name, create, directory_metadata_flags(), work)
 }
 
 #[cfg(windows)]

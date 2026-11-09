@@ -563,15 +563,6 @@ pub(crate) enum DirectoryLinks {
     Follow,
 }
 
-#[cfg(unix)]
-pub(crate) const fn search_flags() -> i32 {
-    #[cfg(target_os = "linux")]
-    let access = libc::O_PATH | libc::O_DIRECTORY;
-    #[cfg(target_os = "macos")]
-    let access = libc::O_SEARCH;
-    access | libc::O_NOFOLLOW | libc::O_CLOEXEC
-}
-
 #[cfg(windows)]
 pub(crate) const SEARCH_ACCESS: fs::FILE_ACCESS_RIGHTS =
     fs::FILE_ACCESS_RIGHTS(fs::FILE_TRAVERSE.0 | fs::FILE_READ_ATTRIBUTES.0 | fs::SYNCHRONIZE.0);
@@ -585,7 +576,7 @@ pub(crate) fn open_root_directory_handle<W: NativeHostWork>(
     #[cfg(unix)]
     let file = unix_name(path.as_os_str(), work, |name, work| {
         let flags = match access {
-            DirectoryAccess::Search => search_flags(),
+            DirectoryAccess::Search => directory_metadata_flags(),
             DirectoryAccess::Read => {
                 let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
                 #[cfg(target_os = "linux")]
