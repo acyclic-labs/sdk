@@ -1,3 +1,4 @@
+//! Real-HTTP conformance and protected-origin negative controls.
 use acyclic_harness_core::{Error, Result, http::*};
 use acyclic_harness_providers::ReqwestTransport;
 use acyclic_machines::{conformance, *};
@@ -24,6 +25,7 @@ struct State {
     requests: Vec<(String, bool)>,
     proxy: String,
     lose_create: bool,
+    fail_upload: bool,
     posts: usize,
 }
 
@@ -152,6 +154,9 @@ impl Server {
                                 path,
                                 multipart[start..multipart.len() - tail.len()].to_vec(),
                             );
+                            if std::mem::take(&mut state.fail_upload) {
+                                status = 500;
+                            }
                         } else {
                             panic!("unadmitted fake Daytona route: {method} {}", url.path());
                         }
@@ -386,6 +391,19 @@ async fn lost_create_reply_is_recovered_without_redispatch_and_expired_files_nev
             .await
             .unwrap(),
         FileRead::Data(vec![0, 255])
+    );
+    // A server failure after replacement does not certify that no write happened.
+    server.state.lock().unwrap().fail_upload = true;
+    assert!(matches!(
+        provider.upload_file(machine(), access(4_102_444_800_000), vec![9]).await,
+        Err(ProviderError::FileIndeterminate(actual)) if actual == machine()
+    ));
+    assert_eq!(
+        provider
+            .download_file(machine(), access(4_102_444_800_000))
+            .await
+            .unwrap(),
+        FileRead::Data(vec![9])
     );
     let count = server.state.lock().unwrap().requests.len();
     assert!(matches!(

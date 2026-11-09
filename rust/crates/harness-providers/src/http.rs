@@ -1,6 +1,5 @@
 use acyclic_harness_core::Result;
 use acyclic_stream::BoxProviderFuture;
-use bytes::Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use futures::StreamExt as _;
 

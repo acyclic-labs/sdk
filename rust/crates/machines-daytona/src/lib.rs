@@ -134,6 +134,7 @@ impl DaytonaProvider {
             404 => return Err(ProviderError::NotFound("Daytona resource".into())),
             409 => return Err(ProviderError::Conflict("Daytona resource".into())),
             300..=399 => return Err(invalid("Daytona redirect refused")),
+            500..=599 => return Err(ProviderError::Unavailable),
             _ => return Err(invalid("Daytona exchange refused")),
         }
         let mut stream = response.body;
