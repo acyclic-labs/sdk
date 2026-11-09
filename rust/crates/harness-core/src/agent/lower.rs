@@ -124,7 +124,16 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             for condition in spawn.request.conditions {
                 builder.condition(condition);
             }
-            builder.forks.extend(spawn.request.mutations);
+            for mutation in spawn.request.mutations {
+                match mutation {
+                    CommitMutation::Append { path, records } => {
+                        for record in records {
+                            builder.append(path.clone(), record);
+                        }
+                    }
+                    mutation => builder.forks.push(mutation),
+                }
+            }
         }
     }
     let mut sequence = prior_conversation;

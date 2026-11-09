@@ -279,6 +279,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     let explicit = self::fixture();
     std::fs::write(explicit.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
     let usage = explicit._directory.path().join("usage.jsonl");
+    let transcripts = explicit._directory.path().join("transcripts");
+    let mut previous_transcript = None;
     for _ in 0..2 {
         assert_eq!(
             succeeded(
@@ -289,6 +291,8 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
                         "--default-config",
                         "--usage-jsonl",
                         usage.to_str().unwrap(),
+                        "--transcripts",
+                        transcripts.to_str().unwrap(),
                         "--operation",
                         "explicit-defaults",
                         "-p",
@@ -301,6 +305,29 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             "fixture answer\n"
         );
         assert_eq!(model.generated(), 3);
+        let files = std::fs::read_dir(&transcripts)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let files: Vec<_> = files
+            .into_iter()
+            .filter(|file| file.file_name() != "agents.jsonl")
+            .collect();
+        assert_eq!(files.len(), 1);
+        let transcript = std::fs::read_to_string(files[0].path()).unwrap();
+        let transcript: Vec<Value> = transcript
+            .lines()
+            .map(|line| {
+                let mut row: Value = serde_json::from_str(line).unwrap();
+                // A live final page can precede its actor's settlement fence.
+                row.as_object_mut().unwrap().remove("after");
+                row
+            })
+            .collect();
+        assert!(!transcript.is_empty());
+        if let Some(previous) = previous_transcript.replace(transcript.clone()) {
+            assert_eq!(transcript, previous, "replay replaces the same transcript");
+        }
         let rows: Vec<Value> = std::fs::read_to_string(&usage)
             .unwrap()
             .lines()
@@ -315,6 +342,14 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
         assert!(rows[0]["estimated_cost"]["token_nano_units"].is_null());
         assert!(rows[0]["estimated_cost"]["price_revision"].is_null());
         let row = &rows[0]["usage"];
+        let index: Vec<Value> = std::fs::read_to_string(transcripts.join("agents.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(index.len(), 1, "replay replaces the agent index");
+        assert_eq!(index[0]["agent_path"], row["agent_path"]);
+        assert_eq!(index[0]["parent"], Value::Null);
         assert_eq!(row["provider"], "graphcoder-qual");
         assert_eq!(row["model"], "tiny");
         assert_eq!(row["completed"], true);

@@ -14,6 +14,7 @@ use super::Connection;
 mod events;
 mod history;
 mod recording;
+mod transcripts;
 mod tree;
 mod usage;
 mod usage_query;
