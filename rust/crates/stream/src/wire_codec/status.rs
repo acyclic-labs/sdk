@@ -69,10 +69,27 @@ fn category_parts(code: Code, message: &str) -> StreamError {
     }
 }
 
-/// Encodes a Stream failure, reproducing a retained member status verbatim.
-/// A failure without retained diagnostics uses its canonical status.
+/// The authoritative Stream error to gRPC status mapping. Servers must use
+/// this conversion rather than reproduce the mapping themselves.
+///
+/// Reproduces a retained member refusal's code, message, details and product
+/// metadata. A failure without retained diagnostics uses its canonical status.
+impl From<&StreamError> for Status {
+    fn from(error: &StreamError) -> Self {
+        error_status(error)
+    }
+}
+
+/// The owned form of the authoritative [`From<&StreamError>`] conversion.
+impl From<StreamError> for Status {
+    fn from(error: StreamError) -> Self {
+        Self::from(&error)
+    }
+}
+
+/// Encodes a Stream failure through the shared server mapping.
 #[must_use]
-pub fn error_status(error: &StreamError) -> Status {
+pub(crate) fn error_status(error: &StreamError) -> Status {
     match error {
         StreamError::InvalidResponse => Status::data_loss("invalid_response"),
         StreamError::InvalidPath => Status::invalid_argument("invalid_path"),
