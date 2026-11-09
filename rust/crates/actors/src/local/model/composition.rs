@@ -94,8 +94,8 @@ fn refusal_was_settled(result: &Result<(), Error>, counts: &Counts, refusal: &St
 async fn definite_refusals_settle_and_leave_the_input_available() -> Result<(), Failure> {
     for refusal in StreamError::ALL {
         if matches!(
-            refusal,
-            StreamError::Unavailable | StreamError::Refused(_) | StreamError::InvalidResponse
+            refusal.category(),
+            StreamError::Unavailable | StreamError::InvalidResponse
         ) {
             continue;
         }

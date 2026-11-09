@@ -1,0 +1,13 @@
+diff --git a/typescript/packages/stream/src/grpc.ts b/typescript/packages/stream/src/grpc.ts
+index 1883ac6995a..d67eab4100b 100644
+--- a/typescript/packages/stream/src/grpc.ts
++++ b/typescript/packages/stream/src/grpc.ts
+@@ -339,7 +339,7 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+ /** Rust owns status categories and retention of original member diagnostics. */
+ function grpcStatus(error: ConnectError): Error {
+   const refusal = grpcRefusal(error);
+-  return Object.assign(grpcStatusError(refusal.status, refusal.message, []) as Error, { refusal });
++  return grpcStatusError(refusal.status, refusal.message, []) as Error;
+ }
+ 
+ /** Public Stream failure for a gRPC call. */

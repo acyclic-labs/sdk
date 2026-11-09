@@ -272,7 +272,7 @@ fn receive_refusal_releases_owner_before_uncredited_frames_drain() -> TestResult
         item: Some(Item::ActorSocket(bytes)), ..
     })) if bytes == b"queued"[..]));
     assert!(
-        matches!(session.controls.pop_front().and_then(|frame| frame.body),
+        matches!(session.controls.pop_front().and_then(|frame| frame.into_wire().body),
         Some(Body::Closed(wire::SessionClosed { code, .. })) if code == StreamError::Unavailable.code())
     );
     assert!(session.channels.is_empty());

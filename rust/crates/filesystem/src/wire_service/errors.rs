@@ -224,7 +224,7 @@ fn object_code(error: &ObjectStoreError) -> Code {
 
 fn stream_code(error: &acyclic_stream::StreamError) -> Code {
     use acyclic_stream::StreamError as E;
-    match error {
+    match error.category() {
         E::InvalidPath | E::InvalidArgument | E::LimitExceeded => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
         E::AlreadyExists => Code::AlreadyExists,
