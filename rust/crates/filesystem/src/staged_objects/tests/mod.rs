@@ -87,6 +87,14 @@ fn native_read_budget() -> WorkBudget {
     }
 }
 
+fn native_batch_read_budget(requests: usize) -> Result<WorkBudget, crate::WorkError> {
+    // Compose the scalar policy for every requested read, including independent
+    // reads sharing the batch ledger. Native backend calls differ by platform.
+    (0..requests).try_fold(WorkBudget::UNCHARGED, |budget, _| {
+        budget.checked_add(native_read_budget())
+    })
+}
+
 async fn spill_fixture(
     store: &LocalStaged,
     token: &CancellationToken,

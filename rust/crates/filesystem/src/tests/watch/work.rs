@@ -522,20 +522,8 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         let directory = tempfile::tempdir()?;
         std::fs::create_dir(directory.path().join("child"))?;
         let birth_cancel = CancellationToken::new();
-        let birth = crate::NativeMaterializationWork::new(
-            WorkBudget {
-                // Registration returns no changes. The first actual delivery
-                // must refuse its item on the original ledger.
-                items_returned: if fail_delivery && !cancel_birth {
-                    0
-                } else {
-                    u64::MAX
-                },
-                ..WorkBudget::UNBOUNDED
-            },
-            &birth_cancel,
-        )
-        .map_err(|(error, _)| error)?;
+        let birth = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &birth_cancel)
+            .map_err(|(error, _)| error)?;
         let mut watch = NativeWatch::open_with_profile_with_native_work(
             &directory.path().canonicalize()?,
             FilesystemProfile::Portable,
@@ -563,6 +551,17 @@ fn native_shutdown_retires_birth_resources_with_a_fresh_invocation()
         };
         assert!(!source.is_stopped());
         let before = birth.receipt();
+        // Even an invalidated watch examines incoming native events, but it
+        // need not return queued changes. Withhold its remaining examination
+        // credit after registration, leaving birth-paid retirement intact.
+        let _delivery_credit = if fail_delivery && !cancel_birth {
+            Some(birth.reserve_work(crate::WorkCounters {
+                items_examined: birth.remaining()?.items_examined,
+                ..crate::WorkCounters::UNCHARGED
+            })?)
+        } else {
+            None
+        };
         if cancel_birth {
             birth_cancel.cancel();
         }
