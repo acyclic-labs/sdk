@@ -1,7 +1,10 @@
 //! Answer text as displayed: [`acyclic_markdown`]'s styled lines, flattened
-//! to one text and the style of each of its byte ranges for wrapping.
+//! to one text and the style of each of its byte ranges for wrapping, with
+//! each tone in its theme token's colour.
 
-use ratatui::style::{Color, Modifier, Style};
+use crate::config::{ThemeStyles, Token};
+use acyclic_markdown::Tone;
+use ratatui::style::{Modifier, Style};
 use std::ops::Range;
 
 /// `text` presented as markdown with tables sized to `width` columns: its
@@ -10,7 +13,11 @@ use std::ops::Range;
 /// its label, `label (url)`, unless the label is the destination itself, so
 /// it stays readable and a terminal can open it.
 #[must_use]
-pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) {
+pub fn render(
+    text: &str,
+    width: usize,
+    theme: &ThemeStyles,
+) -> (String, Vec<(Range<usize>, Style)>) {
     let mut parser =
         acyclic_markdown::Markdown::with_width(u16::try_from(width).unwrap_or(u16::MAX));
     parser.push(text);
@@ -24,7 +31,7 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
         for (at, span) in line.spans.iter().enumerate() {
             let start = shown.len();
             shown.push_str(&span.text);
-            let style = style(span.style);
+            let style = style(span.style, theme);
             if style != Style::default() {
                 styles.push((start..shown.len(), style));
             }
@@ -47,7 +54,9 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
                 shown.push_str(link);
                 styles.push((
                     start..shown.len(),
-                    Style::default().add_modifier(Modifier::UNDERLINED),
+                    theme
+                        .token(Token::Accent)
+                        .add_modifier(Modifier::UNDERLINED),
                 ));
                 shown.push(')');
             }
@@ -57,15 +66,19 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
     (shown, styles)
 }
 
-fn style(source: acyclic_markdown::Style) -> Style {
-    let mut style = Style::default();
-    if let Some(acyclic_markdown::Color(r, g, b)) = source.foreground {
-        style = style.fg(Color::Rgb(r, g, b));
-    }
+/// A tone takes its token's colour; muted text without one takes `muted`.
+fn style(source: acyclic_markdown::Style, theme: &ThemeStyles) -> Style {
+    let token = match source.foreground {
+        Some(Tone::Accent) => Some(Token::Accent),
+        Some(Tone::Attention) => Some(Token::Attention),
+        Some(Tone::Success) => Some(Token::Success),
+        Some(Tone::Error) => Some(Token::Error),
+        None => source.dim.then_some(Token::Muted),
+    };
+    let mut style = token.map_or_else(Style::default, |token| theme.token(token));
     for (set, modifier) in [
         (source.bold, Modifier::BOLD),
         (source.italic, Modifier::ITALIC),
-        (source.dim, Modifier::DIM),
         (source.underline, Modifier::UNDERLINED),
         (source.strikethrough, Modifier::CROSSED_OUT),
     ] {
@@ -82,7 +95,7 @@ mod tests {
 
     #[test]
     fn markers_become_styles() {
-        let (shown, styles) = render("streaming **test answer**", 80);
+        let (shown, styles) = render("streaming **test answer**", 80, &ThemeStyles::default());
         assert_eq!(shown, "streaming test answer");
         let (range, style) = &styles[0];
         assert_eq!(&shown[range.clone()], "test answer");
@@ -91,13 +104,15 @@ mod tests {
 
     #[test]
     fn a_link_keeps_its_destination() {
-        let (shown, _) = render("see [the **docs**](https://example.com/a) now", 80);
+        let theme = ThemeStyles::default();
+        let (shown, _) = render("see [the **docs**](https://example.com/a) now", 80, &theme);
         assert_eq!(shown, "see the docs (https://example.com/a) now");
-        let (shown, _) = render("<https://example.com/b>", 80);
+        let (shown, _) = render("<https://example.com/b>", 80, &theme);
         assert_eq!(shown, "https://example.com/b");
         let (shown, styles) = render(
             "see [ https://**example**.com/a ](https://example.com/a) [**next**](https://example.com/b)",
             80,
+            &theme,
         );
         assert_eq!(
             shown,

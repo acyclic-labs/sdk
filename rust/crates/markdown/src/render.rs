@@ -1,7 +1,4 @@
-use crate::{
-    Line, Style, code,
-    style::{BLUE, CYAN, MAGENTA, MUTED, YELLOW},
-};
+use crate::{Line, Style, Tone, code, style::MUTED};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag, TagEnd};
 use std::sync::Arc;
 
@@ -192,7 +189,7 @@ impl Renderer {
             | Event::DisplayMath(text) => self.text(text),
             Event::Code(text) => {
                 let previous = self.style;
-                self.style.foreground = Some(YELLOW);
+                self.style.foreground = Some(Tone::Attention);
                 self.text(text);
                 self.style = previous;
             }
@@ -221,13 +218,8 @@ impl Renderer {
         match tag {
             Tag::Heading { level, .. } => {
                 self.flush();
-                self.style.foreground =
-                    Some(if matches!(level, HeadingLevel::H1 | HeadingLevel::H2) {
-                        CYAN
-                    } else {
-                        BLUE
-                    });
-                self.style.bold = matches!(level, HeadingLevel::H1 | HeadingLevel::H5);
+                self.style.foreground = Some(Tone::Accent);
+                self.style.bold = true;
                 self.text(match level {
                     HeadingLevel::H1 | HeadingLevel::H2 => "# ",
                     HeadingLevel::H3 | HeadingLevel::H4 => "## ",
@@ -241,7 +233,7 @@ impl Renderer {
                 self.style.strikethrough = true;
             }
             Tag::Link { dest_url, id, .. } | Tag::Image { dest_url, id, .. } => {
-                self.style.foreground = Some(BLUE);
+                self.style.foreground = Some(Tone::Accent);
                 self.style.underline = true;
                 self.new_link = true;
                 self.link = Some(destination(dest_url, id, references));
@@ -267,14 +259,8 @@ impl Renderer {
                     }
                     _ => "• ".into(),
                 };
-                self.line.push(
-                    &marker,
-                    Style {
-                        foreground: Some(MAGENTA),
-                        ..Style::default()
-                    },
-                    None,
-                );
+                // Its own span, so a task marker can replace it alone.
+                self.line.push_new(&marker, MUTED, None);
                 self.prefixes.push(" ".repeat(marker.chars().count()));
             }
             Tag::CodeBlock(kind) => {
