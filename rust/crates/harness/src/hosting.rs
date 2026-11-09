@@ -488,6 +488,41 @@ where
                         .await?,
                 })
             }
+            AgentCommand::Directory {
+                agent,
+                path,
+                generation,
+                page: request,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let mut page = self
+                    .bound
+                    .directory_page(
+                        agent,
+                        path,
+                        generation.as_ref(),
+                        request.cursor(),
+                        request.items(),
+                    )
+                    .await?;
+                let empty = |has_more| AgentReply::Directory {
+                    page: crate::conversation::PrivateDirectoryPage {
+                        generation: page.generation.clone(),
+                        entries: Vec::new(),
+                        has_more,
+                    },
+                };
+                let mut credit = PageCredit::from_envelopes(request, &empty(false), &empty(true))?;
+                for (index, entry) in page.entries.iter().enumerate() {
+                    let continues = index + 1 < page.entries.len() || page.has_more;
+                    if !credit.accept(entry, continues.then_some(0))? {
+                        break;
+                    }
+                }
+                page.has_more |= credit.items < page.entries.len();
+                page.entries.truncate(credit.items);
+                Ok(AgentReply::Directory { page })
+            }
             AgentCommand::Read {
                 agent,
                 target,
@@ -495,6 +530,13 @@ where
             } => {
                 let agent = self.within_tree(agent)?;
                 let (bytes, length) = match target {
+                    ReadTarget::Private { path, generation } => {
+                        let (bytes, length) = self
+                            .bound
+                            .read_private_file(agent, path, generation, *offset, MAX_READ_BYTES)
+                            .await?;
+                        return Ok(AgentReply::read(&bytes, length));
+                    }
                     ReadTarget::Approval { status } => {
                         let (bytes, length) = self
                             .bound
@@ -1126,7 +1168,15 @@ impl PageCredit {
         page: &AgentPageRequest,
         empty: impl Fn(Option<String>) -> AgentReply,
     ) -> Result<Self, Error> {
-        let end_envelope = page_json_bytes(&empty(None))?;
+        Self::from_envelopes(page, &empty(None), &empty(Some(String::new())))
+    }
+
+    fn from_envelopes(
+        page: &AgentPageRequest,
+        end: &AgentReply,
+        next: &AgentReply,
+    ) -> Result<Self, Error> {
+        let end_envelope = page_json_bytes(end)?;
         let maximum = u64::from(page.bytes());
         if !acyclic_harness_client::encoded_agent_reply_size(end_envelope)
             .is_ok_and(|encoded| encoded <= maximum)
@@ -1135,7 +1185,7 @@ impl PageCredit {
         }
         Ok(Self {
             end_envelope,
-            next_envelope: page_json_bytes(&empty(Some(String::new())))?,
+            next_envelope: page_json_bytes(next)?,
             bytes: 0,
             items: 0,
             maximum,
@@ -1300,6 +1350,7 @@ where
                 | AgentCommand::Children { .. }
                 | AgentCommand::ProjectHeads { .. }
                 | AgentCommand::History { .. }
+                | AgentCommand::Directory { .. }
                 | AgentCommand::Approvals { .. }
                 | AgentCommand::Reply { .. }
                 | AgentCommand::Settlement { .. }

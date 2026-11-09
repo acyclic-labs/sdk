@@ -652,6 +652,151 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .read(&entry.output, 1 << 20, None, None)?
         .await?;
     assert!(!output.is_empty());
+    // Give this scenario two visible files, independent of internal layout.
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let private = harness
+        .volume_filesystem
+        .open_workspace(
+            entry.output.volume().storage_name(&mut None)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| agent(failure.error))?
+        .value;
+    let original = b"directory original";
+    private
+        .write_text(
+            "/directory-a",
+            std::str::from_utf8(original).map_err(agent)?,
+        )
+        .await
+        .map_err(agent)?;
+    private
+        .write_text("/directory-b", "second")
+        .await
+        .map_err(agent)?;
+    // The same authenticated session selects a directory and its original
+    // generation, then continues only at that immutable generation.
+    let page =
+        |after| acyclic_harness_client::AgentPageRequest::new(1, 64 * 1024, after).map_err(agent);
+    let first = client.directory_page("", None, page(None)?).await?;
+    assert_eq!(first.entries.len(), 1);
+    assert!(first.has_more);
+    private
+        .write_text("/directory-a", "changed after selection")
+        .await
+        .map_err(agent)?;
+    // Credit includes the canonical frame, generation and continuation bit.
+    // Give the host room for exactly one row while requesting many rows.
+    let selected = AgentCommand::Directory {
+        agent: root.clone(),
+        path: String::new(),
+        generation: Some(first.generation.clone()),
+        page: page(None)?,
+    };
+    let encoded = encode_agent_reply(
+        &Ok(AgentReply::Directory {
+            page: first.clone(),
+        }),
+        &selected,
+    )
+    .map_err(agent)?;
+    let credit = u32::try_from(encoded.len()).map_err(agent)?;
+    let bounded = client
+        .directory_page(
+            "",
+            Some(&first.generation),
+            acyclic_harness_client::AgentPageRequest::new(128, credit, None).map_err(agent)?,
+        )
+        .await?;
+    assert_eq!(bounded, first);
+    assert!(
+        client
+            .directory_page(
+                "",
+                Some(&first.generation),
+                acyclic_harness_client::AgentPageRequest::new(128, credit - 1, None)
+                    .map_err(agent)?,
+            )
+            .await
+            .is_err()
+    );
+    let last = &first.entries[0].name;
+    let second = client
+        .directory_page("", Some(&first.generation), page(Some(last.clone()))?)
+        .await?;
+    assert_eq!(second.generation, first.generation);
+    assert_eq!(second.entries.len(), 1);
+    assert!(second.entries[0].name > *last);
+    let (range, length) = client
+        .read_private_range("directory-a", &first.generation, 0)
+        .await?;
+    assert_eq!(length, original.len() as u64);
+    assert!(!range.is_empty());
+    assert_eq!(range.as_slice(), &original[..range.len()]);
+    let (end, end_length) = client
+        .read_private_range("directory-a", &first.generation, length)
+        .await?;
+    assert!(end.is_empty());
+    assert_eq!(end_length, length);
+    // Reusing the preceding page cannot pass the shared continuation boundary.
+    let continued = acyclic_harness_client::AgentCommand::Directory {
+        agent: root.clone(),
+        path: String::new(),
+        generation: Some(first.generation.clone()),
+        page: page(Some(last.clone()))?,
+    };
+    assert!(
+        acyclic_harness_client::encode_agent_reply(
+            &Ok(acyclic_harness_client::AgentReply::Directory {
+                page: first.clone()
+            },),
+            &continued
+        )
+        .is_err()
+    );
+    // A successful range must make progress or prove this exact file's EOF.
+    let read = acyclic_harness_client::AgentCommand::Read {
+        agent: root.clone(),
+        offset: 0,
+        target: acyclic_harness_client::ReadTarget::Private {
+            path: "directory-a".to_owned(),
+            generation: first.generation.clone(),
+        },
+    };
+    assert!(
+        acyclic_harness_client::encode_agent_reply(
+            &Ok(acyclic_harness_client::AgentReply::read(&[], length),),
+            &read
+        )
+        .is_err()
+    );
+    // A path cannot bypass the original private grant or its internal boundary.
+    assert!(
+        client
+            .directory_page(".system", None, page(None)?)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .directory_page("", None, page(Some(last.clone()))?)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_private_range(".system/record", &first.generation, 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .read_private_range("directory-a", &first.generation, length + 1)
+            .await
+            .is_err()
+    );
     // The same intent replays its commit at the same sequence; no second turn runs.
     assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);

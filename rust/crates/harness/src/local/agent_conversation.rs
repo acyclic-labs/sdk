@@ -12,6 +12,7 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod client_files;
+mod directory;
 mod events;
 mod history;
 mod recording;
