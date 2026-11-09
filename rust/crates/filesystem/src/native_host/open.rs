@@ -488,6 +488,7 @@ mod regular_file_tests {
         assert!(read_regular_file(&alias.join("link")).is_err());
         assert!(read_regular_file(&alias).is_err());
         assert!(read_regular_file(&link).is_err());
+        assert_alias_is_not_a_held_root(&alias);
         Ok(())
     }
 
@@ -519,8 +520,16 @@ mod regular_file_tests {
         crate::windows_test_filesystems::junction(&alias, &directory)?;
         assert_eq!(read_regular_file(&alias.join("input"))?, b"original input");
         assert!(read_regular_file(&alias).is_err());
+        assert_alias_is_not_a_held_root(&alias);
         std::fs::remove_dir(alias)?;
         Ok(())
+    }
+
+    fn assert_alias_is_not_a_held_root(alias: &Path) {
+        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        assert!(HostRoot::open(alias, &mut work).is_err());
+        #[cfg(feature = "native-watch")]
+        assert!(HostRoot::open_search(alias, &mut work).is_err());
     }
 }
 
