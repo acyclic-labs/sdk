@@ -247,6 +247,20 @@ fn modes() -> impl Iterator<Item = u8> {
 
 #[test]
 fn every_writer_shape_round_trips_with_exact_completed_work() {
+    // Keep persisted writer captures admitted as the format evolves. Old captures
+    // remain in the fuzz corpus to exercise refusal paths.
+    for input in [
+        include_bytes!("../../../fuzz/corpus/encoder_work/file-table-plain-internal").as_slice(),
+        include_bytes!("../../../fuzz/corpus/encoder_work/file-table-sealed-internal").as_slice(),
+        include_bytes!("../../../fuzz/corpus/encoder_work/file-table-plain-leaf").as_slice(),
+        include_bytes!("../../../fuzz/corpus/encoder_work/file-table-sealed-leaf").as_slice(),
+    ] {
+        let mut observe = |_| Ok::<_, FsError>(());
+        let page = decode_file_table_page(&input[10..], DecodeLimits::default(), &mut observe)
+            .expect("canonical writer capture must be admitted");
+        check_file_table_writer(&page);
+        check(input);
+    }
     for kind in 0..11 {
         for variant in 0..56 {
             let wire = fixture(kind, b"payload", variant);
