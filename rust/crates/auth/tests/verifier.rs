@@ -169,12 +169,12 @@ proptest! {
         let resource = format!("fs:/{name}/../secret");
         let mut request = request(&resource, &attributes, &usage);
         for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
-            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalResource)));
+            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::Malformed)));
         }
         request.target = acyclic_auth::authority::Target::Resource { action: "fs/read", resource: "fs:/public" };
         request.audience = &resource;
         for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
-            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalAudience)));
+            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::Malformed)));
         }
     }
     #[test]

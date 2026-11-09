@@ -199,6 +199,20 @@ pub enum CredentialCacheError {
     Rejected,
 }
 
+impl CredentialCacheError {
+    /// The final verdict of this original failure. Cached source failures carry
+    /// a captured verdict, so nested providers add no diagnostic traversal.
+    #[must_use]
+    pub fn denial_cause(&self) -> Option<crate::DenialCause> {
+        match self {
+            Self::Provider(error) => error.denial_cause(),
+            Self::Expired => Some(crate::DenialCause::Expired),
+            Self::Rejected => Some(crate::DenialCause::NotCovered),
+            Self::Unavailable | Self::Stale => None,
+        }
+    }
+}
+
 type ResultLease = Result<CredentialLease, CredentialCacheError>;
 #[cfg(not(target_arch = "wasm32"))]
 type RefreshFuture = Pin<Box<dyn Future<Output = ResultLease> + Send>>;

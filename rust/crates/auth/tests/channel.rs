@@ -38,7 +38,7 @@ impl CredentialSource for DeferredSource {
         self.cache
             .watch()
             .map(Some)
-            .map_err(|error| CredentialError::Provider(Box::new(error)))
+            .map_err(CredentialError::from)
             .into()
     }
 }
@@ -68,9 +68,9 @@ impl CredentialRequest for DeferredRequest {
         let lease = self.lease.clone();
         CredentialAction::Pending(Box::pin(async move {
             entered.send(()).unwrap();
-            admission.await.map_err(|_| {
-                CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
-            })?;
+            admission
+                .await
+                .map_err(|_| CredentialError::from(CredentialCacheError::Unavailable))?;
             lease.check().await
         }))
     }
@@ -144,7 +144,15 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
                     .now_or_never()
                     .expect("owner event must finish admission")
                     .unwrap_err();
-                assert_eq!(error.code(), Code::Unauthenticated);
+                assert_eq!(
+                    error.code(),
+                    if other == "expiry" {
+                        Code::Unauthenticated
+                    } else {
+                        Code::Unavailable
+                    },
+                    "losing the credential producer is availability loss, not withdrawal"
+                );
                 assert!(std::error::Error::source(&error).is_some());
             }
         }
@@ -361,7 +369,14 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
             assert!(result.is_ok());
         } else {
             let error = result.unwrap_err();
-            assert_eq!(error.code(), Code::Unauthenticated);
+            assert_eq!(
+                error.code(),
+                if change == "expiry" {
+                    Code::Unauthenticated
+                } else {
+                    Code::Unavailable
+                }
+            );
             assert!(std::error::Error::source(&error).is_some());
         }
         assert!(

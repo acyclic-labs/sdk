@@ -2,11 +2,11 @@
 +++ b/rust/crates/auth/src/authority.rs
 @@ -506,9 +506,6 @@
      if !admitted {
-         return Err(Deny::Capability);
+         return Err(Deny::NotCovered);
      }
 -    if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
--        return Err(Deny::NonCanonicalResource);
+-        return Err(Deny::Malformed);
 -    }
      if !crate::valid_resource(r.audience) {
-         return Err(Deny::NonCanonicalAudience);
+         return Err(Deny::Malformed);
      }

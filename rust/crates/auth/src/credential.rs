@@ -44,6 +44,16 @@ pub enum CredentialError {
     /// Provider failure, with its original diagnostic available as the source.
     #[error("credential provider failed")]
     Provider(#[source] Box<dyn std::error::Error + Send + Sync>),
+    /// Original cache failure and its verdict, captured once at the boundary.
+    /// Reading the verdict never walks a provider's diagnostic source chain.
+    #[error("credential cache failed: {source}")]
+    Cache {
+        /// Original validity or refresh failure, without boxing or copying it.
+        #[source]
+        source: CredentialCacheError,
+        /// Final verdict, or None when source freshness cannot be established.
+        cause: Option<crate::DenialCause>,
+    },
     /// Empty, oversized or header-delimited credentials fail before transport.
     #[error("invalid credential")]
     Invalid,
@@ -51,6 +61,26 @@ pub enum CredentialError {
     /// bearer to resolve; only transports that honor it may dispatch.
     #[error("credential is the channel's transport identity")]
     TransportIdentity,
+}
+
+impl CredentialError {
+    /// The final credential verdict. An arbitrary provider diagnostic and a
+    /// missing bearer transport are availability failures, never inferred denials.
+    #[must_use]
+    pub const fn denial_cause(&self) -> Option<crate::DenialCause> {
+        match self {
+            Self::Invalid => Some(crate::DenialCause::Malformed),
+            Self::Cache { cause, .. } => *cause,
+            Self::Provider(_) | Self::TransportIdentity => None,
+        }
+    }
+}
+
+impl From<CredentialCacheError> for CredentialError {
+    fn from(source: CredentialCacheError) -> Self {
+        let cause = source.denial_cause();
+        Self::Cache { source, cause }
+    }
 }
 
 /// One native renewal invocation, cancelled by dropping its future.
@@ -138,7 +168,9 @@ impl ResolvedCredential {
     pub fn check(&self) -> CredentialAction<()> {
         match &self.0 {
             Resolved::Raw(_) => Ok(()).into(),
-            Resolved::Cached { cache, lease } => cache.check(lease).map_err(cache_error).into(),
+            Resolved::Cached { cache, lease } => {
+                cache.check(lease).map_err(CredentialError::from).into()
+            }
             Resolved::Custodian(request) => request.check(),
         }
     }
@@ -152,7 +184,9 @@ impl ResolvedCredential {
     pub fn retained_access(&self) -> Option<Result<(), CredentialError>> {
         match &self.0 {
             Resolved::Raw(_) => None,
-            Resolved::Cached { cache, lease } => Some(cache.check(lease).map_err(cache_error)),
+            Resolved::Cached { cache, lease } => {
+                Some(cache.check(lease).map_err(CredentialError::from))
+            }
             Resolved::Custodian(request) => request.retained_access(),
         }
     }
@@ -161,7 +195,9 @@ impl ResolvedCredential {
     pub fn reject(&self) -> CredentialAction<bool> {
         match &self.0 {
             Resolved::Raw(_) => Ok(false).into(),
-            Resolved::Cached { cache, lease } => cache.reject(lease).map_err(cache_error).into(),
+            Resolved::Cached { cache, lease } => {
+                cache.reject(lease).map_err(CredentialError::from).into()
+            }
             Resolved::Custodian(request) => request.reject(),
         }
     }
@@ -172,10 +208,6 @@ impl std::ops::Deref for ResolvedCredential {
     fn deref(&self) -> &str {
         self.as_str()
     }
-}
-
-fn cache_error(error: CredentialCacheError) -> CredentialError {
-    CredentialError::Provider(Box::new(error))
 }
 
 impl std::fmt::Debug for CredentialProvider {
@@ -204,7 +236,11 @@ impl CredentialProvider {
     pub fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
         match &self.0 {
             Source::Raw(_) => Ok(None).into(),
-            Source::Cached(cache) => cache.watch().map(Some).map_err(cache_error).into(),
+            Source::Cached(cache) => cache
+                .watch()
+                .map(Some)
+                .map_err(CredentialError::from)
+                .into(),
             Source::Custodian(source) => source.watch(),
             Source::TransportIdentity => Ok(None).into(),
         }
@@ -263,7 +299,7 @@ impl CredentialProvider {
                 Ok(ResolvedCredential(Resolved::Raw(Shared::new(token))))
             }
             Source::Cached(cache) => {
-                let lease = cache.resolve().await.map_err(cache_error)?;
+                let lease = cache.resolve().await.map_err(CredentialError::from)?;
                 Ok(ResolvedCredential(Resolved::Cached {
                     cache: cache.clone(),
                     lease,

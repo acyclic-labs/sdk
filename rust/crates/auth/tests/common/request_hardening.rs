@@ -71,7 +71,7 @@ pub fn request_property(
                 &request(name, "workers:/app", &attributes, &usage),
                 policy
             ),
-            Err(Deny::NonCanonicalResource)
+            Err(Deny::Malformed)
         );
         prop_assert_eq!(
             permit(
@@ -79,7 +79,7 @@ pub fn request_property(
                 &request("fs:/a", name, &attributes, &usage),
                 policy
             ),
-            Err(Deny::NonCanonicalAudience)
+            Err(Deny::Malformed)
         );
     }
     Ok(())
