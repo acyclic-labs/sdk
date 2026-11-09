@@ -1,0 +1,11 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/writer.rs b/rust/crates/filesystem/src/kernel/allocation/writer.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/writer.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/writer.rs
+@@ -166,6 +166,7 @@
+             .and_then(|()| self.append(bytes));
+         if let Err(error) = result {
+             self.failure = Some(error);
++            return Err(std::io::ErrorKind::OutOfMemory.into());
+         }
+         Ok(bytes.len())
+     }

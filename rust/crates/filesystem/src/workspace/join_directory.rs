@@ -416,11 +416,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     /// Fixed-width names do not grow with the source component and distinguish
     /// separate record and binding conflicts at the same source path. The
     /// staging volume must admit these names and their resolution suffixes.
-    pub fn conflict_file_path(&self, key: &ConflictKey) -> Result<String, WorkspaceError> {
+    pub fn conflict_file_path(&mut self, key: &ConflictKey) -> Result<String, WorkspaceError> {
+        let bytes = json(key, &mut self.preview.accounting()?)?;
         Ok(format!(
             "{}/conflicts/{}",
             self.path,
-            entry_name(b"conflict-v1\0", &json(key)?)
+            entry_name(b"conflict-v1\0", &bytes)
         ))
     }
 
@@ -525,8 +526,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                             self.path,
                             entry_name(b"clean-v1\0", file.path.as_bytes())
                         );
-                        let bytes = json(&file)?;
                         let mut accounting = self.preview.accounting()?;
+                        let bytes = json(&file, &mut accounting)?;
                         write_file(
                             &mut transaction,
                             &path,
@@ -563,51 +564,56 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .await?;
             let view = &rendered.value;
             let path = self.conflict_file_path(&view.key)?;
-            let (path, bytes): (String, acyclic_stream::OwnedBytes) =
-                if view.kind == ConflictKind::Text {
-                    use crate::MergeDriver;
-                    let resolution = crate::DefaultTextMergeDriver
-                        .resolve(view)
-                        .map_err(|_| WorkspaceError::InvalidMergeResolution)?;
-                    let text = match resolution {
-                        MergeResolution::Text(text) => text,
-                        MergeResolution::Select(side) => {
-                            let value = match side {
-                                ConflictSide::Base => rendered.value.base,
-                                ConflictSide::Ours => rendered.value.ours,
-                                ConflictSide::Theirs => rendered.value.theirs,
-                            };
-                            let ConflictValue::Text(text) = value else {
-                                return Err(WorkspaceError::InvalidMergeResolution);
-                            };
-                            text.into()
-                        }
-                        _ => return Err(WorkspaceError::InvalidMergeResolution),
-                    };
-                    (path, text)
+            let (path, bytes) = if view.kind == ConflictKind::Text {
+                let (
+                    ConflictValue::Text(base),
+                    ConflictValue::Text(ours),
+                    ConflictValue::Text(theirs),
+                ) = (&view.base, &view.ours, &view.theirs)
+                else {
+                    return Err(WorkspaceError::InvalidMergeResolution);
+                };
+                let accounting = self.preview.accounting()?;
+                let merge = move || {
+                    let mut accounting = accounting;
+                    crate::kernel::allocation::writer::text_merge(
+                        base,
+                        ours,
+                        theirs,
+                        &mut accounting,
+                    )
+                    .map_err(WorkspaceError::from)
+                };
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let bytes = crate::test_support::observe_text_output(merge)?;
+                #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+                let bytes = merge()?;
+                (path, bytes)
+            } else {
+                let absent = |value: &ConflictValue| {
+                    matches!(value, ConflictValue::Absent | ConflictValue::Binding(None))
+                };
+                let kind = if absent(&view.ours) || absent(&view.theirs) {
+                    MergeConflictFileKind::Deleted
                 } else {
-                    let absent = |value: &ConflictValue| {
-                        matches!(value, ConflictValue::Absent | ConflictValue::Binding(None))
-                    };
-                    let kind = if absent(&view.ours) || absent(&view.theirs) {
-                        MergeConflictFileKind::Deleted
-                    } else {
-                        match view.kind {
-                            ConflictKind::Binary => MergeConflictFileKind::Binary,
-                            ConflictKind::Metadata => MergeConflictFileKind::Mode,
-                            _ => MergeConflictFileKind::Type,
-                        }
-                    };
-                    (
-                        format!("{path}.conflict.json"),
-                        json(&MergeConflictFile {
+                    match view.kind {
+                        ConflictKind::Binary => MergeConflictFileKind::Binary,
+                        ConflictKind::Metadata => MergeConflictFileKind::Mode,
+                        _ => MergeConflictFileKind::Type,
+                    }
+                };
+                (
+                    format!("{path}.conflict.json"),
+                    json(
+                        &MergeConflictFile {
                             version: 1,
                             kind,
                             conflict: rendered.value,
-                        })?
-                        .into(),
-                    )
-                };
+                        },
+                        &mut self.preview.accounting()?,
+                    )?,
+                )
+            };
             let mut accounting = self.preview.accounting()?;
             write_file(
                 &mut transaction,
@@ -623,10 +629,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
                 .ok_or(WorkspaceError::ContentLengthOverflow)?;
         }
         next.complete = next.clean_complete && next.conflicts_complete;
-        let bytes = json(&next)?;
-        let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
+        let digest;
         {
             let mut accounting = self.preview.accounting()?;
+            let bytes = json(&next, &mut accounting)?;
+            digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
             transaction
                 .write_if_with_accounting(
                     &format!("{}/plan.json", self.path),
@@ -656,8 +663,41 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MergeDirec
     }
 }
 
-fn json(value: &impl Serialize) -> Result<Vec<u8>, WorkspaceError> {
-    serde_json::to_vec(value).map_err(WorkspaceError::engine)
+fn json(
+    value: &impl Serialize,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<acyclic_stream::OwnedBytes, WorkspaceError> {
+    let serialize = move || {
+        let accounting = accounting;
+        // Keep serde_json's initial output chunk, admitted before entering the
+        // serializer so a refused allocation cannot allocate an IO error box.
+        let bytes = crate::kernel::allocation::writer::ImageWriter::produce(
+            accounting,
+            128,
+            |writer| serde_json::to_writer(writer, value),
+            json_error,
+        )?;
+        let bytes = crate::kernel::allocation::retained::Retained::from_owned(bytes, accounting)?;
+        Ok(bytes.into_bytes((), accounting)?.into())
+    };
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    return crate::test_support::observe_json_output(serialize);
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    serialize()
+}
+
+fn json_error(error: serde_json::Error) -> WorkspaceError {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    {
+        let mut result = None;
+        let first = acyclic_test_support::first_allocation(|| {
+            result = Some(WorkspaceError::engine(error));
+        });
+        crate::test_support::JSON_ERROR_FIRST_ALLOCATION.set(Some(first));
+        result.expect("serializer error conversion completed")
+    }
+    #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+    WorkspaceError::engine(error)
 }
 
 // Source paths are preserved in descriptors, never expanded into staging

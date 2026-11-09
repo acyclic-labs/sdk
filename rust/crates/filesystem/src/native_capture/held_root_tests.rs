@@ -437,6 +437,10 @@ fn held_directories_are_created_in_the_held_root_across_a_replacement() {
         let held = hold_root(&root).unwrap();
         std::fs::rename(&root, &moved).unwrap();
         std::fs::create_dir(&root).unwrap();
+        assert_eq!(
+            held.canonical_path().unwrap(),
+            moved.canonicalize().unwrap()
+        );
         let held = if reopen {
             hold_root(held.path()).unwrap()
         } else {

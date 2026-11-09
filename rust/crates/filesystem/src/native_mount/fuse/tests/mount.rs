@@ -404,7 +404,7 @@ impl MountFilesystem for GatedSource {
         read_pinned_with_meter(path: &MountPath, pin: crate::native_mount::MountContentPin, range: crate::ByteRange, piece: u32, sink: &mut crate::native_mount::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
         read_link(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
         read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
-        read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
+        read_directory_with_meter(path: &MountPath, cursor: Option<&crate::native_mount::MountDirectoryCursor>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
         binding_epoch() -> Option<u64>;
         acquire_view_lease() -> Result<Box<dyn Send>, MountSourceError>;
         acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn Send>, MountSourceError>;
@@ -412,7 +412,7 @@ impl MountFilesystem for GatedSource {
         detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
         read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
         seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
-        read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
+        read_directory(path: &MountPath, cursor: Option<&crate::native_mount::MountDirectoryCursor>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
         list_attributes(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountAttributePage, MountSourceError>;
         write_range(path: &MountPath, offset: u64, bytes: Bytes) -> Result<(), MountSourceError>;
         resize(path: &MountPath, logical_bytes: u64) -> Result<(), MountSourceError>;

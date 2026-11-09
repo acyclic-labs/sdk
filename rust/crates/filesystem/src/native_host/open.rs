@@ -367,7 +367,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     if prefix.is_empty() || matches!(prefix, b"." | b"..") {
         return Err(NativeTreeMaterializationError::InvalidLayout);
     }
-    let examined = WorkCounters {
+    let credit = work.reserve_work(WorkCounters {
         items_examined: prefix.len() as u64,
         #[cfg(windows)]
         bytes_encoded: prefix
@@ -375,17 +375,30 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)? as u64,
         ..WorkCounters::UNCHARGED
-    };
-    // The whole leaf is one admission and one ledger record, not a lock per byte.
-    let credit = work.reserve_work(examined)?;
-    crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
-    credit.record_completed(examined)?;
+    })?;
+    // The complete fixed-size input is already admitted. Validate and encode
+    // it locally, then record the exact examined prefix once, including the
+    // rejected byte. No shared ledger lock is needed for each ASCII unit.
     let mut name = [0; N];
+    let mut examined = 0;
+    let mut valid = true;
     for (&byte, unit) in prefix.iter().zip(&mut name) {
+        examined += 1;
         if !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':') {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
+            valid = false;
+            break;
         }
         *unit = NativeUnit::from(byte);
+    }
+    credit.record_completed(WorkCounters {
+        items_examined: examined,
+        #[cfg(windows)]
+        bytes_encoded: examined * 2,
+        ..WorkCounters::UNCHARGED
+    })?;
+    NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
+    if !valid {
+        return Err(NativeTreeMaterializationError::InvalidLayout);
     }
     Ok(PreparedAsciiLeaf { units: name })
 }
@@ -533,7 +546,102 @@ mod regular_file_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub fn check_prepared_ascii_leaf<const N: usize>(bytes: [u8; N]) {
+    let work = NativeMaterializationWork::new(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .unwrap_or_else(|(error, _)| panic!("native leaf work: {error}"));
+    let before = work.receipt();
+    let live = work.live_allocation_bytes();
+    let result = prepare_ascii_leaf(bytes, &work);
+    let prefix = bytes.split_last().and_then(|(&last, prefix)| {
+        (last == 0 && !prefix.is_empty() && !matches!(prefix, b"." | b"..")).then_some(prefix)
+    });
+    let invalid = prefix.and_then(|prefix| {
+        prefix
+            .iter()
+            .position(|byte| !byte.is_ascii() || matches!(byte, 0 | b'/' | b'\\' | b':'))
+    });
+    assert_eq!(result.is_ok(), prefix.is_some() && invalid.is_none());
+    if let Ok(name) = result {
+        assert!(
+            name.units
+                .iter()
+                .zip(bytes)
+                .all(|(&unit, byte)| unit == NativeUnit::from(byte))
+        );
+    }
+    let examined =
+        prefix.map_or(0, |prefix| invalid.map_or(prefix.len(), |index| index + 1)) as u64;
+    let after = work.receipt();
+    assert_eq!(after.items_examined - before.items_examined, examined);
+    #[cfg(windows)]
+    assert_eq!(after.bytes_encoded - before.bytes_encoded, examined * 2);
+    assert_eq!(after.allocation_operations, before.allocation_operations);
+    assert_eq!(work.live_allocation_bytes(), live);
+}
+
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub fn check_native_root_name_prefix(name: &str) {
+    let Some(prefix) = name.split_once('\0').map(|(prefix, _)| prefix) else {
+        return;
+    };
+    #[cfg(unix)]
+    let (examined, encoded) = (prefix.len() as u64 + 1, 0);
+    #[cfg(windows)]
+    let (examined, encoded) = (prefix.encode_utf16().count() as u64 + 1, 0);
+    let work =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    let live = work.live_allocation_bytes();
+    let before = work.receipt();
+    assert!(matches!(
+        work.root_identity(Path::new(name)),
+        Err(NativeTreeMaterializationError::InvalidLayout)
+    ));
+    let after = work.receipt();
+    assert_eq!(after.items_examined - before.items_examined, examined);
+    assert_eq!(after.bytes_encoded - before.bytes_encoded, encoded);
+    assert_eq!(
+        after.backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(work.live_allocation_bytes(), live);
+    // The demand adapter must keep the same original ledger and exact prefix.
+    let mut original = work.clone();
+    assert!(matches!(
+        HostRoot::open(Path::new(name), &mut original),
+        Err(DemandError::InvalidRequest)
+    ));
+    let after_demand = work.receipt();
+    assert_eq!(after_demand.items_examined - after.items_examined, examined);
+    assert_eq!(after_demand.bytes_encoded - after.bytes_encoded, encoded);
+    assert_eq!(
+        after_demand.backend_read_operations,
+        after.backend_read_operations
+    );
+    assert_eq!(work.live_allocation_bytes(), live);
+    let denied = NativeMaterializationWork::new(
+        WorkBudget {
+            items_examined: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &crate::CancellationToken::new(),
+    )
+    .unwrap_or_else(|(error, _)| panic!("native root work: {error}"));
+    assert!(matches!(
+        denied.root_identity(Path::new(name)),
+        Err(NativeTreeMaterializationError::Work(_))
+    ));
+    assert_eq!(denied.receipt().items_examined, 0);
+    assert_eq!(denied.receipt().backend_read_operations, 0);
+}
+
+#[cfg(all(test, not(loom)))]
 mod prepared_leaf_tests {
     use super::*;
 
@@ -592,23 +700,32 @@ mod prepared_leaf_tests {
     }
 
     #[test]
+    fn native_root_names_exhaust_nul_positions_on_original_work() {
+        for length in 1..=32 {
+            for position in 0..length {
+                let mut name = "a".repeat(length);
+                name.replace_range(position..position + 1, "\0");
+                check_native_root_name_prefix(&name);
+            }
+        }
+        for name in [
+            "\0\u{e9}\u{10400}",
+            "\u{e9}\0\u{10400}",
+            "\u{e9}\u{10400}\0",
+            "\u{e9}\u{10400}\0tail\0",
+        ] {
+            check_native_root_name_prefix(name);
+        }
+    }
+
+    #[test]
     fn prepared_ascii_constructor_exhausts_every_byte_and_rejects_non_components()
     -> Result<(), Box<dyn std::error::Error>> {
         let work =
             NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .map_err(|(error, _)| error)?;
         for byte in u8::MIN..=u8::MAX {
-            let result = prepare_ascii_leaf([b'a', byte, 0], &work);
-            assert_eq!(
-                result.is_ok(),
-                byte.is_ascii() && !matches!(byte, 0 | b'/' | b'\\' | b':')
-            );
-            if let Ok(name) = result {
-                assert_eq!(
-                    name.units,
-                    [NativeUnit::from(b'a'), NativeUnit::from(byte), 0]
-                );
-            }
+            check_prepared_ascii_leaf([b'a', byte, 0]);
         }
         assert!(prepare_ascii_leaf([], &work).is_err());
         assert!(prepare_ascii_leaf([0], &work).is_err());

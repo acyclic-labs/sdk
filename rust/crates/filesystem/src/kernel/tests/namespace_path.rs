@@ -193,6 +193,13 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
                 .map(|name| name.as_bytes().as_ptr());
             let parent_encoded_bytes = path.encoded_bytes();
             let bytes = path.retained_bytes();
+            // Replacement moves the component descriptors, preserving their
+            // separately owned name buffers (checked by pointer identity below).
+            let moved = if path.components.len() == path.components.capacity() {
+                std::mem::size_of_val(path.components.as_slice()) as u64
+            } else {
+                0
+            };
             let before = accounting.spent();
             let path = NamespacePath::child_from_owned(
                 crate::kernel::Owned::new(path, allocation, bytes),
@@ -207,7 +214,7 @@ fn portable_raw_posix_and_windows_names_remain_exact() -> Result<(), Box<dyn std
             }
             assert_eq!(
                 accounting.spent().bytes_copied - before.bytes_copied,
-                name.as_bytes().len() as u64
+                name.as_bytes().len() as u64 + moved
             );
             let expected_bytes =
                 parent_encoded_bytes + u32::from(root != "/") + name.as_bytes().len() as u32;

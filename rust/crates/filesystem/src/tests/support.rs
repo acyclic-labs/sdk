@@ -9,6 +9,79 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    pub(crate) static JSON_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static JSON_OUTPUT_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
+    pub(crate) static JSON_OUTPUT_ALLOCATIONS: std::cell::Cell<Option<acyclic_test_support::AllocationInfo>> = const { std::cell::Cell::new(None) };
+    pub(crate) static JSON_ERROR_FIRST_ALLOCATION: std::cell::Cell<Option<Option<usize>>> = const { std::cell::Cell::new(None) };
+    pub(crate) static TEXT_OUTPUT_CUT: std::cell::RefCell<Option<(crate::NativeMaterializationWork, Option<u64>)>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static TEXT_OUTPUT_ALLOCATIONS: std::cell::Cell<Option<acyclic_test_support::AllocationInfo>> = const { std::cell::Cell::new(None) };
+}
+
+/// Observe the shipped serializer; pressure is applied only at its entry so
+/// earlier transaction preparation and unrelated input backing cannot mask it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_json_output<T>(
+    serialize: impl FnOnce() -> Result<T, crate::workspace::WorkspaceError>,
+) -> Result<T, crate::workspace::WorkspaceError> {
+    let Some((original, pressure)) = JSON_OUTPUT_CUT.with_borrow_mut(Option::take) else {
+        return serialize();
+    };
+    let (result, first, allocations) = observe_output(&original, pressure, serialize);
+    JSON_OUTPUT_FIRST_ALLOCATION.set(Some(first));
+    JSON_OUTPUT_ALLOCATIONS.set(Some(allocations));
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn observe_text_output<T>(
+    merge: impl FnOnce() -> Result<T, crate::workspace::WorkspaceError>,
+) -> Result<T, crate::workspace::WorkspaceError> {
+    let Some((original, pressure)) = TEXT_OUTPUT_CUT.with_borrow_mut(Option::take) else {
+        return merge();
+    };
+    let (result, _, allocations) = observe_output(&original, pressure, merge);
+    TEXT_OUTPUT_ALLOCATIONS.set(Some(allocations));
+    result
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn observe_output<T>(
+    original: &crate::NativeMaterializationWork,
+    pressure: Option<u64>,
+    produce: impl FnOnce() -> T,
+) -> (T, Option<usize>, acyclic_test_support::AllocationInfo) {
+    let withheld = if let Some(allowance) = pressure {
+        let remaining = original.remaining().expect("original JSON allowance");
+        let permit = original
+            .claim(
+                remaining.peak_allocation_bytes - allowance,
+                0,
+                WorkCounters::UNCHARGED,
+            )
+            .expect("withhold original JSON output capacity");
+        assert_eq!(
+            original.remaining().unwrap().peak_allocation_bytes,
+            allowance
+        );
+        Some(permit)
+    } else {
+        None
+    };
+    let mut result = None;
+    let mut allocations = None;
+    let first = acyclic_test_support::first_allocation(|| {
+        allocations = Some(acyclic_test_support::measure(|| result = Some(produce())));
+    });
+    drop(withheld);
+    (
+        result.expect("original output producer completed"),
+        first,
+        allocations.expect("output allocation trace"),
+    )
+}
+
 /// Conformance backend with independently owned read buffers.
 #[derive(Default)]
 pub(crate) struct OwnedReadObjectStore {

@@ -49,7 +49,6 @@ pub use adapter::{
 };
 
 mod view_gate;
-pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod shared;
 mod view_ledger;
@@ -69,9 +68,6 @@ pub use customer::{
 pub use fuse::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 #[cfg(target_os = "linux")]
 pub use guest::{GuestMappingAdmission, GuestMappingFence, GuestPosixPolicy, GuestSource};
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod device;
 
 pub use crate::{
     CaptureError, CaptureOptions, CaptureReceipt, WatchCaptureReceipt, capture_baseline,
@@ -266,6 +262,8 @@ where
 
 mod source;
 pub use source::*;
+mod directory_cursor;
+pub use directory_cursor::MountDirectoryCursor;
 mod path;
 pub use path::MountPath;
 mod callbacks;

@@ -157,7 +157,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn read_directory_with_meter(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
         work: &NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError>;
@@ -544,7 +544,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn read_directory(
         &self,
         path: &MountPath,
-        cursor: Option<&[u8]>,
+        cursor: Option<&crate::native_mount::MountDirectoryCursor>,
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 

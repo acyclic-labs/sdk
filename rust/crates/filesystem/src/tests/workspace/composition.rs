@@ -7,7 +7,6 @@ use crate::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamPath,
-    StreamProvider,
 };
 
 type PlacedFs = Fs<StreamAuthorityStore<MemoryStream>, crate::MemoryObjectBackend>;

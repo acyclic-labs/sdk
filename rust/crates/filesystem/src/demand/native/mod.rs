@@ -1,5 +1,9 @@
 use super::*;
 use crate::facade::FsWork;
+use crate::kernel::allocation::{
+    fixed_index::FixedIndex,
+    retained::{RetainedArc, RetainedWeak},
+};
 use crate::lock_order::{CURSOR, Mutex as RankedMutex};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::native_host::HostListedEntry;
@@ -8,7 +12,6 @@ use crate::native_host::{CachedRoot, HostRoot, HostStat, HostStatReader};
 use crate::source_watch::CallbackWork;
 #[cfg(feature = "test-support")]
 use acyclic_native_runtime::testing::spawn_blocking;
-use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};

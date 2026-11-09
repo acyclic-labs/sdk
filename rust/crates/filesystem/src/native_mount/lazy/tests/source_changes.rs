@@ -157,15 +157,65 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(source.path().join("empty"))?;
     std::fs::write(source.path().join("a"), b"a")?;
     let runtime = shared_runtime()?;
-    let view = runtime.block_on(mounted_view(source.path(), "empty-pages"))?;
+    let demand = Arc::new(runtime.block_on(native_source(
+        source.path(),
+        crate::model::FilesystemProfile::Portable,
+    ))?);
+    let view = runtime.block_on(mounted_view_of_with_authored_work(
+        demand,
+        "empty-pages",
+        crate::MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        Some(&work),
+    ))?;
     let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
     assert!(empty.entries.is_empty());
     assert!(empty.next_cursor.is_none(), "an empty page continues");
     view.create_file(&mounted(&["b"]), FileMetadata::default(), None, &work)?;
+
+    let first = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+    let first_cursor = first.next_cursor().ok_or("first page must continue")?;
+    let peer_stop = CancellationToken::new();
+    let peer_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &peer_stop)
+        .map_err(|(error, _)| error)?;
+    let peer_baseline = peer_work.live_allocation_bytes();
+    let peers = (0..1_024)
+        .map(|_| view.read_directory_with_meter(&MountPath::root(), None, 1, &peer_work))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(peers.iter().all(|page| page.next_cursor().is_some()));
+    let other = runtime.block_on(mounted_view(source.path(), "independent-listing-owner"))?;
+    assert!(matches!(
+        other.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work),
+        Err(MountSourceError::Stale)
+    ));
+    drop(other);
+    let visited = work.receipt().source_entries_visited;
+    let resumed =
+        view.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work)?;
+    assert_eq!(resumed.entries().len(), 1);
+    assert_eq!(
+        work.receipt().source_entries_visited,
+        visited,
+        "continuation replayed its source prefix"
+    );
+    assert!(matches!(
+        view.read_directory_with_meter(&MountPath::root(), Some(first_cursor), 1, &work),
+        Err(MountSourceError::Stale)
+    ));
+    peer_stop.cancel();
+    drop(peers);
+    assert_eq!(
+        peer_work.live_allocation_bytes(),
+        peer_baseline,
+        "abandoned consumers must release their original credit"
+    );
+    drop(resumed);
+    drop(first);
+
     let mut cursor = None;
     let mut listed = 0;
     loop {
-        let page = view.read_directory(&MountPath::root(), cursor.as_deref(), 1)?;
+        let page = view.read_directory(&MountPath::root(), cursor.as_ref(), 1)?;
         assert!(
             !page.entries.is_empty() || page.next_cursor.is_none(),
             "an empty page continues"
@@ -177,6 +227,25 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
         cursor = Some(next);
     }
     assert_eq!(listed, 3, "a, b, and empty");
+    drop(cursor);
+    #[cfg(target_os = "linux")]
+    {
+        let page = view.read_directory_with_meter(&MountPath::root(), None, 1, &work)?;
+        assert!(page.next_cursor().is_some());
+        let view = Arc::new(view);
+        assert!(
+            crate::native_mount::fuse::tests::retirement::retire_source_in_physical_loop(
+                view.clone(),
+                Some(page),
+            )?
+        );
+        assert!(view.physically_retired()?);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        view.cancel_cleanup(None)?;
+        assert!(view.physically_retired()?);
+    }
     Ok(())
 }
 #[test]

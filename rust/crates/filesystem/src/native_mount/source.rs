@@ -154,7 +154,7 @@ impl MountNodeKind {
             _ => return Err(libc::EOPNOTSUPP),
         };
         let device = matches!(kind, Self::CharacterDevice | Self::BlockDevice)
-            .then(|| super::device::split_device(device));
+            .then(|| crate::native_host::split_device(device));
         Ok((kind, device))
     }
 }
@@ -398,8 +398,8 @@ pub struct MountDirectoryPage {
     /// Ordered entries after the supplied opaque cursor.
     pub(super) entries: Vec<MountDirectoryEntry>,
     /// Opaque continuation owned by this open directory handle.
-    pub(super) next_cursor: Option<Vec<u8>>,
-    pub(super) ownership: crate::demand::SourcePayloadOwnership,
+    pub(super) next_cursor: Option<MountDirectoryCursor>,
+    pub(super) _ownership: crate::demand::SourcePayloadOwnership,
 }
 
 impl MountDirectoryPage {
@@ -407,7 +407,7 @@ impl MountDirectoryPage {
     #[must_use]
     pub fn new(
         entries: Vec<MountDirectoryEntry>,
-        next_cursor: Option<Vec<u8>>,
+        next_cursor: Option<MountDirectoryCursor>,
         allocation: Option<crate::NativeAllocation>,
     ) -> Self {
         let ownership = allocation.map_or_else(
@@ -417,7 +417,7 @@ impl MountDirectoryPage {
         Self {
             entries,
             next_cursor,
-            ownership,
+            _ownership: ownership,
         }
     }
 
@@ -429,19 +429,20 @@ impl MountDirectoryPage {
 
     /// Borrows this page's opaque continuation.
     #[must_use]
-    pub fn next_cursor(&self) -> Option<&[u8]> {
-        self.next_cursor.as_deref()
+    pub fn next_cursor(&self) -> Option<&MountDirectoryCursor> {
+        self.next_cursor.as_ref()
     }
 
     /// Internal physical projections transfer data and its exact custody together, splitting that custody only for actual escaping payloads.
+    #[cfg(windows)]
     pub(crate) fn into_parts(
         self,
     ) -> (
         Vec<MountDirectoryEntry>,
-        Option<Vec<u8>>,
+        Option<MountDirectoryCursor>,
         crate::demand::SourcePayloadOwnership,
     ) {
-        (self.entries, self.next_cursor, self.ownership)
+        (self.entries, self.next_cursor, self._ownership)
     }
 
     /// Known owned capacities of this exact page, excluding borrowed metadata and opaque allocator overhead.
@@ -451,19 +452,11 @@ impl MountDirectoryPage {
             .capacity()
             .checked_mul(std::mem::size_of::<MountDirectoryEntry>())
             .ok_or(crate::WorkError::Overflow)? as u64;
-        self.entries
-            .iter()
-            .try_fold(entries, |bytes, entry| {
-                bytes
-                    .checked_add(entry.name.capacity() as u64)
-                    .ok_or(crate::WorkError::Overflow)
-            })?
-            .checked_add(
-                self.next_cursor
-                    .as_ref()
-                    .map_or(0, |cursor| cursor.capacity() as u64),
-            )
-            .ok_or(crate::WorkError::Overflow)
+        self.entries.iter().try_fold(entries, |bytes, entry| {
+            bytes
+                .checked_add(entry.name.capacity() as u64)
+                .ok_or(crate::WorkError::Overflow)
+        })
     }
 }
 

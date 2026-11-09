@@ -7,7 +7,7 @@ use super::{
     FilePayload, FileRecord, FileRecordReadError, LogicalName, NamespacePath, NamespacePathError,
     TreeReadError,
 };
-use crate::async_storage::{self, AsyncObjectStore};
+use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::heap_future::FrameObservation;

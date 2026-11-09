@@ -1,5 +1,4 @@
 use super::*;
-use acyclic_stream::StreamProviderExt as _;
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn publish_with_policy<G: AuthorityGuard>(
@@ -182,7 +181,6 @@ pub(super) fn merge_condition(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_stream::StreamProvider;
 
     fn comparison_prefix(omit_charge: bool) -> Result<(), Box<dyn std::error::Error>> {
         for allowance in 0..=4 {

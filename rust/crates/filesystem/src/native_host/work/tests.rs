@@ -19,6 +19,40 @@ fn shared_demand_claims_and_cleanup_keep_one_leaf_boundary()
         ));
     });
 
+    // A bounded operation spends only its completed prefix from the original
+    // reservation. Refusal and cancelled waiting must not enter the operation.
+    let reservation = root.reserve_work(items(3))?;
+    let before = root.receipt();
+    let (value, locks) = root
+        .state
+        .count_locks(|| reservation.with_admitted_work(items(3), None, || (17, items(1))));
+    assert_eq!(value?, 17);
+    assert_eq!(locks, 1);
+    assert_eq!(root.receipt().items_examined - before.items_examined, 1);
+    assert_eq!(reservation.remaining_work().items_examined, 2);
+    let mut entered = false;
+    assert!(
+        reservation
+            .with_admitted_work(items(3), None, || {
+                entered = true;
+                ((), items(1))
+            })
+            .is_err()
+    );
+    assert!(!entered);
+    let wait = CancellationToken::new();
+    wait.cancel();
+    assert!(matches!(
+        reservation.with_admitted_work(items(1), Some(&wait), || {
+            entered = true;
+            ((), items(1))
+        }),
+        Err(NativeTreeMaterializationError::Cancelled)
+    ));
+    assert!(!entered);
+    drop(reservation);
+    assert_eq!(root.receipt().items_examined - before.items_examined, 1);
+
     fn exercise<W: DemandWorkContext>(
         work: &mut W,
         owner: &NativeMaterializationWork,

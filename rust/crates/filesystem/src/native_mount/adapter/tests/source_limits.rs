@@ -541,7 +541,7 @@ fn physical_cleanup_worker(
         let crate::native_mount::tests::retirement::Fixture {
             root,
             mut session,
-            work,
+            work: _,
             fence,
         } = crate::native_mount::tests::retirement::Fixture::new()
             .expect("original destination fence");
@@ -554,7 +554,6 @@ fn physical_cleanup_worker(
             #[cfg(windows)]
             warm_namespace: None,
         };
-        let before = work.receipt();
         let result = packet.retire(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Physical,
@@ -563,14 +562,14 @@ fn physical_cleanup_worker(
             packet.is_retired(),
             "recording outcome stranded physically acknowledged source or destination custody: {result:?}"
         );
-        crate::native_mount::tests::retirement::retired(root.path(), &fence, before, &work)
+        crate::native_mount::tests::retirement::retired(root.path(), &fence)
             .expect("original destination custody retires before reporting the source outcome");
         return result.map(|_| true);
     }
     #[cfg(target_os = "linux")]
     if matches!(path, PhysicalCleanupPath::FuseLoop) {
         return crate::native_mount::fuse::tests::retirement::retire_source_in_physical_loop(
-            mounted,
+            mounted, None,
         );
     }
     #[cfg(target_os = "macos")]
@@ -757,12 +756,23 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
                 .await
         });
         if limited {
-            assert!(matches!(
-                result,
-                Err(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::Work(_)
-                ))
-            ));
+            // The view's retained reader/index is admitted before the detached
+            // file itself; either boundary must preserve the typed refusal.
+            assert!(
+                matches!(
+                    &result,
+                    Err(
+                        MountSourceError::Work(crate::WorkError::BudgetExceeded { .. })
+                            | MountSourceError::NativeWork(
+                                crate::NativeTreeMaterializationError::Work(
+                                    crate::WorkError::BudgetExceeded { .. }
+                                )
+                            )
+                    )
+                ),
+                "detached admission returned {:?}",
+                result.as_ref().err()
+            );
         } else {
             assert!(result?.read_up_to_with_meter(0, 1, &work)?.bytes.is_empty());
         }

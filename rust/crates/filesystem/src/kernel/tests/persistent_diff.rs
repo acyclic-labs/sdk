@@ -194,6 +194,75 @@ async fn leaf_diff_reports_sorted_add_delete_modify_and_exact_truncation()
     .await?;
     assert_eq!(exact.changes.len(), 1);
     assert!(!exact.truncated);
+    #[cfg(not(target_arch = "wasm32"))]
+    for native in [false, true] {
+        let budget = crate::performance::BOUNDARY_BUDGET;
+        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut accounting = if native {
+            KernelAccounting::native(&original, &cancellation)
+        } else {
+            KernelAccounting::standalone(budget, &cancellation)
+        };
+        let (retained, allocation) = diff_tree_entries_with_accounting(
+            &store,
+            Some(before),
+            Some(after),
+            8,
+            DecodeLimits::default(),
+            &mut accounting,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(retained.changes, complete.changes);
+        let physical = (retained.changes.capacity()
+            * std::mem::size_of::<ValueChange<LogicalName, TreeEntry>>())
+            as u64
+            + retained
+                .changes
+                .iter()
+                .map(|change| {
+                    change.key.logical_owned_bytes()
+                        + change
+                            .before
+                            .iter()
+                            .chain(&change.after)
+                            .map(|entry| entry.name.logical_owned_bytes())
+                            .sum::<u64>()
+                })
+                .sum::<u64>();
+        assert_eq!(
+            retained.retained_allocation_bytes, physical,
+            "vector growth released moved name capacity"
+        );
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline + physical);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                physical
+            );
+        }
+        drop(retained);
+        retire_allocation(allocation, physical, &mut accounting)?;
+        if native {
+            assert_eq!(original.live_allocation_bytes(), baseline);
+        } else {
+            assert_eq!(
+                accounting
+                    .standalone_parts()
+                    .ok_or(WorkError::Overflow)?
+                    .0
+                    .live_bytes(),
+                0
+            );
+        }
+    }
     Ok(())
 }
 
@@ -558,76 +627,83 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 #[tokio::test]
 async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
 -> Result<(), Box<dyn std::error::Error>> {
-    let backend = MemoryObjectStore::new(1024 * 1024)?;
-    let mut before_children = Vec::new();
-    let mut after_children = Vec::new();
-    for index in 0_u8..7 {
-        let child_name = name(&format!("shared-{index:02}"))?;
-        let child = put(
-            &backend,
-            &TreePage::Leaf(vec![TreeEntry {
-                name: child_name.clone(),
-                file_id: FileId::from_bytes([index; 16]),
-                kind: FileKind::Regular,
-            }]),
-            8,
+    let mut copied = None;
+    for shared in [1_u8, 7] {
+        let backend = MemoryObjectStore::new(1024 * 1024)?;
+        let mut before_children = Vec::new();
+        let mut after_children = Vec::new();
+        for index in 0_u8..shared {
+            let child_name = name(&format!("shared-{index:02}"))?;
+            let child = put(
+                &backend,
+                &TreePage::Leaf(vec![TreeEntry {
+                    name: child_name.clone(),
+                    file_id: FileId::from_bytes([index; 16]),
+                    kind: FileKind::Regular,
+                }]),
+                8,
+            )
+            .await?;
+            let descriptor = Child {
+                first: child_name,
+                page: child,
+            };
+            before_children.push(descriptor.clone());
+            after_children.push(descriptor);
+        }
+        let changed_name = name("z")?;
+        let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]), 8).await?;
+        let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]), 8).await?;
+        before_children.push(Child {
+            first: changed_name.clone(),
+            page: before_leaf,
+        });
+        after_children.push(Child {
+            first: changed_name,
+            page: after_leaf,
+        });
+        let before = put(&backend, &TreePage::Internal(before_children), 8).await?;
+        let after = put(&backend, &TreePage::Internal(after_children), 8).await?;
+        let store = CachedObjectStore::new(
+            backend,
+            ObjectCacheOptions {
+                maximum_entries: 8,
+                maximum_bytes: 1024 * 1024,
+            },
+        )?;
+        let cancellation = CancellationToken::new();
+        let cold = diff(
+            &store,
+            Some(before),
+            Some(after),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
         )
         .await?;
-        let descriptor = Child {
-            first: child_name,
-            page: child,
-        };
-        before_children.push(descriptor.clone());
-        after_children.push(descriptor);
-    }
-    let changed_name = name("z")?;
-    let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]), 8).await?;
-    let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]), 8).await?;
-    before_children.push(Child {
-        first: changed_name.clone(),
-        page: before_leaf,
-    });
-    after_children.push(Child {
-        first: changed_name,
-        page: after_leaf,
-    });
-    let before = put(&backend, &TreePage::Internal(before_children), 8).await?;
-    let after = put(&backend, &TreePage::Internal(after_children), 8).await?;
-    let store = CachedObjectStore::new(
-        backend,
-        ObjectCacheOptions {
-            maximum_entries: 8,
-            maximum_bytes: 1024 * 1024,
-        },
-    )?;
-    let cancellation = CancellationToken::new();
-    let cold = diff(
-        &store,
-        Some(before),
-        Some(after),
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(cold.changes.len(), 1);
+        assert_eq!(cold.changes.len(), 1);
 
-    let warm = diff(
-        &store,
-        Some(before),
-        Some(after),
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .await?;
-    assert_eq!(warm.changes, cold.changes);
-    assert_eq!(warm.work.backend_read_operations, 0);
-    assert_eq!(warm.work.object_bytes_read, 0);
-    assert_eq!(warm.work.page_reads, 4);
-    // Only the two result names and their sorted-map routing key are copied.
-    assert_eq!(warm.work.bytes_copied, 3);
-    assert_eq!(store.stats()?.decoded_hits, 4);
+        let warm = diff(
+            &store,
+            Some(before),
+            Some(after),
+            1,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        assert_eq!(warm.changes, cold.changes);
+        assert_eq!(warm.work.backend_read_operations, 0);
+        assert_eq!(warm.work.object_bytes_read, 0);
+        assert_eq!(warm.work.page_reads, 4);
+        // Growing the frontier moves its frames; increasing internal fanout must
+        // add no copies of routing keys or unchanged leaf values.
+        if let Some(copied) = copied {
+            assert_eq!(warm.work.bytes_copied, copied);
+        }
+        copied = Some(warm.work.bytes_copied);
+        assert_eq!(store.stats()?.decoded_hits, 4);
+    }
     Ok(())
 }
 

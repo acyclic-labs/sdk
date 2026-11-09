@@ -48,7 +48,8 @@ pub(crate) struct Poisoned;
 /// Mutations hold one leaf lock with no await. Removed and rejected values
 /// retire after releasing the guard, before their allocation owners can lock.
 /// Private backing makes every adapter use the same revision transition.
-pub(crate) struct MemoryRecords<K, V>(Mutex<BTreeMap<K, V>>);
+// Keep large record bodies out of B-tree insertion and split frames.
+pub(crate) struct MemoryRecords<K, V>(Mutex<BTreeMap<K, Box<V>>>);
 
 impl<K, V> Default for MemoryRecords<K, V> {
     fn default() -> Self {
@@ -57,7 +58,7 @@ impl<K, V> Default for MemoryRecords<K, V> {
 }
 
 impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
-    fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, V>) -> T) -> Result<T, Poisoned> {
+    fn locked<T>(&self, action: impl FnOnce(&mut BTreeMap<K, Box<V>>) -> T) -> Result<T, Poisoned> {
         let mut records = self.0.lock().map_err(|_| Poisoned)?;
         Ok(action(&mut records))
     }
@@ -66,7 +67,7 @@ impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
     where
         V: Clone,
     {
-        self.locked(|records| records.get(key).cloned())
+        self.locked(|records| records.get(key).map(|record| (**record).clone()))
     }
 
     /// Replaces `key` only at `expected` (zero means absent).
@@ -85,8 +86,9 @@ impl<K: Copy + Ord, V: Revisioned> MemoryRecords<K, V> {
     }
 
     fn update(&self, key: K, expected: u64, replacement: Option<V>) -> Result<bool, Poisoned> {
+        let replacement = replacement.map(Box::new);
         let (matched, retired) = self.locked(|records| match records.entry(key) {
-            Entry::Occupied(mut entry) if entry.get().revision() == expected => {
+            Entry::Occupied(mut entry) if entry.get().as_ref().revision() == expected => {
                 let retired = match replacement {
                     Some(value) => entry.insert(value),
                     None => entry.remove(),

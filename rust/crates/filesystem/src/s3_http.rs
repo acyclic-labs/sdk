@@ -11,7 +11,6 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, ObjectId,
     S3Error, S3ListCursor, S3ListOptions, StagedContent, StreamAuthorityStore, Workspace,
 };
-use acyclic_stream::StreamProvider;
 use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;
 use base64::Engine as _;

@@ -20,9 +20,12 @@ async fn capture(
     .value)
 }
 
-async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let source = tempfile::tempdir()?;
-    let file = source.path().join("file");
+async fn check(
+    empty: &crate::facade::MemoryCheckout,
+    source: &Path,
+    body: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let file = source.join("file");
     std::fs::write(&file, body)?;
     // Keep access time ahead of modification/change time so reading cannot
     // itself edit the metadata being compared (including Linux relatime).
@@ -43,13 +46,16 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let mut checkout = capture_policy_tests::native_checkout(&work).await?;
+    let mut checkout = empty.private_candidate(
+        &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+        &cancellation,
+    )?;
     let limits = checkout.volume_config().limits;
     let path =
         NamespacePath::from_portable(&crate::path::PortablePath::parse("/file", limits)?, limits)?;
     let options = CaptureOptions {
-        source_root: source.path().to_owned(),
-        expected_root_identity: capture_root_identity(source.path())?,
+        source_root: source.to_owned(),
+        expected_root_identity: capture_root_identity(source)?,
         maximum_paths: 8,
         maximum_extent_spans: 8,
     };
@@ -130,9 +136,14 @@ fn inline_capture_reuses_only_identical_staged_bytes() -> Result<(), Box<dyn std
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     runtime.block_on(async {
+        let setup =
+            NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let empty = capture_policy_tests::native_checkout(&setup).await?;
+        let source = tempfile::tempdir()?;
         for length in [0, 1, 7, 63, 64, 65] {
             for byte in [0, b'x'] {
-                check(&vec![byte; length]).await?;
+                check(&empty, source.path(), &vec![byte; length]).await?;
             }
         }
         Ok(())

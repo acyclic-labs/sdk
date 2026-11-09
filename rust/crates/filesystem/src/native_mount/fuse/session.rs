@@ -110,6 +110,10 @@ impl FuseSessionState {
             // The worker has physically exited even when its terminal value
             // failed. The same owner must still retire its source and fence.
         }
+        // No admitted request can retain a new page after its worker exits.
+        // Release parked consumers before waiting for their physical source.
+        let streams = std::mem::take(&mut core.state_to_finish().streams);
+        drop(streams);
         if let Some(retirement) = self.retirement.as_mut() {
             if let Err(error) = retirement.retire(None, join) {
                 if !retirement.is_retired() {
@@ -258,7 +262,7 @@ impl FuseSession {
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
             // Retain the join handle through unmount refusal and physical exit.
-            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
+            started.worker = Some(session.start(std::thread::Builder::new())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
             started.identity = Some(identity);

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/filesystem/src/kernel/allocation/writer.rs b/rust/crates/filesystem/src/kernel/allocation/writer.rs
+--- a/rust/crates/filesystem/src/kernel/allocation/writer.rs
++++ b/rust/crates/filesystem/src/kernel/allocation/writer.rs
+@@ -36,6 +36,9 @@
+     theirs: &str,
+     accounting: &mut KernelAccounting<'_>,
+ ) -> Result<acyclic_stream::OwnedBytes, FsError> {
++    let unadmitted = crate::text_merge::merge_text(base, ours, theirs, "ours", "theirs");
++    std::hint::black_box(&unadmitted);
++    drop(unadmitted);
+     let output = crate::text_merge::admitted::merge(
+         base,
+         ours,

@@ -111,6 +111,7 @@ async fn live_mount_shows_writes_through_a_name_outside_its_source()
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
 async fn live_mount_follows_concurrent_changes_to_its_source()
 -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::atomic::Ordering;
     const FILES: usize = 24;
     const WRITERS: usize = 4;
     const READERS: usize = 4;

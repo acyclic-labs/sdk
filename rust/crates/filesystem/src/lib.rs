@@ -136,7 +136,7 @@ mod kani_proofs;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod native_exchange;
+mod native_exchange;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod native_host;
@@ -333,24 +333,20 @@ pub use native_capture::{
     hold_search_root, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_exchange::{
-    NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
-    prepare_native_exchange, publish_native_exchange, recover_native_exchange,
-};
-#[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
     MaterializationReceipt, MaterializeError, MaterializeOptions, Mount, MountAttributePage,
-    MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
-    MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
-    MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    MountSourceRetirement, MountSparseRange, MountSparseSpan, NativeBlockCloneAccelerationEvidence,
-    NativeMountCapabilities, NativeMountCleanupState, NativeMountControlPaths,
-    NativeMountDrainProof, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
-    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWorkScope,
-    NativeSourceIoLease, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    MountContentPin, MountDirectoryCursor, MountDirectoryEntry, MountDirectoryPage,
+    MountFilesystem, MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile,
+    MountOptions, MountPath, MountPublication, MountRangeAllocation, MountSeekTarget,
+    MountSourceError, MountSourceRetirement, MountSparseRange, MountSparseSpan,
+    NativeBlockCloneAccelerationEvidence, NativeMountCapabilities, NativeMountCleanupState,
+    NativeMountControlPaths, NativeMountDrainProof, NativeMountError, NativeMountKind,
+    NativeMountRecoveryCleanupState, NativeMountRecoveryOwner, NativeMountRequest,
+    NativeMountSession, NativeMountWorkScope, NativeSourceIoLease,
+    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, SharedCheckout, SharedCheckoutState,
     detach_native_mount_destination_after_crash, initialize_native_mount_services,

@@ -268,7 +268,10 @@ where
         journal = completion.await?;
         let (_storage, selections) = install_selections(&journal, work)?;
         if !selections.is_empty() {
-            let (destination, _allocation) = materializer.backend.staging_path("")?;
+            let (destination, _allocation) = materializer.backend.work.path(
+                materializer.backend.operation_directory_path(),
+                Some(Path::new("target")),
+            )?;
             let options = crate::MaterializeOptions {
                 destination,
                 expected_root_identity: Some(identity),

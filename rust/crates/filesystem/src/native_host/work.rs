@@ -64,6 +64,14 @@ pub(crate) trait NativeHostWork {
     fn check(&self) -> Result<(), Self::Error>;
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
+    /// Admits a bounded local operation and records its actual work while the
+    /// original ledger or reserved credit is held exclusively. The operation
+    /// must not re-enter that owner.
+    fn with_admitted_work<T>(
+        &mut self,
+        maximum: WorkCounters,
+        operation: impl FnOnce() -> (T, WorkCounters),
+    ) -> Result<T, Self::Error>;
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error>;
     #[cfg(windows)]
@@ -110,6 +118,17 @@ impl DemandWorkContext for DemandWork {
     }
 }
 
+fn admitted_work<T>(
+    work: &mut DemandWork,
+    maximum: WorkCounters,
+    operation: impl FnOnce() -> (T, WorkCounters),
+) -> Result<T, DemandError> {
+    work.admit(maximum)?;
+    let (result, actual) = operation();
+    work.record(actual)?;
+    Ok(result)
+}
+
 impl<W: DemandWorkContext> NativeHostWork for W {
     type Error = DemandError;
     type Allocation = u64;
@@ -134,6 +153,13 @@ impl<W: DemandWorkContext> NativeHostWork for W {
     }
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.with_demand_work(|work| work.record(delta))
+    }
+    fn with_admitted_work<T>(
+        &mut self,
+        maximum: WorkCounters,
+        operation: impl FnOnce() -> (T, WorkCounters),
+    ) -> Result<T, Self::Error> {
+        self.with_demand_work(|work| admitted_work(work, maximum, operation))
     }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.with_demand_work(|work| work.charge(delta))
@@ -225,6 +251,14 @@ impl NativeHostWork for &NativeMaterializationWork {
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.record_admitted(delta)
     }
+    fn with_admitted_work<T>(
+        &mut self,
+        maximum: WorkCounters,
+        operation: impl FnOnce() -> (T, WorkCounters),
+    ) -> Result<T, Self::Error> {
+        self.with_original_leaf(|work| admitted_work(work, maximum, operation))
+            .map_err(Into::into)
+    }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.charge(delta)
     }
@@ -304,14 +338,9 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 /// Creates unbounded native work.
 #[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn ordinary_work() -> DemandWork {
-    #[cfg(not(loom))]
-    static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
-        std::sync::LazyLock::new(crate::CancellationToken::new);
-    #[cfg(loom)]
-    loom::lazy_static! {
-        static ref CANCELLATION: crate::CancellationToken = crate::CancellationToken::new();
-    }
-    DemandWork::new(WorkBudget::UNBOUNDED, &CANCELLATION)
+    // Each work owns its never-cancelled token: a process-global token would
+    // outlive every model execution whose primitives it holds.
+    DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
 }
 
 /// Maps native demand failures to I/O errors.

@@ -70,11 +70,13 @@ mod work;
 pub(crate) use work::*;
 mod cwd;
 #[cfg(unix)]
+pub(crate) use cwd::canonical_directory_path_held;
+#[cfg(unix)]
 use cwd::cwd_metadata_flags;
+#[cfg(all(unix, any(test, feature = "native-watch")))]
+pub(crate) use cwd::normalize_root_path;
 #[cfg(all(test, windows))]
 pub(crate) use cwd::short_path;
-#[cfg(all(unix, any(test, feature = "native-watch")))]
-pub(crate) use cwd::{canonical_directory_path_held, normalize_root_path};
 #[cfg(windows)]
 pub(crate) use cwd::{canonical_directory_wide, fold_case_wide, long_path_wide};
 #[cfg(unix)]
@@ -84,6 +86,9 @@ pub(crate) use unix_path::*;
 mod open;
 pub(crate) use open::*;
 pub use open::{file_transfer, read_regular_file};
+#[cfg(all(not(loom), any(test, feature = "fuzzing")))]
+#[doc(hidden)]
+pub use open::{check_native_root_name_prefix, check_prepared_ascii_leaf};
 mod mutation;
 pub(crate) use mutation::*;
 mod leaf;
@@ -97,6 +102,12 @@ pub(crate) use macos_metadata::*;
 pub(crate) use metadata::set_posix_mode_held;
 mod stat;
 pub(crate) use stat::*;
+#[cfg(unix)]
+mod device;
+#[cfg(all(feature = "fuzzing", any(target_os = "linux", target_os = "macos")))]
+pub use device::check_device_codec;
+#[cfg(unix)]
+pub(crate) use device::*;
 #[cfg(test)]
 #[cfg(windows)]
 pub(crate) mod stat_probe;

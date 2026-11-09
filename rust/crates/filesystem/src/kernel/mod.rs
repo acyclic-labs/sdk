@@ -56,6 +56,8 @@ mod persistent_io;
 mod persistent_pagination;
 mod persistent_point;
 pub use persistent_point::Owned;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use persistent_point::reserve_native_buffer;
 mod probe;
 mod publication;
 mod publication_evidence;
@@ -104,7 +106,6 @@ pub(crate) use persistent_point::split_allocation;
 pub(crate) use probe::WorkingRebaseProbe;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use publication::publish_generation_async_guarded_with_native_work;
-pub(crate) use range::plan_extent_range_with_accounting;
 pub(crate) use rebase::{
     ClassifyRebaseFailure, CommitFootprint, Settled, classify_rebase_settling_with_accounting,
 };

@@ -34,29 +34,38 @@ fn inputs(
     (observed, paths)
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
-
-    #[test]
-    fn original_host_checkout_union_preserves_facts_and_linear_funded_work(
-        host in prop::collection::btree_set(any::<u8>(), 0..65),
-        checkout in prop::collection::btree_set(any::<u8>(), 0..65),
-    ) {
+#[test]
+fn original_host_checkout_union_preserves_facts_and_linear_funded_work() {
+    // Every generated union consumes the same immutable native metadata. Keep
+    // its real no-follow producer alive without rebuilding its host fixture.
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("host"), b"original").unwrap();
+    let setup =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let root = HostRoot::open(source.path(), &mut &setup).unwrap();
+    #[cfg(unix)]
+    let leaf = Path::new("host");
+    #[cfg(windows)]
+    let leaf: Vec<_> = "host".encode_utf16().collect();
+    let stat = root.stat(&leaf, &mut &setup).unwrap();
+    let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+        cases: 64,
+        source_file: Some(file!()),
+        test_name: Some(concat!(
+            module_path!(),
+            "::original_host_checkout_union_preserves_facts_and_linear_funded_work"
+        )),
+        ..ProptestConfig::default()
+    });
+    runner.run(&(
+        prop::collection::btree_set(any::<u8>(), 0..65),
+        prop::collection::btree_set(any::<u8>(), 0..65),
+    ), |(host, checkout)| {
         let cancellation = CancellationToken::new();
         let original = NativeMaterializationWork::new(
             crate::performance::work_budget(100_000, 8 * 1024 * 1024),
             &cancellation,
         ).unwrap();
-        // Metadata is captured from the real no-follow host producer. An equal
-        // checkout name must retain these original facts and original path.
-        let source = tempfile::tempdir().unwrap();
-        std::fs::write(source.path().join("host"), b"original").unwrap();
-        let root = HostRoot::open(source.path(), &mut &original).unwrap();
-        #[cfg(unix)]
-        let leaf = Path::new("host");
-        #[cfg(windows)]
-        let leaf: Vec<_> = "host".encode_utf16().collect();
-        let stat = root.stat(&leaf, &mut &original).unwrap();
         let baseline = original.live_allocation_bytes();
         let scope = CaptureWorkScope::new(&original).unwrap();
         let (observed, paths) = inputs(&host, &checkout, &stat, &scope.native);
@@ -124,5 +133,6 @@ proptest! {
         let error = order_host_checkout_union(Vec::new(), Vec::new(), 0, &original).unwrap_err();
         prop_assert!(matches!(error, CaptureError::Kernel(error) if matches!(*error, crate::FsError::Cancelled(_))));
         prop_assert_eq!(original.live_allocation_bytes(), baseline);
-    }
+        Ok(())
+    }).unwrap();
 }
