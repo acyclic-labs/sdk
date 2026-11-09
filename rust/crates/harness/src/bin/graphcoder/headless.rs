@@ -529,11 +529,7 @@ pub(super) async fn prompt(
     loop {
         let reason = match conversation.settle(operation, inbox, &mut events).await? {
             Settlement::Reply(Reply::Answered { entry, .. }) => {
-                let code = print(conversation, &entry, output).await?;
-                let TurnOutcome::Failed { message } = &entry.outcome else {
-                    return Ok(code);
-                };
-                message.clone()
+                return print(conversation, &entry, output).await;
             }
             Settlement::Reply(_) => conversation.dropped().await?,
             Settlement::Ended(reason) => reason,
@@ -603,13 +599,11 @@ async fn print(
     let mut text = conversation.output_text(entry).await?;
     text.push('\n');
     output.write(conversation.task(), text.into_bytes()).await?;
-    if entry.outcome.is_completed() {
-        return Ok(());
+    match &entry.outcome {
+        TurnOutcome::Completed => Ok(()),
+        TurnOutcome::Failed { message } => Err(Box::new(Exit::failed(message.clone()))),
+        outcome => Err(Box::new(Exit::failed(format!("the turn {outcome:?}")))),
     }
-    Err(Box::new(Exit::failed(format!(
-        "the turn {:?}",
-        entry.outcome
-    ))))
 }
 
 /// The printed answer of prompt `id`, settled as `entry`.
