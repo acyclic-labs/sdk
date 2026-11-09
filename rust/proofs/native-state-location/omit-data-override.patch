@@ -1,0 +1,21 @@
+--- a/rust/crates/harness-core/src/native_environment.rs
++++ b/rust/crates/harness-core/src/native_environment.rs
+@@ -126,18 +126,6 @@
+             .map(PathBuf::into_os_string),
+         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+         Read::State(None) => {
+-            // Native directory APIs can ignore process-level overrides. Resolve
+-            // the caller's explicit root before consulting the platform default.
+-            let variable = if cfg!(windows) {
+-                "LOCALAPPDATA"
+-            } else {
+-                "XDG_DATA_HOME"
+-            };
+-            if let Some(directory) =
+-                std::env::var_os(variable).filter(|value| Path::new(value).is_absolute())
+-            {
+-                return Some(directory);
+-            }
+             dirs::data_local_dir()
+                 .filter(|directory| directory.is_absolute())
+                 .map(PathBuf::into_os_string)

@@ -99,12 +99,16 @@ pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, 
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-/// Resolves the native home directory for an ambient composition.
+/// Resolves an absolute native home directory for an ambient composition.
+/// Returns `None` when the platform supplies no absolute home.
 pub fn home() -> Option<PathBuf> {
     resolve(Read::Home).map(PathBuf::from)
 }
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-/// Resolves an explicitly injected state root or the native data directory.
+/// Resolves an injected root, an absolute data-directory override, or the native default.
+/// The environment override is `LOCALAPPDATA` on Windows and `XDG_DATA_HOME`
+/// elsewhere. Empty or relative environment values use an absolute platform
+/// default, or return `None` if no absolute default is available.
 pub fn state(injected: Option<&Path>) -> Option<PathBuf> {
     resolve(Read::State(injected)).map(PathBuf::from)
 }
@@ -117,18 +121,26 @@ fn resolve(read: Read<'_>) -> Option<OsString> {
     match read {
         Read::Variable(name) => std::env::var_os(name),
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        Read::Home => dirs::home_dir().map(PathBuf::into_os_string),
+        Read::Home => dirs::home_dir()
+            .filter(|directory| directory.is_absolute())
+            .map(PathBuf::into_os_string),
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::State(None) => {
-            // Known Folder lookup does not honor an explicitly isolated Windows
-            // profile. All native owners must use the caller's local-data root.
-            #[cfg(windows)]
+            // Native directory APIs can ignore process-level overrides. Resolve
+            // the caller's explicit root before consulting the platform default.
+            let variable = if cfg!(windows) {
+                "LOCALAPPDATA"
+            } else {
+                "XDG_DATA_HOME"
+            };
             if let Some(directory) =
-                std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty())
+                std::env::var_os(variable).filter(|value| Path::new(value).is_absolute())
             {
                 return Some(directory);
             }
-            dirs::data_local_dir().map(PathBuf::into_os_string)
+            dirs::data_local_dir()
+                .filter(|directory| directory.is_absolute())
+                .map(PathBuf::into_os_string)
         }
         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
         Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),
@@ -140,36 +152,70 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    #[cfg(all(windows, feature = "filesystem-local"))]
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     #[test]
-    fn native_state_honors_literal_local_app_data() {
+    fn native_state_honors_literal_data_override() {
         const EXPECTED: &str = "ACYCLIC_STATE_LOCATION_TEST";
+        const NATIVE_DEFAULT: &str = "native-default";
         if let Some(expected) = variable(EXPECTED) {
-            assert_eq!(state(None), Some(PathBuf::from(&expected)));
-            let injected = PathBuf::from(expected).join("explicit");
+            let expected = if expected == NATIVE_DEFAULT {
+                dirs::data_local_dir().filter(|directory| directory.is_absolute())
+            } else {
+                (!expected.is_empty()).then(|| PathBuf::from(&expected))
+            };
+            #[cfg(unix)]
+            if expected.is_none() {
+                assert!(home().is_none(), "relative HOME reached user settings");
+            }
+            assert_eq!(state(None), expected);
+            let injected = PathBuf::from("explicit");
             assert_eq!(state(Some(&injected)), Some(injected));
             return;
         }
         let fixture = tempfile::tempdir().unwrap();
         let local = fixture.path().join("local & % data-λ");
         std::fs::create_dir(&local).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "native_environment::tests::native_state_honors_literal_local_app_data",
-                "--test-threads=1",
-            ])
-            .env("LOCALAPPDATA", &local)
-            .env(EXPECTED, &local)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        let variable = if cfg!(windows) {
+            "LOCALAPPDATA"
+        } else {
+            "XDG_DATA_HOME"
+        };
+        let empty = std::ffi::OsStr::new("");
+        for (directory, invalid_home) in [
+            (local.as_os_str(), false),
+            (empty, false),
+            (std::ffi::OsStr::new("relative-data"), false),
+            #[cfg(unix)]
+            (std::ffi::OsStr::new("relative-data"), true),
+        ] {
+            let expected = if invalid_home {
+                empty
+            } else if Path::new(directory).is_absolute() {
+                directory
+            } else {
+                std::ffi::OsStr::new(NATIVE_DEFAULT)
+            };
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "native_environment::tests::native_state_honors_literal_data_override",
+                    "--test-threads=1",
+                ])
+                .env(variable, directory)
+                .env(EXPECTED, expected);
+            if invalid_home {
+                command.env("HOME", "relative-home");
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        }
     }
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
