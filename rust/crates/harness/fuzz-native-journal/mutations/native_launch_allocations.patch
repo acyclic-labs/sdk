@@ -1,4 +1,8 @@
 --- a/rust/crates/harness/src/local/host_process/launch.rs
 +++ b/rust/crates/harness/src/local/host_process/launch.rs
-@@ -222,0 +223 @@
+@@ -246,4 +246,5 @@
+         }
+     }
 +    drop(arguments.clone());
+     Ok(arguments)
+ }
