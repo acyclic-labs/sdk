@@ -20,7 +20,7 @@ struct Opening {
     #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
     diagnostics: Vec<crate::mcp::McpServerFailure>,
     #[cfg(any(test, feature = "native-execution"))]
-    native_mounts: bool,
+    native_execution: bool,
 }
 
 struct Storage {
@@ -121,11 +121,8 @@ impl Opening {
         let shell = tools
             .get(crate::tools::shell::PLATFORM.name, None, None)?
             .is_some();
-        // Physical mounting runs commands in plain directories and captures
-        // their effects from userspace, so it projects no native volume.
         #[cfg(any(test, feature = "native-execution"))]
-        let native_mounts =
-            (passive || shell) && config.workspace_mounting == WorkspaceMounting::Native;
+        let native_execution = passive || shell;
         let compaction_choice = config.compaction.take();
         Ok(Self {
             config,
@@ -142,7 +139,7 @@ impl Opening {
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             diagnostics: Vec::new(),
             #[cfg(any(test, feature = "native-execution"))]
-            native_mounts,
+            native_execution,
         })
     }
 
@@ -214,12 +211,18 @@ impl Opening {
     /// is missing and its recovery. Opening stops at the first.
     fn host_refusals(&self) -> Vec<Error> {
         #[cfg(any(test, feature = "native-execution"))]
-        let native = self.native_mounts;
+        let native = self.native_execution;
         #[cfg(not(any(test, feature = "native-execution")))]
         let native = true;
         let mut refusals = self.config.native_refusals(native);
         refusals.extend(self.config.state_refusals());
         refusals
+    }
+
+    // Physical commands use the same native shell preflight, but project no volume.
+    #[cfg(any(test, feature = "native-execution"))]
+    fn native_mounts(&self) -> bool {
+        self.native_execution && self.config.workspace_mounting == WorkspaceMounting::Native
     }
 
     fn storage(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<Storage>> {
@@ -231,7 +234,7 @@ impl Opening {
         #[cfg(any(test, feature = "native-execution"))]
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
-        if self.native_mounts {
+        if self.native_mounts() {
             acyclic_fs::initialize_native_mount_services_async()
                 .await
                 .map_err(storage)?;
@@ -353,7 +356,7 @@ impl Opening {
             scratch,
             directory,
             operation: workspace::attach_operation(owner.task),
-            native_mounts: self.native_mounts,
+            native_mounts: self.native_mounts(),
             mounting: self.config.workspace_mounting,
             authority: Some((issuer, owner.agent)),
         };

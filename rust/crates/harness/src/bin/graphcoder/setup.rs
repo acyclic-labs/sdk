@@ -152,7 +152,7 @@ pub(super) async fn doctor(args: &Args) -> Result<(), Failure> {
         }
         refusals.push(format!("{message}; recovery: correct the reported startup prerequisite and rerun graphcoder doctor"));
     }
-    notes.push("filesystem mode: native mounts (FUSE on Linux); no-FUSE plain-directory execution is not available in this build".into());
+    notes.push("filesystem mode: --workspace-mounting selects native mounts or physical directories; auto probes native availability".into());
     notes.push("shell and state directory: checked by shared native host preflight".into());
     let mut output = std::io::stdout().lock();
     for note in notes {
