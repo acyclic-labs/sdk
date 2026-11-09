@@ -60,6 +60,40 @@ impl Default for Credentials {
 }
 
 impl Credentials {
+    /// Read-only availability check. Never formats a backend error, which may
+    /// contain protected platform details.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn keychain_available() -> bool {
+        keyring::Entry::new("acyclic-harness", "doctor")
+            .is_ok_and(|entry| matches!(entry.get_password(), Ok(_) | Err(keyring::Error::NoEntry)))
+    }
+
+    /// Stores a host credential in the same OS service used by discovery.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn store_api_key(provider: &str, key: &str) -> Result<()> {
+        if key.trim().is_empty() {
+            return Err(super::invalid(
+                "API key is empty; recovery: paste a provider API key",
+            ));
+        }
+        keyring::Entry::new("acyclic-harness", provider)
+            .and_then(|entry| entry.set_password(key.trim()))
+            .map_err(|_| super::invalid("cannot store provider key in OS keychain service acyclic-harness; recovery: unlock the OS keychain and run graphcoder again"))
+    }
+
+    /// Removes only this provider's entry, for host credential lifecycle owners.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn remove_api_key(provider: &str) -> Result<()> {
+        match keyring::Entry::new("acyclic-harness", provider)
+            .and_then(|entry| entry.delete_credential())
+        {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(super::invalid(
+                "cannot remove provider key; recovery: unlock the OS keychain",
+            )),
+        }
+    }
+
     /// The source after keychain, environment and configuration: an existing
     /// Codex CLI login, discovered only when native sources are allowed.
     #[cfg(not(target_arch = "wasm32"))]

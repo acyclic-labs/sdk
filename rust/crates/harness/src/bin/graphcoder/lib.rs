@@ -9,6 +9,7 @@ acyclic_test_support::counting_allocator!();
 mod args;
 mod headless;
 mod lifecycle;
+mod setup;
 mod usage_export;
 mod view;
 
@@ -193,12 +194,8 @@ async fn execute(
 /// under the workspace's native settings and search.
 fn configure(
     args: &Args,
-    credentials: Credentials,
+    registry: Registry,
 ) -> Result<LocalHarnessConfig, Box<dyn std::error::Error>> {
-    let mut registry = Registry::new(credentials)?;
-    if let Some(path) = &args.catalog {
-        registry.load_catalog(path)?;
-    }
     let mut config = registry
         .graphcoder(&args.workspace, args.model.clone())
         .working_directory(&std::env::current_dir()?)?;
@@ -222,7 +219,7 @@ fn configure(
 
 // Own native phase futures separately from the CLI orchestration frame.
 async fn run(
-    args: Args,
+    mut args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
     shutdown: completion::Shutdown,
     event_output: Option<&mut headless::Output>,
@@ -251,35 +248,14 @@ async fn run(
     // is opened.
     if let Some(endpoint) = &args.endpoint {
         let connection = phase(|| Connection::connect_endpoint(endpoint.as_deref())).await?;
-        return connected(&args, connection, output, event_output).await;
+        return connected(&args, connection, output, event_output, None).await;
     }
-    let credentials = if args.default_config {
-        let configured = args
-            .credentials
-            .as_deref()
-            .map(|path| -> Result<Credentials, Box<dyn std::error::Error>> {
-                let bytes = std::fs::read(path)?;
-                serde_json::from_slice::<Credentials>(&bytes)
-                    .map_err(|_| "invalid provider credential file".into())
-            })
-            .transpose()?;
-        Credentials::explicit(
-            configured
-                .map(|credentials| credentials.api_keys)
-                .unwrap_or_default(),
-        )
-    } else {
-        args.credentials
-            .as_deref()
-            .map(Credentials::from_file)
-            .transpose()?
-            .unwrap_or_default()
-    };
-    let config = configure(&args, credentials);
     if matches!(args.command, Some(Command::Doctor)) {
-        return doctor(config).await;
+        return setup::doctor(&args).await;
     }
-    let config = config?;
+    let mut registry = setup::registry(&args)?;
+    let terminal = setup::first_run(&mut args, &mut registry)?;
+    let config = configure(&args, registry)?;
     if let Some(Command::Serve(serve)) = &args.command {
         let tls = match (&serve.tls_certificate, &serve.tls_key, &serve.url) {
             (Some(certificate), Some(key), Some(url)) => {
@@ -317,7 +293,7 @@ async fn run(
     }
     let local = Arc::new(phase(|| LocalHarness::open(config)).await?);
     let connection = phase(|| local.connect()).await?;
-    connected(&args, connection, output, event_output).await
+    connected(&args, connection, output, event_output, terminal).await
 }
 
 async fn host_workspace(
@@ -369,45 +345,12 @@ async fn host_workspace(
     Ok(())
 }
 
-/// Prints read-only prerequisite refusals, one per line with recovery.
-/// Persistent storage and signing authority are admitted only by execution.
-async fn doctor(
-    config: Result<LocalHarnessConfig, Box<dyn std::error::Error>>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write as _;
-    let refusals: Vec<String> = match config {
-        Ok(config) => LocalHarness::doctor(config)
-            .await
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-        Err(error) => vec![error.to_string()],
-    };
-    let mut output = std::io::stdout().lock();
-    for refusal in &refusals {
-        writeln!(output, "refused: {refusal}")?;
-    }
-    if refusals.is_empty() {
-        writeln!(
-            output,
-            "ok: local prerequisites checked; state and signing authority unopened"
-        )?;
-    }
-    output.flush()?;
-    if refusals.is_empty() {
-        return Ok(());
-    }
-    Err(Box::new(Exit::failed(format!(
-        "{} startup refusal(s); a run with these flags does not start",
-        refusals.len()
-    ))))
-}
-
 async fn connected(
     args: &Args,
     connection: Connection,
     output: headless::Prepared,
     event_output: Option<&mut headless::Output>,
+    terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection = match &args.agent {
         Some(agent) => {
@@ -475,7 +418,14 @@ async fn connected(
         }
         return Ok(());
     }
-    drive(args, Conversation::open(connection), output, event_output).await
+    drive(
+        args,
+        Conversation::open(connection),
+        output,
+        event_output,
+        terminal,
+    )
+    .await
 }
 
 /// Drives `conversation` headless (`-p`, JSONL) or through the terminal view.
@@ -484,6 +434,7 @@ async fn drive(
     conversation: Arc<Conversation>,
     prepared: headless::Prepared,
     event_output: Option<&mut headless::Output>,
+    terminal: Option<acyclic_harness::tui::term::Tty>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let headless::Prepared { schema, projection } = prepared;
     let interactive = args.prompt.is_none()
@@ -500,8 +451,9 @@ async fn drive(
                 "--usage-jsonl and --transcripts require -p or --input-format jsonl".into(),
             );
         }
-        return phase(|| view::run(conversation, args.inline, args.resume)).await;
+        return phase(|| view::run(conversation, args.inline, args.resume, terminal)).await;
     }
+    drop(terminal);
     let usage_stdout = args
         .usage_jsonl
         .as_ref()

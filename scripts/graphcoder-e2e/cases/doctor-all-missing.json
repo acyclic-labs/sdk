@@ -1,0 +1,24 @@
+{
+  "id": "doctor-all-missing",
+  "workspace": { "kind": "plain", "files": { "state-blocker": "not a directory" } },
+  "settings": { "credentials.json": "{\"api_keys\":{\"e2e\":\"NEVER_PRINT_E2E_KEY\"},\"invalid\":true}" },
+  "authentication": "api_key",
+  "base_url": "http://127.0.0.1:1/v1",
+  "model": { "steps": [] },
+  "inputs": [{
+    "mode": "headless",
+    "args": ["--credentials", "{{workspace}}/../settings/credentials.json", "doctor"],
+    "environment": {
+      "PATH": "{{workspace}}/empty-path",
+      "TERM": "dumb",
+      "HOME": "{{workspace}}/state-blocker",
+      "LOCALAPPDATA": "{{workspace}}/state-blocker",
+      "XDG_DATA_HOME": "{{workspace}}/state-blocker",
+      "DBUS_SESSION_BUS_ADDRESS": "unix:path={{workspace}}/missing-bus"
+    },
+    "exit": 1,
+    "stdout_contains": ["credentials file:", "provider key unavailable", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "--credentials FILE", "keychain:", "terminal:", "shell:", "provider network is unreachable", "state directory:", "filesystem mode:", "recovery:"],
+    "stdout_absent": ["NEVER_PRINT_E2E_KEY", "ok: local prerequisites checked"]
+  }],
+  "assert": { "requests": 0 }
+}

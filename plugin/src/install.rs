@@ -21,20 +21,11 @@ pub(super) fn run(args: &[String]) -> Result<()> {
             return Err("installer options: --plugin-root PATH, --settings PATH".into());
         }
     }
-    if host == "codex" {
+    if host == "codex" && command != "doctor" {
         check_codex()?;
     }
     if command == "doctor" {
-        let plugins = if host == "codex" {
-            Some(codex_plugin_exchange(None)?)
-        } else {
-            None
-        };
-        println!(
-            "{}",
-            json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[],"native_plugins":plugins})
-        );
-        return Ok(());
+        return doctor(host);
     }
     let executable = env::current_exe()?.canonicalize()?;
     let package = option(args, "--plugin-root")
@@ -76,6 +67,41 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     println!(
         "{command} {host}: workspace-local files only; native permissions and sandbox retained"
     );
+    Ok(())
+}
+
+fn doctor(host: &str) -> Result<()> {
+    let mut refusals: Vec<String> =
+        acyclic_harness::local::LocalHarnessConfig::native_host(env::current_dir()?)
+            .native_preflight()
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+    let plugins = if host == "codex" {
+        match check_codex().and_then(|()| codex_plugin_exchange(None)) {
+            Ok(plugins) => Some(plugins),
+            Err(error) => {
+                refusals.push(format!(
+                    "{error}; recovery: install a supported Codex and rerun acyclic doctor codex"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    println!(
+        "{}",
+        json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[],"native_plugins":plugins,"refusals":refusals})
+    );
+    if !refusals.is_empty() {
+        return Err(format!(
+            "{} startup refusal(s): {}",
+            refusals.len(),
+            refusals.join("; ")
+        )
+        .into());
+    }
     Ok(())
 }
 

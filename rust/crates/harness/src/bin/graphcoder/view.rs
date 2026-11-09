@@ -579,12 +579,16 @@ pub async fn run(
     conversation: Arc<Conversation>,
     inline: bool,
     resume: bool,
+    terminal: Option<Tty>,
 ) -> Result<(), Failure> {
     let mut ui = session::Session::open(&conversation).await?;
     if !resume && ui.open_view().is_some() {
         ui.select(&conversation, None).await?;
     }
-    let mut tty = Tty::open()?;
+    let mut tty = match terminal {
+        Some(terminal) => terminal,
+        None => Tty::open()?,
+    };
     let profile = tty.negotiate(&Environment::capture())?.clone();
     tty.setup(if inline {
         ScreenMode::Inline
