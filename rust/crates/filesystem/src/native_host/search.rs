@@ -3,28 +3,67 @@
 //! process may cross but not list still anchors no-follow lookups below it.
 use super::*;
 
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_creation_retains_its_root_and_refuses_directory_aliases() -> Result<(), DemandError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = tempfile::tempdir()?;
+        let original = fixture.path().join("original");
+        let moved = fixture.path().join("moved");
+        let outside = fixture.path().join("outside");
+        std::fs::create_dir(&original)?;
+        std::fs::create_dir(&outside)?;
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o300))?;
+        let created = (|| {
+            let root = crate::hold_search_root(&original)?;
+            std::fs::rename(&original, &moved)?;
+            std::os::unix::fs::symlink(&outside, &original)?;
+            root.create_directories(Path::new("a/b"))?;
+            std::os::unix::fs::symlink(&outside, moved.join("alias"))?;
+            assert!(root.create_directories(Path::new("alias/escaped")).is_err());
+            Ok::<_, DemandError>(())
+        })();
+        // Restore listing permission before reporting any failure or cleanup.
+        let retained = if moved.exists() { &moved } else { &original };
+        std::fs::set_permissions(retained, std::fs::Permissions::from_mode(0o700))?;
+        created?;
+        assert!(moved.join("a/b").is_dir());
+        assert!(!outside.join("a").exists());
+        assert!(!outside.join("escaped").exists());
+        assert!(crate::hold_search_root(&original).is_err());
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 fn search_child<W: NativeHostWork>(
     parent: &Dir,
     name: &OsStr,
+    create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    unix_name(name, work, |name, work| {
-        open_unix(parent.as_raw_fd(), name, search_flags(), work).map(Dir::from_std_file)
-    })
+    open_unix_directory_with_flags(parent, name, create, search_flags(), work)
 }
 
 #[cfg(windows)]
 fn search_child<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
+    create: bool,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    open_windows_at(
+    open_windows_at_without_reparse(
         parent,
         name,
         SEARCH_ACCESS,
-        nt::FILE_OPEN,
+        if create {
+            nt::FILE_OPEN_IF
+        } else {
+            nt::FILE_OPEN
+        },
         nt::FILE_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,
     )
@@ -45,13 +84,13 @@ fn search_path<W: NativeHostWork>(
         let std::path::Component::Normal(name) = component else {
             return Err(W::invalid_request());
         };
-        current = search_child(&current, name, work)?;
+        current = search_child(&current, name, false, work)?;
     }
     #[cfg(windows)]
     with_wide_path(relative, work, |path, work| {
         for name in path.split(|unit| *unit == 92).filter(|_| !path.is_empty()) {
             work.started_io(ITEM)?;
-            current = search_child(&current, name, work)?;
+            current = search_child(&current, name, false, work)?;
         }
         Ok(())
     })?;
@@ -82,6 +121,28 @@ pub(crate) fn file_identity<W: NativeHostWork>(
 }
 
 impl HostRoot {
+    /// Creates missing descendants without acquiring directory-list access.
+    /// These disposable names are visible on return; no barrier is requested.
+    pub(crate) fn create_search_directories<W: NativeHostWork>(
+        &self,
+        relative: &Path,
+        work: &mut W,
+    ) -> Result<Self, W::Error> {
+        self.create_directories_with(
+            relative,
+            NativeDurability::Visibility,
+            work,
+            |directory, name, work| {
+                #[cfg(unix)]
+                return search_child(directory, name, true, work);
+                #[cfg(windows)]
+                with_wide_path(Path::new(name), work, |name, work| {
+                    search_child(directory, name, true, work)
+                })
+            },
+        )
+    }
+
     /// Holds the directory at `path` for search only. Intermediate path
     /// components need search permission as for any open; the directory
     /// itself is never opened for listing, and a final link is refused.

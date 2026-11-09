@@ -216,6 +216,23 @@ impl HostRoot {
         durability: NativeDurability,
         work: &mut W,
     ) -> Result<Self, W::Error> {
+        self.create_directories_with(relative, durability, work, |directory, name, work| {
+            #[cfg(unix)]
+            return open_unix_directory(directory, name, true, work);
+            #[cfg(windows)]
+            with_wide_path(Path::new(name), work, |name, work| {
+                open_windows_directory_handle(directory, name, true, work)
+            })
+        })
+    }
+
+    pub(super) fn create_directories_with<W: NativeHostWork>(
+        &self,
+        relative: &Path,
+        durability: NativeDurability,
+        work: &mut W,
+        open: impl Fn(&Dir, &OsStr, &mut W) -> Result<Dir, W::Error>,
+    ) -> Result<Self, W::Error> {
         let root = self.directory();
         let mut held: Option<Dir> = None;
         for component in relative.components() {
@@ -232,12 +249,7 @@ impl HostRoot {
             #[cfg(any(test, feature = "test-support"))]
             let directory = duplicate.as_ref().unwrap_or(directory);
             work.started_io(ITEM)?;
-            #[cfg(unix)]
-            let child = open_unix_directory(directory, name, true, work)?;
-            #[cfg(windows)]
-            let child = with_wide_path(Path::new(name), work, |name, work| {
-                open_windows_directory_handle(directory, name, true, work)
-            })?;
+            let child = open(directory, name, work)?;
             // Even an existing child may have just been created by another
             // opener. Persist its name before returning a capability whose
             // records callers may use as durable identity.
