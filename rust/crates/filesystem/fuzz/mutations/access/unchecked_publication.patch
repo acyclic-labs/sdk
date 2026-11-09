@@ -1,0 +1,12 @@
+--- a/rust/crates/filesystem/src/access/view.rs
++++ b/rust/crates/filesystem/src/access/view.rs
+@@ -98,9 +98,6 @@
+             .current
+             .write()
+             .map_err(|_| InvalidPolicy("access view publication failed"))?;
+-        if !can_replace(&current, &view) {
+-            return Err(InvalidPolicy("access view binding or revision changed"));
+-        }
+         let previous = std::mem::replace(&mut *current, view);
+         drop(current);
+         drop(previous);
