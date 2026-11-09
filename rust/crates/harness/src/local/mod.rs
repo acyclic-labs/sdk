@@ -45,6 +45,7 @@ mod observer;
 pub(crate) mod open;
 pub(crate) mod owner;
 mod owner_record;
+mod preflight;
 #[cfg(feature = "serve")]
 mod serve;
 #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]

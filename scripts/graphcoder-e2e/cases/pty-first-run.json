@@ -1,0 +1,25 @@
+{
+  "id": "pty-first-run",
+  "workspace": { "kind": "plain", "files": {} },
+  "keychain": true,
+  "first_run": true,
+  "authentication": "api_key",
+  "model": { "steps": [
+    { "when": { "user": "first configured prompt" }, "text": ["FIRST_CONFIGURED_ANSWER"] },
+    { "when": { "user": "next configured prompt" }, "text": ["NEXT_CONFIGURED_ANSWER"] }
+  ] },
+  "inputs": [
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder first run", "Provider:"] }, "send": "2\r" },
+      { "when": { "contains": ["API key (hidden):"] }, "send": "E2E_FIRST_RUN_NONSECRET\r" },
+      { "when": { "contains": ["Key saved in OS keychain service acyclic-harness", "Model:"] }, "assert": { "absent": ["E2E_FIRST_RUN_NONSECRET"] }, "send": "1\r" },
+      { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "prompt": "first configured prompt" },
+      { "when": { "contains": ["FIRST_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004" }
+    ] },
+    { "mode": "pty", "actions": [
+      { "when": { "contains": ["GraphCoder", "\u25cb"], "cursor": true }, "assert": { "absent": ["GraphCoder first run", "API key (hidden)"] }, "prompt": "next configured prompt" },
+      { "when": { "contains": ["NEXT_CONFIGURED_ANSWER", "\u25cb"] }, "send": "\u0004" }
+    ] }
+  ],
+  "assert": { "requests": 2, "wire_absent": ["E2E_FIRST_RUN_NONSECRET"], "each_model_absent": ["E2E_FIRST_RUN_NONSECRET"] }
+}

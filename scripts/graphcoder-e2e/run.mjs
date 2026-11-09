@@ -9,10 +9,10 @@
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
 // Unix requires python3 and a controlling PTY; no alternate GraphCoder runtime.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Spool, schedule } from "./process.mjs";
@@ -69,6 +69,7 @@ const started = 0; // Process start: suite time includes module load, as the env
 const json = (path, value) => writeFile(path, JSON.stringify(value, null, 2) + "\n");
 function expand(value, fixture) {
   return expandFixture(value, { support: directory.replaceAll("\\", "/"),
+    provider: fixture.provider,
     repository: resolve(directory, "../..").replaceAll("\\", "/"),
     workspace: fixture.workspace.replaceAll("\\", "/"),
     ...(port ? { url: `http://127.0.0.1:${port}/${nativeCases.has(fixture.id) ? 'native-' : ''}${fixture.id}/v1` } : {}) });
@@ -101,6 +102,7 @@ async function prepare(test, gitOrigin) {
   fixture.binary = binary;
   fixture.output = artifact;
   fixture.env = environment(fixture.settings, hostEnvironment);
+  fixture.provider = test.keychain ? `e2e-first-run-${randomUUID()}` : "e2e";
   if (nativeCases.has(test.id)) {
     fixture.url = `http://127.0.0.1:${port}/native-${test.id}/v1`;
     fixture.nativeCapability = nativeCapability;
@@ -112,10 +114,10 @@ async function prepare(test, gitOrigin) {
   } else await mkdir(fixture.workspace, { recursive: true });
   await mkdir(fixture.settings, { recursive: true });
   await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
-  const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: fixture.url,
+  const provider = { adapter: test.adapter ?? "responses", authentication: test.authentication ?? "optional", base_url: expand(test.base_url ?? fixture.url, fixture),
     models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
     token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-  await json(fixture.catalog, { e2e: provider });
+  await json(fixture.catalog, { ...(test.first_run ? { default_model: `${fixture.provider}/tiny` } : {}), [fixture.provider]: provider });
   fixture.env.E2E_MOCK_URL = fixture.url;
   fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
   fixture.requested = request => events.has(requestKey(test.id, request));
@@ -123,7 +125,8 @@ async function prepare(test, gitOrigin) {
     if (event.case === test.id) listener(event);
   });
   fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
-  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
+  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog,
+    ...(test.first_run ? [] : ["--model", `${fixture.provider}/tiny`])];
   // Tracing owns explicit text storage, including through the native PTY host.
   for (const option of ["diagnostic-records", "diagnostic-record-bytes"]) {
     const value = process.env[`E2E_${option.toUpperCase().replaceAll("-", "_")}`];
@@ -141,6 +144,7 @@ async function execute(test, prepared) {
     const messageId = "e2e";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
+      const inputFixture = { ...fixture, env: { ...fixture.env, ...input.environment } };
       if (input.mode === "conversation") {
         await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
           capture => captures.push(capture));
@@ -152,12 +156,12 @@ async function execute(test, prepared) {
       }
       if (input.mode === "pty") {
         const { pty } = await import("./pty.mjs");
-        await pty(processes, binary, fixture, input, capture => captures.push(capture));
+        await pty(processes, binary, inputFixture, input, capture => captures.push(capture));
         continue;
       }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
-      const running = await processes.startReported(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env });
+      const running = await processes.startReported(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: inputFixture.env });
       if (input.kill_on) {
         await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
@@ -174,6 +178,7 @@ async function execute(test, prepared) {
       else assert.equal(result.code, input.exit, `exit ${result.code} (signal ${result.signal}), expected ${input.exit}; stderr: ${result.stderr.trim() || "(empty)"}\nstdout tail: ${result.stdout.slice(-1500)}`);
       if (input.stdout_contains) for (const text of input.stdout_contains) assert.ok(result.stdout.includes(text), `missing stdout ${text}; stdout tail: ${result.stdout.slice(-1500) || "(empty)"}`);
       if (input.stderr_contains) for (const text of input.stderr_contains) assert.ok(result.stderr.includes(text), `missing stderr ${text}; stderr: ${result.stderr.trim().slice(-1500) || "(empty)"}`);
+      for (const text of input.stdout_absent ?? []) assert.ok(!result.stdout.includes(text), `unexpected stdout ${text}`);
       if (((input.exit ?? 0) === 0 && !input.args) || input.outcome !== undefined) {
         const settled = outcome(input, result, messageId);
         if (input.outcome !== undefined) {
@@ -198,6 +203,16 @@ async function execute(test, prepared) {
       preparation_seconds: preparationSeconds, product_seconds: productSeconds, ...failureReport(error),
       tree_failure: treeFailure, workspace: fixture.workspace };
   } finally {
+    if (test.keychain) {
+      try {
+        assert.ok(process.env.E2E_CREDENTIALS_FIXTURE && isAbsolute(process.env.E2E_CREDENTIALS_FIXTURE),
+          "E2E_CREDENTIALS_FIXTURE must name the absolute native provider credential fixture");
+        const removed = await processes.run(process.env.E2E_CREDENTIALS_FIXTURE, [fixture.provider], { env: fixture.env });
+        assert.equal(removed.code, 0, removed.stderr);
+      } catch (error) {
+        result = { ...result, status: "fail", credential_cleanup: failureReport(error) };
+      }
+    }
     result = await finishCase(result, interrupted, recovery);
     evidence.set(test.id, { captures });
   }
@@ -210,6 +225,7 @@ function verify(result, records) {
     requests(test, records);
     const client = JSON.stringify(captures);
     for (const text of test.assert.wire_contains ?? []) assert.ok(client.includes(text), `client wire missing ${text}`);
+    for (const text of test.assert.wire_absent ?? []) assert.ok(!client.includes(text), "client output exposed forbidden content");
     for (const [path, expected] of Object.entries(test.assert.files ?? {})) assert.equal(readFileSync(join(fixture.workspace, path), "utf8"), expected, path);
     for (const path of test.assert.absent_files ?? []) assert.ok(!existsSync(join(fixture.workspace, path)), `unexpected file ${path}`);
     for (const [path, expected] of Object.entries(test.assert.jsonl ?? {})) {

@@ -1,8 +1,54 @@
 use super::*;
 
 impl SettingsConfig {
+    /// Persist the selected model at the one user model setting. Preserve
+    /// other settings and atomically replace the document after a full write.
+    #[cfg(feature = "filesystem-local")]
+    pub fn set_model(&self, selection: &str) -> Result<()> {
+        use std::io::Write as _;
+        let path = self.codex_home.join("config.toml");
+        let mut settings: toml::Table = match self.model_settings()? {
+            Some(bytes) => std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| toml::from_str(text).ok())
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "cannot parse model settings; recovery: repair config.toml".into(),
+                    )
+                })?,
+            None => toml::Table::new(),
+        };
+        let (provider, model) = selection
+            .split_once('/')
+            .ok_or_else(|| Error::Invalid("expected provider/model".into()))?;
+        settings.insert("model".into(), toml::Value::String(model.into()));
+        settings.insert(
+            "model_provider".into(),
+            toml::Value::String(provider.into()),
+        );
+        let bytes = toml::to_string(&settings)
+            .map_err(|_| Error::Invalid("cannot encode model settings".into()))?;
+        std::fs::create_dir_all(&self.codex_home).map_err(Error::process_io)?;
+        let mut file =
+            tempfile::NamedTempFile::new_in(&self.codex_home).map_err(Error::process_io)?;
+        file.write_all(bytes.as_bytes())
+            .map_err(Error::process_io)?;
+        file.as_file().sync_all().map_err(Error::process_io)?;
+        file.persist(&path)
+            .map_err(|error| Error::process_io(error.error))?;
+        Ok(())
+    }
+
     /// Reads the user-configured model from this snapshot's explicit Codex root.
     pub fn configured_model(&self) -> Result<Option<String>> {
+        let Some(bytes) = self.model_settings()? else {
+            return Ok(None);
+        };
+        super::model_selection::parse(&bytes)
+            .map_err(|error| Error::Invalid(format!("settings model: {error}")))
+    }
+
+    fn model_settings(&self) -> Result<Option<Vec<u8>>> {
         let path = self.codex_home.join("config.toml");
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
@@ -23,8 +69,7 @@ impl SettingsConfig {
                 "settings file exceeds its read bound".into(),
             ));
         }
-        super::model_selection::parse(&bytes)
-            .map_err(|error| Error::Invalid(format!("settings model: {error}")))
+        Ok(Some(bytes))
     }
 }
 
@@ -53,6 +98,16 @@ mod tests {
                 crate::native_settings::codec_fuzz::check(encoded.as_bytes()).unwrap();
                 let provider = selected_provider.unwrap_or("openai");
                 prop_assert_eq!(config.configured_model().unwrap(), Some(format!("{provider}/{model}")));
+                #[cfg(feature = "filesystem-local")]
+                {
+                    let path = config.codex_home.join("config.toml");
+                    std::fs::write(&path, format!("{encoded}\n[unrelated]\nkeep = true\n")).unwrap();
+                    let selection = format!("{provider}/{model}/chosen");
+                    config.set_model(&selection).unwrap();
+                    prop_assert_eq!(config.configured_model().unwrap(), Some(selection));
+                    let retained: toml::Table = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+                    prop_assert_eq!(retained.get("unrelated").unwrap().get("keep").unwrap().as_bool(), Some(true));
+                }
             }
         }
         #[test]

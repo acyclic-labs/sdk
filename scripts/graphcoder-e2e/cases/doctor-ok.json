@@ -1,0 +1,15 @@
+{
+  "id": "doctor-ok",
+  "workspace": { "kind": "plain", "files": {} },
+  "settings": { "credentials.json": "{\"api_keys\":{\"e2e\":\"E2E_DOCTOR_NONSECRET\"}}" },
+  "authentication": "api_key",
+  "model": { "steps": [] },
+  "inputs": [{
+    "mode": "headless",
+    "args": ["--credentials", "{{workspace}}/../settings/credentials.json", "-p", "hello", "doctor"],
+    "stdout_contains": ["provider credentials: available", "provider network: reachable", "keychain:", "terminal: ready", "filesystem mode:", "shell and state directory:", "ok: a run with these flags starts"],
+    "stdout_absent": ["E2E_DOCTOR_NONSECRET", "refused:"],
+    "exit": 0
+  }],
+  "assert": { "requests": 0, "http": [{ "method": "HEAD", "step": null }] }
+}

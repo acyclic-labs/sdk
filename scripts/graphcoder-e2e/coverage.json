@@ -8,6 +8,9 @@
       "cases": [
         "cli-help",
         "cli-invalid-option",
+        "doctor-all-missing",
+        "doctor-ok",
+        "pty-first-run",
         "text-responses"
       ]
     },
