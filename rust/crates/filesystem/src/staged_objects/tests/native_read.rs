@@ -569,7 +569,7 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             ] {
                 let budget = WorkBudget {
                     items_returned: requests.len() as u64 + u64::from(native),
-                    ..native_read_budget()
+                    ..native_batch_read_budget(requests.len() + usize::from(native))?
                 };
                 let original =
                     NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
@@ -689,52 +689,6 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
             }
         }
     }
-    // The real provider still has both durable identities in its index, but
-    // its original pinned log can no longer supply their bytes. A private
-    // member must not make that completed failure wait on its spill lease.
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(directory.path().join("objects").join("log"))?
-        .set_len(0)?;
-    for native in [false, true] {
-        for stored in [false, true] {
-            let original = NativeMaterializationWork::new(native_read_budget(), &token)
-                .map_err(|(error, _)| error)?;
-            let baseline = original.live_allocation_bytes();
-            let mut work = if native {
-                AuthorityWork::native(&original, &token)
-            } else {
-                AuthorityWork::new(native_read_budget(), &token)
-            };
-            let spill_file = store.spill_io.write().await;
-            assert!(matches!(store.lookup(first), Lookup::Spilled { .. }));
-            let failed_requests = [
-                durable_requests[0],
-                ObjectReadRequest {
-                    object_id: first,
-                    maximum_bytes: first_bytes.len() as u64,
-                },
-                durable_requests[1],
-            ];
-            let result = if stored {
-                store.read_many_stored(&failed_requests, &mut work).await
-            } else {
-                store.read_many(&failed_requests, &mut work).await
-            };
-            let Err(ObjectStoreError::LogicalObjects(error)) = result else {
-                panic!("the original durable read must report its unavailable log");
-            };
-            assert_eq!(error.code, acyclic_objects::wire::ErrorCode::Unavailable);
-            assert_eq!(work.spent().object_probes, 2);
-            assert_eq!(work.spent().object_bytes_read, 0);
-            assert_eq!(work.spent().bytes_hashed, 0);
-            assert_eq!(work.spent().items_returned, 0);
-            drop(error);
-            assert_eq!(work.allocations.live_bytes(), 0);
-            assert_eq!(original.live_allocation_bytes(), baseline);
-            drop(spill_file);
-        }
-    }
     // Interleaving resident members cannot split the original durable miss
     // batch. Duplicate misses retain their positions and their original aliases.
     let resident = blob(OwnedBytes::from_static(b"mixed resident member"));
@@ -759,13 +713,14 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     let mut batch_admitted = true;
     for native in [false, true] {
         for stored in [false, true] {
-            let original = NativeMaterializationWork::new(native_read_budget(), &token)
-                .map_err(|(cause, _)| cause)?;
+            let budget = native_batch_read_budget(mixed_requests.len())?;
+            let original =
+                NativeMaterializationWork::new(budget, &token).map_err(|(cause, _)| cause)?;
             let baseline = original.live_allocation_bytes();
             let mut work = if native {
                 AuthorityWork::native(&original, &token)
             } else {
-                AuthorityWork::new(native_read_budget(), &token)
+                AuthorityWork::new(budget, &token)
             };
             let (values, allocation) = if native {
                 let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::seeded(50);
@@ -894,8 +849,6 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     drop(allocation);
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
-    let work =
-        NativeMaterializationWork::new(native_read_budget(), &token).map_err(|(error, _)| error)?;
     let requests = [
         durable_requests[0],
         ObjectReadRequest {
@@ -908,6 +861,8 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
         },
         durable_requests[1],
     ];
+    let work = NativeMaterializationWork::new(native_batch_read_budget(requests.len())?, &token)
+        .map_err(|(error, _)| error)?;
     let batch = store
         .read_many(&requests, &mut crate::AuthorityWork::native(&work, &token))
         .await
@@ -929,6 +884,61 @@ async fn native_staged_batch_preserves_two_actual_scalar_spill_reads_and_header_
     );
     drop(values);
     drop(allocation);
+    // The real provider still has both durable identities in its index, but
+    // its original pinned log can no longer supply their bytes. A private
+    // member must not make that completed failure wait on its spill lease.
+    // Successful reads above may promote earlier spills. Keep this member
+    // unread so its original spill lease is still the one being contended.
+    let (unread, unread_bytes) = spill_bytes_fixture(
+        &store,
+        &token,
+        OwnedBytes::from_static(b"unread spill behind unavailable durable batch"),
+    )
+    .await?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(directory.path().join("objects").join("log"))?
+        .set_len(0)?;
+    let failed_requests = [
+        durable_requests[0],
+        ObjectReadRequest {
+            object_id: unread,
+            maximum_bytes: unread_bytes.len() as u64,
+        },
+        durable_requests[1],
+    ];
+    for native in [false, true] {
+        for stored in [false, true] {
+            let budget = native_batch_read_budget(failed_requests.len())?;
+            let original =
+                NativeMaterializationWork::new(budget, &token).map_err(|(error, _)| error)?;
+            let baseline = original.live_allocation_bytes();
+            let mut work = if native {
+                AuthorityWork::native(&original, &token)
+            } else {
+                AuthorityWork::new(budget, &token)
+            };
+            let spill_file = store.spill_io.write().await;
+            assert!(matches!(store.lookup(unread), Lookup::Spilled { .. }));
+            let result = if stored {
+                store.read_many_stored(&failed_requests, &mut work).await
+            } else {
+                store.read_many(&failed_requests, &mut work).await
+            };
+            let Err(ObjectStoreError::LogicalObjects(error)) = result else {
+                panic!("the original durable read must report its unavailable log");
+            };
+            assert_eq!(error.code, acyclic_objects::wire::ErrorCode::Unavailable);
+            assert_eq!(work.spent().object_probes, 2);
+            assert_eq!(work.spent().object_bytes_read, 0);
+            assert_eq!(work.spent().bytes_hashed, 0);
+            assert_eq!(work.spent().items_returned, 0);
+            drop(error);
+            assert_eq!(work.allocations.live_bytes(), 0);
+            assert_eq!(original.live_allocation_bytes(), baseline);
+            drop(spill_file);
+        }
+    }
     drop(store);
     assert!(work.live_allocation_bytes() > NativeMaterializationWork::accounting_state_bytes());
     drop(alias);

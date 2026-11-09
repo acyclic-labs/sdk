@@ -163,8 +163,10 @@ async fn retained_token_custody_follows_exact_snapshot_and_request_retirement() 
     assert!(old.reject().await?);
     assert!(matches!(
         provider.resolve().await,
-        Err(CredentialError::Provider(error))
-            if matches!(error.downcast_ref::<CredentialCacheError>(), Some(CredentialCacheError::Rejected))
+        Err(CredentialError::Cache {
+            source: CredentialCacheError::Rejected,
+            cause: Some(acyclic_auth::DenialCause::NotCovered),
+        })
     ));
     assert_eq!(original.live_allocation_bytes(), first_bytes);
     let current = provider.resolve().await?;

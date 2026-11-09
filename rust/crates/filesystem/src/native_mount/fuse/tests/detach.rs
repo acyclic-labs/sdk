@@ -107,9 +107,10 @@ fn operation(
     }
 }
 
-// Measure the actual finite operation first, then exercise every allocation
-// refusal prefix against replicas of that same tree. A fresh volume has fresh
-// file identities and may require a different number of trie allocations.
+// Measure the actual finite operation first, then exercise its allocation
+// prefixes against replicas of that same tree. A spent receipt excludes
+// temporary reservations, so its count alone need not admit the operation.
+// Every refusal must preserve the namespace, including at the spent count.
 #[test]
 fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn std::error::Error>> {
     use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, MutationMode};
@@ -144,12 +145,11 @@ fn allocation_refusal_precedes_unlink_and_replacement() -> Result<(), Box<dyn st
         )
     })?;
     for rename in [false, true] {
-        let required =
+        let spent_allocations =
             operation(&original, rename, None)?.ok_or("unbounded fixture was refused")?;
-        for allowance in 0..required {
+        for allowance in 0..=spent_allocations {
             operation(&original, rename, Some(allowance))?;
         }
-        assert!(operation(&original, rename, Some(required))?.is_some());
     }
     Ok(())
 }
