@@ -18,6 +18,7 @@ mod completion;
 mod drain;
 mod invocation_failure;
 mod pause;
+mod retry;
 
 mod conditional;
 

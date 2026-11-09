@@ -196,7 +196,7 @@ async fn invocation_response_is_one_fenced_publication_and_reconciles_after_reop
                 &crate::guest::GuestError::PreconditionChanged,
                 failure_key,
             ),
-            Err(Error::PreconditionChanged)
+            Err(Error::PreconditionChanged(_))
         ));
     });
     assert_eq!(refusal.count_total, 0);
