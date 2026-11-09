@@ -68,17 +68,17 @@ public static class TerminalSignalConPty {
                 }
             }
         } finally {
-            try { log?.Dispose(); }
+            try { if(log!=null) log.Dispose(); }
             catch(Exception error) { failure=failure??error; }
         }
         if(failure!=null) ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
     static string FailureTail(string report) {
-        using var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite);
-        log.Seek(Math.Max(0,log.Length-1400),SeekOrigin.Begin);
-        using var tail=new StreamReader(log,Encoding.UTF8);
-        return tail.ReadToEnd();
+        using(var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite)) {
+            log.Seek(Math.Max(0,log.Length-1400),SeekOrigin.Begin);
+            using(var tail=new StreamReader(log,Encoding.UTF8)) return tail.ReadToEnd();
+        }
     }
 
     sealed class Publication : IDisposable {
@@ -97,7 +97,7 @@ public static class TerminalSignalConPty {
                 watcher.Error+=(sender,args)=>Notify(args.GetException());
                 watcher.EnableRaisingEvents=true;
             } catch(Exception error) {
-                watcher?.Dispose(); changed.Dispose();
+                if(watcher!=null) watcher.Dispose(); changed.Dispose();
                 throw new IOException("publication watcher initialization failed"+recovery,error);
             }
         }
@@ -183,7 +183,7 @@ public static class TerminalSignalConPty {
                 Console.WriteLine(File.ReadAllText(report));
                 return;
             }
-            using var publications=new Publication(report,recovery);
+            using(var publications=new Publication(report,recovery)) {
             var timer=Stopwatch.StartNew();
             string inputReady=Path.ChangeExtension(report,"input-ready");
             publications.Await(inputReady,process.process,timer,recovery);
@@ -233,6 +233,7 @@ public static class TerminalSignalConPty {
                 Require(enabled>=0&&restored>enabled,"physical mouse mode restored "+mode);
             }
             Console.WriteLine("ConPTY "+scenario+": original input/output modes and code pages restored");
+            }
         } catch(Exception error) {
             failure=error;
         } finally {

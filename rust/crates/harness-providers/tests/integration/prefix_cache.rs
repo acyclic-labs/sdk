@@ -670,14 +670,6 @@ async fn run(
     assert!(parent.len() >= 5, "{family}: parent sent {}", parent.len());
     assert!(child.len() >= 4, "{family}: child sent {}", child.len());
     assert_eq!(grandchild.len(), 1, "{family}: grandchild requests");
-    // R44: the stock preset's first request (model, tool declarations, system
-    // prompt, cache form and one short message) has a pinned size. Its prefix
-    // is paid by every request of every agent, so a change updates the pin here.
-    let pinned = parent[0].len();
-    assert_eq!(
-        pinned, header,
-        "{family}: the stock first request is {pinned} bytes, pinned at {header}"
-    );
     // The window advances only at its page cut: exactly one request starts
     // a new prefix, and every other one extends the request before it.
     let mut cut = None;
@@ -752,6 +744,15 @@ async fn run(
         "{family}: the backstop rewrote the header at byte {kept} (messages at {start})"
     );
     extends(family, "the step after the backstop", evicted, continued)?;
+    // R44: pin the stock request's exact cost, after checking every cache
+    // invariant so a stale size snapshot cannot mask a prefix regression.
+    // The spawn-name reuse contract adds 76 encoded bytes to every family:
+    // 75 description bytes plus one byte escaping its added newline.
+    let pinned = parent[0].len();
+    assert_eq!(
+        pinned, header,
+        "{family}: the stock first request is {pinned} bytes, pinned at {header}"
+    );
     Ok(())
 }
 
@@ -763,7 +764,7 @@ async fn anthropic_prefixes_extend_byte_for_byte() -> TestResult {
         "messages",
         "anthropic",
         b"\"messages\":[",
-        4445,
+        4521,
     )
     .await
 }
@@ -776,7 +777,7 @@ async fn responses_prefixes_extend_byte_for_byte() -> TestResult {
         "responses",
         "responses",
         b"\"input\":[",
-        4703,
+        4779,
     )
     .await
 }
@@ -789,7 +790,7 @@ async fn gemini_prefixes_extend_byte_for_byte() -> TestResult {
         "models/model:streamGenerateContent",
         "gemini",
         b"\"contents\":[",
-        4369,
+        4445,
     )
     .await
 }
@@ -803,7 +804,7 @@ async fn chat_prefixes_extend_byte_for_byte() -> TestResult {
         "chat/completions",
         "chat",
         b"\"messages\":[",
-        4594,
+        4670,
     )
     .await
 }
