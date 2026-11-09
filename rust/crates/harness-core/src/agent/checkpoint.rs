@@ -1,5 +1,4 @@
-//! The agent checkpoint's one encoding, and the static size bound of every
-//! record an agent step writes.
+//! The agent checkpoint's one encoding, and encoded record bounds.
 //!
 //! The parts that scale with the agent's limits are raw protobuf fields
 //! rather than JSON: each open child is its 16-byte id (its path, like the
@@ -12,9 +11,12 @@
 //! [`super::MAX_DEPTH`], file and volume references by the conversation
 //! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
 //! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
-//! built or decoded), and texts by their own limits. `tests` builds the worst
-//! case of each record kind a step appends and checks it encodes, and the
-//! worst settled checkpoint within [`MAX_CHECKPOINT_BYTES`] and one stream
+//! built or decoded), and names by their own limits. Intent text has no
+//! independent cap: inbox admission reserves its settlement's encoded envelope,
+//! and every record writer enforces the complete encoded frame.
+//! `tests` exercises every record kind with maximum bounded fields and a
+//! representative intent, and the worst settled checkpoint within
+//! [`MAX_CHECKPOINT_BYTES`] and one stream
 //! record. Only the input window and the turn grow with traffic; a state
 //! whose window and turn would not fit fails the agent visibly instead (see
 //! [`super::machine`]), so no step can wedge an agent on a record its stream
@@ -339,8 +341,8 @@ mod tests {
     use super::*;
     use crate::agent::{
         AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
-        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
-        MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_MESSAGE_BYTES,
+        MAX_NAME_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
         Message, NoticePayload, Phase, Sender, SpawnRequest, StatusRecord, TurnInput,
         VolumeBinding,
     };
@@ -395,8 +397,7 @@ mod tests {
     }
 
     fn intent() -> IntentId {
-        super::super::spawn_names::spawn_intent(&widest(MAX_INTENT_BYTES - 6), u64::MAX)
-            .expect("intent")
+        IntentId::try_from(widest(255)).expect("portable child intent")
     }
 
     fn volume() -> VolumeRef {
@@ -438,10 +439,10 @@ mod tests {
                 path: agent(MAX_DEPTH),
             },
             Sender::User {
-                principal: widest(MAX_INTENT_BYTES),
+                principal: widest(MAX_NAME_BYTES),
             },
             Sender::Host {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
             },
         ]
     }
@@ -483,7 +484,7 @@ mod tests {
             checkpoint: Some(u64::MAX),
             volumes: (0..MAX_VOLUMES)
                 .map(|_| VolumeBinding {
-                    name: widest(MAX_INTENT_BYTES),
+                    name: widest(MAX_NAME_BYTES),
                     volume: volume(),
                 })
                 .collect(),
@@ -503,7 +504,7 @@ mod tests {
                 id: intent(),
             }),
             InboxRecord::Hook(Hook {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
                 id: intent(),
                 event: Box::new(file()),
             }),
@@ -558,7 +559,7 @@ mod tests {
                     expected: (0..MAX_VOLUMES)
                         .map(|index| crate::agent::HistoryVolume {
                             binding: VolumeBinding {
-                                name: format!("{}{}", widest(MAX_INTENT_BYTES - 1), index),
+                                name: format!("{}{}", widest(MAX_NAME_BYTES - 1), index),
                                 volume: volume(),
                             },
                             generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
@@ -603,8 +604,50 @@ mod tests {
         inputs
     }
 
+    // Find the admitted boundary through the production encoder, retaining
+    // each original record's other maximum-width fields.
+    fn largest_intent(record: InboxRecord) -> InboxRecord {
+        let mut value = serde_json::to_value(&record).expect("record fields");
+        let Some(fields) = value
+            .as_object_mut()
+            .and_then(|record| record.values_mut().next())
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return record;
+        };
+        let Some(identity) = fields.get_mut("id") else {
+            return record;
+        };
+        if !identity.is_string() {
+            return record;
+        }
+        let mut low = 1;
+        let mut high = MAX_RECORD_BYTES + 1;
+        while low + 1 < high {
+            let middle = low + (high - low) / 2;
+            value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] =
+                "a".repeat(middle).into();
+            let candidate: InboxRecord =
+                serde_json::from_value(value.clone()).expect("intent fields");
+            if candidate.encode().is_ok() {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(high).into();
+        assert!(
+            serde_json::from_value::<InboxRecord>(value.clone())
+                .unwrap()
+                .encode()
+                .is_err()
+        );
+        value.as_object_mut().unwrap().values_mut().next().unwrap()["id"] = "a".repeat(low).into();
+        serde_json::from_value(value).expect("admitted intent")
+    }
+
     #[test]
-    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
+    fn bounded_record_fields_and_settled_checkpoints_fit_their_frames() {
         assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
         // Names admit no control character, so `widest` is their worst case.
         let control = Sender::User {
@@ -659,7 +702,15 @@ mod tests {
             .encode()
             .expect("a status fits");
         }
-        for input in turn_inputs() {
+        let mut inputs = vec![TurnInput::Brief {
+            brief: Box::new(file()),
+        }];
+        for record in inbox_records() {
+            let record = largest_intent(record);
+            record.encode().expect("original inbox admission");
+            inputs.extend(crate::agent::input::input(0, record).map(|queued| queued.input));
+        }
+        for input in inputs {
             ConversationEntry {
                 observed_through: u64::MAX,
                 inbox: u64::MAX,
@@ -828,8 +879,8 @@ mod tests {
             text in proptest::sample::select(vec![0, 1, 8, 9, 10, 13, b'"', b'\\', b'a']),
             cursor in proptest::num::u64::ANY,
         ) {
-            // Every generated case includes every variant, at maximum field
-            // lengths; selection never accidentally omits a large record kind.
+            // Every case includes every variant with maximum bounded fields
+            // and the same representative intent; no variant is omitted.
             for record in inbox_records() {
                 let worst = assert_record_bound(&record);
                 let sample: InboxRecord = varied(&record, name, text);
@@ -877,7 +928,7 @@ mod tests {
 
     #[test]
     fn waiting_host_status_requires_a_bounded_name() {
-        for host in [String::new(), widest(MAX_INTENT_BYTES + 1), "\0".into()] {
+        for host in [String::new(), widest(MAX_NAME_BYTES + 1), "\0".into()] {
             let record = StatusRecord {
                 child_wakes: Vec::new(),
                 phase: Phase::WaitingHost { host },
@@ -892,7 +943,7 @@ mod tests {
         let record = StatusRecord {
             child_wakes: Vec::new(),
             phase: Phase::WaitingHost {
-                host: widest(MAX_INTENT_BYTES),
+                host: widest(MAX_NAME_BYTES),
             },
             cursor: u64::MAX,
             conversation: u64::MAX,

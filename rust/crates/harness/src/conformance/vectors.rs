@@ -95,13 +95,14 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     if values(&*provider, root.conversation()?).await? != [b"once".to_vec()] {
         return Err("turn did not commit exactly once".into());
     }
+    let first_statuses = values(&*provider, root.status()?).await?;
     let Delivered::Committed { inbox } = host.send(&root, &sender(), &request("again")?).await?
     else {
         return Err("second input was refused".into());
     };
     host.drain(&root).await?;
     let statuses = values(&*provider, root.status()?).await?;
-    if statuses.len() != 1 || !host.input_progress(&root, inbox).await?.0 {
+    if statuses != first_statuses || !host.input_progress(&root, inbox).await?.0 {
         return Err(
             "unchanged phase appended status or failed to settle the original input".into(),
         );

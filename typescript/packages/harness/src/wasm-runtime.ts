@@ -56,7 +56,7 @@ export function assertClientWasmExports(value: unknown): void {
   ], true) && hasStaticMethods(exports, "WasmAgentCommand", "wasmagentcommand", [
     "maximumCommandBytes", "maximumInvocationBytes", "maximumReplyBytes",
   ]);
-  const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
+  const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "select", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
   const explorer = hasClass(exports, "WasmExplorer", "wasmexplorer", [
     "drive", "frame", "history", "health", "wakeIn", "setViewport", "scroll", "hover", "focus", "expand", "collapse",
