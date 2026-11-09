@@ -375,10 +375,6 @@ impl Hub {
                     }
                 }
             }
-            if root == shard.root && !shard.stream.is_null() && !shard.purge {
-                shard.route(batch);
-                return;
-            }
             let since = batch
                 .iter()
                 .map(|route| route.floor)
@@ -542,8 +538,9 @@ impl Hub {
                 shard.last_id = shard.last_id.max(id);
                 let moved = flag & ROOT_CHANGED != 0
                     || flag & IS_DIR != 0 && flag & (ITEM_RENAMED | ITEM_REMOVED) != 0;
-                let mut route = |route: &Route, flag: u32| {
-                    // RootChanged has id zero and must survive replay filtering.
+                let mut route = |route: &Route, routed_flag: u32| {
+                    // Only the original native RootChanged may bypass the floor:
+                    // synthesized root changes still have ordinary event ids.
                     if (id <= route.floor && flag & ROOT_CHANGED == 0)
                         || !route.registration.live.load(Ordering::Acquire)
                     {
@@ -556,7 +553,7 @@ impl Hub {
                             batches.len() - 1
                         });
                     if let Some(batch) = batches.get_mut(slot) {
-                        let added = batch.push(event, path, flag);
+                        let added = batch.push(event, path, routed_flag);
                         #[cfg(test)]
                         if added {
                             batch.ids.push(id);

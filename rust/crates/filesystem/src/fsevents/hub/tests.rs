@@ -5,6 +5,33 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 const CAP_CHILD: &str = "ACYCLIC_FSEVENTS_CAP_CHILD";
+const REPLAY_CHILD: &str = "ACYCLIC_FSEVENTS_REPLAY_CHILD";
+
+/// Controlled replay state must not affect other tests sharing the process hub.
+fn isolated_replay(name: &str) -> TestResult {
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", name, "--nocapture"])
+        .env(REPLAY_CHILD, "1")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn suspend_callbacks(hub: &Hub) -> Suspended {
+    extern "C" fn suspend(queue: *mut c_void) {
+        // SAFETY: the live serial queue is resumed by the returned guard.
+        unsafe { dispatch_suspend(queue) };
+    }
+    // SAFETY: suspend runs after all earlier callbacks and stops subsequent
+    // callbacks before returning, without leaving an in-flight delivery.
+    unsafe { dispatch_sync_f(hub.queue(), hub.queue(), suspend) };
+    Suspended(hub.queue())
+}
 
 fn hub() -> TestResult<&'static Hub> {
     let cancellation = crate::CancellationToken::new();
@@ -326,6 +353,139 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
                 .collect::<Vec<_>>()
         );
     }
+    Ok(())
+}
+
+#[test]
+fn pending_registration_replays_changes_across_history_done() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::pending_registration_replays_changes_across_history_done",
+        );
+    }
+    let hub = hub()?;
+    let (_parent, roots) = roots(1)?;
+    let streams = (0..SHARDS)
+        .map(|_| watch(&roots[0], Arc::new(|_| {})))
+        .collect::<Result<Vec<_>, _>>()?;
+    let suspended = suspend_callbacks(hub);
+    // Hold native callbacks and simulate an unfinished replay on every shard,
+    // so the next registration must wait with its saved floor.
+    for shard in &mut hub.state().shards {
+        shard.replaying = true;
+    }
+    let (changed, events) = std::sync::mpsc::channel();
+    let registration = Arc::new(Registration::new(
+        vec![roots[0].clone()],
+        Arc::new(move |batch| {
+            let batch = batch.expect("native stream delivery failed");
+            changed.send(batch.ids().to_vec()).expect("receiver alive");
+        }),
+    ));
+    hub.register(&registration)?;
+    let (old, floor, arms) = {
+        let mut state = hub.state();
+        let shard = state.of(&registration).ok_or("missing shard")?;
+        let pending = shard.pending.first().ok_or("missing pending route")?;
+        (shard.stream, pending.floor, shard.arms)
+    };
+    let path = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
+    hub.deliver(
+        old,
+        &[path.as_ptr(); 3],
+        &[ITEM_CREATED, HISTORY_DONE, ITEM_CREATED],
+        &[floor + 1, floor + 1, floor + 2],
+    );
+    assert!(events.try_recv().is_err());
+    let stream = {
+        let mut state = hub.state();
+        let shard = state.of(&registration).ok_or("missing shard")?;
+        assert_eq!(shard.arms, arms + 1, "pending routes need their own replay");
+        shard.stream
+    };
+    hub.deliver(
+        stream,
+        &[path.as_ptr(); 3],
+        &[ITEM_CREATED, ITEM_CREATED, HISTORY_DONE],
+        &[floor + 1, floor + 2, floor + 2],
+    );
+    assert_eq!(events.try_recv()?, vec![floor + 1, floor + 2]);
+    hub.unregister(&registration);
+    drop(suspended);
+    drop(streams);
+    Ok(())
+}
+
+#[test]
+fn replay_filters_old_moves_before_synthesizing_root_changes() -> TestResult {
+    if std::env::var_os(REPLAY_CHILD).is_none() {
+        return isolated_replay(
+            "fsevents::hub::tests::replay_filters_old_moves_before_synthesizing_root_changes",
+        );
+    }
+    let hub = hub()?;
+    let (_parent, roots) = roots(1)?;
+    let (changed, events) = std::sync::mpsc::channel();
+    let stream = watch(
+        &roots[0],
+        Arc::new(move |batch| {
+            let batch = batch.expect("native stream delivery failed");
+            changed
+                .send(
+                    batch
+                        .ids()
+                        .iter()
+                        .copied()
+                        .zip(batch.flags.iter().copied())
+                        .collect::<Vec<_>>(),
+                )
+                .expect("receiver alive");
+        }),
+    )?;
+    let suspended = suspend_callbacks(hub);
+    let registration = stream.registration.as_ref().ok_or("unregistered")?;
+    let floor = hub.current_event_id();
+    let native = {
+        let mut state = hub.state();
+        let shard = state.of(registration).ok_or("missing shard")?;
+        shard.replaying = true;
+        for route in shard.routes.values_mut().flatten() {
+            route.floor = floor;
+        }
+        shard.stream
+    };
+    // Discard real startup deliveries before injecting the replay batch.
+    while events.try_recv().is_ok() {}
+    let root = std::ffi::CString::new(roots[0].as_os_str().as_bytes())?;
+    let parent =
+        std::ffi::CString::new(roots[0].parent().ok_or("no parent")?.as_os_str().as_bytes())?;
+    hub.deliver(
+        native,
+        &[
+            root.as_ptr(),
+            parent.as_ptr(),
+            root.as_ptr(),
+            parent.as_ptr(),
+            root.as_ptr(),
+        ],
+        &[
+            IS_DIR | ITEM_RENAMED,
+            IS_DIR | ITEM_REMOVED,
+            IS_DIR | ITEM_REMOVED,
+            IS_DIR | ITEM_RENAMED,
+            ROOT_CHANGED,
+        ],
+        &[floor - 1, floor, floor + 1, floor + 2, 0],
+    );
+    let delivered = events.try_recv()?;
+    assert_eq!(
+        delivered.iter().map(|&(id, _)| id).collect::<Vec<_>>(),
+        vec![floor + 1, floor + 2, 0]
+    );
+    assert!(delivered.iter().all(|&(_, flag)| flag & ROOT_CHANGED != 0));
+    assert!(events.try_recv().is_err());
+    drop(suspended);
+    drop(stream);
     Ok(())
 }
 
