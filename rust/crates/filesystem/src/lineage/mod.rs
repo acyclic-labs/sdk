@@ -45,8 +45,8 @@ fn lineage_shape_is_valid(
         name: &str,
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<bool, WorkspaceError> {
-        match crate::WorkspaceName::validate_with_accounting(name, accounting) {
-            Ok(_) => Ok(true),
+        match crate::WorkspaceName::is_canonical(name, accounting) {
+            Ok(canonical) => Ok(canonical),
             Err(WorkspaceError::Name(_)) => Ok(false),
             Err(error) => Err(error),
         }

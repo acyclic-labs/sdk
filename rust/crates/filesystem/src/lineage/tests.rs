@@ -52,6 +52,76 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
     ));
 }
 
+#[tokio::test]
+async fn persisted_lineage_names_require_exact_canonical_bytes() {
+    // Persisted names are identities, so successful normalization alone cannot
+    // validate their spelling. Exercise both names through registration and
+    // recovery from the real adapter, including a canonical Unicode record.
+    for (name, parent_name, valid) in [
+        ("caf\u{e9}", None, true),
+        ("cafe\u{301}", None, false),
+        ("caf\u{e9}", Some("parent"), true),
+        ("cafe\u{301}", Some("parent"), false),
+        ("child", Some("caf\u{e9}"), true),
+        ("child", Some("cafe\u{301}"), false),
+    ] {
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        let cancellation = CancellationToken::new();
+        let mut accounting = crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let record = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: true,
+            workspace_id: workspace(name),
+            workspace_name: name.to_owned(),
+            parent_workspace_id: parent_name.map(workspace),
+            parent_workspace_name: parent_name.map(str::to_owned),
+            fork_generation: generation(1),
+            initial_generation: generation(if parent_name.is_some() { 2 } else { 1 }),
+        };
+        if valid {
+            graph
+                .register(record.clone(), &mut accounting)
+                .await
+                .expect("canonical registration");
+        } else {
+            assert!(
+                matches!(
+                    graph.register(record.clone(), &mut accounting).await,
+                    Err(WorkspaceLineageError::IncompatibleState)
+                ),
+                "noncanonical lineage registration was accepted: {name:?}, {parent_name:?}"
+            );
+            assert!(
+                graph
+                    .store
+                    .compare_and_swap(record.workspace_id, 0, record.clone())
+                    .await
+                    .unwrap()
+            );
+        }
+        let recovered = graph
+            .resolve(
+                record.workspace_id,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| failure.error);
+        if valid {
+            assert_eq!(recovered.unwrap().value, record);
+        } else {
+            assert!(matches!(
+                recovered,
+                Err(WorkspaceLineageError::IncompatibleState)
+            ));
+        }
+    }
+}
+
 #[derive(Default)]
 struct ObservedStore {
     inner: MemoryWorkspaceLineageStore,
