@@ -358,7 +358,7 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
         |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
     in_heap_measured(
         move |budget| async move {
-            persistent_batch::lookup_async::<S, FileTableFormat>(
+            persistent_batch::lookup_async::<FileTableFormat>(
                 store,
                 root,
                 file_ids,
@@ -398,7 +398,7 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
     ),
     crate::FsError,
 > {
-    persistent_batch::lookup_async_with_accounting::<S, FileTableFormat>(
+    persistent_batch::lookup_async_with_accounting::<FileTableFormat>(
         store,
         root,
         file_ids,
@@ -461,7 +461,7 @@ pub(crate) async fn lookup_file_record_async_with_accounting<S: AsyncObjectStore
     cancellation: &CancellationToken,
     data_custody: Option<&ProofDataCustody>,
 ) -> Result<(Option<FileRecord>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_point::lookup_async_with_accounting::<S, FileTableFormat>(
+    persistent_point::lookup_async_with_accounting::<FileTableFormat>(
         store,
         root,
         &file_id,
@@ -499,7 +499,7 @@ pub(crate) async fn lookup_file_record_async_with_custody<S: AsyncObjectStore>(
         |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
     in_heap_measured(
         move |budget| async move {
-            persistent_point::lookup_async::<S, FileTableFormat>(
+            persistent_point::lookup_async::<FileTableFormat>(
                 store,
                 root,
                 &file_id,

@@ -2,6 +2,24 @@
 use super::*;
 use crate::{AsyncAuthorityStore, AsyncObjectStore};
 
+/// The owner may retain authenticated roots; the preparation kernel borrows
+/// that hook independently of the authority and object provider types.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) type RootPreparation<'a, E> = dyn FnMut(
+        &crate::kernel::GenerationRoot,
+        &mut ProofGuard,
+        &mut KernelAccounting<'_>,
+    ) -> Result<(), E>
+    + Send
+    + 'a;
+#[cfg(target_arch = "wasm32")]
+pub(super) type RootPreparation<'a, E> = dyn FnMut(
+        &crate::kernel::GenerationRoot,
+        &mut ProofGuard,
+        &mut KernelAccounting<'_>,
+    ) -> Result<(), E>
+    + 'a;
+
 pub(super) struct Preparation<'a, P> {
     pub(super) owner: &'a P,
     pub(super) request: PublishGenerationRequest,
@@ -117,18 +135,13 @@ impl<P: PublicationOwner> ValidatedPreparation<'_, P> {
         Ok(authenticated)
     }
 
-    pub(super) async fn prepare<E, R>(
+    pub(super) async fn prepare<E>(
         mut self,
         accounting: &mut KernelAccounting<'_>,
-        prepare_roots: &mut R,
+        prepare_roots: &mut RootPreparation<'_, E>,
     ) -> Result<Prepared, E>
     where
         E: From<crate::FsError> + Send,
-        R: FnMut(
-            &crate::kernel::GenerationRoot,
-            &mut ProofGuard,
-            &mut KernelAccounting<'_>,
-        ) -> Result<(), E>,
     {
         let candidate = self.candidate(accounting).await.map_err(E::from)?;
         let proven_at = self.0.owner.objects().collection_sweeps();

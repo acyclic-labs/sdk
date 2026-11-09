@@ -119,6 +119,8 @@ fn charge_copy(
 mod batch;
 mod cache;
 mod decode;
+mod source;
+pub(crate) use source::Source;
 
 pub(crate) use batch::read_pages_with_accounting;
 use cache::admit_decoded_with_accounting;
