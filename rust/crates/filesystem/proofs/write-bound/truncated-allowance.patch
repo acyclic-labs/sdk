@@ -1,0 +1,7 @@
+--- a/rust/crates/filesystem/src/core_state/native_io.rs
++++ b/rust/crates/filesystem/src/core_state/native_io.rs
+@@ -411,3 +411,3 @@
+ pub(super) fn bounded_write_length<N: Copy + Ord + TryFrom<u64>>(length: N, limit: u64) -> N {
+-    N::try_from(limit).map_or(length, |limit| length.min(limit))
++    N::try_from(limit & u64::from(u8::MAX)).map_or(length, |limit| length.min(limit))
+ }

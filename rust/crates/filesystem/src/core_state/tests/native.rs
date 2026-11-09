@@ -428,3 +428,78 @@ proptest::proptest! {
         });
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    #[test]
+    fn journal_write_bounds_preserve_wide_budget_allowances(
+        object_limit in proptest::prop_oneof![
+            proptest::strategy::Just(0_u64),
+            proptest::strategy::Just(1_u64 << 32),
+            proptest::strategy::Just(u64::MAX),
+            proptest::num::u64::ANY,
+        ],
+        encoded_limit in proptest::num::u64::ANY,
+        encoded in proptest::bool::ANY,
+        bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..65),
+    ) {
+        use proptest::prelude::*;
+        crate::initialize_test_native_io();
+        let cancellation = crate::CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                object_bytes_written: object_limit,
+                bytes_encoded: encoded_limit,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        ).map_err(|error| TestCaseError::fail(format!("write context: {error:?}")))?;
+        let mut writer = MaterializationWriter {
+            file: tempfile::tempfile()?,
+            work: Some(&work),
+            encoded,
+        };
+        let limit = object_limit.min(if encoded { encoded_limit } else { u64::MAX });
+        let result = writer.write(&bytes);
+        if !bytes.is_empty() && limit == 0 {
+            prop_assert!(result.is_err());
+            prop_assert_eq!(writer.file.metadata()?.len(), 0);
+        } else {
+            let written = result?;
+            prop_assert!(crate::foundation::usize_to_u64(written) <= limit);
+            prop_assert_eq!(writer.file.metadata()?.len(), crate::foundation::usize_to_u64(written));
+            // A wide allowance must not wrap to zero on a narrow pointer target.
+            prop_assert!(bytes.is_empty() || written != 0);
+            let receipt = work.receipt();
+            prop_assert_eq!(receipt.object_bytes_written, crate::foundation::usize_to_u64(written));
+            prop_assert_eq!(receipt.bytes_encoded, if encoded { receipt.object_bytes_written } else { 0 });
+        }
+    }
+}
+
+#[test]
+fn journal_write_bound_exhausts_a_narrow_index_domain_and_rejects_truncation() {
+    fn matches_wide_min(length: u8, limit: u64, actual: u8) -> bool {
+        u64::from(actual) == u64::from(length).min(limit)
+    }
+    for length in u8::MIN..=u8::MAX {
+        for limit in 0_u64..=511 {
+            assert!(matches_wide_min(
+                length,
+                limit,
+                bounded_write_length(length, limit)
+            ));
+        }
+        for limit in [1_u64 << 32, u64::MAX] {
+            assert!(matches_wide_min(
+                length,
+                limit,
+                bounded_write_length(length, limit)
+            ));
+        }
+    }
+    // Reinstating a truncating budget conversion breaks the same wide-min oracle.
+    let limit = 1_u64 << 32;
+    let [truncated, ..] = limit.to_le_bytes();
+    assert!(!matches_wide_min(1, limit, 1_u8.min(truncated)));
+}
