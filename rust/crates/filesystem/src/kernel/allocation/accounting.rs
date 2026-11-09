@@ -598,7 +598,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     pub(crate) fn spent(&self) -> WorkCounters {
-        #[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+        #[cfg(all(test, feature = "memory", not(loom)))]
         super::snapshot_tests::observe();
         match self {
             Self::Standalone { work, .. } => *work,

@@ -1065,8 +1065,7 @@ async fn post_ack_reads_keep_operation_custody_until_real_companion_settlement()
         store.armed.store(true, Ordering::Release);
         let original = work.clone();
         let allow = move |work: &crate::NativeMaterializationWork| {
-            assert!(work.shares_ledger(&original));
-            assert!(work.shares_resource_allowance(&original));
+            assert!(work.shares_allocation_context(&original));
             std::future::ready(Ok::<(), MountSourceError>(()))
         };
         let mut acknowledged = None;

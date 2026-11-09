@@ -194,7 +194,7 @@ async fn reservation_recovery_uses_bounded_reads_and_hashing_for_long_histories(
 async fn reservation_recovery_rejects_every_forged_original_request_component() -> TestResult {
     let (stream, reservation) = reserved().await?;
     let token = CancellationToken::new();
-    for corrupt in (1..=10).chain([12, 13]) {
+    for corrupt in 1..=13 {
         let mut spy = ReleaseSpy::new(stream.clone());
         spy.corrupt_observation = corrupt;
         let store = StreamAuthorityStore::new(Arc::new(spy));
