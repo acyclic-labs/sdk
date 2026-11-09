@@ -6,6 +6,66 @@ use super::{
 };
 
 #[test]
+fn root_names_validate_once_before_encoding_or_opening() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::ffi::{OsStrExt as _, OsStringExt as _};
+
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("root-𝄞-é");
+    std::fs::create_dir(&path)?;
+    let canonical = path.canonicalize()?;
+    let expected = test_root(&path)?.identity();
+    for path in [&path, &canonical] {
+        let units = path.as_os_str().encode_wide().count() as u64;
+        let verbatim = path.as_os_str().encode_wide().take(4).eq([92, 92, 63, 92]);
+        let queries = if verbatim { 0 } else { 2 };
+        let cancellation = crate::CancellationToken::new();
+        let work = NativeMaterializationWork::new(
+            WorkBudget {
+                items_examined: units + queries,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let root = super::HostRoot::open(path, &mut &work)?;
+        assert_eq!(root.identity(), expected);
+        assert_eq!(work.receipt().items_examined, units + queries);
+
+        // An embedded terminator is rejected while counting, before any
+        // buffer or OS operation can observe the truncated name.
+        let invalid = std::ffi::OsString::from_wide(
+            &path
+                .as_os_str()
+                .encode_wide()
+                .chain([0])
+                .collect::<Vec<_>>(),
+        );
+        let denied = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let before = denied.receipt();
+        let (result, events): (_, Vec<&'static str>) = acyclic_test_support::differential::observe(
+            || stat_probe::Probe::rescan(false),
+            |probe| {
+                let result = super::HostRoot::open(Path::new(&invalid), &mut &denied);
+                probe.publish();
+                result
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::NativeTreeMaterializationError::InvalidLayout)
+        ));
+        assert!(events.is_empty());
+        assert_eq!(
+            denied.receipt().allocation_operations,
+            before.allocation_operations
+        );
+        assert_eq!(denied.receipt().bytes_encoded, before.bytes_encoded);
+    }
+    Ok(())
+}
+
+#[test]
 fn absolute_creation_returns_its_validated_directory_without_reopening_the_path()
 -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
