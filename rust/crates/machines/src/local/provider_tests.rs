@@ -400,7 +400,7 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
         )
         .await?;
     assert!(
-        matches!(result.next().await, Some(Err(ProviderError::CommandIndeterminate(id))) if id == machine)
+        matches!(result.next().await, Some(Err(error)) if error.classification() == &ProviderError::CommandIndeterminate(machine))
     );
     let key = IdempotencyKey::new();
     assert!(

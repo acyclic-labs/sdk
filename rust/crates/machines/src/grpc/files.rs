@@ -32,14 +32,14 @@ impl<E: RpcEndpoint> Provider<E> {
         .await?
         .map_err(|error| {
             obs::failed_rpc(observation, &error);
-            file_error(machine, &error)
+            guest_error(ProviderError::FileIndeterminate(machine), error)
         })?
         .into_inner();
         let response = deadline
             .run(output.message())
             .await
             .map_err(|stop| stop.file(machine))?
-            .map_err(|_| ProviderError::FileIndeterminate(machine))?
+            .map_err(|error| ProviderError::FileIndeterminate(machine).with_cause(error))?
             .ok_or(ProviderError::FileIndeterminate(machine))?;
         decode_read_response(response, machine, access.offset, limit)
     }
@@ -76,14 +76,14 @@ impl<E: RpcEndpoint> Provider<E> {
         .await?
         .map_err(|error| {
             obs::failed_rpc(observation, &error);
-            file_error(machine, &error)
+            guest_error(ProviderError::FileIndeterminate(machine), error)
         })?
         .into_inner();
         let response = deadline
             .run(output.message())
             .await
             .map_err(|stop| stop.file(machine))?
-            .map_err(|_| ProviderError::FileIndeterminate(machine))?
+            .map_err(|error| ProviderError::FileIndeterminate(machine).with_cause(error))?
             .ok_or(ProviderError::FileIndeterminate(machine))?;
         decode_write_response(response, machine, access.offset, length)
     }
@@ -165,11 +165,4 @@ fn decode_errno(errno: u32) -> Result<NonZeroU32, ProviderError> {
                 .into(),
         )
     })
-}
-
-fn file_error(machine: MachineId, error: &Status) -> ProviderError {
-    match command_error(machine, error) {
-        ProviderError::CommandIndeterminate(_) => ProviderError::FileIndeterminate(machine),
-        cause => cause,
-    }
 }

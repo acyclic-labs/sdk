@@ -23,9 +23,9 @@ pub(super) fn machines_key(key: &IdempotencyKey) -> Result<MachinesKey> {
 
 /// Keeps the provider cause; only an uncertain mutation with a known operation becomes a receipt.
 pub(super) fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
-    match (error, operation) {
+    let receipt = match (error.classification(), operation) {
         (ProviderError::OperationIndeterminate(operation), _) => {
-            Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
+            Some(OperationId::from_bytes(operation.as_bytes()))
         }
         (
             ProviderError::Indeterminate(_)
@@ -36,7 +36,14 @@ pub(super) fn map_error(error: ProviderError, operation: Option<OperationId>) ->
                 machine: Some(_), ..
             },
             Some(operation),
-        ) => Error::Indeterminate(operation),
-        (cause, _) => Error::Machines(cause),
+        ) => Some(operation),
+        _ => None,
+    };
+    match receipt {
+        Some(operation_id) => Error::MachinesIndeterminate {
+            operation_id,
+            cause: error,
+        },
+        None => Error::Machines(error),
     }
 }

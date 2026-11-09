@@ -62,7 +62,7 @@ pub(super) async fn recovered_admission<E: RpcEndpoint>(
         .await
         .map_err(|error| {
             obs::failed_rpc(observation, &error);
-            recovery_error(key, &error)
+            recovery_error(key, error)
         })?
         .into_inner();
     let operation =
@@ -84,14 +84,14 @@ pub(super) async fn wait<E: RpcEndpoint>(
             .await
             .map_err(|error| {
                 obs::failed_rpc(&observation, &error);
-                watch_error(key, &error)
+                watch_error(key, error)
             })?
             .into_inner();
         // The server owns completion. Quiet output does not authorize an
         // inspection, another subscription or another mutation dispatch.
         while let Some(value) = stream.message().await.map_err(|error| {
             obs::failed_rpc(&observation, &error);
-            watch_error(key, &error)
+            watch_error(key, error)
         })? {
             let phase = decode_operation_observation(&value, operation)
                 .map_err(|_| ProviderError::Indeterminate(key))?
