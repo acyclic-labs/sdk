@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
@@ -86,11 +86,20 @@ export function* tarEntries(tar) {
   throw new Error("archive lacks an end marker");
 }
 
-// wasm-bindgen emits flat bindings plus inline JavaScript under snippets/.
+export function isCanonicalRelativePath(path) {
+  return path.split("/").every(part => part !== "" && part !== "." && part !== ".." && !part.includes("\\"));
+}
+
+// Exactly what the producer writes: wasm-bindgen's flat `<name>.js`, `<name>.d.ts`,
+// `<name>_bg.wasm` and `<name>_bg.wasm.d.ts`, its inline JavaScript under snippets/,
+// and build-wasm's receipt. Any other top-level file (tracked package metadata such
+// as package.json or .npmignore) belongs to the source tree and is never an artifact.
 export function isWasmArtifactPath(path) {
+  if (!isCanonicalRelativePath(path)) return false;
   const parts = path.split("/");
-  return parts.every(part => part !== "" && part !== "." && part !== ".." && !part.includes("\\"))
-    && (parts.length === 1 || (parts[0] === "snippets" && parts.length > 1));
+  return parts.length === 1
+    ? path === "producer-receipt.json" || /\.(?:js|d\.ts|wasm)$/u.test(path)
+    : parts[0] === "snippets";
 }
 
 /** Enumerate the complete emitted tree without following symbolic links. */
@@ -106,6 +115,8 @@ function* wasmArtifactPaths(directory, { receipt = false } = {}) {
         yield* visit(join(parent, entry.name), `${path}/`);
       } else if (entry.isFile() && !entry.isSymbolicLink() && isWasmArtifactPath(path)) {
         if (receipt || path !== "producer-receipt.json") yield path;
+      } else if (entry.isFile() && !entry.isSymbolicLink() && prefix === "") {
+        // Source-owned metadata beside the artifacts: neither enumerated, copied nor removed.
       } else {
         throw new Error(`WASM artifact admission failed at ${path}: non-regular artifact; recovery: bun scripts/build-wasm.mjs`);
       }
@@ -123,15 +134,19 @@ export function* wasmArtifactFiles(directory, options) {
 
 /** Replace only admitted generated files, including snippets from an older build. */
 export function copyWasmArtifacts(source, output) {
-  const artifacts = wasmArtifactInventory(wasmArtifactFiles(source));
-  const current = new Set(artifacts.map(item => item.path.slice("generated/wasm/".length)));
+  const files = [...wasmArtifactFiles(source)];
+  const current = new Set(files.map(([path]) => path.slice("generated/wasm/".length)));
   // Admit the complete old tree before removing anything. Directory entries
   // alone suffice; stale payloads need neither reading nor hashing.
   const previous = existsSync(output) ? [...wasmArtifactPaths(output, { receipt: true })] : [];
   for (const path of previous) if (!current.has(path)) unlinkSync(join(output, path));
-  mkdirSync(output, { recursive: true });
-  cpSync(source, output, { recursive: true });
-  return artifacts;
+  // Write exactly the admitted bytes the inventory names, never the whole producer tree.
+  for (const [path, bytes] of files) {
+    const destination = join(output, path.slice("generated/wasm/".length));
+    mkdirSync(dirname(destination), { recursive: true });
+    writeFileSync(destination, bytes);
+  }
+  return wasmArtifactInventory(files);
 }
 
 /** Retain a temporary build separately and return the original output unchanged. */
