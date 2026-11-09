@@ -139,7 +139,7 @@ impl Fixture {
     }
 
     pub async fn check(
-        self,
+        &self,
         backend: &dyn Backend,
         root: AuthorityRoot,
         admission: TurnAdmission,

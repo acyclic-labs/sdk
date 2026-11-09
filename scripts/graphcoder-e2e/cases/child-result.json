@@ -24,7 +24,7 @@
     "requests": 5,
     "last_model_contains": ["CHILD_RESULT_NATIVE_E2E", "PARENT_READ_CHILD_RESULT"],
     "tool_contains": ["harness/agents/"],
-    "tool_results": [{ "settled": [{ "phase": "idle", "answer": "CHILD_RESULT_NATIVE_E2E" }], "running": [] }],
+    "tool_results": [{ "settled": [{ "phase": "idle", "answer": "CHILD_RESULT_NATIVE_E2E" }], "unsettled": [] }],
     "wire_contains": ["SPAWNED harness/agents/", "done"]
   }
 }

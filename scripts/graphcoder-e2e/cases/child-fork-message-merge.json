@@ -168,7 +168,7 @@
     "requests": 11,
     "tool_results": [
       {
-        "running": [],
+        "unsettled": [],
         "settled": [
           {
             "name": "worker",

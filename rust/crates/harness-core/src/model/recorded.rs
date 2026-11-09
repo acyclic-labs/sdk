@@ -923,6 +923,10 @@ mod tests {
                 .0,
             0
         );
+        assert!(
+            work.receipt().items_examined > 0,
+            "cursor lookup must spend the original work credit"
+        );
         assert!(work.live_allocation_bytes() > retained);
         drop(funded);
         assert_eq!(
