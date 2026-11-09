@@ -7,7 +7,7 @@ const root = new URL("../", import.meta.url);
 const inventories = ["languages/package-names.json", "release/npm-packages.json", "release/cargo-crates.json"];
 
 test("retired runtime findings enumerate each inventory and remain stable when an earlier finding disappears", () => {
-  const documents = new Map(inventories.map(path => [path, JSON.parse(readFileSync(new URL(path, root), "utf8")))]));
+  const documents = new Map(inventories.map(path => [path, JSON.parse(readFileSync(new URL(path, root), "utf8"))]));
   assert.deepEqual(retiredRuntimeFindings(documents), []);
   // Apply every retired spelling to real inventories without changing their scope.
   for (const term of ["python", "pytest", "boto3", "botocore", "fixture.py", "fixture.pyi", "fixture.pyc", "fixture.pyo"]) {
