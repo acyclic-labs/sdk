@@ -118,6 +118,8 @@ mod tests {
                     expected.push_str(&text);
                     if fits {
                         prop_assert_eq!(value.as_ptr(), pointer);
+                    } else {
+                        prop_assert_ne!(value.as_ptr(), pointer);
                     }
                 } else {
                     prop_assert_eq!(value.pop(), expected.pop());
