@@ -63,25 +63,12 @@ fn pair(
     invalid: bool,
     restore_old_factory: bool,
 ) -> [(Output, Vec<(&'static str, u64)>); 2] {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            crate::executor::json::baseline::LEGACY.set(false);
-        }
-    }
-    let _reset = Reset;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let mut first = true;
     differential::pair::<_, _, (&'static str, u64)>(
-        || {
-            crate::executor::json::baseline::LEGACY.set(first);
-            first = false;
-            runtime.block_on(initialize(text, invalid))
-        },
+        || runtime.block_on(initialize(text, invalid)),
         |(journal, executor, input, calls), old| {
-            crate::executor::json::baseline::LEGACY.set(old);
             let mut result = None;
             let allocations = acyclic_test_support::measure(|| {
                 // Pinned here so the runtime never boxes it: the measured
@@ -132,7 +119,17 @@ fn pair(
 }
 
 fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
+    // Both factories use the production codec. Codec savings must not hide
+    // allocations from restoring the redundant request preparations.
     let [(old, old_trace), (new, new_trace)] = pair(text, invalid, restore);
+    if !invalid {
+        prop_assert!(
+            new.4.count_total < old.4.count_total && new.4.bytes_total < old.4.bytes_total,
+            "preparation allocations did not decrease: old={:?}, new={:?}",
+            old.4,
+            new.4
+        );
+    }
     let semantic = |trace: &Vec<(&'static str, u64)>| {
         trace
             .iter()
@@ -155,7 +152,6 @@ fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
             && old.1 == new.1
             && old.2 == new.2
             && old.3 == new.3
-            && (invalid || new.4.count_total < old.4.count_total)
             && semantic(&old_trace) == semantic(&new_trace)
             && preparations(&old_trace) == if invalid { 0 } else { 4 }
             && preparations(&new_trace) == if invalid { 0 } else { 1 }
@@ -183,6 +179,7 @@ fn restoring_redundant_request_preparations_is_detected() {
     assert!(
         error
             .to_string()
-            .contains("independent preparation differs or repeats removed work")
+            .contains("preparation allocations did not decrease"),
+        "{error}"
     );
 }

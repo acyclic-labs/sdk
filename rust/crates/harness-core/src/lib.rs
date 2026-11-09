@@ -149,6 +149,18 @@ pub type NativeCustody = Option<()>;
 /// work. `None` remains unbounded, with no private allocation ledger.
 pub(crate) struct NativeIndexWork<'a>(pub(crate) NativeWork<'a>);
 
+impl NativeIndexWork<'_> {
+    fn preparation(&self) -> Result<Option<crate::executor::PreparationIo>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        return self
+            .0
+            .map(crate::executor::PreparationIo::from_native_work)
+            .transpose();
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        Ok(None)
+    }
+}
+
 impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
     type Error = Error;
     type Allocation = NativeCustody;
@@ -161,7 +173,7 @@ impl acyclic_collections::IndexWork for NativeIndexWork<'_> {
         let _ = (self.0, items);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = self.0 {
-            original.admit(acyclic_fs::WorkCounters {
+            original.charge(acyclic_fs::WorkCounters {
                 items_examined: items,
                 ..Default::default()
             })?;

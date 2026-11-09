@@ -79,8 +79,7 @@ impl RecordedToolOutcome {
                 }
             }
         };
-        // Transfer only the output's storage. Temporary lookup funding stays
-        // with this preparation until its owned key has been destroyed.
+        // The returned payload owns its funding until that payload is dropped.
         let custody = io.take_native_custody(io.owned_since(before)?)?;
         Ok((outcome, Some(custody)))
     }
@@ -219,10 +218,65 @@ struct Replay {
     cursor: Cursor,
     dispatches: FixedIndex<Option<ReplaySelection>, crate::NativeCustody, 52>,
     // Original source coordinates: copy the outcome only if it is requested.
-    tools: HashMap<(OperationId, String), ([u8; 32], usize, usize)>,
+    tools: FixedIndex<ReplayTool, crate::NativeCustody, 48>,
     /// Turns that went live; each stays live.
     live: FixedIndex<bool, crate::NativeCustody, 16>,
     diverged: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ToolCoordinate {
+    key: [u8; 32],
+    index: usize,
+    ordinal: usize,
+}
+
+struct ReplayTool {
+    // Immutable source identity also guards an unaccepted, funded slot.
+    identity: ToolCoordinate,
+    selected: Option<ToolCoordinate>,
+}
+
+fn tool_key(
+    operation: OperationId,
+    call_id: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<[u8; 48]> {
+    let digest = crate::executor::with_history_io(io, |work| {
+        crate::executor::json::borrowed_json_digest(
+            &("recorded-tool-v1", call_id),
+            crate::conversation::MAX_EXACT_JS_INTEGER,
+            work,
+        )
+    })?;
+    let mut key = [0; 48];
+    key[..16].copy_from_slice(&operation.into_bytes());
+    key[16..].copy_from_slice(&digest);
+    Ok(key)
+}
+
+impl Recording {
+    fn tool(&self, coordinate: ToolCoordinate) -> &(String, RecordedToolOutcome) {
+        &self.calls[&coordinate.key][coordinate.index].tools[coordinate.ordinal]
+    }
+
+    fn verify_tool(
+        &self,
+        coordinate: ToolCoordinate,
+        call_id: &str,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        NativeIndexWork(work).charge_items(call_id.len() as u64)?;
+        if self.tool(coordinate).0 != call_id {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "recorded tool identity collision",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -302,6 +356,10 @@ enum ReplayPreparation<'a, T> {
 /// Native live-turn storage is admitted before calling that provider. Accepting
 /// its returned generation object only publishes into the retained turn slot;
 /// it never grows or resizes a membership table.
+/// Recorded tool registration likewise funds fixed-width nodes before accepting
+/// source consumption, borrowing original call IDs and verifying their complete
+/// identity. Index work per tool is independent of retained replay history;
+/// hashing and comparing a newly admitted ID are proportional to that ID.
 pub struct RecordedModel {
     live: Arc<dyn ModelProvider>,
     recording: Arc<Recording>,
@@ -415,12 +473,45 @@ impl RecordedModel {
                     let Some((index, call)) = candidate else {
                         return Ok(None);
                     };
-                    let output = build(call)?;
+                    // Stage only this answer's fixed keys. All node admission and
+                    // full source-identity checks precede the returned-object
+                    // builder; refusal leaves every earlier settlement selected.
+                    let io = NativeIndexWork(work).preparation()?;
+                    let mut staged = Vec::new();
+                    crate::executor::stock_vec_reserve(&mut staged, call.tools.len(), io.as_ref())?;
                     for (ordinal, (call_id, _)) in call.tools.iter().enumerate() {
-                        tools.insert(
-                            (dispatch.operation_id, call_id.clone()),
-                            (key, index, ordinal),
-                        );
+                        let identity = ToolCoordinate {
+                            key,
+                            index,
+                            ordinal,
+                        };
+                        let lookup = tool_key(dispatch.operation_id, call_id, io.as_ref())?;
+                        let slot = tools.get_or_try_insert_with(
+                            lookup,
+                            &mut NativeIndexWork(work),
+                            |_| {
+                                Ok(ReplayTool {
+                                    identity,
+                                    selected: None,
+                                })
+                            },
+                        )?;
+                        self.recording
+                            .verify_tool(slot.identity, call_id, work, io.as_ref())?;
+                        staged.push(lookup);
+                    }
+                    let output = build(call)?;
+                    // The lock retains the exact admitted slots. Publication has
+                    // no allocation, cancellation check or other fallible work.
+                    for (ordinal, lookup) in staged.into_iter().enumerate() {
+                        tools
+                            .get_retained_mut(lookup, |_| true, |_| {})
+                            .expect("original tool admission retains its funded slot")
+                            .selected = Some(ToolCoordinate {
+                            key,
+                            index,
+                            ordinal,
+                        });
                     }
                     *selection = Some(ReplaySelection::Recorded { key, index });
                     Ok(Some(output))
@@ -930,12 +1021,16 @@ mod tests {
                         ..dispatch
                     }),
                     events: vec![crate::contract::canonical_json_bytes(event)?],
-                    tools: vec![(
-                        format!("original-{ordinal}"),
-                        RecordedToolOutcome::Completed(crate::tool::ToolResult {
-                            value: Value::Null,
-                        }),
-                    )],
+                    tools: ["original", "companion"]
+                        .map(|prefix| {
+                            (
+                                format!("{prefix}-{ordinal}"),
+                                RecordedToolOutcome::Completed(crate::tool::ToolResult {
+                                    value: Value::Null,
+                                }),
+                            )
+                        })
+                        .into(),
                 },
             );
         }
@@ -954,9 +1049,17 @@ mod tests {
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .map_err(|(error, _)| error)?;
         let probe_trial = trial();
-        let stream = probe_trial
-            .generate_with_native_work(&request, dispatch, &probe)?
-            .await?;
+        let before = probe.receipt();
+        let mut prepared = None;
+        let physical = acyclic_test_support::measure(|| {
+            prepared = Some(probe_trial.generate_with_native_work(&request, dispatch, &probe));
+        });
+        let admitted = probe.receipt().allocation_operations - before.allocation_operations;
+        assert!(
+            physical.count_total <= admitted,
+            "replay admission allocated without original funding: physical={physical:?}, admitted={admitted}"
+        );
+        let stream = prepared.unwrap()?.await?;
         let complete_allocations = probe.receipt().allocation_operations;
         drop(stream);
         assert!(complete_allocations > 1);
@@ -978,10 +1081,14 @@ mod tests {
                 2,
                 "refused funding consumed a source occurrence"
             );
-            assert!(
-                trial.lock().tools.is_empty(),
-                "refused funding published tool coordinates"
-            );
+            for call_id in ["original-0", "companion-0"] {
+                assert!(
+                    trial
+                        .recorded_tool_result(dispatch.operation_id, call_id, None)?
+                        .is_none(),
+                    "refused funding published tool coordinates"
+                );
+            }
             assert!(
                 !trial.diverged(),
                 "refused replay admission entered the live provider"
@@ -1008,7 +1115,13 @@ mod tests {
             drop(custody);
             assert!(futures::StreamExt::next(&mut stream).await.is_none());
             assert_eq!(trial.unused(), 1);
-            assert_eq!(trial.lock().tools.len(), 1);
+            for call_id in ["original-0", "companion-0"] {
+                assert!(
+                    trial
+                        .recorded_tool_result(dispatch.operation_id, call_id, None)?
+                        .is_some()
+                );
+            }
         }
         // Cancellation after acceptance retains the selected original terminal.
         let trial = trial();
@@ -1051,7 +1164,6 @@ mod tests {
         drop(custody);
         drop(resumed);
         assert_eq!(trial.unused(), 1);
-        assert_eq!(trial.lock().tools.len(), 1);
         let next = ModelDispatch {
             step: 1,
             ..dispatch
@@ -1067,8 +1179,82 @@ mod tests {
         assert_eq!(actual, events[1]);
         drop(custody);
         assert_eq!(trial.unused(), 0);
-        assert_eq!(trial.lock().tools.len(), 2);
         assert!(!trial.diverged());
+
+        // Measure the same production hash, then allow each individual index
+        // check but insufficient cumulative traversal and full-ID work. Merely
+        // checking admission would incorrectly consume this settlement.
+        let hash_work =
+            NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .map_err(|(error, _)| error)?;
+        let hash_items = {
+            let io = crate::filesystem::PreparationIo::from_native_work(&hash_work)?;
+            let before = hash_work.receipt().items_examined;
+            tool_key(dispatch.operation_id, "original-0", Some(&io))?;
+            hash_work.receipt().items_examined - before
+        };
+        let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
+        budget.items_examined = hash_items + 48 + "original-0".len() as u64 + 2;
+        let limited =
+            NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        assert!(
+            matches!(
+                trial.recorded_tool_result(dispatch.operation_id, "original-0", Some(&limited)),
+                Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "items_examined",
+                            ..
+                        }
+                    ),
+                    ..
+                })
+            ),
+            "replay tool index checks did not spend original work"
+        );
+
+        // A digest is only an index coordinate. Inject a colliding source
+        // identity and require the public entrance to refuse before consuming.
+        let lookup = tool_key(dispatch.operation_id, "original-0", None)?;
+        let original = ToolCoordinate {
+            key,
+            index: 0,
+            ordinal: 0,
+        };
+        trial
+            .lock()
+            .tools
+            .get_retained_mut(lookup, |_| true, |_| {})
+            .unwrap()
+            .identity = ToolCoordinate {
+            index: 1,
+            ..original
+        };
+        assert!(matches!(
+            trial.recorded_tool_result(dispatch.operation_id, "original-0", Some(&funded)),
+            Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                ..
+            })
+        ));
+        trial
+            .lock()
+            .tools
+            .get_retained_mut(lookup, |_| true, |_| {})
+            .unwrap()
+            .identity = original;
+        for call_id in ["original-0", "original-1", "companion-0", "companion-1"] {
+            assert!(
+                trial
+                    .recorded_tool_result(dispatch.operation_id, call_id, Some(&funded))?
+                    .is_some()
+            );
+            assert!(
+                trial
+                    .recorded_tool_result(dispatch.operation_id, call_id, None)?
+                    .is_none()
+            );
+        }
 
         // Reconciliation and the portable entrance retain this accepted
         // source coordinate even after the recording is otherwise exhausted.
@@ -1238,6 +1424,23 @@ mod tests {
         let sink: Arc<dyn DivergenceSink> = Arc::new(Quiet);
         let operation = OperationId::new();
         let call_id = "0";
+        let request = PreparedModelRequest::prepare(
+            ModelRequest {
+                summary: false,
+                compose_tools: false,
+                model: Model::new("recorded-control".into(), "tool-copy".into(), "1".into())?,
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("source".into()),
+                }],
+                tools: Vec::new(),
+                sampling: Default::default(),
+                max_output_tokens: None,
+            },
+            crate::conversation::Limits::default(),
+            None,
+        )?;
+        let key = request.replay_key()?;
         // Generated opaque copy operands, not provider or tool-output fixtures.
         for size in [1usize, 2048] {
             let text = "0".repeat(size);
@@ -1254,25 +1457,36 @@ mod tests {
                 },
             ] {
                 let mut source = Recording::default();
-                source.insert(
-                    [0; 32],
-                    RecordedCall {
-                        source: None,
-                        events: Vec::new(),
-                        tools: vec![(call_id.into(), original.clone())],
-                    },
-                );
+                for _ in 0..4 {
+                    source.insert(
+                        key,
+                        RecordedCall {
+                            source: None,
+                            events: Vec::new(),
+                            tools: vec![(call_id.into(), original.clone())],
+                        },
+                    );
+                }
                 let source = Arc::new(source);
                 let trial =
                     RecordedModel::new(Arc::clone(&live), Arc::clone(&source), Arc::clone(&sink));
-                trial
-                    .lock()
-                    .tools
-                    .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                let mut step = 0;
+                let mut register = || {
+                    drop(trial.generate(
+                        &request,
+                        ModelDispatch {
+                            operation_id: operation,
+                            step,
+                            request_digest: request.request_digest(),
+                        },
+                    ));
+                    step += 1;
+                };
+                register();
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let mut budget = acyclic_fs::performance::BOUNDARY_BUDGET;
-                // Admit the lookup key, then refuse the payload copy itself.
-                budget.bytes_copied = call_id.len() as u64;
+                // Lookup borrows its key; refuse the payload copy itself.
+                budget.bytes_copied = 0;
                 let refused = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(error, _)| error)?;
                 let baseline = refused.live_allocation_bytes();
@@ -1294,7 +1508,6 @@ mod tests {
                     "original copy denial was {denial:?}"
                 );
                 assert_eq!(refused.live_allocation_bytes(), baseline);
-                assert_eq!(trial.lock().tools.len(), 1);
 
                 let work = acyclic_fs::NativeMaterializationWork::new(
                     acyclic_fs::performance::BOUNDARY_BUDGET,
@@ -1309,7 +1522,6 @@ mod tests {
                         ..
                     })
                 ));
-                assert_eq!(trial.lock().tools.len(), 1);
 
                 let cancellation = acyclic_fs::CancellationToken::new();
                 let work = acyclic_fs::NativeMaterializationWork::new(
@@ -1326,8 +1538,8 @@ mod tests {
                 assert!(copied.1.as_ref().unwrap().work().shares_ledger(&work));
                 assert_eq!(
                     work.receipt().bytes_copied - before.bytes_copied,
-                    (call_id.len() + size) as u64,
-                    "one lookup copy and one payload copy, with no document copy"
+                    size as u64,
+                    "one payload copy, with no lookup or document copy"
                 );
                 assert!(work.live_allocation_bytes() > baseline);
                 assert!(
@@ -1335,7 +1547,7 @@ mod tests {
                         .recorded_tool_result(operation, call_id, None)?
                         .is_none()
                 );
-                assert_eq!(source.calls[&[0; 32]][0].tools[0].1, original);
+                assert_eq!(source.calls[&key][0].tools[0].1, original);
                 drop(copied);
                 assert_eq!(work.live_allocation_bytes(), baseline);
 
@@ -1369,10 +1581,7 @@ mod tests {
                 ));
                 assert_eq!(work.live_allocation_bytes(), retained);
                 for _ in 0..2 {
-                    trial
-                        .lock()
-                        .tools
-                        .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                    register();
                     let (outcome, custody) = trial
                         .recorded_tool_result(operation, call_id, Some(&work))?
                         .unwrap();
@@ -1389,10 +1598,7 @@ mod tests {
 
                 // Absorbing the same custody into the preparation reproduces
                 // the old retention: dropping the payload cannot refund it.
-                trial
-                    .lock()
-                    .tools
-                    .insert((operation, call_id.into()), ([0; 32], 0, 0));
+                register();
                 let (outcome, custody) = trial
                     .recorded_tool_result(operation, call_id, Some(&work))?
                     .unwrap();
@@ -1508,25 +1714,18 @@ impl ModelProvider for RecordedModel {
         call_id: &str,
         work: crate::NativeWork<'_>,
     ) -> Result<Option<(RecordedToolOutcome, crate::NativeCustody)>> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let io = work
-            .map(crate::filesystem::PreparationIo::from_native_work)
-            .transpose()?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let lookup = (
-            operation,
-            crate::executor::stock_string_copy(call_id, io.as_ref())?,
-        );
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let lookup = {
-            let _ = work;
-            (operation, call_id.to_owned())
-        };
+        let io = NativeIndexWork(work).preparation()?;
+        let lookup = tool_key(operation, call_id, io.as_ref())?;
         let mut replay = self.lock();
-        let Some(&(key, index, ordinal)) = replay.tools.get(&lookup) else {
+        let Some(slot) = replay.tools.get(lookup, &mut NativeIndexWork(work))? else {
             return Ok(None);
         };
-        let original = &self.recording.calls[&key][index].tools[ordinal].1;
+        self.recording
+            .verify_tool(slot.identity, call_id, work, io.as_ref())?;
+        let Some(coordinate) = slot.selected else {
+            return Ok(None);
+        };
+        let original = &self.recording.tool(coordinate).1;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let copied = match io.as_ref() {
             Some(io) => original.copy_with_custody(io)?,
@@ -1534,7 +1733,9 @@ impl ModelProvider for RecordedModel {
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let copied = (original.clone(), None);
-        replay.tools.remove(&lookup);
+        let removed = replay.tools.remove(lookup, &mut NativeIndexWork(work))?;
+        drop(replay);
+        drop(removed);
         Ok(Some(copied))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
