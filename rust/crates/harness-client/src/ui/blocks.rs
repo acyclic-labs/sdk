@@ -85,7 +85,9 @@ pub(super) fn embed(markdown: &str, mut default: impl FnMut() -> Result<String>)
     let mut start = None;
     for (event, range) in Parser::new(markdown).into_offset_iter() {
         match event {
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) if info == "ui:default" => {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                if info.as_ref() == "ui:default" =>
+            {
                 start = Some(range.start);
             }
             Event::End(TagEnd::CodeBlock) => {

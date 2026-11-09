@@ -75,7 +75,7 @@ pub fn approval_reply(
     approved: bool,
     reason: Option<String>,
 ) -> Result<AgentCommand> {
-    if block.attributes.get("approval") != Some(&pending.id.to_string()) {
+    if block.attributes.get("approval").map(String::as_str) != Some(pending.id.as_str()) {
         return Err(Error::Invalid(
             "approval block differs from displayed action",
         ));
