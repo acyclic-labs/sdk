@@ -4,7 +4,8 @@ use super::*;
 #[tokio::test]
 async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(), Box<dyn Error>> {
     use crate::test_support::{
-        JSON_ERROR_FIRST_ALLOCATION, JSON_OUTPUT_CUT, JSON_OUTPUT_FIRST_ALLOCATION,
+        JSON_ERROR_FIRST_ALLOCATION, JSON_OUTPUT_ALLOCATIONS, JSON_OUTPUT_CUT,
+        JSON_OUTPUT_FIRST_ALLOCATION,
     };
 
     for pressure in [None, Some(0), Some(128)] {
@@ -39,6 +40,7 @@ async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(
         let mut directory =
             preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
         JSON_OUTPUT_FIRST_ALLOCATION.set(None);
+        JSON_OUTPUT_ALLOCATIONS.set(None);
         JSON_ERROR_FIRST_ALLOCATION.set(None);
         JSON_OUTPUT_CUT.with_borrow_mut(|cut| *cut = Some((original.clone(), pressure)));
         let result = directory
@@ -56,10 +58,22 @@ async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(
         let first = JSON_OUTPUT_FIRST_ALLOCATION
             .take()
             .ok_or("missing JSON allocation event")?;
+        let allocations = JSON_OUTPUT_ALLOCATIONS
+            .take()
+            .ok_or("missing JSON allocation trace")?;
         eprintln!(
             "JSON producer: pressure={pressure:?} first_allocation={first:?} result={result:?}"
         );
         if let Some(allowance) = pressure {
+            assert_eq!(
+                allocations.count_total,
+                u64::from(allowance != 0),
+                "refused JSON allocated private serializer backing"
+            );
+            assert_eq!(
+                allocations.bytes_total, allowance,
+                "refused JSON allocated outside its admitted output"
+            );
             if allowance == 0 {
                 assert_eq!(
                     first, None,
@@ -100,6 +114,8 @@ async fn merge_directory_json_admission_precedes_output_allocation() -> Result<(
 async fn merge_directory_pages_preserve_pins_and_non_text_conflicts() -> Result<(), Box<dyn Error>>
 {
     merge_directory_staging_credit().await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    merge_directory_text_admission().await?;
     let fs = Fs::memory();
     let main = unbounded!(fs, create_workspace("directory-main"))?;
     let longest_conflict = format!("/{}", "%".repeat(255));
@@ -877,7 +893,7 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
     };
     let mut samples = Vec::new();
     // Equal-length labels leave the actual diff and output size unchanged.
-    // Each extra custom label therefore isolates one required replacement.
+    // Direct marker emission must avoid replacement buffers for every label.
     for (ours_label, theirs_label) in [
         ("ours", "theirs"),
         ("fork", "theirs"),
@@ -908,9 +924,9 @@ fn merge_text_allocation_cost(view: &crate::ConflictView) -> Result<(), Box<dyn 
     }
     for (fewer, more) in [(0, 1), (0, 2), (1, 3), (2, 3)] {
         assert!(
-            samples[fewer].count_total < samples[more].count_total
-                && samples[fewer].bytes_total < samples[more].bytes_total,
-            "default marker label performed an identity replacement: {samples:?}"
+            samples[fewer].count_total == samples[more].count_total
+                && samples[fewer].bytes_total == samples[more].bytes_total,
+            "marker label allocated a replacement buffer: {samples:?}"
         );
     }
     // Identity merges need only the returned String. Exercise all three
@@ -1082,6 +1098,87 @@ async fn merge_directory_proposal_retirement<
         baseline,
         "discarded text retained its original allocation credit"
     );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn merge_directory_text_admission() -> Result<(), Box<dyn Error>> {
+    use crate::test_support::{TEXT_OUTPUT_ALLOCATIONS, TEXT_OUTPUT_CUT};
+
+    // Refuse before the first line table, then after one line table fits; a
+    // successful page must still project the original hunk conflict.
+    let first_backing = std::mem::size_of::<(&str, u64)>() as u64;
+    for pressure in [None, Some(0), Some(first_backing)] {
+        let fs = Fs::memory();
+        let target = unbounded!(fs, create_workspace("text-admission-target"))?;
+        target.write_text("/file", "base\n").await?;
+        let source = fork_workspace(
+            &target,
+            "text-admission-source",
+            ForkOptions::from_generation(unbounded!(target, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        target.write_text("/file", "ours\n").await?;
+        source.write_text("/file", "theirs\n").await?;
+        let staging = unbounded!(fs, create_workspace("text-admission-output"))?;
+        let before = unbounded!(staging, head())?.id();
+        let cancellation = CancellationToken::new();
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let join = unbounded!(source.join_into(&target), plan())?;
+        let options = ApplyOptions {
+            if_target: join.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        };
+        let preview = value!(join.preview_pages(options, &original, &cancellation).await)?;
+        let mut directory =
+            preview.directory(staging.clone(), IdempotencyKey::new().operation_id())?;
+        let key = ConflictKey::File(unbounded!(target, stat("/file"))?.file_id);
+        let conflict_path = directory.conflict_file_path(&key)?;
+        TEXT_OUTPUT_ALLOCATIONS.set(None);
+        TEXT_OUTPUT_CUT.with_borrow_mut(|cut| *cut = Some((original.clone(), pressure)));
+        let result = directory
+            .write_page(
+                MergeDirectorySection::Conflicts,
+                std::num::NonZeroU32::new(1).ok_or("zero text page")?,
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await;
+        assert!(
+            TEXT_OUTPUT_CUT.with_borrow_mut(Option::take).is_none(),
+            "text page missed its producer"
+        );
+        let allocations = TEXT_OUTPUT_ALLOCATIONS
+            .take()
+            .ok_or("missing text allocation trace")?;
+        if let Some(allowance) = pressure {
+            assert_eq!(
+                allocations.bytes_total, allowance,
+                "text allocated before original admission"
+            );
+            assert_eq!(
+                allocations.count_total,
+                u64::from(allowance != 0),
+                "text allocated unadmitted scratch"
+            );
+            assert!(matches!(
+                result,
+                Err(WorkspaceError::Work(
+                    crate::WorkError::BudgetExceeded { .. }
+                ))
+            ));
+            assert_eq!(unbounded!(staging, head())?.id(), before);
+        } else {
+            result?;
+            assert!(allocations.count_total > 0);
+            assert_ne!(unbounded!(staging, head())?.id(), before);
+            let proposal = unbounded!(staging, read(&conflict_path, 4096))?;
+            assert_eq!(
+                &*proposal,
+                b"<<<<<<< ours\nours\n||||||| original\nbase\n=======\ntheirs\n            );
+        }
+    }
+>>>>>>> 05cbde9cd9d (Admit shared text merge storage and preserve serializer refusals)
     Ok(())
 }
 

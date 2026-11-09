@@ -12,6 +12,58 @@ pub(crate) struct ImageWriter<'w, 'a> {
     failure: Option<FsError>,
 }
 
+struct TextWork<'w, 'a>(&'w mut KernelAccounting<'a>);
+
+impl crate::text_merge::admitted::Work for TextWork<'_, '_> {
+    type Allocation = super::retained::RetainedAllocation;
+    type Error = FsError;
+
+    fn allocate(&mut self, bytes: usize) -> Result<Self::Allocation, FsError> {
+        super::retained::RetainedAllocation::claim(bytes as u64, u64::from(bytes != 0), self.0)
+    }
+
+    fn copy(&mut self, bytes: usize) -> Result<(), FsError> {
+        self.0.charge(WorkCounters {
+            bytes_copied: bytes as u64,
+            ..WorkCounters::UNCHARGED
+        })
+    }
+
+    fn examine(&mut self) -> Result<(), FsError> {
+        self.0.charge_items(1)
+    }
+}
+
+/// The shared merger owns scratch and transfers its original output guard
+/// directly into staging, without a second payload allocation or fresh budget.
+pub(crate) fn text_merge(
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<acyclic_stream::OwnedBytes, FsError> {
+    let output = crate::text_merge::admitted::merge(
+        base,
+        ours,
+        theirs,
+        "ours",
+        "theirs",
+        &mut TextWork(accounting),
+    )
+    .map_err(|error| match error {
+        crate::text_merge::admitted::Error::Work(error) => error,
+        crate::text_merge::admitted::Error::Allocation(error) => {
+            FsError::EncodedAllocationFailed(error)
+        }
+        crate::text_merge::admitted::Error::Overflow => WorkError::Overflow.into(),
+    })?;
+    let bytes = super::retained::Retained {
+        value: output.content.into_bytes(),
+        allocation: output.allocation,
+    };
+    Ok(bytes.into_bytes((), accounting)?.into())
+}
+
 impl ImageWriter<'_, '_> {
     /// The scope retires failed output after its physical storage drops,
     /// including during unwind. Successful output keeps its original guard.
@@ -91,17 +143,23 @@ impl std::fmt::Write for ImageWriter<'_, '_> {
 
 impl std::io::Write for ImageWriter<'_, '_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.accounting
+        // The producer boundary returns the saved typed failure. Relaying it
+        // through IO would make serde_json allocate its private error box after
+        // admission failed. Discard further output without touching the ledger.
+        if self.failure.is_some() {
+            return Ok(bytes.len());
+        }
+        let result = self
+            .accounting
             .charge(WorkCounters {
                 bytes_encoded: bytes.len() as u64,
                 ..WorkCounters::UNCHARGED
             })
-            .and_then(|()| self.append(bytes))
-            .map(|()| bytes.len())
-            .map_err(|error| {
-                self.failure = Some(error);
-                std::io::ErrorKind::Other.into()
-            })
+            .and_then(|()| self.append(bytes));
+        if let Err(error) = result {
+            self.failure = Some(error);
+        }
+        Ok(bytes.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
