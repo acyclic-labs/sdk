@@ -571,7 +571,8 @@ pub struct DefaultTextMergeDriver;
 
 impl MergeDriver for DefaultTextMergeDriver {
     fn fingerprint(&self) -> &[u8] {
-        b"acyclic-default-text-v1"
+        // Prior resolutions may have projected binary content as text.
+        b"acyclic-default-text-v2"
     }
 
     fn mode(&self) -> MergeDriverMode {
@@ -584,6 +585,15 @@ impl MergeDriver for DefaultTextMergeDriver {
         else {
             return Err(DriverError::Unsupported);
         };
+        for text in [base, ours, theirs] {
+            crate::text_merge::text_from_bytes(
+                text.as_bytes(),
+                crate::text_merge::ByteMergeLimits {
+                    max_bytes: u64::MAX,
+                },
+            )
+            .map_err(|_| DriverError::Unsupported)?;
+        }
         let merged = crate::text_merge::merge_text(base, ours, theirs, "ours", "theirs");
         if merged.clean && merged.content == *ours {
             Ok(MergeResolution::Select(ConflictSide::Ours))
@@ -647,6 +657,33 @@ mod tests {
                     && text.contains("<<<<<<< ours")
                     && text.contains(">>>>>>> theirs")
         ));
+    }
+
+    #[test]
+    fn default_text_driver_refuses_binary_text_values_on_every_side() {
+        for side in 0..3 {
+            for offset in [0, 8191, 8192] {
+                let mut values = ["base".to_owned(), "ours".to_owned(), "theirs".to_owned()];
+                let mut text = "a".repeat(8193);
+                text.replace_range(offset..=offset, "\0");
+                values[side] = text;
+                let [base, ours, theirs] = values;
+                let conflict = ConflictView {
+                    key: ConflictKey::File(FileId::new()),
+                    path: None,
+                    kind: ConflictKind::Text,
+                    base: ConflictValue::Text(base),
+                    ours: ConflictValue::Text(ours),
+                    theirs: ConflictValue::Text(theirs),
+                };
+                let result = DefaultTextMergeDriver.resolve(&conflict);
+                if offset < 8192 {
+                    assert_eq!(result, Err(DriverError::Unsupported));
+                } else {
+                    assert!(matches!(result, Ok(MergeResolution::Text(_))));
+                }
+            }
+        }
     }
 
     #[test]
