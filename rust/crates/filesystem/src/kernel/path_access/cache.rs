@@ -295,6 +295,8 @@ pub(super) fn object_hash(object_id: ObjectId) -> usize {
     hash
 }
 #[cfg(test)]
+mod callback_tests;
+#[cfg(test)]
 #[cfg(loom)]
 mod loom_tests;
 #[cfg(test)]
