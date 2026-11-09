@@ -50,7 +50,10 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
             .await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
+}
 
+#[tokio::test]
+async fn persisted_lineage_names_require_exact_canonical_bytes() {
     // Persisted names are identities, so successful normalization alone cannot
     // validate their spelling. Exercise both names through registration and
     // recovery from the real adapter, including a canonical Unicode record.
