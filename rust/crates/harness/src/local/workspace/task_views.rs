@@ -102,9 +102,7 @@ impl LocalWorkspace {
             workspace.path = mounted.path().to_path_buf();
             workspace.identity = served_identity(&mounted)?;
             workspace.mounted = Some(mounted);
-            workspace.mounts = workspace
-                .mounts_at_from(&workspace.path, Some(&self.mounts))
-                .await?;
+            workspace.mounts = workspace.mounts_at(&workspace.path).await?;
             workspace.context_line = workspace.mounts.context_line();
             reconciliation::recover_pending(
                 &workspace,

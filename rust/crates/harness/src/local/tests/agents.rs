@@ -1596,6 +1596,53 @@ async fn parent_and_child_context_and_writes_retain_their_own_volumes() -> Resul
     Ok(())
 }
 
+/// Each agent of a chain runs a command, which publishes its task view and so
+/// the volume alias it authored, then spawns the next below it. Every fork
+/// inherits its parent's alias to that parent's own binding; each depth must
+/// rebind it. Negative control: accepting only the root's binding as the
+/// alias to replace fails the second child with "volume alias names another
+/// binding".
+#[tokio::test]
+async fn a_spawn_chain_binds_its_volumes_at_every_depth() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply};
+    const DEPTH: usize = 6;
+    let provider = super::scripted((0..DEPTH).flat_map(|depth| {
+        [
+            super::checked_commands::call(depth, crate::tools::shell::PLATFORM.name, "echo depth"),
+            super::ScriptedTurn::Text(format!("depth {depth} done")),
+        ]
+    }));
+    let (_directory, harness, provider) = checkout_scripted(&[], provider).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, mut parent) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    for depth in 0..DEPTH {
+        let AgentReply::Spawned { agent: child, .. } = connection
+            .execute(&AgentCommand::Spawn {
+                parent: parent.clone(),
+                id: crate::agent::IntentId::try_from(format!("depth-{depth}").as_str())
+                    .map_err(agent)?,
+                brief: crate::model::ModelContent::Text("run one command".into()),
+                role: "worker".into(),
+            })
+            .await?
+        else {
+            return Err(Error::Invalid("spawn was not delivered".into()));
+        };
+        settled(&harness, &child).await?;
+        let state = agents.state(&child).await.map_err(agent)?;
+        assert!(
+            !matches!(state.phase, crate::agent::Phase::Done { .. }),
+            "depth {} settled {:?}",
+            depth + 1,
+            state.phase
+        );
+        parent = child;
+    }
+    assert_eq!(provider.request_count(), 2 * DEPTH);
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
