@@ -82,7 +82,7 @@ where
         };
         if unresolved {
             return Err(Self::error(
-                "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
+                "Git join has unresolved conflicts. Edit the conflicted paths, then repeat the same merge to finish it",
             ));
         }
         let tracked_paths = self
