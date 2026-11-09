@@ -299,7 +299,7 @@ fn trace_mapping(source: &str, inventory: &Inventory) -> Result<(), String> {
 /// Each original call must record its own arguments and bound result before
 /// another statement can lower or change them. Set coverage alone cannot show
 /// this: a second call to an already mapped helper can otherwise go unrecorded.
-/// The recorded agent must also own the control snapshot passed to that call.
+/// The recorded agent must also own any control snapshot passed to that call.
 /// Snapshot, call and record are consecutive statements, so no binding or
 /// assignment can invalidate that ownership between them.
 fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
@@ -335,6 +335,7 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
     }
     #[derive(Default)]
     struct Sites {
+        control_inputs: BTreeMap<String, Vec<usize>>,
         calls: usize,
         records: usize,
         paired: usize,
@@ -375,22 +376,26 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
                     if call_path(record) != ["control_trace", "record"] || record.args.len() != 2 {
                         return None;
                     }
-                    let control = name(call.args.first()?)?;
-                    let syn::Stmt::Local(snapshot) = block.stmts.get(index.checked_sub(1)?)? else {
-                        return None;
-                    };
-                    if bound(&snapshot.pat)? != [control] {
-                        return None;
-                    }
-                    let Expr::Call(snapshot) = &*snapshot.init.as_ref()?.expr else {
-                        return None;
-                    };
-                    let recorded_owner = owner(record.args.first()?)?;
-                    if call_path(snapshot) != ["control"]
-                        || snapshot.args.len() != 1
-                        || owner(snapshot.args.first()?).as_deref() != Some(recorded_owner.as_str())
-                    {
-                        return None;
+                    for &argument in self.control_inputs.get(action)? {
+                        let control = name(call.args.get(argument)?)?;
+                        let syn::Stmt::Local(snapshot) = block.stmts.get(index.checked_sub(1)?)?
+                        else {
+                            return None;
+                        };
+                        if bound(&snapshot.pat)? != [control] {
+                            return None;
+                        }
+                        let Expr::Call(snapshot) = &*snapshot.init.as_ref()?.expr else {
+                            return None;
+                        };
+                        let recorded_owner = owner(record.args.first()?)?;
+                        if call_path(snapshot) != ["control"]
+                            || snapshot.args.len() != 1
+                            || owner(snapshot.args.first()?).as_deref()
+                                != Some(recorded_owner.as_str())
+                        {
+                            return None;
+                        }
                     }
                     let Expr::Call(decision) = record.args.last()? else {
                         return None;
@@ -433,7 +438,35 @@ fn trace_call_sites(source: &str, inventory: &Inventory) -> Result<(), String> {
         }
     }
     let file = syn::parse_file(source).map_err(|error| error.to_string())?;
-    let mut sites = Sites::default();
+    let kernel = syn::parse_file(include_str!("../src/agent/kernel.rs"))
+        .map_err(|error| error.to_string())?;
+    let control_inputs = kernel
+        .items
+        .iter()
+        .filter_map(|item| {
+            let Item::Fn(function) = item else {
+                return None;
+            };
+            let inputs = function
+                .sig
+                .inputs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, argument)| {
+                    let syn::FnArg::Typed(argument) = argument else {
+                        return None;
+                    };
+                    matches!(&*argument.ty, syn::Type::Path(ty) if ty.path.is_ident("Control"))
+                        .then_some(index)
+                })
+                .collect();
+            Some((function.sig.ident.to_string(), inputs))
+        })
+        .collect();
+    let mut sites = Sites {
+        control_inputs,
+        ..Default::default()
+    };
     sites.visit_file(&file);
     if let Some(error) = sites.error {
         return Err(error);
@@ -498,6 +531,11 @@ fn agent_control_mapping_is_bidirectional() -> Result<(), String> {
     trace_mapping(trace, &inventory)?;
     trace_call_sites(shell, &inventory)?;
     for (before, after, action) in [
+        (
+            "Decision::Until(need, reachable, sleep, deadline, wait)",
+            "Decision::Until(need, reachable, sleep, deadline, deadline)",
+            "until",
+        ),
         (
             "Decision::Alarm(before, queued, approval_ready, pending, alarm)",
             "Decision::Alarm(before, queued, queued, pending, alarm)",

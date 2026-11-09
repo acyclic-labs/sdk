@@ -23,6 +23,10 @@ struct Model {
 }
 
 async fn model(directory: &Path) -> Model {
+    model_response(directory, ANSWER).await
+}
+
+async fn model_response(directory: &Path, response: &'static str) -> Model {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -36,7 +40,7 @@ async fn model(directory: &Path) -> Model {
             "/responses",
             post(move |Json(body): Json<Value>| {
                 recorded.lock().unwrap().push(body);
-                async { ([("content-type", "text/event-stream")], ANSWER) }
+                async move { ([("content-type", "text/event-stream")], response) }
             }),
         );
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -457,6 +461,37 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     assert_eq!(row["usage"]["completed"], true);
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
+    model.close().await;
+}
+
+#[tokio::test]
+async fn failed_prompt_and_replay_report_the_original_cause() {
+    let fixture = fixture();
+    let model = model_response(
+        fixture._directory.path(),
+        concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture partial\"}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":403}}}\n\n",
+        ),
+    )
+    .await;
+    // Native dispatch retains the admitted diagnostic, without the host's
+    // typed Display prefix. Prompt output must preserve those original bytes.
+    let cause = "model HTTP status 403";
+    for _ in 0..2 {
+        let output = graphcoder(
+            &fixture,
+            &model.catalog,
+            vec!["--operation", "failed-prompt", "-p", "hello"],
+            "",
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(output.stdout, b"fixture partial\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.trim_end(), format!("graphcoder: {cause}"));
+        assert_eq!(model.generated(), 1, "replay dispatched model work");
+    }
     model.close().await;
 }
 

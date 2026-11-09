@@ -43,7 +43,7 @@
       "actions": [
         {
           "when": {
-            "task_failure": "model provider unavailable (co",
+            "task_failure": "model provider unavailable",
             "contains": [
               "RECOVERED_E2E"
             ]

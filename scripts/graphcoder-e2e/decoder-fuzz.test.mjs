@@ -7,6 +7,19 @@ import { fuzz as assertions } from "./assertions.fuzz.mjs";
 import { fuzz as spool } from "./spool.fuzz.mjs";
 import { fuzz as watch } from "./output-watch.fuzz.mjs";
 import { fuzz as serial } from "./serial.fuzz.mjs";
+import { fuzz as terminalChild } from "./terminal-child.fuzz.mjs";
+
+test("terminal child fuzz target admits only complete captured native announcements", async () => {
+  const capture = JSON.parse(readFileSync(new URL("./fixtures/conpty-child-announcement.json", import.meta.url)));
+  const seed = Buffer.from(capture.stderr);
+  await terminalChild(seed.subarray(0, -2));
+  for (let length = 0; length <= seed.length; length++) await terminalChild(seed.subarray(0, length));
+  for (let offset = 0; offset < seed.length; offset++) {
+    const mutation = Buffer.from(seed);
+    mutation[offset] ^= 255;
+    await terminalChild(mutation);
+  }
+});
 
 test("decoder fuzz targets retain captured native and shipping seeds across byte mutations", async () => {
   const { ready, acknowledgement } = JSON.parse(readFileSync(new URL("./fixtures/native-report-ready.json", import.meta.url)));

@@ -68,17 +68,18 @@ export function expectedTaskFailure(visible, condition) {
 }
 export class FailureHistory {
   #handled = new Map();
-  unexpected(visible, condition) {
-    for (const failure of failures(visible)) if (!expected(failure, condition)
+  unexpected(visible, condition, assertion) {
+    for (const failure of failures(visible)) if (!expected(failure, condition) && !expected(failure, assertion)
       && !expected(failure, this.#handled.get(failure.identity ?? failure.text))) return failure.text;
   }
-  accept(visible, condition) {
+  accept(visible, condition, assertion) {
     const handled = new Map();
     for (const failure of failures(visible)) {
       const key = failure.identity ?? failure.text, previous = this.#handled.get(key);
       // The task and explicitly admitted prefix survive clipping/reflow. Other
       // notices retain exact text identity. Retain only this frame's failures.
       if (expected(failure, condition)) handled.set(key, condition);
+      else if (expected(failure, assertion)) handled.set(key, assertion);
       else if (expected(failure, previous)) handled.set(key, previous);
     }
     this.#handled = handled;

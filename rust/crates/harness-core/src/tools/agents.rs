@@ -24,7 +24,7 @@ use crate::{
     Error, Result,
     agent::{
         AgentPath, AgentState, CreationConfig, IntentId, MAX_OPEN_CHILDREN, SpawnTemplates,
-        TurnChildren, TurnEffect, TurnEffects, named_child,
+        TurnChildren, TurnEffect, TurnEffects, TurnOutcome, named_child,
     },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
@@ -403,13 +403,19 @@ impl AgentTool {
                 }
                 Err(error) => return Err(error),
             };
+            let (answer, outcome) = observer.answer(child).await?.unzip();
             let mut entry = json!({
                 "name": name,
                 "agent": child.as_str(),
                 "phase": serde_json::to_value(&phase)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
-                "answer": observer.answer(child).await?,
+                "answer": answer,
             });
+            // A failed last turn leaves the child open: this agent decides
+            // whether to send it more, retry elsewhere or archive it.
+            if let Some(TurnOutcome::Failed { message }) = outcome {
+                entry["failed"] = json!(message);
+            }
             // The fork's branch: its changes reach this agent's project
             // only through `fs merge` of it. A spawn name names it; an agent
             // path does not.
@@ -660,7 +666,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
+                "Wait for subagents (children) to finish their current work and messages. Returns each settled child's phase and last answer, its error as failed when that turn failed, plus its branch when addressed by spawn name, and lists the rest as unsettled with their phase; a wait its open children cannot meet fails naming each child that cannot settle. need (default all) sets how many must settle, 1 for the first; timeout_ms returns after that long regardless. Inspect changes with fs diff <branch>, then bring accepted changes into your project with fs merge <branch>",
             )?,
         ),
     ] {
@@ -795,7 +801,10 @@ mod tests {
             Box::pin(async move { Ok((phase, settled)) })
         }
 
-        fn answer<'a>(&'a self, _: &'a AgentPath) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        fn answer<'a>(
+            &'a self,
+            _: &'a AgentPath,
+        ) -> BoxProviderFuture<'a, Result<Option<(String, TurnOutcome)>>> {
             Box::pin(async { Ok(None) })
         }
     }

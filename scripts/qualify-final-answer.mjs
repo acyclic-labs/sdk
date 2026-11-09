@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { environment } from "./graphcoder-e2e/scratch.mjs";
 
 const [binary, scenario = "unicode", mode = "prompt"] = process.argv.slice(2);
 assert.ok(binary && isAbsolute(binary), "absolute shipping binary required");
@@ -15,9 +16,8 @@ assert.ok(["prompt", "jsonl"].includes(mode));
 const root = mkdtempSync(join(tmpdir(), "final-answer-"));
 const workspace = join(root, "workspace"), settings = join(root, "settings");
 mkdirSync(workspace);
-for (const path of ["AppData/Local", "AppData/Roaming", "codex-home"]) {
-  mkdirSync(join(settings, path), { recursive: true });
-}
+// The shared scratch profile isolates per-user state and signing custody.
+const env = environment(settings);
 const failed = scenario === "pre-dispatch";
 const answer = scenario === "empty" ? "" : "  final λ\nanswer 猫\n";
 const sse = value => `data: ${JSON.stringify(value)}\n\n`;
@@ -63,9 +63,6 @@ const operation = randomUUID();
 const args = ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog,
   "--model", "fixture/tiny", "--operation", operation];
 async function run(replay) {
-  const env = { ...process.env, HOME: settings, USERPROFILE: settings, CODEX_HOME: join(settings, "codex-home"),
-    LOCALAPPDATA: join(settings, "AppData/Local"), APPDATA: join(settings, "AppData/Roaming"),
-    XDG_DATA_HOME: settings, OPENAI_API_KEY: "", GRAPHCODER_MODEL: "" };
   const command = mode === "prompt" ? [...args, "-p", "qualify final answer"] : [...args, "--input-format", "jsonl"];
   const child = spawn(binary, command, { env, cwd: workspace, windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"], signal: AbortSignal.timeout(8000), killSignal: "SIGKILL" });

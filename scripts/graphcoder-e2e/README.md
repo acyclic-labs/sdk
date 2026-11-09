@@ -192,10 +192,10 @@ The orphan case waits for an acknowledged HTTP barrier from a real native-tool
 descendant, kills the shipping owner and reopens the workspace. It checks both
 process identities while the mock's held response remains open. Closing the
 mock first would let an unfenced descendant exit and hide the failure.
-If the interrupted tool has no authoritative outcome, reopening must report the
-typed may-have-run failure with exit 1. It must neither request a recovery answer
-from the model nor start the tool again. The case retains its unexpected-recovery
-model response so an additional generation fails the request/step oracle.
+If the interrupted tool has no authoritative outcome, its turn settles failed:
+replaying the prompt must report the typed may-have-run failure with exit 1. It
+must neither request a recovery answer from the model nor start the tool again;
+an additional generation fails the request/step oracle.
 
 The separate real-login tier accepts an existing Codex login directory by path:
 
@@ -222,7 +222,8 @@ JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeate
 tool calls. This tier complements the installed-host matrix.
 
 The kept byte-fuzz entries are `lines.fuzz.mjs`, `process-report.fuzz.mjs`,
-`assertions.fuzz.mjs`, `spool.fuzz.mjs` and `output-watch.fuzz.mjs`. They call the shared production decoders and acceptance
+`assertions.fuzz.mjs`, `spool.fuzz.mjs`, `output-watch.fuzz.mjs` and
+`terminal-child.fuzz.mjs`. They call the shared production decoders and acceptance
 boundaries, retaining captured wire seeds and provenance in `fixtures/`.
 Run their corpus replay and planted production-defect controls with:
 
@@ -247,3 +248,6 @@ a distinct second range. Its in-memory
 stream adapter does not qualify filesystem transcript failures or native pipes.
 Pending and retained-key cancellation must preserve the caller's original reason
 even when later source EOF or indexed data is available.
+The terminal-child target partitions a captured native ConPTY announcement and
+mutates or truncates every byte. Only a complete line selects a PID; source EOF
+or failure refuses the pending selection and releases its stream listeners.

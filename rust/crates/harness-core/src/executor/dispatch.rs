@@ -593,7 +593,17 @@ impl StockExecution<'_> {
                 let Some(event) = next else {
                     break;
                 };
-                let event = event?;
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        // An error can follow text without a transport pause.
+                        // Retain that original prefix before settling the turn.
+                        if let Some(text) = text.as_mut() {
+                            text.flush().await?;
+                        }
+                        return Err(error);
+                    }
+                };
                 #[cfg(feature = "research")]
                 clock.observe(&event);
                 let latency_ns = matches!(event, ModelEvent::Completed { .. })

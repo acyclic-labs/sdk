@@ -280,7 +280,15 @@ export class Processes {
     if (process.platform !== "win32") return start(binary, args, { ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
-    return start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    // Kill only the shipping executable, as POSIX custody does: the ConPTY and
+    // process hosts then observe its exit and retire the tree with a receipt.
+    const terminal = running => {
+      const announced = terminalChild(running.child.stderr);
+      announced.catch(() => {});
+      return { ...running, killExecutable: () => announced.then(pid => process.kill(pid)) };
+    };
+    const running = start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    return running instanceof Promise ? running.then(terminal) : terminal(running);
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
@@ -330,6 +338,25 @@ export class Processes {
     }
     if (observationError ?? this.#observationFailure) throw observationError ?? this.#observationFailure;
   }
+}
+
+export function terminalChild(stderr) {
+  return new Promise((resolve, reject) => {
+    const detach = () => { stderr.off("data", consume); cleanup(); };
+    const lines = new Lines(line => {
+      const match = /^conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=([1-9]\d*)\r?$/.exec(line);
+      const pid = Number(match?.[1]);
+      if (pid > 0 && pid <= 0xffff_ffff) { detach(); resolve(pid); }
+    });
+    const consume = bytes => lines.write(bytes);
+    const cleanup = finished(stderr, { readable: true, writable: false }, cause => {
+      detach();
+      reject(Object.assign(new Error(
+        "step=terminal-child-announcement; recovery=inspect the original ConPTY stderr transcript", { cause },
+      ), { code: "CONPTY_CHILD_UNANNOUNCED" }));
+    });
+    stderr.on("data", consume);
+  });
 }
 
 // Only this launch's original write/end calls are observed. A completed Node

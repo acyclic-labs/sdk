@@ -43,7 +43,8 @@ pub const MAX_VOLUMES: usize = 8;
 /// Version 15 requires membership feeds created atomically with every agent.
 /// Version 16 retains committed agent actions and compact wait selections.
 /// Version 17 records forced continuation provenance in the creation profile.
-pub const RECORD_VERSION: u32 = 17;
+/// Version 18 settles a definitive turn failure as a failed conversation entry.
+pub const RECORD_VERSION: u32 = 18;
 
 /// Version-one creation event in an agent's append-only membership stream.
 /// The first event names the owner; subsequent events name its direct children.

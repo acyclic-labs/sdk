@@ -16,7 +16,19 @@
       },
       {
         "when": {
-          "contains": "Summarize this conversation"
+          "contains": "refuse unmatched summary"
+        },
+        "status": 400,
+        "json": {
+          "error": {
+            "message": "scripted refusal",
+            "type": "invalid_request_error"
+          }
+        }
+      },
+      {
+        "when": {
+          "contains": "preserve the fact"
         },
         "text": [
           "COMPACTED_E2E_FACT"
@@ -53,7 +65,8 @@
               "\u25cb"
             ]
           },
-          "prompt": "/compact preserve the fact"
+          "prompt": "/compact refuse unmatched summary",
+          "send": "\u001b[200~/compact preserve the fact\u001b[201~\r"
         },
         {
           "when": {
@@ -62,10 +75,13 @@
               "\u25cb"
             ]
           },
+          "assert": {
+            "task_failure": "model HTTP status 400"
+          },
           "prompt": "after compact",
           "after_request": {
             "path": "responses",
-            "step": 1
+            "step": 2
           }
         },
         {
@@ -81,7 +97,7 @@
     }
   ],
   "assert": {
-    "requests": 3,
+    "requests": 4,
     "last_model_contains": [
       "COMPACTED_E2E_FACT"
     ],

@@ -127,24 +127,20 @@ const REWOUND: &str = "Rewound to selected checkpoint";
 
 /// How the session ended, as the process exit: the last turn succeeded,
 /// failed (status 1), or was cancelled (status 2).
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 enum Outcome {
     #[default]
     Settled,
-    Failed,
+    Failed(String),
     Cancelled,
 }
 
 impl View {
     /// The process exit, each nonzero status with its reason.
     fn exit(&self) -> Result<(), Failure> {
-        match self.outcome {
+        match &self.outcome {
             Outcome::Settled => Ok(()),
-            Outcome::Failed => Err(Box::new(Exit::failed(
-                self.ended
-                    .clone()
-                    .unwrap_or_else(|| "the last turn failed".into()),
-            ))),
+            Outcome::Failed(message) => Err(Box::new(Exit::failed(message.clone()))),
             Outcome::Cancelled => Err(Box::new(Exit::new(
                 std::num::NonZeroU8::MIN.saturating_add(1),
                 "the last turn was cancelled",
@@ -177,9 +173,6 @@ struct View {
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
-    /// The failed task's error while its conversation stays failed, shown
-    /// whole on the status row.
-    ended: Option<String>,
     /// A cancel was sent and its turn has not stopped yet.
     cancelling: bool,
     outcome: Outcome,
@@ -284,8 +277,12 @@ impl View {
                     self.ring = true;
                     return Ok(());
                 }
-                // A cancelled checkpoint selects nothing and shows nothing.
+                // A failed context request settles with the same visible
+                // failure as a prompt; it does not select a checkpoint.
                 if entry.input.context().is_some() {
+                    if let TurnOutcome::Failed { message } = &entry.outcome {
+                        self.failed(conversation, message);
+                    }
                     return Ok(());
                 }
                 let cancelled = entry.outcome == TurnOutcome::Cancelled;
@@ -309,6 +306,9 @@ impl View {
                     self.outcome = Outcome::Cancelled;
                     // It marks the stop a cancel in flight would otherwise mark.
                     self.cancel_marked = self.cancelling || self.stopped.is_some();
+                } else if let TurnOutcome::Failed { message } = &entry.outcome {
+                    // The turn failed; the conversation stays open.
+                    self.failed(conversation, message);
                 } else {
                     self.outcome = Outcome::Settled;
                 }
@@ -317,7 +317,6 @@ impl View {
             }
             Event::Delta => return Ok(()),
             Event::Status(status) => {
-                self.ended = None;
                 self.approval_prompt = match &status.phase {
                     Phase::WaitingApproval { id, .. } => conversation.approval_prompt(id).await?,
                     _ => None,
@@ -333,9 +332,7 @@ impl View {
                 } = &status.phase
                 {
                     self.settle_pending();
-                    self.ended = Some(format!("task {} failed: {message}", conversation.task()));
-                    self.outcome = Outcome::Failed;
-                    self.ring = true;
+                    self.failed(conversation, message);
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
                     if std::mem::take(&mut self.cancelling) {
                         // The cancel's stop shows once the entries this status
@@ -385,6 +382,16 @@ impl View {
         self.checkpoints.push(inbox);
         self.pending_dirty = true;
         Ok(())
+    }
+
+    /// Records a failure in the transcript, where it stays visible.
+    fn failed(&mut self, conversation: &Conversation, message: &str) {
+        self.transcript.push(
+            false,
+            &format!("task {} failed: {message}", conversation.task()),
+        );
+        self.outcome = Outcome::Failed(message.into());
+        self.ring = true;
     }
 
     /// Shows the pending prompts and the streamed answer as settled.
@@ -541,7 +548,7 @@ impl View {
         if let Some(Prompt::Confirm(CommandRequest::ClearAll {})) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
-        if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
+        if let Some(notice) = &self.notice {
             return notice.clone();
         }
         match (&self.phase, self.approval()) {

@@ -88,6 +88,7 @@ def _invocation(binary: str, state: str, model: str) -> list[str]:
         "XDG_CONFIG_HOME=" + home, "XDG_DATA_HOME=" + home,
         "XDG_STATE_HOME=" + home, "XDG_CACHE_HOME=" + home,
         "TMPDIR=" + str(PurePosixPath(state) / "tmp"),
+        "ACYCLIC_SIGNING_CUSTODY=private-file", "ACYCLIC_SIGNING_CUSTODY_DIRECTORY=" + home,
         binary, "--catalog", str(PurePosixPath(state) / "catalog.json"),
         "--settings-root", home, "--model", "benchmark/" + model.split("/", 1)[1],
     ]

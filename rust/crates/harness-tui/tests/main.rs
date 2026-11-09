@@ -1,4 +1,6 @@
 //! Integration behaviour tests.
+#![cfg(test)]
+
 acyclic_test_support::counting_allocator!();
 
 #[path = "cases/completion.rs"]

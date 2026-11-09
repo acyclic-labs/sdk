@@ -352,6 +352,89 @@ async fn replacement_fences_the_original_file_instead_of_unrelated_publications(
     Ok(())
 }
 
+// Two harness publications to one volume (a turn's journal and a prompt's
+// staged input) each add a receipt beside the other's. Losing the race to
+// the other must rebase the proven-disjoint candidate on every adapter.
+#[tokio::test]
+async fn publication_rebases_past_an_unrelated_concurrent_writer() -> Result<()> {
+    for adapter in 0..3 {
+        let provider = ProviderRef::new("race".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = crate::AgentId::from_bytes([39; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let access = crate::conversation::ContentAccess {
+            ceiling: None,
+            io: io.as_ref(),
+        };
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let opened = host.open(&workspace, None).await?;
+        let race = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let race_arm = race.clone();
+        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+            let armed = race_arm.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let workspace = opened.clone();
+            Box::pin(async move {
+                if armed {
+                    workspace
+                        .write_text("/.system/harness-uploads/racer", "racer")
+                        .await
+                        .unwrap();
+                }
+            })
+        }));
+        let mut staged = Vec::new();
+        for (key, armed) in [("first", false), ("second", true)] {
+            race.store(armed, std::sync::atomic::Ordering::SeqCst);
+            let file = host
+                .put_content(
+                    &volume,
+                    &write,
+                    &format!("inputs/{key}"),
+                    b"input",
+                    "text/plain",
+                    "input",
+                    64,
+                    &IdempotencyKey::new(key)?,
+                    None,
+                    access,
+                )
+                .await?;
+            staged.push(file);
+        }
+        assert!(!race.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            host.read_content(&staged[1], &read, 64, io.as_ref())
+                .await?
+                .as_ref(),
+            b"input"
+        );
+        assert_eq!(
+            host.read(&workspace, None, "/.system/harness-uploads/racer", 64, None)
+                .await?
+                .as_ref(),
+            b"racer"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
     for native_adapter in [false, true] {

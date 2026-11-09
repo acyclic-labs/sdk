@@ -52,7 +52,7 @@ pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    use axum::{Json, Router, routing::post};
+    use axum::{Json, Router, http::StatusCode, routing::post};
     use std::io::Write as _;
     let bearer = directory.join("bearer");
     acyclic_native_runtime::private_file::create(&bearer)?.write_all(b"fixture-bearer")?;
@@ -101,16 +101,19 @@ async fn secrets_invocation(directory: &std::path::Path) -> Result<(), Box<dyn s
             post(move || {
                 let events = events.clone();
                 async move {
-                    let events = events.lock().expect("request event").take();
+                    let events = events
+                        .lock()
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+                        .take();
                     if let Some((entered, released)) = events {
                         let _ = entered.send(());
                         let _ = released.await;
                     }
-                    Json(acyclic_auth::contract::SecretListReply {
+                    Ok::<_, StatusCode>(Json(acyclic_auth::contract::SecretListReply {
                         generation: 7,
                         variables: vec![],
                         next_cursor: None,
-                    })
+                    }))
                 }
             }),
         );
