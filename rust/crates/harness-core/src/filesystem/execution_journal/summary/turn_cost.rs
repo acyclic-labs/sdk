@@ -149,6 +149,11 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
             },
         };
         let before = io.receipt();
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded,
+            "append inherited prior invocation work at step {step}"
+        );
         assert!(
             journal
                 .append_if_tail(
@@ -184,10 +189,12 @@ async fn append_work_is_bounded_per_invocation_across_history() -> Result<()> {
                 "hot summary grew with history: step={step}, entries={entries}"
             );
         }
-        assert!(
-            after.bytes_encoded - before.bytes_encoded < 4_096,
-            "append encoding exceeded the fixed per-append bound at step {step}: encoded={}",
-            after.bytes_encoded - before.bytes_encoded
+        // Local storage also encodes its own durable records. Its exact work
+        // belongs to this invocation, independently of earlier appends.
+        assert_eq!(
+            io.remaining()?.bytes_encoded,
+            budget.bytes_encoded - (after.bytes_encoded - before.bytes_encoded),
+            "append charged work outside its invocation at step {step}"
         );
     }
     Ok(())
