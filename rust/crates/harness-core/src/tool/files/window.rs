@@ -25,32 +25,27 @@ impl Window {
     pub async fn first(
         context: &ToolContext,
         input: &ReadFileInput,
+        original: super::source::ReadSource,
         range: acyclic_fs::ByteRange,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        let source_hold;
-        let original = input
-            .version
-            .as_deref()
-            .map(|version| {
-                super::version::decode_tool_version(Some(context), &input.path, version, work)
-            })
-            .transpose()?;
-        let original = match original {
-            Some((FileReadSource::Content(file), hold)) => {
-                source_hold = hold;
+        let original = match original.source {
+            Some(FileReadSource::Content(file)) => {
                 let range = content_range(&file, range, work)?;
                 let bytes = context.read_file_range(&file, range, io).await?;
                 return Ok(Self {
                     source: FileReadSource::Content(file),
                     bytes,
-                    _hold: source_hold,
+                    _hold: original.custody,
                 });
             }
-            original => original,
+            source => super::source::ReadSource {
+                source,
+                custody: original.custody,
+            },
         };
-        let expected = original.as_ref().and_then(|(source, _)| match source {
+        let expected = original.source.as_ref().and_then(|source| match source {
             FileReadSource::Authored(file) => Some(file),
             FileReadSource::Content(_) => None,
         });
