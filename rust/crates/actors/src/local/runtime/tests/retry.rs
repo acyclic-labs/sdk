@@ -269,7 +269,18 @@ async fn guarded_store() -> Result<(Store<MemoryStream>, ActorReference), Box<dy
             })?;
         }
     }
-    for effect in store.create(&address, subscriptions, Some(ledger("out/guarded")?))? {
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions,
+                checkpoint: Some(ledger("out/guarded")?),
+                escrow: None,
+            },
+        )?,
+        store.activation(&address),
+    ] {
         held.join(effect)?;
     }
     store.submit(held).await?;
@@ -390,7 +401,18 @@ async fn a_failed_record_does_not_starve_other_ready_subscriptions() -> TestResu
             },
         })?;
     }
-    for effect in store.create(&address, subscriptions, Some(ledger("out/fairness")?))? {
+    for effect in [
+        store.create(
+            None,
+            &address,
+            crate::local::Creation {
+                subscriptions,
+                checkpoint: Some(ledger("out/fairness")?),
+                escrow: None,
+            },
+        )?,
+        store.activation(&address),
+    ] {
         create.join(effect)?;
     }
     store.submit(create).await?;

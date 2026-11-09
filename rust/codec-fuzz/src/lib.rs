@@ -484,17 +484,24 @@ pub fn actor_seeds()
         let store = Store::new(Arc::clone(&provider), StreamPath::new("codec/actors")?);
         let mut create =
             PreparedPublish::foreign(IdempotencyKey::new(b"codec/invocation/create".to_vec())?);
-        for effect in store.create(
-            &actor,
-            BTreeMap::from([(
-                "inbox".into(),
-                Subscription {
-                    path: input.clone(),
-                    cursor: 0,
+        for effect in [
+            store.create(
+                None,
+                &actor,
+                acyclic_actors::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".into(),
+                        Subscription {
+                            path: input.clone(),
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: None,
+                    escrow: None,
                 },
-            )]),
-            None,
-        )? {
+            )?,
+            store.activation(&actor),
+        ] {
             create.join(effect)?;
         }
         PreparedPublish::settle(&provider.commit(create.into_request()?).await?)?;
@@ -581,7 +588,18 @@ pub fn actor_seeds()
         StreamPath::new("codec/actors")?,
     );
     let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
-    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
+    let effects = [
+        store.create(
+            None,
+            &actor,
+            acyclic_actors::local::Creation {
+                subscriptions: BTreeMap::new(),
+                checkpoint: Some(checkpoint.clone()),
+                escrow: None,
+            },
+        )?,
+        store.activation(&actor),
+    ];
     let CommitMutation::Append { records, .. } = &effects[0].mutation else {
         return Err("actor creation did not append state".into());
     };
@@ -1064,17 +1082,24 @@ async fn actor_alarm_seeds()
     let input = StreamPath::new("codec/alarm-input")?;
     let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
     let mut create = PreparedPublish::foreign(IdempotencyKey::unique());
-    for effect in store.create(
-        &actor,
-        BTreeMap::from([(
-            "inbox".into(),
-            Subscription {
-                path: input.clone(),
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &actor,
+            acyclic_actors::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: input.clone(),
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: Some(checkpoint.clone()),
+                escrow: None,
             },
-        )]),
-        Some(checkpoint.clone()),
-    )? {
+        )?,
+        store.activation(&actor),
+    ] {
         create.join(effect)?;
     }
     create.join(Effect {

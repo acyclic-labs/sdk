@@ -239,17 +239,24 @@ async fn shared_input_invocations_execute_only_under_the_original_store_root() -
     let right_host = publish(
         &right,
         &actor,
-        right.create(
-            &actor,
-            BTreeMap::from([(
-                "inbox".into(),
-                crate::guest::Subscription {
-                    path: input,
-                    cursor: 0,
+        [
+            right.create(
+                None,
+                &actor,
+                crate::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".into(),
+                        crate::guest::Subscription {
+                            path: input,
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: Some(initial_checkpoint(2)?),
+                    escrow: None,
                 },
-            )]),
-            Some(initial_checkpoint(2)?),
-        )?,
+            )?,
+            right.activation(&actor),
+        ],
     )
     .await?;
     let left_pool = Pool::new(

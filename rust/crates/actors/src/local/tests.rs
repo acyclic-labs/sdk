@@ -7,6 +7,7 @@ use proptest::prelude::*;
 
 mod disposition;
 mod hot_path;
+mod overlay;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -48,22 +49,24 @@ async fn fork_replay_retains_original_cut_after_parent_and_input_progress() -> T
     // The original operation commits, but its caller loses the reply.
     store.fork_actor(&[], &request).await?;
     // The former acceptance identity must not select this generation's
-    // changed exclusion semantics. A restored v1 key fails this real retained
+    // changed overlay semantics. A restored earlier key fails this real retained
     // envelope oracle, without a migration reader or synthetic provider.
     {
         use prost::Message as _;
         use sha2::Digest as _;
-        let mut old = sha2::Sha256::new();
-        old.update(b"acyclic.actors.fork.v1\0");
-        old.update(store.path(&child)?.as_str().as_bytes());
-        old.update([0]);
-        old.update(request.encode_to_vec());
-        assert!(
-            provider
-                .inspect_idempotency(IdempotencyKey::new(old.finalize().to_vec())?)
-                .await?
-                .is_none()
-        );
+        for format in [b"acyclic.actors.fork.v1\0", b"acyclic.actors.fork.v2\0"] {
+            let mut old = sha2::Sha256::new();
+            old.update(format);
+            old.update(store.path(&child)?.as_str().as_bytes());
+            old.update([0]);
+            old.update(request.encode_to_vec());
+            assert!(
+                provider
+                    .inspect_idempotency(IdempotencyKey::new(old.finalize().to_vec())?)
+                    .await?
+                    .is_none()
+            );
+        }
         let current = provider
             .inspect_idempotency(fork_key(&store.path(&child)?, &request)?)
             .await?
@@ -132,14 +135,16 @@ async fn forked_prepared_publication_retains_original_provenance() -> TestResult
     place(&store, &parent).await?;
     let parent_cut = store.load(&parent).await?;
     let mut publication = PreparedPublish::foreign(key("fork")?);
-    for effect in store.fork(&parent_cut, &child, inbox(&child)?)? {
-        publication.join(effect)?;
-    }
+    publication.join(store.branch(&parent_cut, &child, Branch::unfunded(inbox(&child)?))?)?;
+    publication.join(store.activation(&child))?;
     store.submit(publication).await?;
     let forked = store.load(&child).await?;
     let original = forked.provenance().cloned().ok_or("missing fork origin")?;
     assert_eq!(original.source, *parent_cut.path());
-    store.claim(&forked, 2, key("claim")?).await?;
+    // Born paused: the forker's resume is the branch's first placement.
+    store
+        .claim_with_pause(&forked, 2, Some(false), key("claim")?)
+        .await?;
     let mut retained = store.load(&child).await?;
     for sequence in 0..2 {
         let publication = store.prepare_publish(
@@ -772,7 +777,18 @@ async fn place<P: StreamProvider + ?Sized>(
 ) -> Result<(), Error> {
     let path = store.path(address)?;
     let mut prepared = PreparedPublish::foreign(key(&format!("create/{path}"))?);
-    for effect in store.create(address, inbox(address)?, None)? {
+    for effect in [
+        store.create(
+            None,
+            address,
+            crate::local::Creation {
+                subscriptions: inbox(address)?,
+                checkpoint: None,
+                escrow: None,
+            },
+        )?,
+        store.activation(address),
+    ] {
         prepared.join(effect)?;
     }
     let created = store.provider().commit(prepared.into_request()?).await?;

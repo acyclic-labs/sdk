@@ -463,17 +463,24 @@ async fn drive<P: StreamProvider + 'static>(provider: Arc<P>) -> Result {
     );
     let mut creation = PreparedPublish::foreign(key("create-topology")?);
     for route in routes.iter() {
-        for effect in store.create(
-            &route.actor,
-            BTreeMap::from([(
-                "inbox".into(),
-                Subscription {
-                    path: route.inbox.clone(),
-                    cursor: 0,
+        for effect in [
+            store.create(
+                None,
+                &route.actor,
+                acyclic_actors::local::Creation {
+                    subscriptions: BTreeMap::from([(
+                        "inbox".into(),
+                        Subscription {
+                            path: route.inbox.clone(),
+                            cursor: 0,
+                        },
+                    )]),
+                    checkpoint: None,
+                    escrow: None,
                 },
-            )]),
-            None,
-        )? {
+            )?,
+            store.activation(&route.actor),
+        ] {
             creation.join(effect)?;
         }
     }
@@ -791,17 +798,24 @@ async fn late_reply<P: StreamProvider + 'static>(provider: Arc<P>, fail: bool) -
     let pin = Pin::Actor(actor.encode());
     let inbox = path("proof/inbox")?;
     let mut creation = PreparedPublish::foreign(key("create-late")?);
-    for effect in store.create(
-        &actor,
-        BTreeMap::from([(
-            "inbox".into(),
-            Subscription {
-                path: inbox,
-                cursor: 0,
+    for effect in [
+        store.create(
+            None,
+            &actor,
+            acyclic_actors::local::Creation {
+                subscriptions: BTreeMap::from([(
+                    "inbox".into(),
+                    Subscription {
+                        path: inbox,
+                        cursor: 0,
+                    },
+                )]),
+                checkpoint: None,
+                escrow: None,
             },
-        )]),
-        None,
-    )? {
+        )?,
+        store.activation(&actor),
+    ] {
         creation.join(effect)?;
     }
     store.submit(creation).await?;
