@@ -46,7 +46,7 @@ impl Shared {
                         .checked_add(bytes)
                         .ok_or(crate::WorkError::Overflow)?;
                     changes.push(change(relative, flags));
-                } else if flags & (MOUNT | UNMOUNT) != 0 {
+                } else if flags & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0 {
                     changes.push(HostChange::Everything);
                 }
             }

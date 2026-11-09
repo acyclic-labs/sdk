@@ -65,15 +65,40 @@ fn watch_all(
     Ok(started.into_inner().map_err(|_| "poisoned")?)
 }
 
-fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+fn wait_until(events: &std::sync::mpsc::Receiver<()>, mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + DEADLINE;
     while !done() {
-        if Instant::now() >= deadline {
+        if events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .is_err()
+        {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(5));
     }
     true
+}
+
+fn wait_for_arm(hub: &Hub, registration: &Registration, before: u64) -> bool {
+    let (mut state, _) = hub
+        .armed
+        .wait_timeout_while(hub.state(), DEADLINE, |state| {
+            state
+                .of(registration)
+                .is_some_and(|shard| shard.arms <= before)
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    state
+        .of(registration)
+        .is_some_and(|shard| shard.arms > before)
+}
+
+fn receive_roots(events: &std::sync::mpsc::Receiver<usize>, count: usize) -> TestResult {
+    let deadline = Instant::now() + DEADLINE;
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() != count {
+        seen.insert(events.recv_timeout(deadline.saturating_duration_since(Instant::now()))?);
+    }
+    Ok(())
 }
 
 fn threads() -> i32 {
@@ -110,7 +135,9 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
             .collect::<Vec<_>>(),
     );
     let started = Instant::now();
+    let (changed, events) = std::sync::mpsc::channel();
     let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
         let (seen, touched) = (Arc::clone(&seen), roots[index].join("touched"));
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
@@ -120,6 +147,7 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
             {
                 seen[index].store(true, Ordering::Release);
             }
+            let _ = changed.send(());
         })
     })?;
     let registered = started.elapsed();
@@ -128,7 +156,9 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
     for root in &roots {
         std::fs::write(root.join("touched"), b"event")?;
     }
-    let delivered = wait_until(|| seen.iter().all(|seen| seen.load(Ordering::Acquire)));
+    let delivered = wait_until(&events, || {
+        seen.iter().all(|seen| seen.load(Ordering::Acquire))
+    });
     let missing = seen
         .iter()
         .filter(|seen| !seen.load(Ordering::Acquire))
@@ -161,7 +191,9 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
             })
             .collect::<Vec<_>>(),
     );
+    let (changed, events) = std::sync::mpsc::channel();
     let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
         let (seen, root) = (Arc::clone(&seen), roots[index].clone());
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
@@ -174,6 +206,7 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
                     names.insert(path.to_path_buf());
                 }
             }
+            let _ = changed.send(());
         })
     })?;
     for file in 0..FILES {
@@ -190,7 +223,7 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
                 .len()
                 == FILES
     };
-    let delivered = wait_until(|| seen.iter().all(covered));
+    let delivered = wait_until(&events, || seen.iter().all(covered));
     let rescanned = seen
         .iter()
         .filter(|seen| seen.rescanned.load(Ordering::Acquire))
@@ -214,6 +247,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
     let (_parent, roots) = roots(1 + GROWTH)?;
     let watched = roots[0].clone();
     let delivered = Arc::new(Mutex::new(Vec::<(PathBuf, u32, u64)>::new()));
+    let (changed, events) = std::sync::mpsc::channel();
     let stream = watch(&watched, {
         let delivered = Arc::clone(&delivered);
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
@@ -223,6 +257,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
             for ((path, flags), &id) in events.iter().zip(ids) {
                 delivered.push((path.to_path_buf(), flags, id));
             }
+            let _ = changed.send(());
         })
     })?;
     let registration = stream.registration.clone().ok_or("unregistered")?;
@@ -240,7 +275,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
         }
         // A shard that is replaying re-arms once its replay is done.
         hub.rearm(&registration);
-        if !wait_until(|| hub.arms(&registration) > before) {
+        if !wait_for_arm(hub, &registration, before) {
             return Err(format!("the watched shard stopped re-arming in round {round}").into());
         }
     }
@@ -252,7 +287,7 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
             .map(|(path, ..)| path.clone())
             .collect::<std::collections::HashSet<_>>()
     };
-    let complete = wait_until(|| {
+    let complete = wait_until(&events, || {
         let delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
         names(&delivered).len() == FILES
             || delivered
@@ -295,23 +330,67 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
 }
 
 #[test]
+fn shared_coverage_preserves_root_and_ancestor_moves() -> TestResult {
+    let outer = tempfile::tempdir()?;
+    let parent = outer.path().canonicalize()?.join("parent");
+    std::fs::create_dir(&parent)?;
+    let roots = (0..2 * SHARDS)
+        .map(|index| {
+            let root = parent.join(format!("root-{index}"));
+            std::fs::create_dir(&root).map(|()| root)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let (changed, events) = std::sync::mpsc::channel();
+    let (ready, received_ready) = std::sync::mpsc::channel();
+    let streams = watch_all(&roots, |index| {
+        let changed = changed.clone();
+        let ready = ready.clone();
+        let touched = roots[index].join("ready");
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
+            if events.iter().any(|(_, flags)| flags & ROOT_CHANGED != 0) {
+                let _ = changed.send(index);
+            }
+            if events
+                .iter()
+                .any(|(path, flags)| path == touched || rescans(path, flags, &touched))
+            {
+                let _ = ready.send(index);
+            }
+        })
+    })?;
+    for root in &roots {
+        std::fs::write(root.join("ready"), b"ready")?;
+    }
+    receive_roots(&received_ready, roots.len())?;
+    std::fs::rename(&roots[0], parent.join("moved-root"))?;
+    assert_eq!(events.recv_timeout(DEADLINE)?, 0);
+    std::fs::rename(&parent, outer.path().join("moved-parent"))?;
+    receive_roots(&events, roots.len())?;
+    drop(streams);
+    Ok(())
+}
+
+#[test]
 fn a_panicking_handler_does_not_stop_the_hub() -> TestResult {
     hub()?;
     let (_parent, roots) = roots(2)?;
     let panicking = watch(&roots[0], Arc::new(|_| panic!("handler panic")))?;
     let seen = Arc::new(AtomicUsize::new(0));
+    let (changed, events) = std::sync::mpsc::channel();
     let counting = watch(&roots[1], {
         let seen = Arc::clone(&seen);
         Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
             let events = events.expect("native stream delivery failed");
             seen.fetch_add(events.iter().len(), Ordering::AcqRel);
+            let _ = changed.send(());
         })
     })?;
     for round in 0..2 {
         let before = seen.load(Ordering::Acquire);
         std::fs::write(roots[0].join(format!("panic-{round}")), b"panic")?;
         std::fs::write(roots[1].join(format!("count-{round}")), b"count")?;
-        assert!(wait_until(|| seen.load(Ordering::Acquire) > before));
+        assert!(wait_until(&events, || seen.load(Ordering::Acquire) > before));
     }
     drop((panicking, counting));
     Ok(())
@@ -334,7 +413,11 @@ fn a_stream_per_watch_hits_the_process_cap() -> TestResult {
         .env(CAP_CHILD, "1")
         .output()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{stdout}");
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let cap = stdout
         .lines()
         .find_map(|line| line.split_once("raw fsevents streams: "))
@@ -418,18 +501,43 @@ fn count_raw_streams() -> TestResult {
         // locks, before startup releases the callback producer.
         let hub = hub()?;
         let (failure, received) = std::sync::mpsc::channel();
-        let refused = watch(
-            &roots[0],
-            Arc::new(move |events| {
-                if let Err(error) = events {
-                    let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
-                    let _ = failure.send((error, unlocked));
-                }
-            }),
-        );
+        // Hold the actual callback queue. Startup must reach its funded drain
+        // before returning an error; otherwise its queued failure outlives the
+        // registration's original ownership. Both outcomes publish an event,
+        // so the original broken handoff fails without a readiness timeout.
+        let suspended = Suspended::new(hub.queue());
+        let (observed, observation) = std::sync::mpsc::channel();
+        let root = roots[0].clone();
+        let starter = std::thread::spawn(move || {
+            let draining = observed.clone();
+            BEFORE_DRAIN.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    let _ = draining.send(true);
+                }));
+            });
+            let refused = watch(
+                &root,
+                Arc::new(move |events| {
+                    if let Err(error) = events {
+                        let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
+                        let _ = failure.send((error, unlocked));
+                    }
+                }),
+            )
+            .is_err();
+            BEFORE_DRAIN.with(|hook| drop(hook.borrow_mut().take()));
+            let _ = observed.send(false);
+            refused
+        });
+        let draining = observation.recv()?;
+        drop(suspended);
+        let refused = starter
+            .join()
+            .map_err(|_| "native startup worker panicked")?;
+        assert!(refused, "exhausted native capacity admitted another stream");
         assert!(
-            refused.is_err(),
-            "exhausted native capacity admitted another stream"
+            draining,
+            "refused startup released its queued callback owner"
         );
         let (error, unlocked) = received.recv()?;
         assert!(

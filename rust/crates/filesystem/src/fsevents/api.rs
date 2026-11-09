@@ -24,17 +24,6 @@ unsafe impl Sync for Api {}
 static API: OnceLock<Api> = OnceLock::new();
 
 impl Api {
-    /// Bootstrap belongs to the process, before a finite original ledger exists.
-    /// The warm path neither allocates an invocation nor acquires the loader lock.
-    pub(super) fn initialize_services() -> notify::Result<()> {
-        if API.get().is_some() {
-            return Ok(());
-        }
-        let cancellation = crate::CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Self::get(&mut work).map(|_| ()).map_err(notify_error)
-    }
-
     pub(super) fn get<W: SourceDemandReadWork>(work: &mut W) -> Result<&'static Self, DemandError> {
         static LOADING: Mutex<()> = Mutex::new(());
         work.check()?;

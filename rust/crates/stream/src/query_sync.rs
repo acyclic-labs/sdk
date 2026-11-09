@@ -3,10 +3,14 @@
 #[path = "query_sync/parity.rs"]
 pub(crate) mod parity;
 
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+pub use acyclic_native_runtime::InlineMutex as SyncMutex;
 #[cfg(loom)]
 pub use loom::sync::{Arc, Mutex as SyncMutex};
 #[cfg(not(loom))]
-pub use std::sync::{Arc, Mutex as SyncMutex};
+pub use std::sync::Arc;
+#[cfg(all(not(loom), target_arch = "wasm32"))]
+pub use std::sync::Mutex as SyncMutex;
 #[cfg(not(loom))]
 pub use tokio::sync::{Mutex, RwLock, watch};
 

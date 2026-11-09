@@ -150,10 +150,13 @@ impl FsEventsWatcher {
                     };
                     for (path, flags) in events.iter() {
                         let watched = recursive.iter().any(|(root, recursive)| {
-                            path.starts_with(root)
+                            (path.starts_with(root)
                                 && (*recursive
                                     || path == root.as_path()
-                                    || path.parent() == Some(root.as_path()))
+                                    || path.parent() == Some(root.as_path())))
+                                || (flags & (ROOT_CHANGED | MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT)
+                                    != 0
+                                    && root.starts_with(path))
                         });
                         if !watched {
                             continue;

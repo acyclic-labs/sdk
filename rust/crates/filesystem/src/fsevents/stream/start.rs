@@ -40,8 +40,10 @@ impl EventStream {
             if let Some(published) = published_bytes {
                 published.store(owned_bytes, Ordering::Release);
             }
-            hub.register(allocated)?;
+            // Register can enqueue a terminal failure before it refuses.
+            // Retain the original cleanup owner through that callback too.
             registered = true;
+            hub.register(allocated)?;
             work.check()?;
             if !retained {
                 work.release(owned_bytes)?;
