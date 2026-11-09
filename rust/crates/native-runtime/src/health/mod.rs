@@ -1,5 +1,6 @@
+use crate::sync::Mutex;
 use crate::{HeldFile, OperationFence};
-use std::sync::{Arc, Mutex, atomic::AtomicBool};
+use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Default)]
 pub(crate) struct FileHealth {

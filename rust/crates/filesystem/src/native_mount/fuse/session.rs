@@ -300,7 +300,6 @@ impl FuseSession {
             backend_read_operations: 3,
             ..WorkCounters::UNCHARGED
         })?;
-        let close_root = work.reserve_cleanup_write()?;
         let bytes = request.destination.as_os_str().as_bytes();
         let mut path = fuse_vec(bytes.len().checked_add(1).ok_or(WorkError::Overflow)?, work)?;
         work.admit(Copy.delta(bytes.len() as u64))?;
@@ -330,9 +329,7 @@ impl FuseSession {
             Ok(core)
         })?;
         let core = Arc::clone(view.core());
-        let (directory, identity) =
-            crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
-        close_root.attempt(|| drop(directory)).1?;
+        let identity = view.root_identity();
         let state = Arc::new(Mutex::new(FuseSessionState {
             path,
             before: None,

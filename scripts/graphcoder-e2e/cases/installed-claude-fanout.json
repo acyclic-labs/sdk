@@ -1,0 +1,140 @@
+{
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "inputs": [
+    {
+      "mode": "qualification",
+      "format": "installed-host",
+      "host": "claude-code",
+      "tools": [
+        "spawn",
+        "wait"
+      ],
+      "prompt": "NATIVE_PLUGIN_MODEL",
+      "answer": "NATIVE_PLUGIN_MODEL_DONE"
+    }
+  ],
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL"
+        },
+        "tools": [
+          {
+            "id": "native_spawn",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__spawn",
+            "arguments": {
+              "reference": "native-child",
+              "prompt": "NATIVE_PLUGIN_FANOUT"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "inbox"
+        },
+        "tools": [
+          {
+            "id": "native_wait",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__wait",
+            "arguments": {
+              "reference": "native-child"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL",
+          "tool_result": "NATIVE_PLUGIN_FANOUT_DONE"
+        },
+        "text": [
+          "NATIVE_PLUGIN_MODEL_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_FANOUT"
+        },
+        "tools": [
+          {
+            "id": "fanout_left",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__spawn",
+            "arguments": {
+              "reference": "left",
+              "prompt": "NATIVE_PLUGIN_LEFT"
+            }
+          },
+          {
+            "id": "fanout_right",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__spawn",
+            "arguments": {
+              "reference": "right",
+              "prompt": "NATIVE_PLUGIN_RIGHT"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_FANOUT",
+          "tool_result": "inbox"
+        },
+        "tools": [
+          {
+            "id": "wait_left",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__wait",
+            "arguments": {
+              "reference": "left"
+            }
+          },
+          {
+            "id": "wait_right",
+            "name": "mcp__plugin_acyclic_acyclic-sessions__wait",
+            "arguments": {
+              "reference": "right"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_FANOUT",
+          "tool_result": "Succeeded"
+        },
+        "text": [
+          "NATIVE_PLUGIN_FANOUT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_LEFT"
+        },
+        "text": [
+          "NATIVE_PLUGIN_LEFT_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_RIGHT"
+        },
+        "text": [
+          "NATIVE_PLUGIN_RIGHT_DONE"
+        ]
+      }
+    ]
+  },
+  "id": "installed-claude-fanout",
+  "assert": {
+    "requests": 8,
+    "tool_contains": [
+      "NATIVE_PLUGIN_FANOUT_DONE",
+      "Succeeded"
+    ]
+  }
+}

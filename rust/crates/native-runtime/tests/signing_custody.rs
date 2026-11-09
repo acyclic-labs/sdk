@@ -120,8 +120,9 @@ fn make_public(path: &Path) -> io::Result<()> {
 fn make_public(path: &Path) -> io::Result<()> {
     // Exercise the real ACL, not a synthetic backend refusal. The well-known
     // Everyone SID works independently of the machine's display language.
+    // Canonical Windows paths retain the extended namespace for long roots.
     let output = Command::new("icacls")
-        .arg(path)
+        .arg(path.canonicalize()?)
         .args(["/grant", "*S-1-1-0:R"])
         .output()?;
     if output.status.success() {

@@ -1,5 +1,7 @@
 //! `cargo rustc -p acyclic-native-runtime --test wake_loom --features model-checking -- --cfg loom`
 #![cfg(loom)]
+#[path = "../src/sync/locks.rs"]
+pub mod sync;
 #[path = "../src/wake.rs"]
 mod wake;
 use loom::sync::Arc;

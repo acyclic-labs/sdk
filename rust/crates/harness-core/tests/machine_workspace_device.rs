@@ -697,7 +697,8 @@ async fn committed_handover(refused_close: bool) -> Result {
         let (mut release, _) = listener.accept().await?;
         let result = terminal(&provider, log(&run.agent, op)?, async || {
             use tokio::io::AsyncWriteExt as _;
-            release.write_all(b"continue\n").await?;
+            // Both native shells consume one LF permit before closing the socket.
+            release.write_all(b"\n").await?;
             Ok(())
         })
         .await?;
@@ -956,7 +957,7 @@ async fn committed_handover(refused_close: bool) -> Result {
                 .await?;
             use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
             assert!(futures::poll!(Box::pin(still_running.read_u8())).is_pending());
-            still_running.write_all(b"continue\n").await?;
+            still_running.write_all(b"\n").await?;
             assert_eq!(
                 still_running.read_u8().await.unwrap_err().kind(),
                 std::io::ErrorKind::UnexpectedEof
@@ -969,7 +970,7 @@ async fn committed_handover(refused_close: bool) -> Result {
             // socket, inbox and committed operation stream. The old 16 KiB
             // JSON chunk exceeded one frame for these bytes and lost the link.
             binary.arguments["command"] = if cfg!(windows) {
-                "[Console]::OpenStandardOutput().Write([byte[]](@(255) * 16384))"
+                "[Console]::OpenStandardOutput().Write([byte[]](@(255) * 16384), 0, 16384)"
             } else {
                 "head -c 16384 /dev/zero | LC_ALL=C tr '\\000' '\\377'"
             }
@@ -1058,6 +1059,8 @@ async fn committed_handover(refused_close: bool) -> Result {
             .commit(dispatch(active, b"archive-active-command")?)
             .await?;
         let (mut held, _) = listener.accept().await?;
+        use tokio::io::AsyncReadExt as _;
+        assert!(futures::poll!(Box::pin(held.read_u8())).is_pending());
         if refused_close {
             let mut original = provider
                 .follow(FollowRequest::new(log(&run.agent, active_op)?, 0))
@@ -1114,11 +1117,12 @@ async fn committed_handover(refused_close: bool) -> Result {
                 "interrupted command settled as {lost}"
             );
         }
-        use tokio::io::AsyncReadExt as _;
-        assert_eq!(
-            held.read_u8().await.unwrap_err().kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
+        // Native custody forcibly retires this child, so its held socket may
+        // reset instead of completing the graceful close checked above.
+        assert!(matches!(
+            held.read_u8().await.map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset)
+        ));
         assert_eq!(std::fs::read(&marker_path)?, b"xx");
         assert_eq!(
             owner

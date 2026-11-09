@@ -20,12 +20,9 @@
 //! must run per file to make that file's own metadata durable, and the Linux
 //! block layer already merges concurrent cache flushes into one. They keep
 //! their native full flush.
-#[cfg(loom)]
-use loom::sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex};
 use std::io;
 use std::sync::PoisonError;
-#[cfg(not(loom))]
-use std::sync::{Condvar, Mutex};
 
 #[derive(Default)]
 struct Progress {

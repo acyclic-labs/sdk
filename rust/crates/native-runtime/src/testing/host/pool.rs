@@ -1,15 +1,10 @@
 //! Physical startup yields when every worker is parked or occupied outside DST.
 use super::*;
+use crate::sync::MutexGuard;
 #[cfg(loom)]
-use loom::sync::{
-    MutexGuard,
-    atomic::{AtomicUsize, Ordering},
-};
+use loom::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(loom))]
-use std::sync::{
-    MutexGuard,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) struct Pool {
     threads: usize,

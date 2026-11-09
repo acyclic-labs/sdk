@@ -280,7 +280,7 @@ impl AgentTool {
                     Err(rejected) => return Ok(rejected),
                 };
                 let Some(target) = self.recipient(&input.agent, false) else {
-                    return Ok(rejected("archive reaches only an open child"));
+                    return Ok(rejected(self.unarchivable(&input.agent).await?));
                 };
                 TurnEffect::Archive {
                     target,
@@ -331,6 +331,26 @@ impl AgentTool {
             return Some(to.clone());
         }
         named_child(&turn.agent, agent).filter(|child| turn.children.contains(child))
+    }
+
+    /// Why `archive` of `agent` has nothing to archive, in the terms `wait`
+    /// reports: a settled child is named with the phase `wait` returns for
+    /// it, so the two tools never disagree about one child.
+    async fn unarchivable(&self, agent: &str) -> Result<String> {
+        let child = named_child(&self.turn.agent, agent);
+        let (Some(child), Some(observer)) = (child, &self.turn.observer) else {
+            return Ok(format!("{agent} names no child of this agent"));
+        };
+        Ok(match observer.settled(&child).await {
+            Ok(Some(phase)) => {
+                let phase = serde_json::to_string(&phase)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                format!("{agent} already settled ({phase}); wait returns its outcome")
+            }
+            Ok(None) => format!("{agent} is not an open child of this agent"),
+            Err(Error::NotFound(_)) => format!("{agent} names no child of this agent"),
+            Err(error) => return Err(error),
+        })
     }
 
     /// Reads the named children once; see [`WaitAgentInput`]. Its call

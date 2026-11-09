@@ -7,6 +7,9 @@ use acyclic_fs::{
 
 /// Reserved mount namespace within an already writable checkout.
 pub const HOST_VIEW_ROOT: &str = ".volumes/agents";
+/// The one namespace below [`HOST_VIEW_ROOT`] holding every task binding of
+/// a checkout's tree, one directory per bound project.
+const BINDINGS: &str = ".bindings";
 
 mod bootstrap;
 #[cfg(test)]
@@ -136,14 +139,6 @@ impl LocalWorkspace {
     }
 
     pub(super) async fn mounts_at(&self, path: &Path) -> Result<Arc<Mounts>> {
-        self.mounts_at_from(path, None).await
-    }
-
-    pub(super) async fn mounts_at_from(
-        &self,
-        path: &Path,
-        inherited: Option<&Mounts>,
-    ) -> Result<Arc<Mounts>> {
         let primary = self.mounts.named(None)?.1;
         let mut mounts = mounts::owner(
             path,
@@ -160,7 +155,7 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        volumes::link(path, &mut mounts, inherited)?;
+        volumes::link(path, &mut mounts, &self.mount_directory.join(BINDINGS))?;
         Ok(Arc::new(mounts))
     }
 
@@ -192,7 +187,7 @@ impl LocalWorkspace {
         let root = self
             .held_task_mount_root()?
             .create_directories(
-                &Path::new(".bindings").join(binding),
+                &Path::new(BINDINGS).join(binding),
                 acyclic_fs::NativeDurability::Durable,
             )
             .map_err(storage)?;

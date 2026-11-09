@@ -1,9 +1,6 @@
 //! Single-threaded polling of the original owned futures, in seeded ready order.
 use super::*;
-#[cfg(loom)]
-use loom::sync::Condvar;
-#[cfg(not(loom))]
-use std::sync::Condvar;
+use crate::sync::Condvar;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,

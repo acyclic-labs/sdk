@@ -1,3 +1,4 @@
+use crate::sync::{Condvar, Mutex};
 use crate::*;
 
 #[derive(Default)]

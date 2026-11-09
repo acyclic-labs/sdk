@@ -1,9 +1,6 @@
 //! Durable wake tokens shared by synchronous native completion owners.
-#[cfg(loom)]
-use loom::sync::{Condvar, Mutex};
+use crate::sync::{Condvar, Mutex};
 use std::sync::Arc;
-#[cfg(not(loom))]
-use std::sync::{Condvar, Mutex};
 
 /// A coalescing notification retained until one waiter consumes it.
 /// Its mutex is independent of the state protected by the caller.

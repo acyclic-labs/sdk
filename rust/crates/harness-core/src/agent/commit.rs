@@ -212,6 +212,9 @@ pub(super) fn spawn_at(
     let mut exclude = layout::not_inherited(fresh)?;
     let mut selected = Vec::new();
     let mut conditions = vec![
+        CommitCondition::Present {
+            path: parent.membership()?,
+        },
         CommitCondition::Absent {
             path: child.inbox()?,
         },
@@ -252,7 +255,12 @@ pub(super) fn spawn_at(
             records: vec![record.into()],
         },
         first_status(&child, at_tail, conversation)?,
+        membership(&parent.membership()?, &child)?,
+        membership(&child.membership()?, &child)?,
     ];
+    conditions.push(CommitCondition::Absent {
+        path: child.membership()?,
+    });
     mutations.extend(selected);
     Ok(Spawn {
         request: CommitRequest {
@@ -286,6 +294,18 @@ fn first_status(
     })
 }
 
+fn membership(path: &StreamPath, agent: &AgentPath) -> Result<CommitMutation, Error> {
+    let bytes = serde_json::to_vec(&super::Membership {
+        version: 1,
+        agent: agent.clone(),
+    })
+    .map_err(|_| Error::Record("membership encoding failed"))?;
+    Ok(CommitMutation::Append {
+        path: path.clone(),
+        records: vec![bytes.into()],
+    })
+}
+
 /// Creates a root agent. Its volumes and actor state join the same request.
 pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn, Error> {
     let child = AgentPath::root(&adopted.agent);
@@ -303,6 +323,9 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
                 CommitCondition::Absent {
                     path: child.status()?,
                 },
+                CommitCondition::Absent {
+                    path: child.membership()?,
+                },
             ],
             mutations: vec![
                 CommitMutation::Append {
@@ -310,6 +333,7 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
                     records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
                 },
                 first_status(&child, 0, 0)?,
+                membership(&child.membership()?, &child)?,
             ],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },

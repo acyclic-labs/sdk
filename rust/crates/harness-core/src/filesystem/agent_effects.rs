@@ -106,7 +106,11 @@ where
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 match crate::agent::inbox_tail(&*self.stream, &child).await {
                     Err(crate::agent::Error::NoSuchAgent) => {}
-                    Ok(_) => return Err(Error::Conflict("an agent with this name exists".into())),
+                    Ok(_) => {
+                        return Err(Error::Conflict(
+                            "an agent with this name exists; a spawn name is used once".into(),
+                        ));
+                    }
                     Err(error) => return Err(Error::Storage(error.to_string())),
                 }
             }
