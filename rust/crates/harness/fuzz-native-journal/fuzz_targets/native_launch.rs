@@ -159,7 +159,9 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
             if name == "--sandbox" {
                 continue;
             }
-            let value = values.next().expect("validated option value");
+            let value = values
+                .next()
+                .ok_or_else(|| format!("validated option value absent: {name}, {flags:?}"))?;
             if name == "--settings" {
                 if value.trim_start().starts_with('{') {
                     let result = launch::child_arguments(host, &inherited, cwd, None);
@@ -169,10 +171,11 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
                         assert!(result.is_ok());
                     }
                 }
-                return;
+                return Ok(());
             }
         }
     }
+    let policy = expected_policy(host, &inherited)?;
     let file = format!("{reference}.jsonl");
     for session in [
         None,
@@ -189,91 +192,7 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
             let session = session.map(|session| (session.id, session.file));
             format!("admitted inherited policy was refused: {host}, {inherited:?}, {session:?}: {error}")
         })?;
-        let (prefix, suffix): (&[&str], Vec<OsString>) = match host {
-            "codex" => (
-                &[],
-                vec!["exec".into(), "--json".into(), "--cd".into(), cwd.into()],
-            ),
-            "claude-code" => (
-                &["-p", "--output-format", "stream-json", "--verbose"],
-                vec![],
-            ),
-            "opencode" => (&["run", "--format", "json", "--dir"], vec![]),
-            "agy" => (
-                &[
-                    "--input-format",
-                    "stream-json",
-                    "--output-format",
-                    "stream-json",
-                ],
-                vec![],
-            ),
-            _ => (&["--mode", "json", "-p"], vec![]),
-        };
-        let mut policy = Vec::new();
-        let mut values = inherited.iter();
-        let mut timeout = false;
-        let mut denied = false;
-        while let Some(option) = values.next() {
-            policy.push(OsString::from(option));
-            if option == "--sandbox" && host == "agy" || option == "--no-extensions" && host == "pi"
-            {
-                continue;
-            }
-            let value = values.next().expect("admitted option value");
-            timeout |= option == "--print-timeout" && host == "agy";
-            denied |= option == "--disallowedTools" && host == "claude-code";
-            policy.push(if option == "--disallowedTools" && host == "claude-code" {
-                OsString::from(format!("{value},Agent,Task"))
-            } else {
-                value.into()
-            });
-        }
-        match host {
-            "agy" if !timeout => policy.extend(["--print-timeout", "0"].map(OsString::from)),
-            "codex" => policy.extend(
-                [
-                    "--config",
-                    "features.multi_agent_v2=false",
-                    "--config",
-                    "agents.enabled=false",
-                ]
-                .map(OsString::from),
-            ),
-            "claude-code" if !denied => {
-                policy.extend(["--disallowedTools", "Agent,Task"].map(OsString::from))
-            }
-            _ => {}
-        }
-        let mut expected = prefix
-            .iter()
-            .copied()
-            .map(OsString::from)
-            .chain((host == "opencode").then(|| OsString::from(cwd)))
-            .chain(policy)
-            .chain(suffix)
-            .collect::<Vec<_>>();
-        if let Some(session) = session {
-            let option = match host {
-                "codex" => "resume",
-                "claude-code" => "--resume",
-                "pi" => "--fork",
-                "agy" => "--conversation",
-                _ => "--session",
-            };
-            let resume = if host == "pi" {
-                session.file.unwrap_or(session.id)
-            } else {
-                session.id
-            };
-            expected.extend([option, resume].into_iter().map(OsString::from));
-            if host == "pi" {
-                expected.extend(["--session-id", session.id].into_iter().map(OsString::from));
-            }
-        }
-        if host == "codex" {
-            expected.push("-".into());
-        }
+        let expected = expected_arguments(host, &policy, cwd, session);
         assert_eq!(
             arguments, expected,
             "native child changed the complete command vector"
@@ -298,6 +217,105 @@ fn policy(host: &str, flags: &[String], cwd: &Path, reference: &str) -> Result<(
         );
     }
     Ok(())
+}
+
+fn expected_arguments(
+    host: &str,
+    policy: &[OsString],
+    cwd: &Path,
+    session: Option<launch::NativeSession<'_>>,
+) -> Vec<OsString> {
+    let (prefix, suffix): (&[&str], Vec<OsString>) = match host {
+        "codex" => (
+            &[],
+            vec!["exec".into(), "--json".into(), "--cd".into(), cwd.into()],
+        ),
+        "claude-code" => (
+            &["-p", "--output-format", "stream-json", "--verbose"],
+            vec![],
+        ),
+        "opencode" => (&["run", "--format", "json", "--dir"], vec![]),
+        "agy" => (
+            &[
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ],
+            vec![],
+        ),
+        _ => (&["--mode", "json", "-p"], vec![]),
+    };
+    let mut expected = prefix
+        .iter()
+        .copied()
+        .map(OsString::from)
+        .chain((host == "opencode").then(|| OsString::from(cwd)))
+        .chain(policy.iter().cloned())
+        .chain(suffix)
+        .collect::<Vec<_>>();
+    if let Some(session) = session {
+        let option = match host {
+            "codex" => "resume",
+            "claude-code" => "--resume",
+            "pi" => "--fork",
+            "agy" => "--conversation",
+            _ => "--session",
+        };
+        let resume = if host == "pi" {
+            session.file.unwrap_or(session.id)
+        } else {
+            session.id
+        };
+        expected.extend([option, resume].into_iter().map(OsString::from));
+        if host == "pi" {
+            expected.extend(["--session-id", session.id].into_iter().map(OsString::from));
+        }
+    }
+    if host == "codex" {
+        expected.push("-".into());
+    }
+    expected
+}
+
+fn expected_policy(host: &str, inherited: &[String]) -> Result<Vec<OsString>, String> {
+    let mut policy = Vec::new();
+    let mut values = inherited.iter();
+    let mut timeout = false;
+    let mut denied = false;
+    while let Some(option) = values.next() {
+        policy.push(OsString::from(option));
+        if option == "--sandbox" && host == "agy" || option == "--no-extensions" && host == "pi" {
+            continue;
+        }
+        let value = values
+            .next()
+            .ok_or_else(|| format!("admitted option value absent: {option}, {inherited:?}"))?;
+        timeout |= option == "--print-timeout" && host == "agy";
+        denied |= option == "--disallowedTools" && host == "claude-code";
+        policy.push(if option == "--disallowedTools" && host == "claude-code" {
+            OsString::from(format!("{value},Agent,Task"))
+        } else {
+            value.into()
+        });
+    }
+    match host {
+        "agy" if !timeout => policy.extend(["--print-timeout", "0"].map(OsString::from)),
+        "codex" => policy.extend(
+            [
+                "--config",
+                "features.multi_agent_v2=false",
+                "--config",
+                "agents.enabled=false",
+            ]
+            .map(OsString::from),
+        ),
+        "claude-code" if !denied => {
+            policy.extend(["--disallowedTools", "Agent,Task"].map(OsString::from))
+        }
+        _ => {}
+    }
+    Ok(policy)
 }
 
 fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(), String> {
@@ -331,18 +349,21 @@ fn relative_permissions(input: &str, cwd: &Path, non_unicode: &Path) -> Result<(
         .map(|[_, value]| value)
         .ok_or_else(|| format!("native settings value absent: {args:?}"))?;
     let actual: serde_json::Value = serde_json::from_str(
-        settings.to_str().ok_or_else(|| format!("native settings are not Unicode: {settings:?}"))?,
-    ).map_err(|error| format!("native settings JSON is invalid: {settings:?}: {error}"))?;
+        settings
+            .to_str()
+            .ok_or_else(|| format!("native settings are not Unicode: {settings:?}"))?,
+    )
+    .map_err(|error| format!("native settings JSON is invalid: {settings:?}: {error}"))?;
     let mut expected = original;
     for list in ["allow", "ask", "deny"] {
         for (index, action) in ["read_file", "write_file"].iter().enumerate() {
-            let rule = actual["permissions"][list][index]
-                .as_str()
-                .expect("native file rule");
+            let rule = actual["permissions"][list][index].as_str().ok_or_else(|| {
+                format!("native file rule is not a string: {list}, {index}, {actual}")
+            })?;
             let path = rule
                 .strip_prefix(&format!("{action}("))
                 .and_then(|rule| rule.strip_suffix(')'))
-                .expect("native file rule syntax");
+                .ok_or_else(|| format!("native file rule syntax is invalid: {action}, {rule}"))?;
             assert_eq!(
                 Path::new(path),
                 cwd.join(&target),
