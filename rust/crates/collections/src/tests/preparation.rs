@@ -171,6 +171,11 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
         assert_eq!(original.live.get(), 0);
     }
 
+    Ok(())
+}
+
+#[test]
+fn mutable_insertion_matches_ordered_facts_within_owned_bound() -> Result<(), &'static str> {
     use proptest::test_runner::{Config, RngSeed, TestRunner};
     let mut runner = TestRunner::new(Config {
         cases: 128,
@@ -212,6 +217,11 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
             "mutable insertion exceeded its owned bound or changed exact contents"
         })?;
 
+    Ok(())
+}
+
+#[test]
+fn mutable_insertion_funds_every_branch_coordinate() -> Result<(), &'static str> {
     fn coordinates<const N: usize>() -> Result<(), &'static str> {
         let mut original = Work {
             observe_retirement: true,
@@ -233,7 +243,7 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
                 for byte in (0..N).rev() {
                     for bit in (0..8).rev() {
                         let mut key = [0; N];
-                        key[byte] = 0x80 >> bit;
+                        *key.get_mut(byte).ok_or("missing branch byte")? = 0x80 >> bit;
                         index.get_or_try_insert_with(
                             key,
                             &mut Bounded {
@@ -255,7 +265,7 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
                     |_| panic!("existing constructor"),
                 )?;
                 assert_eq!(
-                    original.live.get() as i64,
+                    i64::try_from(original.live.get()).expect("live credit fits allocator counter"),
                     acyclic_test_support::current_allocations()
                         .unwrap()
                         .bytes_current
@@ -288,9 +298,18 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
     coordinates::<8>()?;
     coordinates::<40>()?;
 
+    Ok(())
+}
+
+#[test]
+fn mutable_insertion_cost_is_independent_of_population() -> Result<(), &'static str> {
     let mut observations = [0; 2];
     let mut ordered_comparisons = [0; 2];
-    for (row, population) in [1_u64, 100_000].into_iter().enumerate() {
+    for ((observation, ordered_comparison), population) in observations
+        .iter_mut()
+        .zip(&mut ordered_comparisons)
+        .zip([1_u64, 100_000])
+    {
         let mut original = Work::default();
         let mut index = FixedIndex::<usize, _, 9>::default();
         index.get_or_try_insert_with([0; 9], &mut original, |_| Ok(7))?;
@@ -335,37 +354,17 @@ fn mutable_insertion_bounds_cover_original_backing_refusal_and_unrelated_populat
             },
             |_| Ok(11),
         )?;
-        observations[row] = original.items - before;
+        *observation = original.items - before;
         assert_eq!(original.live.get() - live, bound.allocation_bytes);
         // Restoring an ordered insertion pays comparisons against unrelated
         // keys. The independent comparison sink exposes that forbidden slope.
-        #[derive(Clone)]
-        struct Ordered(u64, Rc<Cell<u64>>);
-        impl PartialEq for Ordered {
-            fn eq(&self, other: &Self) -> bool {
-                self.0 == other.0
-            }
-        }
-        impl Eq for Ordered {}
-        impl PartialOrd for Ordered {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-                Some(self.cmp(other))
-            }
-        }
-        impl Ord for Ordered {
-            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-                self.1.set(self.1.get() + 1);
-                self.0.cmp(&other.0)
-            }
-        }
-        let comparisons = Rc::new(Cell::new(0));
         let mut ordered = BTreeMap::new();
         for foreign in (1..=population).rev() {
-            ordered.insert(Ordered(foreign, comparisons.clone()), ());
+            ordered.insert(OrderedKey(foreign), ());
         }
-        comparisons.set(0);
-        ordered.insert(Ordered(0, comparisons.clone()), ());
-        ordered_comparisons[row] = comparisons.get();
+        ORDERED_COMPARISONS.set(0);
+        ordered.insert(OrderedKey(0), ());
+        *ordered_comparison = ORDERED_COMPARISONS.get();
         drop(index);
         assert_eq!(original.live.get(), 0);
     }
