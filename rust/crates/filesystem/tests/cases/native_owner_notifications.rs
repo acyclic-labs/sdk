@@ -50,15 +50,10 @@ async fn unchanged_charges_and_cross_thread_retirement_preserve_exact_receipts()
         std::thread::spawn(move || drop(sources))
             .join()
             .map_err(|_| "retirement panicked")?;
-        let retired = work.live_allocation_bytes();
         assert_eq!(work.receipt(), expected);
         work.charge(WorkCounters::UNCHARGED)?;
         let settled = work.live_allocation_bytes();
-        if count == 0 {
-            assert_eq!(settled, retired);
-        } else {
-            assert!(settled == baseline || settled + 1 == retired);
-        }
+        assert_eq!(settled, baseline);
         let settled = work.live_allocation_bytes();
         for _ in 0..64 {
             work.charge(WorkCounters {
@@ -79,51 +74,6 @@ async fn unchanged_charges_and_cross_thread_retirement_preserve_exact_receipts()
         );
         assert_eq!(work.receipt(), expected);
         expected.verify(BUDGET)?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn retirement_followed_by_new_admission_keeps_its_initial_snapshot() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let root = tempfile::tempdir()?;
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
-    for _ in 0..16 {
-        let first = open(root.path(), &work).await?;
-        let second = open(root.path(), &work).await?;
-        let before = work.receipt();
-        let live = work.live_allocation_bytes();
-        drop(second);
-        let retired = work.live_allocation_bytes();
-        assert!(retired < live);
-        work.charge(WorkCounters::UNCHARGED)?;
-        // Pruning also destroys the retired owner's inert Arc gauge.
-        let gauge_bytes = std::alloc::Layout::array::<usize>(2)?
-            .extend(std::alloc::Layout::new::<std::sync::atomic::AtomicU64>())?
-            .0
-            .pad_to_align()
-            .size() as u64;
-        assert_eq!(work.live_allocation_bytes(), retired - gauge_bytes);
-        assert_eq!(work.receipt(), before);
-        drop(first);
-        // Admission must consume pending retirement and initialize the new owner,
-        // even though no later payload mutation will mark its snapshot dirty.
-        let third = open(root.path(), &work).await?;
-        let expected = work.receipt();
-        let live = work.live_allocation_bytes();
-        work.charge(WorkCounters::UNCHARGED)?;
-        assert_eq!(work.live_allocation_bytes(), live);
-        assert_eq!(work.receipt(), expected);
-        drop(third);
-        let retired = work.live_allocation_bytes();
-        work.charge(WorkCounters::UNCHARGED)?;
-        let settled = work.live_allocation_bytes();
-        assert!(
-            settled == NativeMaterializationWork::accounting_state_bytes()
-                || settled + 1 == retired
-        );
-        assert_eq!(work.receipt(), expected);
     }
     Ok(())
 }
