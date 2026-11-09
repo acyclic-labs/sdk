@@ -218,6 +218,14 @@ fn recorded_http_refusals_preserve_class_under_equivalent_escapes_and_chunking()
         }
     }
 
+    // Reclassify the captured authentication body as a non-context refusal.
+    // The original diagnostic must survive both HTTP statuses and chunking.
+    for status in [400u16, 413] {
+        let mut input = include_bytes!("../../fuzz/corpus/http_failure/llamacpp-auth").to_vec();
+        input[..2].copy_from_slice(&status.to_le_bytes());
+        assert_http_failure_invariants(&input);
+    }
+
     // This is the same captured context refusal, with only its JSON spelling
     // changed. Native parsing must fund scratch, retire it, and retain refusal
     // of an exhausted or cancelled original invocation.
