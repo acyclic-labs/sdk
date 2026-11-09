@@ -303,7 +303,11 @@ pub fn child_arguments(
             );
             extend_policy(&mut arguments, host, args, cwd)?;
             if let Some(session) = session {
-                arguments.extend(["--conversation", session.id].into_iter().map(OsString::from));
+                arguments.extend(
+                    ["--conversation", session.id]
+                        .into_iter()
+                        .map(OsString::from),
+                );
             }
         }
         _ => return Err(invalid("unsupported native host")),
