@@ -132,7 +132,7 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
     let root = fixture.path().join("workspace");
     let child = root.join(".volumes/agents/child");
     let settings_file = fixture.path().join("policy.json");
-    proptest!(|(target in prop_oneof!["[a-zA-Z0-9 _/-]{1,32}", Just("../linked/../marker".to_owned())], mode in prop_oneof![Just("accept-edits"), Just("plan")])| {
+    proptest!(|(target in "[a-zA-Z0-9 _-]{1,16}(/[a-zA-Z0-9 _-]{1,16})?", mode in prop_oneof![Just("accept-edits"), Just("plan")])| {
         let mut original = serde_json::json!({
             "modelProvider": "gemini",
             "provider": {"options": {"baseURL": "http://127.0.0.1:1234"}},
@@ -181,6 +181,38 @@ fn relative_file_permissions_preserve_native_policy_in_each_view() -> Result {
             agy::settings(invalid, &root),
             Err(Error::Invalid(_))
         ));
+    }
+    for target in ["..", "../outside", "nested/../marker"] {
+        for action in ["read_file", "write_file"] {
+            for list in ["allow", "ask", "deny"] {
+                let supplied = serde_json::json!({
+                    "permissions": {list: [format!("{action}({target})")]}
+                });
+                let flags = parent_flags(
+                    "agy",
+                    &[
+                        "--sandbox".into(),
+                        "--mode".into(),
+                        "accept-edits".into(),
+                        "--settings".into(),
+                        supplied.to_string(),
+                    ],
+                    &root,
+                )?;
+                assert!(matches!(
+                    policy_arguments("agy", &flags, &root),
+                    Err(Error::Invalid(_))
+                ));
+                assert!(matches!(
+                    run_root_session(&root, "agy", OsStr::new("agy"), &flags),
+                    Err(Error::Invalid(_))
+                ));
+                assert!(matches!(
+                    child_arguments("agy", &flags, &child, None),
+                    Err(Error::Invalid(_))
+                ));
+            }
+        }
     }
     Ok(())
 }
