@@ -5,7 +5,10 @@
 //! Older turns page in before the first row, settled turns append, and the
 //! streaming tail rewraps alone, so a delta costs the tail block's rows.
 
-use crate::Layout;
+use crate::{
+    Layout,
+    config::{ThemeStyles, Token},
+};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -24,6 +27,7 @@ pub struct TranscriptRows {
     blocks: VecDeque<Block>,
     lines: Vec<Line<'static>>,
     width: usize,
+    theme: ThemeStyles,
     /// Rows of the pending prompts, after the settled rows.
     pending_rows: usize,
     /// Rows of the streaming tail, after the pending prompts.
@@ -36,6 +40,7 @@ impl Default for TranscriptRows {
             blocks: VecDeque::new(),
             lines: Vec::new(),
             width: 80,
+            theme: ThemeStyles::default(),
             pending_rows: 0,
             tail_rows: 0,
         }
@@ -51,7 +56,8 @@ impl TranscriptRows {
     }
 
     fn push_owned(&mut self, prompt: bool, text: String) {
-        self.lines.extend(wrap(prompt, &text, self.width.max(1)));
+        self.lines
+            .extend(wrap(prompt, &text, self.width.max(1), &self.theme));
         self.blocks.push_back(Block { prompt, text });
     }
 
@@ -64,7 +70,7 @@ impl TranscriptRows {
         let mut added = Vec::new();
         for (prompt, text) in blocks {
             let text = settled(&text).to_owned();
-            rows.extend(wrap(prompt, &text, width));
+            rows.extend(wrap(prompt, &text, width, &self.theme));
             added.push(Block { prompt, text });
         }
         for block in added.into_iter().rev() {
@@ -82,14 +88,36 @@ impl TranscriptRows {
         let width = usize::from(width).max(1);
         if width != self.width {
             self.width = width;
-            self.pending_rows = 0;
-            self.tail_rows = 0;
-            self.lines.clear();
-            for block in std::mem::take(&mut self.blocks) {
-                self.push_owned(block.prompt, block.text);
-            }
+            self.rewrap();
         }
         &self.lines
+    }
+
+    /// Show every block in `theme`'s colours. A changed theme rewraps the
+    /// settled blocks; call `pending` and `tail` again to restore the
+    /// transient rows.
+    pub fn set_theme(&mut self, theme: ThemeStyles) {
+        if theme != self.theme {
+            self.theme = theme;
+            self.rewrap();
+        }
+    }
+
+    /// Remove every block, keeping the width and theme.
+    pub fn clear(&mut self) {
+        self.blocks.clear();
+        self.lines.clear();
+        self.pending_rows = 0;
+        self.tail_rows = 0;
+    }
+
+    fn rewrap(&mut self) {
+        self.pending_rows = 0;
+        self.tail_rows = 0;
+        self.lines.clear();
+        for block in std::mem::take(&mut self.blocks) {
+            self.push_owned(block.prompt, block.text);
+        }
     }
 
     /// Replace the pending prompts, each a prompt (`true`) or an answer,
@@ -99,7 +127,7 @@ impl TranscriptRows {
         self.clear_pending();
         let width = self.width.max(1);
         for (prompt, text) in blocks {
-            let rows = wrap(prompt, settled(text), width);
+            let rows = wrap(prompt, settled(text), width, &self.theme);
             self.pending_rows += rows.len();
             self.lines.extend(rows);
         }
@@ -112,7 +140,7 @@ impl TranscriptRows {
             .truncate(self.lines.len().saturating_sub(self.tail_rows));
         self.tail_rows = 0;
         if let Some(text) = text.filter(|text| !text.is_empty()) {
-            let rows = wrap(false, settled(text), self.width.max(1));
+            let rows = wrap(false, settled(text), self.width.max(1), &self.theme);
             self.tail_rows = rows.len();
             self.lines.extend(rows);
         }
@@ -164,8 +192,9 @@ fn settled(text: &str) -> &str {
     text.trim_end_matches('\n')
 }
 
-/// A prompt is shown bold as typed; an answer is rendered markdown.
-fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
+/// A prompt is shown bold as typed after an accent marker; an answer is
+/// rendered markdown.
+fn wrap(prompt: bool, text: &str, width: usize, theme: &ThemeStyles) -> Vec<Line<'static>> {
     let marked = width > 2;
     let columns = if marked { width - 2 } else { width };
     let (text, styles) = if prompt {
@@ -174,7 +203,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
             vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
         )
     } else {
-        let (text, styles) = crate::markdown::render(text, columns);
+        let (text, styles) = crate::markdown::render(text, columns, theme);
         (Cow::Owned(text), styles)
     };
     let mut style_at = crate::styled_cells::ordered_styles(styles);
@@ -195,7 +224,11 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
         };
         let mut spans: Vec<Span<'static>> = Vec::new();
         if !marker.is_empty() {
-            spans.push(Span::styled(marker, style_at(row.start)));
+            let mut style = style_at(row.start);
+            if prompt && index == 0 {
+                style = style.patch(theme.token(Token::Accent));
+            }
+            spans.push(Span::styled(marker, style));
         }
         // The marker span stays its own, borrowed; text cells of one style join.
         crate::styled_cells::append(
@@ -250,7 +283,8 @@ mod tests {
         transcript.pending([(true, "pending prompt")].into_iter());
         let settled = transcript.lines[0].spans.as_ptr();
         let pending = transcript.lines[transcript.len() - 2].spans.as_ptr();
-        for streamed in ["str", "streaming **answer**", "streaming **answer** grows"] {
+        // Rows wrap by character; the tail fits the 18 text columns whole.
+        for streamed in ["str", "str **answer**", "str **answer** grows"] {
             transcript.tail(Some(streamed));
             // The settled and pending rows are the same allocations.
             assert_eq!(transcript.lines[0].spans.as_ptr(), settled);

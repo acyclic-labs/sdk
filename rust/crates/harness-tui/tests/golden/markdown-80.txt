@@ -1,0 +1,56 @@
+== headings at 80 columns
+«#61afef,b»› «,b»Summarise **this**, shown as typed
+
+«#61afef,b»  # Title
+  
+  Intro with «,b»bold«», «,i»italic«», «#7f848e,s»gone«» and «#e5c07b»code«».
+  
+«#61afef,b»  # Section
+  
+«#61afef,b»  ## Detail
+
+== lists at 80 columns
+«#7f848e»  1. «»first
+«#7f848e»  2. «»second
+«#7f848e»     • «»nested item that is long enough to wrap at a narrow width
+  
+  [✓] done
+  [ ] later
+
+== code at 80 columns
+«#7f848e»  ┌─ rust
+«#7f848e»  │ // Answer the question.
+«#7f848e»  │ «#61afef»fn«» answer() -> «#61afef»u32«» {
+«#7f848e»  │ «»    «#61afef»let«» text = «#98c379»"forty-two"«»;
+«#7f848e»  │ «»    «#e5c07b»42
+«#7f848e»  │ «»}
+«#7f848e»  └─
+  
+«#7f848e»  ┌─ sh
+«#7f848e»  │ «»echo «#98c379»"$HOME"«» «#7f848e»# where
+«#7f848e»  └─
+
+== table at 80 columns
+«#7f848e»  ┌──────────┬───────┬──────────────┐
+«#7f848e»  │«» «,b»crate«»    «#7f848e»│«» «,b»lines«» «#7f848e»│«» «,b»note«»         «#7f848e»│
+«#7f848e»  ├──────────┼───────┼──────────────┤
+«#7f848e»  │«» tui      «#7f848e»│«»  1200 «#7f848e»│«» renders «,b»rows«» «#7f848e»│
+«#7f848e»  │«» markdown «#7f848e»│«»  4000 «#7f848e»│«» streams      «#7f848e»│
+«#7f848e»  └──────────┴───────┴──────────────┘
+
+== links at 80 columns
+  See «#61afef,u»the docs«» («#61afef,u»https://example.com/docs«») or «#61afef,u»https://example.com«».
+  
+«#7f848e»  │ «#7f848e,i»Quoted with a «#61afef,i,u»link«» («#61afef,u»https://example.com/q«»)«#7f848e,i».
+  
+«#7f848e»  ────────────────────────────────────────
+
+== unicode at 80 columns
+  界面 «,b»宽字符«» 👩‍💻 é — mixed-width text that wraps
+  
+«#7f848e»  ┌──────┬─────┐
+«#7f848e»  │«» «,b»名前«» «#7f848e»│«» «,b»🦀«»  «#7f848e»│
+«#7f848e»  ├──────┼─────┤
+«#7f848e»  │«» 値   «#7f848e»│«» ✓   «#7f848e»│
+«#7f848e»  └──────┴─────┘
+

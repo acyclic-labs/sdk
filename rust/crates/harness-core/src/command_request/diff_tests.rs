@@ -55,3 +55,32 @@ proptest::proptest! {
 fn settings_only_negative_control() {
     check::<false>("retained", 0, OperationId::new());
 }
+
+#[test]
+fn theme_writes_a_mode_the_theme_schema_accepts_and_keeps_overrides() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../harness-tui/data/theme.schema.json")).unwrap();
+    let modes = [ThemeMode::Auto, ThemeMode::Dark, ThemeMode::Light].map(|mode| json!(mode));
+    assert_eq!(schema["properties"]["mode"]["enum"], json!(modes));
+    let overrides = json!({"mode":"dark","dark":{"accent":"#ff0000"}});
+    let snapshot = BTreeMap::from([(
+        CommandFileRoot::Config,
+        BTreeMap::from([("theme.json".into(), overrides.clone())]),
+    )]);
+    let command = CommandResolution::Submit {
+        request: CommandRequest::Theme {
+            mode: ThemeMode::Light,
+        },
+    };
+    let changes = command.file_changes(&snapshot, OperationId::new()).unwrap();
+    let [change] = changes.as_slice() else {
+        panic!("theme publishes one file: {changes:?}");
+    };
+    assert_eq!(
+        (change.root, change.path.as_str()),
+        (CommandFileRoot::Config, "theme.json")
+    );
+    let mut expected = overrides;
+    expected["mode"] = json!("light");
+    assert_eq!(change.contents, expected);
+}

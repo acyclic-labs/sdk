@@ -1,14 +1,11 @@
 //! Configuration precedence, live rendering, parser invariants and negative controls.
 #![cfg(feature = "tui")]
-use acyclic_harness_tui::ratatui::{
-    Terminal,
-    backend::TestBackend,
-    style::{Color, Modifier},
-};
+use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, style::Color};
 use acyclic_harness_tui::{
     ACTIONS, Action, AppAction, Editor, InputEffect, PromptInput, PromptWidget, Viewport,
     config::{
-        ConfigDiagnostics, ConfigFile, ConfigView, DiagnosticKind, Scope, ThemeRole, fold, parse,
+        ConfigDiagnostics, ConfigFile, ConfigView, DiagnosticKind, Scope, ThemeRole, Token, fold,
+        parse,
     },
     key_event::{KeyCode, KeyEvent, KeyModifiers as M},
     term::{Capabilities, ColourDepth},
@@ -124,12 +121,17 @@ fn diagnostic_categories_and_canonical_conflicts() {
         ),
         (
             ConfigFile::Theme,
-            r##"{"text":{"foreground":"#xyzxyz"}}"##,
+            r##"{"dark":{"accent":"#xyzxyz"}}"##,
             DiagnosticKind::InvalidValue,
         ),
         (
             ConfigFile::Theme,
-            r##"{"text":{"blink":true}}"##,
+            r##"{"mode":"sepia"}"##,
+            DiagnosticKind::InvalidValue,
+        ),
+        (
+            ConfigFile::Theme,
+            r##"{"light":{"blink":"#000000"}}"##,
             DiagnosticKind::UnknownKey,
         ),
         (
@@ -171,7 +173,7 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
     view.set_file(
         Scope::User,
         ConfigFile::Theme,
-        Some(r##"{"text":{"foreground":"#123456","background":"#010203","bold":true}}"##),
+        Some(r##"{"dark":{"fg":"#123456"}}"##),
     );
     let profile = Capabilities {
         colour: ColourDepth::TrueColour,
@@ -191,9 +193,7 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
     let text: String = buffer.content.iter().map(|c| c.symbol()).collect();
     assert_eq!(text, "def ");
     assert_eq!(viewport.cursor, Some((3, 0)));
-    assert_eq!(buffer[(3, 0)].bg, Color::Rgb(1, 2, 3));
     assert_eq!(buffer[(0, 0)].fg, Color::Rgb(0x12, 0x34, 0x56));
-    assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
     for depth in [
         ColourDepth::Monochrome,
         ColourDepth::Ansi16,
@@ -214,8 +214,51 @@ fn live_theme_and_no_wrap_render_with_test_backend() {
                 Some(Color::Rgb(..)) | Some(Color::Indexed(_))
             )),
         }
-        assert!(style.add_modifier.contains(Modifier::BOLD));
     }
+}
+
+#[test]
+fn theme_mode_follows_the_probed_background_unless_the_file_sets_it() {
+    let accent = |view: &ConfigView, background| {
+        view.theme(&Capabilities {
+            colour: ColourDepth::TrueColour,
+            background,
+            ..Default::default()
+        })
+        .unwrap()
+        .token(Token::Accent)
+        .fg
+    };
+    let (dark, light) = (
+        Some(Color::Rgb(0x61, 0xaf, 0xef)),
+        Some(Color::Rgb(0x09, 0x69, 0xda)),
+    );
+    let mut view = ConfigView::default();
+    // An unknown background is dark; a known one is light above mid grey.
+    assert_eq!(accent(&view, None), dark);
+    assert_eq!(accent(&view, Some([0x1e, 0x1e, 0x1e])), dark);
+    assert_eq!(accent(&view, Some([0x7f, 0x7f, 0x7f])), dark);
+    assert_eq!(accent(&view, Some([0x80, 0x80, 0x80])), light);
+    assert_eq!(accent(&view, Some([0xfa, 0xfa, 0xfa])), light);
+    // An explicit mode wins over the background, and one token overrides
+    // alone: the other set and the other tokens keep the shipped values.
+    view.set_file(
+        Scope::User,
+        ConfigFile::Theme,
+        Some(r##"{"mode":"light","dark":{"accent":"#ff0000"}}"##),
+    );
+    assert_eq!(accent(&view, Some([0, 0, 0])), light);
+    view.set_file(
+        Scope::Workspace,
+        ConfigFile::Theme,
+        Some(r##"{"mode":"dark"}"##),
+    );
+    assert_eq!(
+        accent(&view, Some([0xff, 0xff, 0xff])),
+        Some(Color::Rgb(0xff, 0, 0))
+    );
+    let theme = view.theme(&Capabilities::default()).unwrap();
+    assert_eq!(theme.token(Token::Error).fg, Some(Color::LightRed));
 }
 
 proptest! {
@@ -386,7 +429,7 @@ fn parsers_round_trip_and_reject_unknown_keys() {
     proptest!(ProptestConfig::with_cases(64), |(tab in 1usize..17, wrap in any::<bool>(), rgb in any::<[u8; 3]>(), bold in any::<bool>(), action in prop::sample::select(ACTIONS), f in 1u8..25)| {
         let settings = json!({"tab_width": tab, "wrap": wrap});
         let color = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
-        let theme = json!({"text": {"foreground": color, "bold": bold}});
+        let theme = json!({"mode": if bold { "light" } else { "dark" }, "dark": {"accent": color}});
         let keymap = json!({"bindings": {format!("Ctrl+F{f}"): action.chord}});
         for (file, value) in [(ConfigFile::Settings, settings), (ConfigFile::Theme, theme), (ConfigFile::Keymap, keymap)] {
             schema.check(&(file, value.to_string().into_bytes()));
@@ -554,8 +597,7 @@ mod projection {
     fn fallback(rgb: [u8; 3], fault: Option<&ProjectionFault>) -> usize {
         let mut view = ConfigView::default();
         let text =
-            json!({"text":{"foreground":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}})
-                .to_string();
+            json!({"dark":{"fg":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}}).to_string();
         view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
         let theme = view
             .theme(&Capabilities {

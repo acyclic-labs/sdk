@@ -64,10 +64,10 @@ pub enum CommandRequest {
     ClearAll {},
     /// Export diagnostics.
     Export {},
-    /// Select an exact configured theme name.
+    /// Select the theme set: the terminal background's, or a fixed one.
     Theme {
-        /// Canonical name from the caller's theme data.
-        name: String,
+        /// The mode `config/theme.json` records.
+        mode: ThemeMode,
     },
     /// Compact with optional summary guidance.
     Compact {
@@ -81,6 +81,18 @@ pub enum CommandRequest {
         /// Provider/model identifier.
         model: String,
     },
+}
+
+/// Which theme set the terminal shows, as `config/theme.json` records it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    /// Follow the probed terminal background.
+    Auto,
+    /// The dark set.
+    Dark,
+    /// The light set.
+    Light,
 }
 
 /// Task control commands distinguish the current subtree from every tree.
@@ -353,9 +365,9 @@ impl CommandResolution {
                     settings.into(),
                 ));
             }
-            CommandRequest::Theme { name } => {
+            CommandRequest::Theme { mode } => {
                 let mut theme = document(snapshot, CommandFileRoot::Config, "theme.json")?;
-                theme.insert("name".into(), json!(name));
+                theme.insert("mode".into(), json!(mode));
                 return Ok(config(CommandFileRoot::Config, "theme.json", theme.into()));
             }
             CommandRequest::CycleMode {} => {

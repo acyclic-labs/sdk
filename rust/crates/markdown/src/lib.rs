@@ -24,7 +24,7 @@ use std::{
     collections::{HashMap, HashSet},
     ops::Range,
 };
-pub use style::{Color, Line, Span, Style};
+pub use style::{Line, Span, Style, Tone};
 
 /// Disposable incremental presentation of one append-only Markdown stream.
 /// Completed leaves and fence lines remain behind a parser checkpoint, including

@@ -1,36 +1,68 @@
-use crate::{Color, Line, Style, style::MUTED};
+use crate::{
+    Line, Style, Tone,
+    style::{MUTED, toned},
+};
 use pulldown_cmark::{Event, Parser};
 use std::sync::OnceLock;
-use syntect::{
-    easy::HighlightLines,
-    highlighting::{FontStyle, HighlightState, Theme, ThemeSet},
-    parsing::{ParseState, SyntaxSet},
-};
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
-static THEME: OnceLock<Theme> = OnceLock::new();
+static RULES: OnceLock<Vec<(Scope, Style)>> = OnceLock::new();
+
+/// The style of each grammar scope family, by tone: code shares the theme's
+/// tokens instead of carrying a palette of its own. The innermost scope with
+/// a rule styles a run, so an operator keyword stays plain and a string's
+/// quotes take the string's tone.
+const TONES: [(&str, Style); 9] = [
+    ("comment", MUTED),
+    ("string", toned(Tone::Success)),
+    ("constant.numeric", toned(Tone::Attention)),
+    ("constant.language", toned(Tone::Attention)),
+    ("constant.character", toned(Tone::Attention)),
+    ("keyword.operator", Style::DEFAULT),
+    ("keyword", toned(Tone::Accent)),
+    ("storage", toned(Tone::Accent)),
+    ("invalid", toned(Tone::Error)),
+];
 
 #[cfg(test)]
 std::thread_local! {
     pub(crate) static HIGHLIGHTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// A fence's grammar state between its lines.
 #[derive(Clone)]
 pub(crate) struct Code {
-    state: Option<(HighlightState, ParseState)>,
+    state: Option<(ParseState, ScopeStack)>,
 }
 
-fn theme() -> &'static Theme {
-    THEME.get_or_init(|| {
-        ThemeSet::load_defaults()
-            .themes
-            .remove("base16-ocean.dark")
-            .unwrap_or_default()
-    })
+fn syntaxes() -> &'static SyntaxSet {
+    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// The style of text under `stack`.
+fn tone(stack: &ScopeStack) -> Style {
+    let rules = RULES.get_or_init(|| {
+        TONES
+            .iter()
+            .filter_map(|(name, style)| Some((Scope::new(name).ok()?, *style)))
+            .collect()
+    });
+    stack
+        .as_slice()
+        .iter()
+        .rev()
+        .find_map(|scope| {
+            rules
+                .iter()
+                .find(|(rule, _)| rule.is_prefix_of(*scope))
+                .map(|(_, style)| *style)
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn highlighter(language: &str) -> Code {
-    let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let syntaxes = syntaxes();
     let language = match language {
         "ts" | "typescript" => "JavaScript",
         "sh" | "bash" => "sh",
@@ -39,45 +71,41 @@ pub(crate) fn highlighter(language: &str) -> Code {
     let syntax = syntaxes
         .find_syntax_by_token(language)
         .unwrap_or_else(|| syntaxes.find_syntax_plain_text());
-    let (highlight, parse) = HighlightLines::new(syntax, theme()).state();
     Code {
-        state: Some((highlight, parse)),
+        state: Some((ParseState::new(syntax), ScopeStack::new())),
     }
 }
 
 pub(crate) fn highlight(code: &mut Code, text: &str) -> Line {
     #[cfg(test)]
     HIGHLIGHTED.with(|count| count.set(count.get() + 1));
-    let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
-    let (highlight, parse) = code
-        .state
-        .take()
-        .unwrap_or_else(|| HighlightLines::new(syntaxes.find_syntax_plain_text(), theme()).state());
-    let mut highlighter = HighlightLines::from_state(theme(), highlight, parse);
+    let syntaxes = syntaxes();
+    let (mut parse, mut stack) = code.state.take().unwrap_or_else(|| {
+        (
+            ParseState::new(syntaxes.find_syntax_plain_text()),
+            ScopeStack::new(),
+        )
+    });
+    let shown = text.trim_end_matches(['\r', '\n']);
     let mut line = Line::plain("│ ", MUTED);
-    match highlighter.highlight_line(text, syntaxes) {
-        Ok(spans) => {
-            for (style, text) in spans {
-                let fg = style.foreground;
-                line.push(
-                    text.trim_end_matches(['\r', '\n']),
-                    Style {
-                        foreground: Some(Color(fg.r, fg.g, fg.b)),
-                        bold: style.font_style.contains(FontStyle::BOLD),
-                        italic: style.font_style.contains(FontStyle::ITALIC),
-                        underline: style.font_style.contains(FontStyle::UNDERLINE),
-                        ..Style::default()
-                    },
-                    None,
-                );
+    let mut at = 0;
+    // A grammar error leaves the rest of the line in the current style.
+    if let Ok(operations) = parse.parse_line(text, syntaxes) {
+        for (offset, operation) in operations {
+            let end = offset.min(shown.len());
+            if end > at {
+                line.push(shown.get(at..end).unwrap_or_default(), tone(&stack), None);
+                at = end;
+            }
+            if stack.apply(&operation).is_err() {
+                break;
             }
         }
-        Err(_) => line.push(text.trim_end_matches(['\r', '\n']), Style::default(), None),
     }
-    code.state = Some(highlighter.state());
+    line.push(shown.get(at..).unwrap_or_default(), tone(&stack), None);
+    code.state = Some((parse, stack));
     line
 }
-
 pub(crate) fn header(language: &str) -> Line {
     Line::plain(
         &format!(

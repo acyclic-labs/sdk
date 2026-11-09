@@ -3,93 +3,54 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "text": {
-      "$ref": "#/$defs/style"
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "dark", "light"]
     },
-    "border": {
-      "$ref": "#/$defs/style"
+    "dark": {
+      "$ref": "#/$defs/tokens"
     },
-    "editing": {
-      "$ref": "#/$defs/style"
-    },
-    "selection": {
-      "$ref": "#/$defs/style"
-    },
-    "placeholder": {
-      "$ref": "#/$defs/style"
-    },
-    "popup": {
-      "$ref": "#/$defs/style"
-    },
-    "popup_selected": {
-      "$ref": "#/$defs/style"
-    },
-    "diagnostic": {
-      "$ref": "#/$defs/style"
-    },
-    "heading": {
-      "$ref": "#/$defs/style"
-    },
-    "link": {
-      "$ref": "#/$defs/style"
-    },
-    "code": {
-      "$ref": "#/$defs/style"
-    },
-    "quote": {
-      "$ref": "#/$defs/style"
-    },
-    "list": {
-      "$ref": "#/$defs/style"
-    },
-    "rule": {
-      "$ref": "#/$defs/style"
-    },
-    "table": {
-      "$ref": "#/$defs/style"
-    },
-    "added": {
-      "$ref": "#/$defs/style"
-    },
-    "removed": {
-      "$ref": "#/$defs/style"
+    "light": {
+      "$ref": "#/$defs/tokens"
     },
     "$schema": {
       "type": "string"
     }
   },
   "$defs": {
-    "style": {
+    "tokens": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "foreground": {
-          "type": "string",
-          "format": "ui-color"
+        "fg": {
+          "$ref": "#/$defs/color"
         },
-        "background": {
-          "type": "string",
-          "format": "ui-color"
+        "muted": {
+          "$ref": "#/$defs/color"
         },
-        "bold": {
-          "type": "boolean"
+        "accent": {
+          "$ref": "#/$defs/color"
         },
-        "italic": {
-          "type": "boolean"
+        "attention": {
+          "$ref": "#/$defs/color"
         },
-        "dim": {
-          "type": "boolean"
+        "success": {
+          "$ref": "#/$defs/color"
         },
-        "underline": {
-          "type": "boolean"
+        "error": {
+          "$ref": "#/$defs/color"
         },
-        "reverse": {
-          "type": "boolean"
+        "diff-add": {
+          "$ref": "#/$defs/color"
         },
-        "strikethrough": {
-          "type": "boolean"
+        "diff-del": {
+          "$ref": "#/$defs/color"
         }
       }
+    },
+    "color": {
+      "type": "string",
+      "format": "ui-color"
     }
   }
 }

@@ -16,7 +16,7 @@ pub use parse::has_frontmatter;
 use parse::{expand, validate_name};
 
 pub use crate::command_request::{
-    CommandQuery, CommandRequest, CommandResolution, CommandTaskScope, CommandTool,
+    CommandQuery, CommandRequest, CommandResolution, CommandTaskScope, CommandTool, ThemeMode,
 };
 
 /// The built-in catalog, as installed.

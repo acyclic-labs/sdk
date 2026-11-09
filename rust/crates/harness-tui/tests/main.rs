@@ -10,6 +10,9 @@ mod config;
 #[path = "cases/editor.rs"]
 mod editor;
 
+#[path = "cases/golden.rs"]
+mod golden;
+
 #[path = "cases/input.rs"]
 mod input;
 

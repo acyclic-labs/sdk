@@ -19,6 +19,7 @@ use acyclic_harness::{
     tui::{
         Action, AppAction, Editor, InputEffect, PromptInput, QueryController, QueryPage, Screen,
         TranscriptRows, Viewport,
+        config::{ConfigView, Token},
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -272,7 +273,7 @@ impl View {
                         // A cleared conversation shows nothing before it,
                         // and pages nothing in from before it.
                         None => {
-                            self.transcript = TranscriptRows::default();
+                            self.transcript.clear();
                             self.top = seen;
                             self.floor = seen;
                             self.epoch += 1;
@@ -580,7 +581,10 @@ pub async fn run(
     resume: bool,
 ) -> Result<(), Failure> {
     let mut tty = Tty::open()?;
-    tty.negotiate(&Environment::capture())?;
+    // The shipped tokens, light or dark by the probed background.
+    let theme = ConfigView::default()
+        .theme(tty.negotiate(&Environment::capture())?)
+        .map_err(|diagnostics| format!("shipped theme rejected: {diagnostics:?}"))?;
     tty.setup(if inline {
         ScreenMode::Inline
     } else {
@@ -609,6 +613,8 @@ pub async fn run(
     let mut output_rows = Vec::new();
     let catalog = CommandCatalog::builtins()?;
     let mut input = PromptInput::default();
+    input.theme = theme;
+    view.transcript.set_theme(theme);
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
     let mut queries = QueryController::<query::Source>::default();
@@ -804,7 +810,7 @@ pub async fn run(
                 }
                 // Reasoning shows muted in the strip tool output uses.
                 let style = if kind == LiveKind::Reasoning {
-                    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+                    theme.token(Token::Muted).add_modifier(Modifier::ITALIC)
                 } else {
                     Style::default()
                 };
