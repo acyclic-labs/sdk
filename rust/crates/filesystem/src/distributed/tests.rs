@@ -630,7 +630,7 @@ async fn replay_rejects_a_record_with_a_different_stream_sequence() -> TestResul
         )
         .await?;
     let mut spy = ReleaseSpy::new(stream);
-    spy.corrupt_observation = 11;
+    spy.corrupt_read_sequence = true;
     let result = StreamAuthorityStore::new(Arc::new(spy))
         .replay(
             reservation.authority_id,
@@ -952,6 +952,7 @@ pub(super) struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
+    corrupt_read_sequence: bool,
     before_commit: Vec<crate::GuardedAppend>,
     before_gate_release: Option<PublicationReservation>,
     before_lease_close: Option<StreamPath>,
@@ -973,6 +974,7 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
+            corrupt_read_sequence: false,
             before_commit: Vec::new(),
             before_gate_release: None,
             before_lease_close: None,
@@ -1176,7 +1178,7 @@ impl StreamProvider for ReleaseSpy {
             );
         }
         let records = self.inner.read(request).await?;
-        if self.corrupt_observation == 11 {
+        if self.corrupt_read_sequence {
             return Ok(records.map_cursor(|records| {
                 Box::pin(records.map(|record| {
                     record.map(|mut record| {
