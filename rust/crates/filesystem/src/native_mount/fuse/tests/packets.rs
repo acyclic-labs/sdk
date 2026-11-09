@@ -39,6 +39,35 @@ struct KernelCapture {
 }
 
 #[test]
+fn foreign_work_is_refused_before_activating_a_real_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::adapter::tests::native_source_io_control;
+
+    let (borrowed, _) = shared_sources(crate::model::VolumeConfig::portable(
+        crate::model::Lifecycle::Ephemeral,
+    ))?;
+    let original = fuse_fixture_work();
+    let source = native_source_io_control(&borrowed, &original)?;
+    let core = projection_core(
+        source,
+        crate::WorkBudget::UNBOUNDED,
+        original.cancellation(),
+    )?;
+    let foreign = fuse_fixture_work();
+    let before = foreign.receipt();
+    assert!(matches!(
+        NativeMountWorkScope::new(&core, &foreign),
+        Err(NativeMountError::ControlPending)
+    ));
+    assert_eq!(foreign.receipt(), before);
+    let active = NativeMountWorkScope::new(&core, &original)?;
+    let nested = active.try_clone_for_io()?;
+    drop((nested, active));
+    assert!(core.take_handler_failure().is_none());
+    Ok(())
+}
+
+#[test]
 fn recorded_kernel_packets_replay_without_mounting() -> Result<(), Box<dyn std::error::Error>> {
     let capture: KernelCapture = serde_json::from_str(include_str!(
         "../../../../fixtures/fuse/linux-kernel-packets.json"

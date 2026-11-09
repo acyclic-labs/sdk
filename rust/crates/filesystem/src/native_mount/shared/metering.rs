@@ -111,6 +111,8 @@ pub(crate) fn verify_write(
 
 /// A view whose callbacks charge an active invocation's meter.
 pub(crate) trait MeteredView: Send + Sync {
+    /// The source whose original invocation owns this view's callbacks.
+    fn source(&self) -> &dyn MountFilesystem;
     /// Makes `work` the active meter; returns its activation generation.
     fn activate(&self, work: &Work) -> Result<u64, NativeMountError>;
     /// Ends the activation `activate` returned.
@@ -137,6 +139,7 @@ impl NativeMountWorkScope {
 
     fn enter(view: Arc<dyn MeteredView>, work: &Work) -> Result<Self, NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
+        source_original(view.source(), Some(work))?;
         let generation = view.activate(work)?;
         Ok(Self {
             view,

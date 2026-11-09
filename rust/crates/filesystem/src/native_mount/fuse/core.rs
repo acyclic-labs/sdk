@@ -141,6 +141,10 @@ pub(super) struct ProjectionCore {
 pub use crate::native_mount::shared::metering::NativeMountWorkScope;
 
 impl crate::native_mount::shared::metering::MeteredView for ProjectionCore {
+    fn source(&self) -> &dyn MountFilesystem {
+        self.source.as_ref()
+    }
+
     fn activate(&self, work: &Work) -> Result<u64, NativeMountError> {
         let generation = self
             .startup_meter
