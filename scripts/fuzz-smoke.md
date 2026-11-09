@@ -36,7 +36,11 @@ retained corpus or silently change the next campaign's starting state.
 
 The external coordinator supplies `fuzz-campaign.mjs` beside its existing
 `action-cache.mjs` and `test-cache.mjs`; `SDK_FUZZ_CAMPAIGN` selects another supplied
-module path. Missing infrastructure fails explicitly. Cache assumptions match the
+module path. Missing infrastructure fails explicitly. Supplied runners publish
+their terminal through the `log` callback;
+the entry point publishes FAIL if import or invocation fails before that receipt,
+or if the runner returns without one. A runner that publishes FAIL and then throws
+does not produce a second receipt. Cache assumptions match the
 shared tracer: process/kernel state and file metadata are outside the content
 key, and private scratch names have no semantic significance. Non-loopback
 network activity, foreign sockets, namespace changes, privileged executables and
