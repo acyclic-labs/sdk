@@ -469,8 +469,21 @@ fn raw_marker_names_and_non_object_fixtures_are_preserved() {
         json!("{}"),
         json!({"_raw":null}),
         json!({"$serde_json::private::RawValue":"null","nested":[]}),
+        json!({"$serde_json::private::Number":"null","nested":[]}),
     ] {
         crate::fuzzing::assert_model_json_round_trip(&value);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        for adapter in [
+            Adapter::Anthropic,
+            Adapter::Responses,
+            Adapter::Chat,
+            Adapter::Gemini,
+        ] {
+            assert!(
+                crate::fuzzing::input_round_trip(adapter, &bytes),
+                "accepted literal-key input skipped validation"
+            );
+        }
         oracle.check(&Case::Projected(value));
     }
 }
@@ -485,18 +498,6 @@ fn wire_wrapping_collision_leaves_distinct_canonical_arguments_unchanged() {
     let oracle = oracle();
     oracle.check(&Case::Normalized(array));
     oracle.check(&Case::Normalized(object));
-}
-
-#[test]
-fn negative_control_default_value_decode_misinterprets_literal_marker_keys() {
-    let original = json!({"$serde_json::private::RawValue":"null","nested":[]});
-    let bytes = serde_json::to_vec(&original).unwrap();
-    assert!(serde_json::from_slice::<Value>(&bytes).is_err());
-    assert!(serde_json::from_value::<Value>(original.clone()).is_err());
-    assert_eq!(
-        crate::projection::arguments::literal(&bytes).unwrap(),
-        original
-    );
 }
 
 #[test]

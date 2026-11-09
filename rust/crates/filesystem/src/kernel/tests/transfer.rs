@@ -282,10 +282,10 @@ async fn import_keeps_cumulative_work_live_backing_and_cancelled_prefix()
     for cancelled in [false, true] {
         let token = CancellationToken::new();
         let (producer, receiver) = tokio::sync::oneshot::channel();
-        let paused = crate::test_support::PausedStore {
-            inner: std::sync::Arc::new(MemoryObjectStore::default()),
-            release: std::sync::Mutex::new(Some(receiver)),
-        };
+        let paused = crate::test_support::PausedStore::new(
+            std::sync::Arc::new(MemoryObjectStore::default()),
+            Some(receiver),
+        );
         let mut importing = Box::pin(import_generation_batch_async(
             &paused,
             &manifest,

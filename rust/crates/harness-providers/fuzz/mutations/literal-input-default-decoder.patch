@@ -1,0 +1,18 @@
+diff --git a/rust/crates/harness-providers/src/fuzzing.rs b/rust/crates/harness-providers/src/fuzzing.rs
+--- a/rust/crates/harness-providers/src/fuzzing.rs
++++ b/rust/crates/harness-providers/src/fuzzing.rs
+@@ -320,4 +320,4 @@
+ pub(crate) fn input_round_trip(adapter: Adapter, input: &[u8]) -> bool {
+-    let Ok(body) = crate::json(input) else {
++    let Ok(body) = serde_json::from_slice::<serde_json::Value>(input) else {
+         return false;
+     };
+diff --git a/rust/crates/harness-providers/src/fuzzing/http_failure.rs b/rust/crates/harness-providers/src/fuzzing/http_failure.rs
+--- a/rust/crates/harness-providers/src/fuzzing/http_failure.rs
++++ b/rust/crates/harness-providers/src/fuzzing/http_failure.rs
+@@ -105,4 +105,4 @@
+     if matches!(status, 400 | 413)
+-        && let Ok(value) = crate::json(bytes)
++        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes)
+     {
+         let canonical = serde_json::to_vec(&value).expect("JSON value encodes");

@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::PausedStore;
 use std::future::{Future, poll_fn};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::Poll;
 
 const B: WorkBudget = WorkBudget::UNBOUNDED;
@@ -60,13 +60,8 @@ async fn decoded_misses_keep_the_original_epoch_through_scalar_and_batch_io()
                     );
                 }
                 let (release, receiver) = tokio::sync::oneshot::channel();
-                let cache = CachedObjectStore::new(
-                    PausedStore {
-                        inner,
-                        release: Mutex::new(Some(receiver)),
-                    },
-                    options(),
-                )?;
+                let cache =
+                    CachedObjectStore::new(PausedStore::new(inner, Some(receiver)), options())?;
                 let peer = cache.share_cache_with(())?;
                 let cancel = CancellationToken::new();
                 let original = crate::NativeMaterializationWork::new(B, &cancel)

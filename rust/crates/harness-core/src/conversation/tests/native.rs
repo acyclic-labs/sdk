@@ -85,9 +85,13 @@ fn native_file_clone_partial_failure_retires_only_its_actual_strings() -> Result
     let held = io.clone_text("held")?;
     assert!(matches!(
         source.copy(&mut Some(&mut io)),
-        Err(Error::NativeFilesystem { source, .. }) if matches!(*source,
-                acyclic_fs::FsError::NativeKernel(NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter: "bytes_copied", .. })))
+        Err(Error::NativeWork {
+            cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                counter: "bytes_copied",
+                ..
+            }),
+            ..
+        })
     ));
     let guard = io.into_custody()?;
     assert_eq!(

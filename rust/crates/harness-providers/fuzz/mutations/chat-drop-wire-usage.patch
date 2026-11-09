@@ -1,0 +1,12 @@
+diff --git a/rust/crates/harness-providers/src/stream/chat.rs b/rust/crates/harness-providers/src/stream/chat.rs
+--- a/rust/crates/harness-providers/src/stream/chat.rs
++++ b/rust/crates/harness-providers/src/stream/chat.rs
+@@ -23,7 +23,7 @@ pub(super) fn parse(state: &mut State, value: &Value) -> Result<Vec<ModelEvent>> {
+         }
+     }
+     state.identity(value)?;
+-    state.usage(&value["usage"])?;
++    state.usage(&Value::Null)?;
+     let Some(choice) = choice else {
+         return Ok(Vec::new());
+     };

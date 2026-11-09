@@ -111,6 +111,9 @@ export async function pty(processes, binary, fixture, input, capture) {
       }
       frame();
     });
+    // Exercise input arriving with the first terminal bytes, before the first
+    // rendered frame or terminal-query replies have been admitted.
+    if (input.text !== undefined) running.child.stdout.once("data", () => running.child.stdin.write(input.text));
     running.child.stdout.on("data", bytes => {
       raw.write(bytes);
       frames.write(bytes);

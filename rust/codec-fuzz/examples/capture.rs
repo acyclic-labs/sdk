@@ -179,6 +179,30 @@ fn save(
 
 fn capture() -> Result<(), Box<dyn Error>> {
     std::env::set_current_dir(env!("CARGO_MANIFEST_DIR"))?;
+    if std::env::args().any(|arg| arg == "--only-model-usage") {
+        let prefix = "harness_codecs/usage-";
+        let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?
+            .lines()
+            .filter(|line| !line.starts_with(prefix))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        let source = std::fs::read("../crates/conformance/fixtures/inference/llamacpp/text.body")?;
+        if hex::encode(Sha256::digest(&source))
+            != "9291f29c22062298aff55dd764b31a3632d9e6560fd55da78a35ed1673c5bd54"
+        {
+            return Err("original llama.cpp usage capture changed".into());
+        }
+        save(
+            "harness_codecs",
+            "usage-llamacpp-text-json",
+            source
+                .get(1263..1806)
+                .ok_or("original usage frame is missing")?,
+            "original Chat SSE data JSON bytes 1263..1806 from rust/crates/conformance/fixtures/inference/llamacpp/text.body; POST /v1/chat/completions status200; source SHA256 9291f29c22062298aff55dd764b31a3632d9e6560fd55da78a35ed1673c5bd54; no reserialization",
+            &mut manifest,
+        )?;
+        return finish(&manifest, prefix);
+    }
     if std::env::args().any(|arg| arg == "--only-agent-controls") {
         let prefix = "agent_controls/";
         let mut manifest = std::fs::read_to_string("corpus/SOURCES.tsv")?

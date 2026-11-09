@@ -11,18 +11,19 @@ pub(crate) struct Kernel {
     pub(crate) state: Mutex<bool>,
 }
 
-thread_local! {
-    static CONTEXT: RefCell<Option<Arc<Kernel>>> = const { RefCell::new(None) };
+// Loom threads share one OS thread, so the context is per Loom thread.
+loom::thread_local! {
+    static CONTEXT: RefCell<Option<Arc<Kernel>>> = RefCell::new(None);
 }
 
 pub(crate) fn current() -> Option<Arc<Kernel>> {
-    CONTEXT.with_borrow(Clone::clone)
+    CONTEXT.with(|context| context.borrow().clone())
 }
 
 struct Enter;
 impl Drop for Enter {
     fn drop(&mut self) {
-        CONTEXT.set(None);
+        CONTEXT.with(|context| context.borrow_mut().take());
         publish_probe::omit_reader_sync(false);
     }
 }
@@ -37,7 +38,7 @@ fn check(omit_reader_sync: bool) {
             let kernel = kernel.clone();
             let root = HostRoot::open(directory.path(), &mut ordinary_work()).unwrap();
             loom::thread::spawn(move || {
-                CONTEXT.set(Some(kernel.clone()));
+                CONTEXT.with(|context| *context.borrow_mut() = Some(kernel.clone()));
                 let _entered = Enter;
                 publish_probe::omit_reader_sync(omit_reader_sync);
                 let record = root

@@ -51,6 +51,7 @@ nix = { version = "0.31", default-features = false, features = ["event"], option
 
 
 [target.'cfg(unix)'.dev-dependencies]
+futures.workspace = true
 rustix = { workspace = true, features = ["process"] }
 rustix-openpty = "0.2"
 
