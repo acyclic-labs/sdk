@@ -1,5 +1,10 @@
 //! Source policies inspect precisely the repository inputs admitted at build.
 //!
+//! The catalog embeds every Rust source in the repository, so this package is
+//! rebuilt by any Rust change. It is a leaf: no other package depends on it, and
+//! the policies that read the whole catalog are its own tests. Other test
+//! binaries therefore depend only on the sources they compile.
+//!
 //! Copying thousands of files onto a target and reopening them is unnecessary
 //! for a policy on the compiled source, and makes its cost depend on filesystem
 //! caches. The build host enumerates once; Cargo tracks additions and changes.
@@ -44,6 +49,13 @@ pub fn repository_rust_source(path: &Path) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod catalog_build;
+#[cfg(test)]
+mod file_locks;
+#[cfg(test)]
+mod mount_clock;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -54,15 +66,15 @@ mod tests {
         for (path, text) in sources {
             assert_eq!(repository_rust_source(Path::new(path)), Some(*text));
         }
-        let path = Path::new("rust/crates/test-support/src/../src/source_catalog.rs");
-        assert_eq!(
-            repository_rust_source(path),
-            Some(include_str!("source_catalog.rs"))
+        let path = Path::new("rust/crates/source-policies/src/../src/lib.rs");
+        assert_eq!(repository_rust_source(path), Some(include_str!("lib.rs")));
+        assert!(
+            repository_rust_source(Path::new("../rust/crates/source-policies/src/lib.rs"))
+                .is_none()
         );
         assert!(
-            repository_rust_source(Path::new("../rust/crates/test-support/src/lib.rs")).is_none()
+            repository_rust_source(Path::new("rust/crates/source-policies/absent.rs")).is_none()
         );
-        assert!(repository_rust_source(Path::new("rust/crates/test-support/absent.rs")).is_none());
         assert!(repository_rust_source(&std::env::temp_dir().join("absent.rs")).is_none());
     }
 }

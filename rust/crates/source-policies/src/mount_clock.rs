@@ -71,7 +71,7 @@ fn mount_callbacks_cannot_read_host_clocks_directly() {
     // Scan the whole native_mount tree on every build platform, so callback
     // helpers in any file, existing or new, are covered without a hand-kept
     // callback list. Lifecycle helper subprocesses are refused/scripted by Driver.
-    let files: Vec<_> = acyclic_test_support::repository_rust_sources()
+    let files: Vec<_> = crate::repository_rust_sources()
         .iter()
         .filter_map(|(path, text)| {
             let path = path.strip_prefix("rust/crates/")?;

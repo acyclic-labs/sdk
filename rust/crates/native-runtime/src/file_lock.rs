@@ -233,7 +233,3 @@ impl Drop for FileLock {
 #[cfg(test)]
 #[path = "file_lock_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "file_lock_sources_tests.rs"]
-mod sources;

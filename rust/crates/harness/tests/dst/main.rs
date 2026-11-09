@@ -19,7 +19,6 @@ mod digest;
 mod driver;
 mod flushes;
 mod recovery;
-mod sources;
 
 // Keep each simulator layer independent of the production future's layout.
 type EntryFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
