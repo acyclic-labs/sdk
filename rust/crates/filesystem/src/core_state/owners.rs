@@ -4,6 +4,54 @@ use std::sync::{OnceLock, Weak};
 
 type Owners<T> = OrderedMutex<BTreeMap<PathBuf, ([u8; 16], Weak<T>)>, OPERATION>;
 
+/// Retire the native handle before decrementing the owner's Arc. A reopen
+/// that sees an expired Weak then waits on the claim's physical release event.
+#[derive(Clone, Debug)]
+pub(super) struct OwnerRef {
+    _handle: acyclic_native_runtime::StoreHandle,
+    owner: Arc<Owner>,
+}
+
+impl OwnerRef {
+    pub(super) fn new(owner: Arc<Owner>) -> Self {
+        Self {
+            _handle: owner._claim.handle(),
+            owner,
+        }
+    }
+}
+
+impl std::ops::Deref for OwnerRef {
+    type Target = Owner;
+
+    fn deref(&self) -> &Owner {
+        &self.owner
+    }
+}
+
+pub(super) fn create(
+    root: &Path,
+    cache_limit: Option<usize>,
+) -> Result<Arc<Owner>, LocalCoreStateStoreError> {
+    let claim =
+        acyclic_native_runtime::StoreClaim::acquire(&root.join(OWNER_LOCK)).map_err(|error| {
+            if acyclic_native_runtime::is_exclusive_lock_contention(&error) {
+                LocalCoreStateStoreError::OwnershipConflict(root.to_owned())
+            } else {
+                error.into()
+            }
+        })?;
+    Ok(Arc::new(Owner {
+        residents: Arc::default(),
+        log: Mutex::default(),
+        flush_gate: Mutex::default(),
+        pending: AtomicBool::new(false),
+        failed: AtomicBool::new(false),
+        cache_limit,
+        _claim: claim,
+    }))
+}
+
 // Registry -> OS namespace lock. Neither the record log nor provider/view locks
 // are acquired while holding this registry. The constructor uses try-lock only.
 fn join<T, const FENCE: bool>(
@@ -49,19 +97,11 @@ impl LocalCoreStateStore {
             OWNERS.get_or_init(|| OrderedMutex::new(BTreeMap::new())),
             root.clone(),
             held.identity().to_bytes(),
-            || {
-                let store = Self::open_owned(&root)?;
-                let Ownership::Owned(mut owner) = store.ownership else {
-                    unreachable!()
-                };
-                Arc::get_mut(&mut owner).expect("new owner").cache_limit =
-                    Some(super::contexts::OWNED_CHECKPOINT as usize);
-                Ok(owner)
-            },
+            || create(&root, Some(super::contexts::OWNED_CHECKPOINT as usize)),
         )?;
         Ok(Self {
             root: Arc::new(root),
-            ownership: Ownership::Owned(owner),
+            ownership: Ownership::Owned(OwnerRef::new(owner)),
             deferral: None,
             inspection: false,
             journal_work: None,
@@ -149,7 +189,7 @@ mod tests {
         else {
             panic!("joined store is not owned")
         };
-        assert!(Arc::ptr_eq(a, b));
+        assert!(Arc::ptr_eq(&a.owner, &b.owner));
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
         drop(first);
         assert!(LocalCoreStateStore::open_owned(directory.path()).is_err());
@@ -196,5 +236,46 @@ mod tests {
         ));
         drop(first);
         LocalCoreStateStore::open_shared_owner(&root).unwrap();
+    }
+
+    #[test]
+    fn reopening_waits_for_the_retiring_native_owner() {
+        crate::initialize_test_native_io();
+        for shared in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = if shared {
+                LocalCoreStateStore::open_shared_owner(directory.path())
+            } else {
+                LocalCoreStateStore::open_owned(directory.path())
+            }
+            .unwrap();
+            let Ownership::Owned(owner) = &store.ownership else {
+                panic!("not owned")
+            };
+            // Retain physical teardown after the last public handle retires.
+            let retiring = owner.owner.clone();
+            let release = owner._claim.release_observer();
+            drop(store);
+            let (events, received) = std::sync::mpsc::channel();
+            let registered = events.clone();
+            let observer = std::thread::spawn(move || {
+                registered.send(release.wait_registered().is_ok()).unwrap();
+            });
+            let path = directory.path().to_owned();
+            let opener = std::thread::spawn(move || {
+                let result = LocalCoreStateStore::open_owned(path);
+                events.send(false).unwrap();
+                result
+            });
+            let waited = received.recv().unwrap();
+            drop(retiring);
+            observer.join().unwrap();
+            let reopened = opener.join().unwrap();
+            assert!(
+                waited,
+                "reopen refused instead of waiting for native retirement"
+            );
+            assert!(reopened.is_ok(), "{reopened:?}");
+        }
     }
 }
