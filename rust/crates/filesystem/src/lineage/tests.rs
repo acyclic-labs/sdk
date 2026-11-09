@@ -50,6 +50,69 @@ async fn malformed_lineage_shape_never_enters_the_graph() {
             .await,
         Err(WorkspaceLineageError::IncompatibleState)
     ));
+
+    // Persisted names are identities, so successful normalization alone cannot
+    // validate their spelling. Exercise both names through registration and
+    // recovery from the real adapter, including a canonical Unicode record.
+    for (name, parent_name, valid) in [
+        ("caf\u{e9}", "parent", true),
+        ("cafe\u{301}", "parent", false),
+        ("child", "cafe\u{301}", false),
+    ] {
+        let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
+        let cancellation = CancellationToken::new();
+        let mut accounting = crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let record = WorkspaceLineageRecord {
+            version: LINEAGE_VERSION,
+            revision: 1,
+            ready: true,
+            workspace_id: workspace(name),
+            workspace_name: name.to_owned(),
+            parent_workspace_id: Some(workspace(parent_name)),
+            parent_workspace_name: Some(parent_name.to_owned()),
+            fork_generation: generation(1),
+            initial_generation: generation(2),
+        };
+        if valid {
+            graph
+                .register(record.clone(), &mut accounting)
+                .await
+                .expect("canonical registration");
+        } else {
+            assert!(
+                matches!(
+                    graph.register(record.clone(), &mut accounting).await,
+                    Err(WorkspaceLineageError::IncompatibleState)
+                ),
+                "noncanonical lineage registration was accepted: {name:?}, {parent_name:?}"
+            );
+            assert!(
+                graph
+                    .store
+                    .compare_and_swap(record.workspace_id, 0, record.clone())
+                    .await
+                    .unwrap()
+            );
+        }
+        let recovered = graph
+            .resolve(
+                record.workspace_id,
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await;
+        if valid {
+            assert_eq!(recovered.unwrap().value, record);
+        } else {
+            assert!(matches!(
+                recovered,
+                Err(WorkspaceLineageError::IncompatibleState)
+            ));
+        }
+    }
 }
 
 #[derive(Default)]

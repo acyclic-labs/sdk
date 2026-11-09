@@ -39,6 +39,20 @@ impl WorkspaceName {
         )
     }
 
+    /// Requires persisted names to already have the parser's canonical bytes.
+    pub(crate) fn is_canonical(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<bool, WorkspaceError> {
+        Self::parse_with(
+            name,
+            accounting,
+            char::is_ascii,
+            &mut |_, _, _| {},
+            |canonical, _, _| Ok(canonical == name),
+        )
+    }
+
     fn with_probe(
         name: &str,
         accounting: &mut KernelAccounting<'_>,
