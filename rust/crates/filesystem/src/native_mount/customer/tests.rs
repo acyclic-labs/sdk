@@ -196,7 +196,7 @@ async fn retired_mount_proof_preserves_all_terminal_causes_on_every_os()
     };
     let before = retirement_work.receipt();
     let proof = mount.retire(&cancellation)?;
-    retired(root.path(), &fence, before, &retirement_work)?;
+    retired(root.path(), &fence)?;
     assert!(mount.source.physically_retired()?);
     assert!(
         mount

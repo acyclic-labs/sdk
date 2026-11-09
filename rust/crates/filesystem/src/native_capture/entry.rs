@@ -191,6 +191,30 @@ impl HeldRoot {
         &self.path
     }
 
+    /// The canonical path of this held directory, including after a rename.
+    /// The kernel's held-directory query resolves ancestor aliases without
+    /// following a replacement of the original path.
+    pub fn canonical_path(&self) -> Result<PathBuf, DemandError> {
+        let mut work = crate::native_host::ordinary_work();
+        #[cfg(unix)]
+        let (path, allocation) = crate::native_host::canonical_directory_path_held(
+            self.root.try_clone(&mut work)?.into_directory(),
+            &mut work,
+        )?;
+        #[cfg(windows)]
+        let (path, allocation) = {
+            use std::os::windows::ffi::OsStringExt as _;
+            let (path, allocation) =
+                crate::native_host::canonical_directory_wide(&self.root.directory(), &mut work)?;
+            (
+                PathBuf::from(std::ffi::OsString::from_wide(&path)),
+                allocation,
+            )
+        };
+        work.release(allocation)?;
+        Ok(path)
+    }
+
     /// A search-only view of this held directory, never reopened by path.
     pub fn search(&self) -> Result<SearchRoot, DemandError> {
         let held = self.try_clone()?;

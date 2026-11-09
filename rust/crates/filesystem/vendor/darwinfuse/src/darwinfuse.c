@@ -472,6 +472,7 @@ int fuse_getgroups(int size, gid_t list[])
 struct mounted_io_test {
     struct fuse *fuse;
     const char *root;
+    int (*retire)(const char *root);
     _Atomic int created;
     int result;
 };
@@ -507,14 +508,15 @@ static void mounted_io_ready(void *arg)
     int len = snprintf(path, sizeof(path), "%s/ready", test->root);
     test->result = len < 0 || (size_t)len >= sizeof(path) ? ENAMETOOLONG :
         mkdir(path, 0755) == 0 ? 0 : errno;
-    if (unmount(test->root, MNT_FORCE) != 0 && test->result == 0)
-        test->result = errno;
+    int retired = test->retire(test->root);
+    if (test->result == 0)
+        test->result = retired;
     fuse_exit(test->fuse);
 }
 
-int nfs4_test_mounted_io(const char *root)
+int nfs4_test_mounted_io(const char *root, int (*retire)(const char *root))
 {
-    struct mounted_io_test test = { .root = root, .result = EIO };
+    struct mounted_io_test test = { .root = root, .retire = retire, .result = EIO };
     atomic_init(&test.created, 0);
     struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
     struct fuse_chan *channel = fuse_mount(root, &args);

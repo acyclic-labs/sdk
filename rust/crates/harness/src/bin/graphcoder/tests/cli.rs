@@ -162,6 +162,7 @@ fn graphcoder_command(fixture: &Fixture) -> Command {
         .env("USERPROFILE", &fixture.settings)
         .env("LOCALAPPDATA", &fixture.settings)
         .env("XDG_DATA_HOME", &fixture.settings)
+        .env("XDG_STATE_HOME", &fixture.settings)
         .env("TERM", "dumb")
         .env("GRAPHCODER_LOG", "off")
         .env_remove("GRAPHCODER_MODEL")

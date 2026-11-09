@@ -240,12 +240,13 @@ impl Exclusion {
         root: &HeldRoot,
         paths: &[&Path],
     ) -> Result<Option<Self>> {
-        let mut top = root.path();
+        let path = root.canonical_path().map_err(storage)?;
+        let mut top = path.as_path();
         let mut held = root.search().map_err(storage)?;
         loop {
             if let Some(git) = metadata(&held)? {
                 let common = common(git)?;
-                let relative = root.path().strip_prefix(top).map_err(storage)?;
+                let relative = path.strip_prefix(top).map_err(storage)?;
                 let patterns = paths
                     .iter()
                     .map(|path| pattern(&relative.join(path)))
@@ -260,7 +261,7 @@ impl Exclusion {
             let ancestor = acyclic_fs::hold_search_root(parent).map_err(storage)?;
             // Named ancestor discovery is only accepted if its held descendant
             // is the captured checkout. A replaced path cannot redirect it.
-            let relative = root.path().strip_prefix(parent).map_err(storage)?;
+            let relative = path.strip_prefix(parent).map_err(storage)?;
             if ancestor
                 .open_search_directory(relative)
                 .map_err(storage)?

@@ -541,7 +541,7 @@ fn physical_cleanup_worker(
         let crate::native_mount::tests::retirement::Fixture {
             root,
             mut session,
-            work,
+            work: _,
             fence,
         } = crate::native_mount::tests::retirement::Fixture::new()
             .expect("original destination fence");
@@ -554,7 +554,6 @@ fn physical_cleanup_worker(
             #[cfg(windows)]
             warm_namespace: None,
         };
-        let before = work.receipt();
         let result = packet.retire(
             None,
             crate::native_mount::retirement::SourceRetirementWait::Physical,
@@ -563,7 +562,7 @@ fn physical_cleanup_worker(
             packet.is_retired(),
             "recording outcome stranded physically acknowledged source or destination custody: {result:?}"
         );
-        crate::native_mount::tests::retirement::retired(root.path(), &fence, before, &work)
+        crate::native_mount::tests::retirement::retired(root.path(), &fence)
             .expect("original destination custody retires before reporting the source outcome");
         return result.map(|_| true);
     }

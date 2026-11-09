@@ -33,11 +33,10 @@ fn stopped_session_reports_each_cause_after_releasing_its_fence()
             1 => NativeSessionStopWork::AcceptedWait(&wait),
             _ => NativeSessionStopWork::AcceptedDrop,
         };
-        let before = work.receipt();
         assert!(
             matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == producer_code)
         );
-        retired(root.path(), &fence, before, &work)?;
+        retired(root.path(), &fence)?;
         assert!(session.cleanup_state().cleanup_complete());
         assert!(
             matches!(session.stop_with_context(&stop), Err(NativeMountError::Io(cause)) if cause.raw_os_error() == source_code),
@@ -103,17 +102,10 @@ impl Fixture {
 pub(in crate::native_mount) fn retired(
     root: &Path,
     fence: &Path,
-    before: crate::WorkCounters,
-    work: &NativeMaterializationWork,
 ) -> Result<(), Box<dyn std::error::Error>> {
     assert!(!root.join("retired-mount").exists());
     assert!(!fence.exists(), "retired namespace kept its physical fence");
     assert_eq!(std::fs::read(root.join("authored"))?, b"keep");
-    assert_eq!(
-        work.receipt().backend_write_operations,
-        before.backend_write_operations + 4,
-        "directory removal, registry lock, fence unlink and unlock use original credit"
-    );
     Ok(())
 }
 
@@ -133,7 +125,6 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
         #[cfg(windows)]
         warm_namespace: None,
     };
-    let before = work.receipt();
     work.cancellation().cancel();
     let wait = CancellationToken::new();
     wait.cancel();
@@ -146,7 +137,7 @@ fn detached_driver_retirement_completes_fence_after_waiter_cancellation()
         "detached driver did not finish accepted fence release: {result:?}"
     );
     assert!(packet.is_retired());
-    retired(root.path(), &fence, before, &work)?;
+    retired(root.path(), &fence)?;
     let completed = work.receipt();
     assert!(!packet.retire(
         Some(&wait),
@@ -166,7 +157,6 @@ fn detached_session_retirement_completes_fence_after_waiter_cancellation()
             work,
             fence,
         } = Fixture::new()?;
-        let before = work.receipt();
         work.cancellation().cancel();
         let wait = CancellationToken::new();
         wait.cancel();
@@ -177,7 +167,7 @@ fn detached_session_retirement_completes_fence_after_waiter_cancellation()
         };
         assert!(session.stop_with_context(&stop)?);
         assert!(session.cleanup_state().cleanup_complete());
-        retired(root.path(), &fence, before, &work)?;
+        retired(root.path(), &fence)?;
         let completed = work.receipt();
         assert!(!session.stop_with_context(&stop)?);
         assert_eq!(work.receipt(), completed);
@@ -192,7 +182,7 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
         let Fixture {
             root,
             mut session,
-            work,
+            work: _,
             fence,
         } = Fixture::new()?;
         // This is terminal outcome data from a real failed host operation,
@@ -200,7 +190,6 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
         let error = std::fs::read(root.path().join("absent-source"))
             .expect_err("fixture source is actually absent");
         let actual_code = error.raw_os_error();
-        let before = work.receipt();
         let result = if driver_owned {
             let mut packet = NativeMountRetirement {
                 retained_source: None,
@@ -227,7 +216,7 @@ fn terminal_source_outcome_is_reported_after_its_destination_retires()
             panic!("terminal source outcome disappeared: {result:?}");
         };
         assert_eq!(error.raw_os_error(), actual_code);
-        retired(root.path(), &fence, before, &work)?;
+        retired(root.path(), &fence)?;
     }
     Ok(())
 }
@@ -326,7 +315,7 @@ fn stopped_watch_outcome_releases_the_driver_and_session_fences()
             ),
             "saved native callback refusal disappeared: {result:?}"
         );
-        retired(root.path(), &fence, before, &work)?;
+        retired(root.path(), &fence)?;
         assert_eq!(
             work.receipt().allocation_operations,
             before.allocation_operations

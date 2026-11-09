@@ -120,7 +120,7 @@ fn terminal_worker_retires_destination(
             .map_err(|_| "retirement state poisoned")?
             .is_retired()
     );
-    retired(root.path(), &fence, before, &work)?;
+    retired(root.path(), &fence)?;
     if panicked {
         let NativeMountError::DriverPanicked { panic, .. } = first else {
             panic!("worker panic changed to {first:?}");
@@ -296,7 +296,6 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         work,
         fence,
     } = Fixture::new()?;
-    let before = work.receipt();
     let meter = matches!(mode, Retirement::Meter);
     let last_owner = matches!(mode, Retirement::LastOwner);
     let (callbacks, source) = shared_sources(posix_config())?;
@@ -467,7 +466,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         "destination fence retired before the kernel acknowledgment"
     );
     assert!(source.upgrade().is_none(), "retired packet kept its source");
-    retired(root.path(), &fence, before, &work)?;
+    retired(root.path(), &fence)?;
     assert!(
         !caller_waited.load(std::sync::atomic::Ordering::Acquire),
         "observer drop entered the original native wait instead of its accepted physical owner"
