@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,7 +14,6 @@ export function projectGenerated(path, content, check) {
     tracked ??= new Set(execFileSync("git", ["ls-files", "-z"], { cwd: sourceRoot, encoding: "utf8" }).split("\0"));
     if (tracked.has(relative(sourceRoot, path).replaceAll("\\", "/"))) return checkGenerated(path, content);
   }
-  mkdirSync(dirname(path), { recursive: true });
   writeChanged(path, content);
 }
 
@@ -23,20 +23,38 @@ export function checkGenerated(path, content) {
   }
 }
 
-// Directory-producing Rust exporters use the same output in write and check
-// modes. Comparing their fresh bytes never rewrites a contributor's checkout.
-export function checkGeneratedDirectory(generated, destination) {
-  for (const entry of readdirSync(generated, { recursive: true, withFileTypes: true })) {
-    if (entry.isDirectory()) continue;
-    const source = join(entry.parentPath, entry.name);
-    const relative = source.slice(generated.length + 1);
-    projectGenerated(join(destination, relative), readFileSync(source), true);
-  }
+// Exporters render privately in both modes; only changed bytes reach the checkout.
+export async function generateFiles(destination, render, prune = [], check = false) {
+  const temporary = mkdtempSync(join(tmpdir(), "sdk-generation-"));
+  try {
+    await render(temporary);
+    const current = new Set();
+    for (const entry of readdirSync(temporary, { recursive: true, withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const source = join(entry.parentPath, entry.name);
+      const name = relative(temporary, source);
+      current.add(name);
+      projectGenerated(join(destination, name), readFileSync(source), check);
+    }
+    for (const directory of prune.map(name => join(destination, name))) {
+      if (!existsSync(directory)) continue;
+      for (const entry of readdirSync(directory, { recursive: true, withFileTypes: true })) {
+        const path = join(entry.parentPath, entry.name);
+        if (entry.isFile() && !current.has(relative(destination, path))) {
+          if (check) throw new Error(`STEP_FAILED generated-artifact: obsolete ${path}; recovery: bun run generate`);
+          rmSync(path);
+        }
+      }
+    }
+  } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
 
 export const writeChanged = (path, content) => {
   const bytes = typeof content === "string" ? Buffer.from(content) : content;
-  if (!existsSync(path) || !readFileSync(path).equals(bytes)) writeFileSync(path, bytes);
+  if (!existsSync(path) || !readFileSync(path).equals(bytes)) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
 };
 
 // Canonical generation inputs and their published copies live here.

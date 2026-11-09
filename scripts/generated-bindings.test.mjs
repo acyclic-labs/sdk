@@ -1,9 +1,40 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { generateFiles } from "./generated-bindings.mjs";
+
+test("private generation publishes changed bytes, preserves unchanged files and prunes only owned output", async t => {
+  const output = mkdtempSync(join(tmpdir(), "sdk-generation-publication-"));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
+  mkdirSync(join(output, "semantic"));
+  writeFileSync(join(output, "semantic/stale.ts"), "obsolete");
+  writeFileSync(join(output, "package.json"), "source-owned");
+  const render = bytes => temporary => {
+    mkdirSync(join(temporary, "semantic"));
+    writeFileSync(join(temporary, "semantic/current.ts"), bytes);
+  };
+  await generateFiles(output, render("first"), ["semantic"]);
+  assert.equal(existsSync(join(output, "semantic/stale.ts")), false);
+  const current = join(output, "semantic/current.ts");
+  utimesSync(current, 1, 1);
+  const before = statSync(current, { bigint: true }).mtimeNs;
+  await generateFiles(output, render("first"), ["semantic"]);
+  assert.equal(statSync(current, { bigint: true }).mtimeNs, before);
+  await generateFiles(output, render("second"), ["semantic"]);
+  assert.equal(readFileSync(current, "utf8"), "second");
+  let privateOutput;
+  await assert.rejects(generateFiles(output, temporary => {
+    privateOutput = temporary;
+    render("incomplete")(temporary);
+    throw new Error("renderer failed");
+  }, ["semantic"]), /renderer failed/);
+  assert.equal(existsSync(privateOutput), false);
+  assert.equal(readFileSync(current, "utf8"), "second");
+  assert.equal(readFileSync(join(output, "package.json"), "utf8"), "source-owned");
+});
 
 test("every inventory importer rejects ignored copies before using files", t => {
   const root = mkdtempSync(join(tmpdir(), "sdk-packaged-copies-"));
