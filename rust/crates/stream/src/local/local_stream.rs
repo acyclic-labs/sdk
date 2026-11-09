@@ -639,13 +639,19 @@ impl LocalStream {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
                     let key = PersistenceKey::new(Arc::as_ptr(&inner.journal) as usize, 0);
-                    let acquire = move || Ok::<_, StreamError>((file, (inner, work)));
+                    let owner = FlushOwner {
+                        inner,
+                        active: true,
+                    };
+                    let acquire = move || Ok::<_, StreamError>((file, (owner, work)));
                     let flush = move |file: &acyclic_native_runtime::FileLease,
-                                      (inner, work): &mut (
-                        Arc<LocalInner>,
+                                      (owner, work): &mut (
+                        FlushOwner,
                         Option<Arc<crate::native::Work>>,
                     )| {
-                        Ok(inner.flush_through(file, durability, work.as_deref()))
+                        let flushed = owner.inner.flush_through(file, durability, work.as_deref());
+                        owner.active = false;
+                        Ok(flushed)
                     };
                     #[cfg(not(loom))]
                     let submitted = acyclic_native_runtime::FileLease::submit(

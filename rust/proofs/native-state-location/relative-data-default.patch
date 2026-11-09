@@ -1,0 +1,13 @@
+--- a/rust/crates/harness-core/src/native_environment.rs
++++ b/rust/crates/harness-core/src/native_environment.rs
+@@ -138,9 +138,7 @@
+             {
+                 return Some(directory);
+             }
+-            dirs::data_local_dir()
+-                .filter(|directory| directory.is_absolute())
+-                .map(PathBuf::into_os_string)
++            dirs::data_local_dir().map(PathBuf::into_os_string)
+         }
+         #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+         Read::State(Some(directory)) => Some(directory.as_os_str().to_owned()),

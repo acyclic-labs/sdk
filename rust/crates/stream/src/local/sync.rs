@@ -17,6 +17,22 @@ struct SyncProgress {
     flushed: Option<u64>,
 }
 
+// The submitted producer owns the flush cut even after its caller leaves.
+// Losing it must terminate every waiter on that cut.
+struct FlushOwner {
+    inner: Arc<LocalInner>,
+    active: bool,
+}
+
+impl Drop for FlushOwner {
+    fn drop(&mut self) {
+        if self.active {
+            self.inner
+                .fail(LocalStreamFailure::new("flush", "producer_lost"));
+        }
+    }
+}
+
 impl SyncProgress {
     fn completion(self, through: u64, durability: LocalDurability) -> Option<SyncCompletion> {
         match durability {

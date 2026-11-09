@@ -36,7 +36,6 @@ async fn scoped_custody(
                 JoinFailure::Native(error) => assert!(error.is_cancelled()),
                 #[cfg(feature = "test-support")]
                 JoinFailure::Cancelled(_) => {}
-                #[cfg(feature = "test-support")]
                 JoinFailure::Panicked { .. } => panic!("cancellation became a panic"),
             }
         } else {

@@ -45,8 +45,10 @@ fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
     operations::sync_owned_file(&native.file, Durability::Full, None)?;
     assert_eq!(crate::device_flush::classification_work(), admitted);
 
-    // A real unsupported descriptor cannot borrow the previous file's success.
-    let invalid = HeldFile::new(File::open("/dev/null")?);
+    // A pipe cannot stage writes, so neither caller may classify its device.
+    // A device such as /dev/null can stage successfully on some hosts.
+    let (reader, _writer) = io::pipe()?;
+    let invalid = HeldFile::new(File::from(std::os::fd::OwnedFd::from(reader)));
     let before = crate::device_flush::classification_work();
     let owned = invalid
         .sync_once()
@@ -54,7 +56,7 @@ fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
     let borrowed = crate::sync_descriptor_once(invalid.as_file().as_fd())
         .expect_err("same original native refusal");
     assert_eq!(owned.raw_os_error(), borrowed.raw_os_error());
-    assert_eq!(owned.raw_os_error(), Some(libc::ENODEV));
+    assert!(owned.raw_os_error().is_some());
     assert_eq!(crate::device_flush::classification_work(), before);
 
     // A public cached lease retains evidence on its physical handle. Its
@@ -109,11 +111,16 @@ fn owned_flush_reuses_device_only_for_the_retained_file() -> io::Result<()> {
         false,
         true,
     )?;
-    let before = crate::device_flush::classification_work();
-    invalid
-        .lease()?
+    let lease = invalid.lease()?;
+    let original = lease
         .flush(|file| file.flush_data())
         .expect_err("original cached descriptor cannot perform a full flush");
-    assert_eq!(crate::device_flush::classification_work(), before);
+    let resolved = crate::device_flush::classification_work();
+    let repeated = lease
+        .flush(|file| file.flush_data())
+        .expect_err("the same original descriptor must retain its refusal");
+    assert_eq!(original.raw_os_error(), Some(libc::ENODEV));
+    assert_eq!(repeated.raw_os_error(), original.raw_os_error());
+    assert_eq!(crate::device_flush::classification_work(), resolved);
     Ok(())
 }

@@ -1,0 +1,13 @@
+diff --git a/rust/crates/native-runtime/src/recovery/frame.rs b/rust/crates/native-runtime/src/recovery/frame.rs
+--- a/rust/crates/native-runtime/src/recovery/frame.rs
++++ b/rust/crates/native-runtime/src/recovery/frame.rs
+@@ -60,8 +60,7 @@
+         } else {
+             u64::from(u32::from_le_bytes(*prefix.first_chunk::<4>()?))
+         };
+-        (self.minimum_body..=self.maximum_body)
+-            .contains(&length)
++        (self.minimum_body..self.minimum_body).contains(&length)
+             .then_some(length)
+     }
+ 

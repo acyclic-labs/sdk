@@ -94,13 +94,21 @@ async fn collected_and_streamed_launches_run_a_command_identically() -> io::Resu
     let executable = std::env::current_exe()?;
     #[cfg(unix)]
     let executable = {
-        use std::os::unix::ffi::OsStrExt;
-        let native = root.path().join(std::ffi::OsStr::from_bytes(b"child-\xff"));
+        // APFS requires valid UTF-8 names; other Unix filesystems also exercise
+        // the native-byte path that cannot be represented as UTF-8.
+        #[cfg(target_os = "macos")]
+        let name = std::ffi::OsStr::new("child-\u{ff}");
+        #[cfg(not(target_os = "macos"))]
+        let name = {
+            use std::os::unix::ffi::OsStrExt;
+            std::ffi::OsStr::from_bytes(b"child-\xff")
+        };
+        let native = root.path().join(name);
         std::os::unix::fs::symlink(executable, &native)?;
         native
     };
     // The collected command is the ordinary-path control. Streaming must also
-    // preserve a native executable path that cannot be represented as UTF-8.
+    // preserve the native executable alias accepted by the filesystem.
     let Ok(mut streamed) = command_at(root.path(), executable)
         .stream(Recorder::default())
         .await

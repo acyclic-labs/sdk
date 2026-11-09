@@ -6,6 +6,49 @@ use std::{
     task::{Context, Poll},
 };
 
+#[tokio::test]
+async fn lost_flush_producer_terminates_original_waiters() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = tempfile::tempdir()?;
+    let stream = LocalStream::open(root.path(), Default::default()).await?;
+    deferring_durability(stream.append(super::keyed_append("lost-flush", 0)?)).await?;
+    let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::seeded(0);
+    let submitted = {
+        let leader = schedule.scope(stream.await_publication(1));
+        tokio::pin!(leader);
+        loop {
+            tokio::select! {
+                result = &mut leader => panic!("flush ended before worker submission: {result:?}"),
+                boundary = boundaries.recv() => {
+                    let boundary = boundary.ok_or("flush boundary producer ended")?;
+                    if boundary.name == "native:submitted" {
+                        break boundary;
+                    }
+                    boundary.release();
+                }
+            }
+        }
+    };
+    // The real await_synced producer is admitted but has not executed. Losing
+    // its caller must leave custody with that producer and this waiter parked.
+    let mut waiting = std::pin::pin!(stream.await_publication(1));
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    assert!(stream.failure().is_none());
+    // Retiring the scheduler drops the original queued job, including the
+    // owner wired by await_synced. No replacement worker or owner is created.
+    drop(schedule);
+    drop(submitted);
+    assert!(matches!(
+        waiting.as_mut().now_or_never(),
+        Some(Err(StreamError::Unavailable))
+    ));
+    assert_eq!(
+        stream.failure().map(|failure| failure.cause),
+        Some("producer_lost")
+    );
+    Ok(())
+}
+
 // The OS refuses a real journal write through a held read-only descriptor.
 // Keep its lease so the descriptor cache cannot reopen it with write access.
 #[tokio::test]
