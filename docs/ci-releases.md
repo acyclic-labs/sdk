@@ -1,10 +1,8 @@
 # CI and SDK releases
 
-`SDK Static` is one required Linux job, started only by an explicit dispatch.
-Use `gh workflow run static.yml --ref <PR-head-branch>` to request it. The branch
-must belong to exactly one open PR, and its head must match the dispatched
-commit. The job checks root README approvals before checking out that commit.
-PR activity and main pushes do not start the workflow automatically. Run
+Every PR and main push runs `SDK Static`, one required Linux job that checks
+manifest and lockfile consistency without compiling. It also supports manual
+dispatch with `gh workflow run static.yml --ref <branch>`. Run
 `node scripts/check-cargo-lock.mjs` locally to reproduce its manifest and lockfile
 check. The checker compares the lockfile with Cargo's own canonical output from
 `cargo update --workspace`, preserving locked dependency versions while avoiding
