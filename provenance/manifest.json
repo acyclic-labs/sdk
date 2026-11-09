@@ -2,6 +2,15 @@
   "$schema": "../compatibility/schemas/provenance.schema.json",
   "imports": [
     {
+      "sourceRepository": "https://github.com/bmwill/diffy",
+      "sourceCommit": "4aa58708a7eef6efd9c1ec04b7af5e53865ec627",
+      "sourcePath": "src/diff/myers.rs (bidirectional middle-snake search), src/diff/cleanup.rs (edit alignment), LICENSE-MIT",
+      "destinationPath": "rust/crates/filesystem-base/src/text_merge",
+      "license": "MIT",
+      "auditResult": "approved",
+      "reviewer": "Codex: replace opaque allocations with fallible original-owner buffer admission and an explicit traversal stack"
+    },
+    {
       "sourceRepository": "https://github.com/acyclic-labs/cloud",
       "sourceCommit": "63747d834c6af687ac1f4a555c1b0bd2b8fbc914",
       "sourcePath": "lib/authority/src/task.rs",
