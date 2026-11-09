@@ -1,5 +1,5 @@
 //! Every Rust source in the repository takes OS file locks through
-//! [`super::FileLock`]. A raw lock released by closing its file stays held
+//! `acyclic_native_runtime::FileLock`. A raw lock released by closing its file stays held
 //! while any concurrently spawned process shares the description.
 //!
 //! This scan catches every textual spelling of a raw lock: fs2, `flock` calls,
@@ -82,14 +82,12 @@ fn violations<'a>(files: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<St
 fn sources() -> &'static [(&'static str, &'static str)] {
     static FILES: std::sync::OnceLock<Vec<(&str, &str)>> = std::sync::OnceLock::new();
     FILES.get_or_init(|| {
-        acyclic_test_support::repository_rust_sources()
+        crate::repository_rust_sources()
             .iter()
             .copied()
             // This policy spells its forbidden inputs; every other Rust source
             // in every original root remains subject to the exact allowance.
-            .filter(|(path, _)| {
-                *path != "rust/crates/native-runtime/src/file_lock_sources_tests.rs"
-            })
+            .filter(|(path, _)| *path != "rust/crates/source-policies/src/file_locks.rs")
             .collect()
     })
 }
@@ -99,7 +97,7 @@ fn compiled_source_policy_borrows_every_input_without_target_file_opens() {
     let files = sources();
     assert!(files.len() > 3000, "source catalog lost its roots");
     for (path, text) in files {
-        let original = acyclic_test_support::repository_rust_source(std::path::Path::new(path))
+        let original = crate::repository_rust_source(std::path::Path::new(path))
             .expect("compiled source exists");
         assert!(std::ptr::eq(text.as_ptr(), original.as_ptr()));
         assert_eq!(*text, original);
