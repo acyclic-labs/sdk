@@ -24,6 +24,7 @@ mod context;
 mod history_retry;
 mod replay;
 pub(super) mod settings;
+mod transcripts;
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))

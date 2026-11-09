@@ -40,6 +40,17 @@ pub const MAX_VOLUMES: usize = 8;
 /// four-byte big-endian version.
 pub const RECORD_VERSION: u32 = 14;
 
+/// Version-one creation event in an agent's append-only membership stream.
+/// The first event names the owner; subsequent events name its direct children.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Membership {
+    /// Schema version, always one.
+    pub version: u32,
+    /// Agent created atomically with this event.
+    pub agent: AgentPath,
+}
+
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("unsupported record version {found}; this build reads version {expected}")]

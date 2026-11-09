@@ -11,11 +11,15 @@
 //!                                          target <name>: one MachineBinding
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! harness/status/<id>                      status records, outside the subtree
+//! harness/membership/<root>/<id>           self then direct child creations (v1)
 //! ```
 //!
 //! Status lives outside the subtree so the commit that creates an agent (a spawn
 //! fork may write nothing inside its destination) also writes its first status:
 //! every agent a `children` page lists already has one.
+//! Membership also lives outside fork destinations. Its first record and each
+//! parent's child record share the creation commit, so consumers discover new
+//! agents by following, without rescanning child listings.
 //!
 //! Targets live only under the tree's root, and no child inherits them: every
 //! agent of the tree reads the root's `targets` by path prefix, so a spawn
@@ -279,6 +283,21 @@ impl AgentPath {
     /// Parent of the child subtrees, the `children_page` parent.
     pub fn children(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CHILDREN}", self.text))
+    }
+
+    /// Append-only membership: this agent first, then each direct child, in
+    /// the same commit as its creation. Outside fork destinations like status.
+    pub fn membership(&self) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{}", self.membership_tree()?, self.id_text()))
+    }
+
+    /// Namespace of this tree's membership feeds. A root observer can follow
+    /// each descendant's feed on its existing authenticated session.
+    pub fn membership_tree(&self) -> Result<StreamPath, Error> {
+        stream(&format!(
+            "harness/membership/{}",
+            self.tree_root().id_text()
+        ))
     }
 
     /// The root of this agent's tree: itself for a root.
