@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { environment } from "./scratch.mjs";
 
 for (const entry of ["qualify-web-lifecycle.mjs", "qualify-fetch-cancellation.mjs"]) {
   test(`${entry} admits subprocesses through the shared scratch and profile owner`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "standalone-fixture-contract-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "standalone-fixture-contract-")));
     const processes = new Processes();
     try {
       const scratch = join(root, "leased"), inherited = join(root, "inherited");
