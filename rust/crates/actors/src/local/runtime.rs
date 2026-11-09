@@ -57,21 +57,8 @@ struct Slot {
 #[derive(Default)]
 struct DeliveryControl {
     paused: bool,
-    cancellation: Option<crate::guest::CancellationToken>,
     /// An unread control result retains its original uncertain publication.
     failure: Option<Box<Error>>,
-}
-
-// Registration borrows the original delivery token; Drop clears it before
-// releasing the delivery lock, including caller loss and typed failure.
-struct ActiveDelivery<'a>(&'a SyncMutex<DeliveryControl>);
-impl Drop for ActiveDelivery<'_> {
-    fn drop(&mut self) {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancellation = None;
-    }
 }
 
 /// An event retains its placement through cooperative batch boundaries.
@@ -862,16 +849,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let cancellation = crate::guest::CancellationToken::new();
             self.interrupt_follows(&mut inner, state, &trigger).await?;
             {
-                let mut control = slot
+                let control = slot
                     .delivery_control
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if control.paused {
                     return Ok(true);
                 }
-                control.cancellation = Some(cancellation.clone());
             }
-            let _active = ActiveDelivery(&slot.delivery_control);
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.

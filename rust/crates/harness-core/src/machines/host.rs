@@ -126,6 +126,10 @@ impl MachinesHost {
             .provider
             .capability(acyclic_machines::ProviderCapability::BinaryDuplexExec)
             == acyclic_machines::Support::Unsupported
+            && self
+                .provider
+                .capability(acyclic_machines::ProviderCapability::RequestResponseExec)
+                == acyclic_machines::Support::Supported
         {
             let maximum = command.maximum_output_bytes();
             let output = self
