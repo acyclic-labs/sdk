@@ -7,7 +7,7 @@ use acyclic_harness::{
     agent::AgentPath,
     local::{host_files, host_owner::HostAction},
 };
-use acyclic_plugin::input::{Result, parse_task, read_json};
+use acyclic_plugin::input::{Result, parse_native_task, parse_task, read_json};
 use serde_json::{Value, json};
 use std::{
     env, io,
@@ -50,8 +50,8 @@ fn run() -> Result<()> {
         let task = parse_task(id)?;
         args.drain(..2);
         task
-    } else if let Ok(task) = env::var("ACYCLIC_TASK") {
-        parse_task(&task)?
+    } else if let Some(task) = env::var_os("ACYCLIC_TASK") {
+        parse_native_task(&task)?
     } else {
         serde_json::from_value(
             host_files::request(
@@ -98,14 +98,14 @@ fn internal(args: &[String]) -> Result<bool> {
             let [_, host, event] = args else {
                 return Err("__hook requires HOST EVENT".into());
             };
-            let answer = match read_json(io::stdin().lock()) {
+            let answer = match read_json(io::stdin().lock(), Some(65_536)) {
                 Ok(input) => hook(host, event, input),
                 Err(error) => hook_failure(event, &error.to_string()),
             };
             println!("{answer}");
         }
         "__workspace" => {
-            let action = serde_json::from_value(read_json(io::stdin().lock())?)?;
+            let action = serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
             println!("{}", host_files::request(&env::current_dir()?, action)?);
         }
         "install" | "uninstall" | "doctor" => {
@@ -145,7 +145,7 @@ fn internal(args: &[String]) -> Result<bool> {
 
 fn install_package() -> Result<()> {
     let request: acyclic_fs::package_install::Request =
-        serde_json::from_value(read_json(io::stdin().lock())?)?;
+        serde_json::from_value(read_json(io::stdin().lock(), None)?)?;
     let recovery = serde_json::to_string(&json!(["node", request.directory.join("install.js")]))?;
     let test = env::var("NODE_ENV").as_deref() == Ok("test");
     use acyclic_fs::package_install::Stage;
@@ -263,7 +263,7 @@ fn hook(host: &str, event: &str, input: Value) -> Value {
 
 fn hook_input(mut input: Value, task: Option<&std::ffi::OsStr>) -> Result<Value> {
     if let Some(task) = task {
-        let task = parse_task(task.to_str().ok_or("native task identity is not UTF-8")?)?;
+        let task = parse_native_task(task)?;
         input
             .as_object_mut()
             .ok_or("native hook input must be an object")?

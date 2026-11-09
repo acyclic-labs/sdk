@@ -14,8 +14,8 @@ recovery = "python3 rust/crates/harness-fuzz/graphcoder-args-control.py"
 controls = {
     "native_stdin_binary": (
         "plugin/src/input.rs",
-        b"input.take(65_537).read_to_end(&mut bytes)?;",
-        b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+        b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
+        b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
         "null",
         b"native stdin read error must retain its original cause",
     ),
@@ -77,7 +77,7 @@ controls = {
     ),
     "native_input": (
         "plugin/src/input.rs",
-        b"if bytes.len() > 65_536 {",
+        b"if maximum.is_some_and(|bound| bytes.len() as u64 > bound) {",
         b"if false {",
         "null",
         b"native input exceeds its admitted byte bound",
@@ -175,15 +175,15 @@ additional_controls = {
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
+            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
             b"input.take(1).read_to_end(&mut bytes)?;",
             "null",
             b"native input admission changed its original JSON",
         ),
         (
             "plugin/src/input.rs",
-            b"input.take(65_537).read_to_end(&mut bytes)?;",
-            b"let _ = input.take(65_537).read_to_end(&mut bytes);",
+            b"input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes)?;",
+            b"let _ = input\n        .take(maximum.map_or(u64::MAX, |bound| bound.saturating_add(1)))\n        .read_to_end(&mut bytes);",
             "null",
             b"native input read failure must retain its OS error",
         ),
@@ -344,7 +344,7 @@ def run(target, seed, witness, *, capture=False, runs=0):
         command = [
             "cargo", "nextest", "run", "--locked", "-p", "acyclic-plugin",
             "--test", "main", "--profile", "ci", "-E",
-            "test(native_input::native_stdin_failures_stop_before_workspace_effects)",
+            "test(native_input::native_input_failures_stop_before_workspace_effects)",
         ]
     else:
         command = [
